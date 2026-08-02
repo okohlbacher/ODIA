@@ -86,8 +86,6 @@ the exit-code-6-on-success. These remain:
 - **The contiguity check is order-dependent.** Two blocks of one precursor that
   are *adjacent* still merge silently, discarding the second block's RT, IM,
   precursor m/z and protein group; only non-adjacent repeats are detected.
-- **Generated libraries write `nan` in the RT column** until prediction lands.
-  No TSV consumer will accept it; write an empty field instead.
 - **Null cells are indistinguishable from zero** for `Decoy`, `Precursor.Charge`,
   `Fragment.Series.Number` and the string columns — a null `Decoy` column makes
   every decoy a target, the same effect the BOOL case was added to fix.
@@ -123,6 +121,11 @@ the exit-code-6-on-success. These remain:
 ---
 
 ## Implementation, unblocked
+
+*Fixture coverage is now addressed: `scripts/make_adversarial_fixtures.py` plus
+`test/check_invariants.py` give 20 tests over losses, modifications, decoy
+collisions, unusual Parquet types, nulls and malformed input, with masses
+verified against a residue table independent of OpenMS.*
 
 - ONNX prediction: iRT, MS2 intensities, CCS — with CUDA attempted and CPU
   fallback, and ODIA's own `mod_x` encoder.
