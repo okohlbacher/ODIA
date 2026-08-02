@@ -63,6 +63,52 @@ external fix are marked **[you]**; the rest are mine to work through.
 
 ---
 
+## From the Phase 1 adversarial review — still open
+
+Four criticals from that review are fixed (decoy fragment masses, the
+target/decoy round-trip merge, non-contiguous row detection, Parquet numeric and
+string type coverage), plus the `toFixed` domain, the unchecked output stream and
+the exit-code-6-on-success. These remain:
+
+- **Decoy `Modified.Sequence` and `Precursor.Mz` are mutually inconsistent** by
+  up to tens of Th, because the decoy inherits the target's precursor m/z (D7,
+  deliberate) while storing the mutated sequence. DIA-NN resolves this by keeping
+  the *target* sequence on the decoy row. Ours is self-consistent for fragment
+  recomputation but is not a valid DIA-NN library as written; decide which
+  convention to follow on output.
+- **N-terminal modifications break the decoy tokeniser.** `(UniMod:1)PEPTIDE`
+  has its modification name tokenised as residues. Not reachable from the FASTA
+  path today (no N-term variable mods configured), but `appendDecoys` is public
+  and DIA-NN writes exactly this syntax.
+- **Generated libraries write `nan` in the RT column** until prediction lands.
+  No TSV consumer will accept it; write an empty field or omit the row instead.
+- **`footprintBytes()` under-reports by ~2.6×** — `StringArena::lookup_` is one
+  hash node per distinct string and is never counted, nor is unused block
+  capacity. D3 exists to make the memory claim measured, so the measurement must
+  be honest: at the 7.1 M-distinct-peptide scale the missing map term alone is
+  ~400 MB.
+- **`sortByPrecursorMz` doubles peak memory** (+483 MiB, +39% on the human
+  proteome) by materialising complete copies before moving. An in-place
+  permutation or a block-streamed rebuild avoids it.
+- **Protein-group accumulation uses a substring test**, so `P1` is dropped when
+  `P12` is already present. Order-dependent, and routine with isoform accessions.
+  Split and compare on `;` boundaries.
+- **`sorted_by_mz_` is never invalidated** and the non-const accessors let any
+  caller break the invariant; `lowerBound` then returns 0 silently rather than
+  erroring.
+- **D5's mandated warning is not implemented** — the reader should warn once when
+  an input's transition names disagree with what ODIA would synthesise. The
+  accepted round-trip risk is currently unmitigated.
+- **`Decoy` given as `True`/`False` parses to 0**, and `toLong` cannot
+  distinguish absent from unparseable.
+- Smaller: `char buf[64]` truncates long numeric fields and `strtod` accepts
+  partial parses (`500,1` becomes 500); no `static_assert` that the two mutation
+  tables are the same length; `loadTSV` never reserves; a handful of
+  `pseudo_reverse` decoys are identical to their target for palindromic
+  prefixes.
+
+---
+
 ## Implementation, unblocked
 
 - ONNX prediction: iRT, MS2 intensities, CCS — with CUDA attempted and CPU
