@@ -44,6 +44,18 @@ external fix are marked **[you]**; the rest are mine to work through.
 - **Isotope element mapping.** AlphaPeptDeep's element list contains `2H`,
   `13C`, `15N`, `18O`; OpenMS writes isotopes as `(13)C`. Without an explicit
   translation, isotope-labelled modifications land silently in the `?` bucket.
+  Adversarial review confirmed these four renames are the *only* mapping needed:
+  all 40 element symbols in the shipped `unimod.xml` are in the 109-element list.
+
+- **Mod feature counts are signed.** 600 of 2859 rows in the UniMod-derived table
+  have negative counts (`Deamidated@N` is `H(-1)N(-1)O(1)`), so an unsigned type
+  or an `abs()` on the OpenMS side is silently wrong. Measured: RT 0.5231 signed
+  against 0.5121 with `abs()`.
+
+- **Batches must be length-homogeneous.** Trailing padding is not inert -- index 0
+  is one-hot encoded and no model applies a padding mask. The same peptide padded
+  to `seq_len` 13/20/30 predicts RT 0.8196/0.4737/0.2714. Group by encoded length
+  and run one batch per length.
 
 - **Determinism harness.** Permutation invariance and thread invariance at
   1/8/64 threads with OpenMP linked, per the cross-cutting invariants. Not yet
