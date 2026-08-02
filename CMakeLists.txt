@@ -51,7 +51,10 @@ message(STATUS "Arrow:  ${Arrow_VERSION}")
 # ---------------------------------------------------------------------------
 # Shared code lives in a library so tools stay thin and are testable.
 # ---------------------------------------------------------------------------
-set(ODIA_LIB_SOURCES)
+set(ODIA_LIB_SOURCES
+  src/library/Library.cpp
+  src/library/DIANNLibraryFile.cpp
+)
 
 if(ODIA_LIB_SOURCES)
   add_library(odia_core STATIC ${ODIA_LIB_SOURCES})
@@ -68,6 +71,7 @@ endif()
 # ---------------------------------------------------------------------------
 set(ODIA_TOOLS
   ODIAInfo
+  OpenDIAlyzer
 )
 
 foreach(tool ${ODIA_TOOLS})

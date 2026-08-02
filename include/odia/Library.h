@@ -1,0 +1,180 @@
+// Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace ODIA
+{
+
+  /// m/z stored as fixed-point in units of 1e-5 Th.
+  ///
+  /// Four bytes, like float, but the error is distributed better for this use.
+  /// Tolerances in DIA are relative (ppm), and fixed-point error is constant in
+  /// absolute terms, so the scale is chosen against the *bottom* of the m/z
+  /// range: at 1e-5 Th the half-quantum is 0.033 ppm at m/z 150 and 0.0025 ppm
+  /// at m/z 2000, against a flat ~0.03-0.05 ppm for float32. Range is
+  /// 0 - 42,949 Th.
+  using MzFixed = std::uint32_t;
+
+  inline constexpr double MZ_QUANTUM = 1e-5;
+
+  inline MzFixed toFixed(double mz)
+  {
+    return static_cast<MzFixed>(mz / MZ_QUANTUM + 0.5);
+  }
+
+  inline constexpr double fromFixed(MzFixed v)
+  {
+    return static_cast<double>(v) * MZ_QUANTUM;
+  }
+
+  enum class FragmentType : std::uint8_t
+  {
+    Unknown = 0, A, B, C, X, Y, Z, Precursor
+  };
+
+  enum class LossType : std::uint8_t
+  {
+    None = 0, Water, Ammonia, Phospho, CO, Other
+  };
+
+  FragmentType parseFragmentType(std::string_view s);
+  LossType parseLossType(std::string_view s);
+  std::string_view toString(FragmentType t);
+  std::string_view toString(LossType l);
+
+  /// Interned strings addressed by a 4-byte handle.
+  ///
+  /// The library's string fields repeat massively -- a peptide reference has
+  /// ~7.1 M distinct values across ~78.6 M transitions, a protein group far
+  /// fewer. Storing std::string per row is what produced ~471 M allocations and
+  /// a 32.65 GB library load in the predecessor project; the strings themselves
+  /// were a fifth of that, the rest was arena fragmentation caused by the
+  /// allocation count. One arena plus 4-byte handles removes both.
+  class StringArena
+  {
+  public:
+    static constexpr std::uint32_t npos = 0xFFFFFFFFu;
+
+    /// Returns a handle for @p s, storing it only if it is new.
+    std::uint32_t intern(std::string_view s);
+
+    std::string_view get(std::uint32_t handle) const;
+
+    std::size_t size() const { return entries_.size(); }
+    std::size_t bytes() const { return bytes_; }
+
+    void reserve(std::size_t entries, std::size_t chars);
+
+  private:
+    /// Characters live in fixed blocks that are never reallocated.
+    ///
+    /// The lookup map is keyed by views into this storage, so the storage must
+    /// have stable addresses. Backing it with a growing std::string silently
+    /// breaks interning: on reallocation every key in the map dangles, lookups
+    /// stop matching, and the same string is stored again -- which shows up as
+    /// an inflated distinct-string count rather than as a crash.
+    static constexpr std::size_t BLOCK = 1u << 20;
+
+    struct Entry
+    {
+      const char* data;
+      std::uint32_t length;
+    };
+
+    char* allocate(std::size_t n);
+
+    std::vector<std::vector<char>> blocks_;
+    std::size_t block_used_ = 0;
+    std::size_t bytes_ = 0;
+    std::vector<Entry> entries_;
+    std::unordered_map<std::string_view, std::uint32_t> lookup_;
+  };
+
+  /// An assay library as parallel arrays.
+  ///
+  /// Layout is struct-of-arrays with a CSR relation: precursors own a
+  /// contiguous run of transitions via (transition_begin, transition_count).
+  /// Sorting precursors by m/z therefore makes each isolation window a
+  /// contiguous slice rather than a gather, which is what lets the library be
+  /// paged rather than held resident.
+  ///
+  /// Deliberately absent: a per-transition name. It is derived from the peptide
+  /// reference and the fragment annotation, and the annotation is itself
+  /// reconstructible from (type, ordinal, charge, loss), which cost 4 bytes
+  /// here. Storing it would be ~78.5 M distinct strings.
+  class Library
+  {
+  public:
+    struct PrecursorArrays
+    {
+      std::vector<MzFixed> mz;
+      std::vector<float> irt;              ///< library prediction, not an observation
+      std::vector<float> im;               ///< NaN when absent
+      std::vector<std::uint8_t> charge;
+      std::vector<std::uint8_t> decoy;
+      std::vector<std::uint32_t> modified_sequence;  ///< StringArena handle
+      std::vector<std::uint32_t> protein_group;      ///< StringArena handle
+      std::vector<std::uint32_t> transition_begin;
+      std::vector<std::uint32_t> transition_count;
+    };
+
+    struct TransitionArrays
+    {
+      std::vector<MzFixed> product_mz;
+      std::vector<float> library_intensity;   ///< relative; f32 is more than it carries
+      std::vector<FragmentType> type;
+      std::vector<std::uint8_t> ordinal;
+      std::vector<std::int8_t> charge;
+      std::vector<LossType> loss;
+    };
+
+    std::size_t precursorCount() const { return precursors_.mz.size(); }
+    std::size_t transitionCount() const { return transitions_.product_mz.size(); }
+    std::size_t decoyCount() const;
+
+    const PrecursorArrays& precursors() const { return precursors_; }
+    const TransitionArrays& transitions() const { return transitions_; }
+    const StringArena& strings() const { return strings_; }
+
+    PrecursorArrays& precursors() { return precursors_; }
+    TransitionArrays& transitions() { return transitions_; }
+    StringArena& strings() { return strings_; }
+
+    /// Reorder precursors by ascending m/z, rebuilding the CSR index.
+    ///
+    /// After this, the precursors of an isolation window are a contiguous range
+    /// locatable by binary search.
+    void sortByPrecursorMz();
+
+    /// First precursor with m/z >= @p mz_low, for window slicing. Requires
+    /// sortByPrecursorMz() to have been called.
+    std::size_t lowerBound(double mz_low) const;
+
+    /// Bytes held by the arrays and the arena. Reported so the design claim in
+    /// doc/02-decisions.md D3 is measured rather than asserted.
+    std::size_t footprintBytes() const;
+
+    void reserve(std::size_t precursors, std::size_t transitions);
+
+    /// Release the growth slack in every array.
+    ///
+    /// Called after loading so footprintBytes() reports what is held rather
+    /// than what std::vector happened to allocate on the way -- otherwise the
+    /// figure varies with the input path rather than the data.
+    void shrinkToFit();
+
+  private:
+    PrecursorArrays precursors_;
+    TransitionArrays transitions_;
+    StringArena strings_;
+    bool sorted_by_mz_ = false;
+  };
+
+} // namespace ODIA

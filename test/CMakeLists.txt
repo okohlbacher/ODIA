@@ -32,3 +32,34 @@ if(EXISTS "${ODIA_DATA_DIR}/12_80.mzML")
   set_tests_properties(ODIAInfo_mzml PROPERTIES
     PASS_REGULAR_EXPRESSION "distinct isolation windows")
 endif()
+
+# --------------------------------------------------------------------- library
+# Fixtures are derived, not committed; scripts/make_fixtures.sh builds them onto
+# node-local scratch. Skip these tests where they are absent rather than fail.
+set(ODIA_FIXTURE_DIR "$ENV{ODIA_SCRATCH}/fixtures"
+    CACHE PATH "Directory holding the assay-library fixtures")
+
+if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.parquet")
+  add_test(NAME library_parquet
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/diann_library_small.parquet"
+                                -stop_after library)
+  set_tests_properties(library_parquet PROPERTIES
+    PASS_REGULAR_EXPRESSION "precursors:[ ]+500")
+endif()
+
+if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
+  add_test(NAME library_tsv
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/diann_library_small.tsv"
+                                -stop_after library)
+  set_tests_properties(library_tsv PROPERTIES
+    PASS_REGULAR_EXPRESSION "precursors:[ ]+500")
+
+  # The two readers must agree, and a TSV round-trip must be lossless in the
+  # quantities we keep. library_roundtrip.cmake asserts both.
+  add_test(NAME library_roundtrip
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DFIXTURES=${ODIA_FIXTURE_DIR}
+                   -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/library_roundtrip.cmake)
+endif()

@@ -1,0 +1,58 @@
+// Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+#pragma once
+
+#include <odia/Library.h>
+
+#include <string>
+
+namespace ODIA
+{
+
+  /// Reads and writes assay libraries in DIA-NN's dialect.
+  ///
+  /// DIA-NN's TSV and Parquet libraries share column names, so one column map
+  /// serves both. Both are fully denormalised -- one row per transition, with
+  /// every precursor field repeated -- which is exactly the redundancy the CSR
+  /// layout in Library collapses on load.
+  class DIANNLibraryFile
+  {
+  public:
+    /// Column names, as DIA-NN writes them.
+    struct Columns
+    {
+      static constexpr const char* PRECURSOR_ID = "Precursor.Id";
+      static constexpr const char* MODIFIED_SEQUENCE = "Modified.Sequence";
+      static constexpr const char* STRIPPED_SEQUENCE = "Stripped.Sequence";
+      static constexpr const char* PRECURSOR_CHARGE = "Precursor.Charge";
+      static constexpr const char* DECOY = "Decoy";
+      static constexpr const char* RT = "RT";
+      static constexpr const char* IM = "IM";
+      static constexpr const char* PRECURSOR_MZ = "Precursor.Mz";
+      static constexpr const char* PRODUCT_MZ = "Product.Mz";
+      static constexpr const char* RELATIVE_INTENSITY = "Relative.Intensity";
+      static constexpr const char* FRAGMENT_TYPE = "Fragment.Type";
+      static constexpr const char* FRAGMENT_CHARGE = "Fragment.Charge";
+      static constexpr const char* FRAGMENT_SERIES_NUMBER = "Fragment.Series.Number";
+      static constexpr const char* FRAGMENT_LOSS_TYPE = "Fragment.Loss.Type";
+      static constexpr const char* PROTEIN_GROUP = "Protein.Group";
+    };
+
+    /// Load a library. Dispatches on the extension: .parquet, else TSV.
+    ///
+    /// Rows are grouped into precursors by a change in Precursor.Id, so the
+    /// input must keep a precursor's transitions together -- which DIA-NN does.
+    static void load(const std::string& filename, Library& library);
+
+    static void loadTSV(const std::string& filename, Library& library);
+    static void loadParquet(const std::string& filename, Library& library);
+
+    /// Write in DIA-NN's TSV dialect.
+    ///
+    /// Precursor.Id is synthesised as <Modified.Sequence><charge>, matching
+    /// DIA-NN, since ODIA does not store per-transition identifiers.
+    static void storeTSV(const std::string& filename, const Library& library);
+  };
+
+} // namespace ODIA
