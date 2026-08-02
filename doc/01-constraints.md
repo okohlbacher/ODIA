@@ -94,6 +94,57 @@ malformed compressed mzML *before* `main_` runs. ODIA dispatches on the file
 extension instead. Adding a `FileTypes` entry upstream is a small, obvious
 contribution.
 
+## 1c. Measured: m/z pruning does not work on the example archives
+
+The project thesis is that mzPeak's row-group and page-index pruning makes
+DIA-NN-style selective, repeated reads of a run affordable, removing the
+constraint that pushed OpenSWATH to a single-tier design. That is testable
+today, and the answer is currently **no for the m/z axis**.
+
+All three example archives store their signal in `spectra_peaks.parquet` in the
+flat **point** layout — `(spectrum_index u64, mz f64, intensity f32)`, one row
+per peak. `spectra_data.parquet`, which would hold the *chunked* m/z layout
+(`chunk.mz_chunk_start` / `chunk.mz_chunk_end`), is present in the schema but
+has **zero rows** in all three.
+
+Row-group statistics for `12_80` (21.17 M peaks, 21 row groups of 1,048,576):
+
+| axis | clustered? | consequence |
+|---|---|---|
+| `point.spectrum_index` | **yes** — rg0 = spectra 0–897, rg1 = 897–2090, … | RT / spectrum-range pruning works |
+| `point.mz` | **no** — every row group spans 100.0–1200.0 | m/z-band pruning is impossible |
+
+Measured directly: a 10 ppm band touches **21 of 21** row groups at m/z 400 and
+at m/z 700 (5 of 21 at m/z 1200, only because a few row groups top out just
+below it). This is inherent to the layout — every spectrum covers the full m/z
+range, so every row group does too.
+
+**Re-converting with the chunked layout does not currently help.** Running
+`mzpeak-convert --layout chunked` on `12_80.mzML` produced a file with the same
+21,172,704 point rows and no chunk rows — the same layout, within 168 bytes of
+the original — while emitting its own diagnostics:
+
+```
+[ERROR mzpeak_prototyping::chunk_series] BUG: signal array IntensityArray is
+being spilled to auxiliary_arrays (metadata facet); signal arrays must live in
+spectra_data/spectra_peaks
+```
+
+So the chunked path appears to fail and fall back to point. Cause unknown;
+needs the converter's authors. This also explains the `S08_diaPASEF` size
+anomaly — 13 GB of mzPeak against 1.3 GB of mzML is what the point layout costs
+at 20 bytes per peak with no chunk-level encoding.
+
+**What survives**, and it is not nothing: spectrum-index pruning is real and DIA
+extraction does restrict to an RT window; column projection works; and Parquet
+decode avoids XML parsing entirely (`ODIAInfo` reads the full spectrum inventory
+of `12_80` in 0.07 s against 3.58 s for OpenMS to parse the mzML).
+
+**What does not:** reading only the m/z bands a set of transitions needs, which
+is the specific capability the two-tier extraction design would trade on.
+
+This has to be settled before Phase 2 commits to an extraction strategy.
+
 ## 2. Everything must be built with one toolchain
 
 - mzpeak's headers are C++23 and use `std::print`, `std::ranges::to` and
