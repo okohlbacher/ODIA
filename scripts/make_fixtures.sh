@@ -64,4 +64,10 @@ print(f"  full : {table.num_rows:,} rows, {len(set(pid)):,} precursors")
 print(f"  small: {small.num_rows:,} rows, {len(keep):,} precursors")
 PY
 
+# Fixtures that deliberately exercise what the DIA-NN library cannot: neutral
+# losses, N-terminal and multiple modifications, decoy-sequence collisions,
+# unusual Parquet types, nulls, and malformed numbers.
+echo "==> writing adversarial fixtures"
+"${ODIA_ENV}/bin/python" "${here}/make_adversarial_fixtures.py" "${DEST}"
+
 ls -la "${DEST}"

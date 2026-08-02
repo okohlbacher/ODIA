@@ -63,3 +63,79 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
                    -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/library_roundtrip.cmake)
 endif()
+
+# ----------------------------------------------------- adversarial fixtures
+# Every critical defect found so far lived in a path the DIA-NN fixture cannot
+# reach. These are its complement: neutral losses, N-terminal and multiple
+# modifications, decoy-sequence collisions, unusual Parquet types, nulls,
+# malformed numbers and out-of-order rows.
+#
+# check_invariants.py recomputes fragment masses from its own residue table, not
+# from OpenMS, so it cannot agree with ODIA by sharing its arithmetic.
+find_program(ODIA_PYTHON python3 HINTS "$ENV{ODIA_ENV}/bin" NO_DEFAULT_PATH)
+if(NOT ODIA_PYTHON)
+  find_program(ODIA_PYTHON python3)
+endif()
+
+set(ODIA_ADVERSARIAL
+  adv_losses adv_mods adv_collisions adv_fragments adv_target_decoy)
+
+foreach(fx ${ODIA_ADVERSARIAL})
+  if(EXISTS "${ODIA_FIXTURE_DIR}/${fx}.tsv" AND ODIA_PYTHON)
+    add_test(NAME adversarial_${fx}
+             COMMAND ${CMAKE_COMMAND}
+                     -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                     -DPYTHON=${ODIA_PYTHON}
+                     -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_invariants.py
+                     -DINPUT=${ODIA_FIXTURE_DIR}/${fx}.tsv
+                     -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${fx}.out.tsv
+                     -DCHECK_DECOYS=--decoy-table
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
+  endif()
+endforeach()
+
+# The same invariants must hold on the real library -- targets only, since
+# DIA-NN's own decoy rows were mutated by DIA-NN's position rule, not ours, and
+# cannot be reproduced from the substitution table alone.
+if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv" AND ODIA_PYTHON)
+  add_test(NAME adversarial_real_library
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DPYTHON=${ODIA_PYTHON}
+                   -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_invariants.py
+                   -DINPUT=${ODIA_FIXTURE_DIR}/diann_library_small.tsv
+                   -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/real.out.tsv
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
+endif()
+
+# Rows out of precursor order must be refused, not silently split.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_interleaved.tsv")
+  add_test(NAME adversarial_interleaved_rejected
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/adv_interleaved.tsv"
+                                -stop_after library)
+  set_tests_properties(adversarial_interleaved_rejected PROPERTIES WILL_FAIL TRUE)
+endif()
+
+# Unusual Parquet types must decode, including a bool decoy flag.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_types.parquet")
+  add_test(NAME adversarial_parquet_types
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/adv_types.parquet"
+                                -stop_after library)
+  set_tests_properties(adversarial_parquet_types PROPERTIES
+    PASS_REGULAR_EXPRESSION "1 target / 1 decoy")
+endif()
+
+# A library ODIA generated itself, decoys included. This is the only test where
+# the decoy substitution table is ours end to end, so the mutation check is
+# meaningful.
+if(EXISTS "/scratch/kohlbach/AGXT.fasta" AND ODIA_PYTHON)
+  add_test(NAME adversarial_generated
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DPYTHON=${ODIA_PYTHON}
+                   -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_invariants.py
+                   -DFASTA=/scratch/kohlbach/AGXT.fasta
+                   -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/generated.out.tsv
+                   -DCHECK_DECOYS=--decoy-table
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
+endif()

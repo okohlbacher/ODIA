@@ -51,7 +51,8 @@ protected:
     setValidFormats_("fasta", {"fasta"}, false);
 
     registerStringOption_("decoys", "<method>", "mutate",
-                          "Decoy construction when generating from FASTA.", false);
+                          "Decoy construction. Applied to a library read with -tr "
+                          "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
     registerIntOption_("missed_cleavages", "<n>", 1, "Maximum missed cleavages.", false, true);
@@ -98,6 +99,20 @@ protected:
       if (!tr.empty())
       {
         ODIA::DIANNLibraryFile::load(tr, library);
+
+        // Decoys for a supplied library too, not only for a generated one. A
+        // library without them cannot be scored, and appendDecoys is idempotent
+        // so one that already has them is left alone.
+        const auto method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
+        if (method != ODIA::DecoyMethod::None && library.decoyCount() == 0)
+        {
+          std::size_t skipped = 0;
+          const auto made = ODIA::LibraryGenerator::appendDecoys(library, method, &skipped);
+          std::ostringstream msg;
+          msg << "added " << made << " decoys";
+          if (skipped) { msg << " (" << skipped << " targets got none)"; }
+          writeLogInfo_(msg.str());
+        }
       }
       else
       {

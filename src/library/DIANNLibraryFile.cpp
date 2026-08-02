@@ -422,7 +422,11 @@ namespace ODIA
             << seq << '\t' << z << '\t'
             << static_cast<int>(p.decoy[i]) << '\t';
         out.precision(9);
-        out << p.irt[i] << '\t';
+        // An unpredicted retention time is written as an empty field, not as
+        // "nan": no TSV consumer accepts the latter, and it propagates into
+        // anything that reads the library back.
+        if (std::isnan(p.irt[i])) { out << ""; } else { out << p.irt[i]; }
+        out << '\t';
         if (has_im) { out << p.im[i]; } else { out << 0; }
         out << '\t';
         out.precision(10);
