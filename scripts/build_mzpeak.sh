@@ -13,14 +13,27 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${here}/env.sh"
 
-MZPEAK_COMMIT="${MZPEAK_COMMIT:-80fff0152328dccc30a0e83a057e2e01d82d5f96}"
-src="${ODIA_SCRATCH}/src/mzpeak"
+# okohlbacher/mzpeak-openms is a fork of OpenMS/mzpeak carrying the work ODIA
+# needs and upstream does not yet have:
+#
+#   - reads the split-metadata (v2) layout, which is what mzpeak-convert >= 0.7.0
+#     writes and therefore what all of our example archives use. Upstream trunk
+#     throws "metadata file missing or does not have the spectrum group" on them.
+#   - exposes per-spectrum retention time, precursors/isolation windows and ion
+#     mobility. Upstream's Spectrum exposes only m/z, intensity and MS level,
+#     which is not enough to drive a DIA extraction.
+#   - has a writer, which is how ODIA emits mzPeak chromatograms.
+#
+# Pinned to a commit because this is an active WIP branch, not a release.
+MZPEAK_REPO="${MZPEAK_REPO:-https://github.com/okohlbacher/mzpeak-openms.git}"
+MZPEAK_COMMIT="${MZPEAK_COMMIT:-587a4fb733d089ccf61a601af98e4176dc547fd3}"
+src="${ODIA_SCRATCH}/src/mzpeak-openms"
 build="${ODIA_SCRATCH}/build/mzpeak"
 
 mkdir -p "${ODIA_SCRATCH}/src"
 if [[ ! -d "${src}/.git" ]]; then
   echo "==> cloning mzpeak"
-  git clone https://github.com/OpenMS/mzpeak.git "${src}"
+  git clone "${MZPEAK_REPO}" "${src}"
 fi
 git -C "${src}" fetch --all --quiet
 git -C "${src}" checkout --quiet --force "${MZPEAK_COMMIT}"
@@ -48,11 +61,14 @@ meson setup "${build}" "${src}" \
   -Dcpp_args="-I${ODIA_ENV}/include" \
   -Dcpp_link_args="-L${ODIA_ENV}/lib -Wl,-rpath,${ODIA_ENV}/lib"
 
+# Build only the library and tools. The test suite does not currently compile
+# against Arrow 23 (parquet_writer_test.cpp calls FileReader::ReadTable() with a
+# signature this Arrow does not have) -- a WIP-branch issue, not ours.
 echo "==> building mzpeak"
-meson compile -C "${build}"
+ninja -C "${build}" libmzpeak.so libmzpeak.a mzp-inspect read_spectra
 
 echo "==> installing mzpeak to ${ODIA_MZPEAK}"
-meson install -C "${build}"
+meson install -C "${build}" --no-rebuild
 
 # Repair the installed header layout.
 #

@@ -40,7 +40,56 @@ Consequences:
 - mzpeak's README states the API is **not stable** ("no stability is guaranteed
   at this point"; freeze targeted for summer 2026). ODIA pins a commit.
 
-## 1a. The mzpeak C++ reader cannot read our mzPeak files at all
+## 1. Reader: use okohlbacher/mzpeak-openms, not OpenMS/mzpeak
+
+ODIA builds against the fork, pinned at `587a4fb` (branch `writer_test`). It
+carries three things upstream does not have, all of which ODIA needs:
+
+- **It reads the split-metadata (v2) layout**, which is what
+  `mzpeak-convert >= 0.7.0` writes and therefore what every example archive
+  uses. Upstream trunk throws on all of them (§1a).
+- **It exposes per-spectrum retention time, precursors/isolation windows and
+  ion mobility.** Upstream's `Spectrum` exposes only m/z, intensity and MS
+  level, which cannot drive a DIA extraction (§1b).
+- **It has a writer**, which is how ODIA will emit mzPeak chromatograms.
+
+### Verified against OpenMS on `12_80`
+
+`ODIAInfo` reports the same quantities through both readers, deliberately, so
+the two can be cross-checked. They agree exactly:
+
+| | mzPeak (fork) | mzML (OpenMS) |
+|---|---|---|
+| spectra | 13,009 | 13,009 |
+| MS1 / MS2 | 1,083 / 11,926 | 1,083 / 11,926 |
+| RT range | 30.1 – 929.995 s | 30.1 – 929.995 s |
+| isolation windows | 11 | 11 |
+| cycles | 1,085 | 1,085 |
+| **wall / peak RSS** | **0.29 s / 95 MB** | 3.76 s / 412 MB |
+
+So for the metadata pass — which is what run indexing and window/cycle
+detection need — mzPeak is **13× faster and uses 4.3× less memory** than
+parsing mzML. That part of the thesis holds.
+
+### Two live gaps in the fork
+
+1. **Peak decoding costs ~277 ms per spectrum.** Measured over 1,000 spectra of
+   `12_80`. OpenMS parses the *entire* run — all 13,009 spectra and 21.2 M peaks
+   — out of mzML in 3.55 s, i.e. ~0.27 ms/spectrum. The reader is therefore
+   about **1,000× slower per spectrum than mzML parsing**, which puts a single
+   pass over `12_80` at roughly an hour and over `astral` (307,590 spectra) at
+   about a day. This is not a tuning matter; it makes extraction impossible
+   until it is fixed, and it is the single most important number for Phase 2.
+   `ODIAInfo` therefore decodes peaks only under `-peaks`.
+
+2. **Not every encoding decodes.** Spectra 0–66 of `12_80` decode; spectrum 67
+   (MS2) throws `chunked array decoding is not implemented (MS:1000515)` —
+   the intensity array. 25 of the first 1,000 spectra are affected.
+
+Both are WIP-branch issues rather than design faults, but Phase 2 cannot begin
+extraction until at least the first is resolved.
+
+## 1a. Upstream OpenMS/mzpeak cannot read our files at all
 
 Worse than an API gap: `Index::spectra()` throws on every example archive.
 

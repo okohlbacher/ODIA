@@ -7,11 +7,7 @@
 #include <OpenMS/KERNEL/MSExperiment.h>
 
 #include <mzpeak.h>
-#include <mzpeak/util/parquet.h>
 
-#include <arrow/api.h>
-#include <arrow/compute/api.h>
-#include <parquet/arrow/reader.h>
 
 #include <algorithm>
 #include <ranges>
@@ -42,12 +38,10 @@ DIA extraction needs to know about: how many spectra there are per MS level,
 the retention-time range, the isolation-window scheme, and whether an ion
 mobility dimension is present.
 
-mzPeak files are read through the OpenMS/mzpeak library; mzML files are read
-through OpenMS. The two paths report different levels of detail, because the
-mzpeak high-level API currently exposes only m/z, intensity and MS level per
-spectrum -- retention time, precursor isolation windows and ion mobility live
-in the archive's Parquet metadata tables and are reachable only through the
-low-level interface.
+mzPeak files are read through okohlbacher/mzpeak-openms, mzML files through
+OpenMS. Both paths report the same quantities on purpose: running the tool over
+the two encodings of one run is the cheapest cross-check that the two readers
+agree.
 
 <B>The command line parameters of this tool are:</B>
 @verbinclude ODIA_ODIAInfo.cli
@@ -94,7 +88,8 @@ protected:
     registerOutputFile_("out", "<file>", "", "Optional text report; written to stdout if omitted.", false);
     setValidFormats_("out", {"txt"}, false);
 
-    registerFlag_("windows", "List the isolation-window scheme (mzML input only).");
+    registerFlag_("windows", "List the isolation-window scheme.");
+    registerFlag_("peaks", "Also decode and count peaks (mzPeak: slow, see below).");
   }
 
   ExitCodes main_(int, const char**) override
@@ -102,12 +97,13 @@ protected:
     const std::string in = getStringOption_("in");
     const std::string out = getStringOption_("out");
     const bool list_windows = getFlag_("windows");
+    const bool count_peaks = getFlag_("peaks");
 
     std::ostringstream report;
 
     if (in.ends_with(".mzpeak"))
     {
-      if (ExitCodes rc = describeMzPeak_(in, report); rc != EXECUTION_OK) { return rc; }
+      if (ExitCodes rc = describeMzPeak_(in, list_windows, count_peaks, report); rc != EXECUTION_OK) { return rc; }
     }
     else
     {
@@ -128,95 +124,97 @@ protected:
   }
 
 private:
-  /// Read one column of a table as doubles, whatever numeric type it is stored as.
-  static std::vector<double> readNumericColumn_(const std::shared_ptr<arrow::Table>& table,
-                                                const std::string& name)
-  {
-    std::vector<double> values;
-    const int idx = table->schema()->GetFieldIndex(name);
-    if (idx < 0) { return values; }
-
-    auto casted = arrow::compute::Cast(arrow::Datum(table->column(idx)),
-                                       arrow::float64());
-    if (!casted.ok()) { return values; }
-
-    const auto chunked = casted->chunked_array();
-    values.reserve(static_cast<size_t>(chunked->length()));
-    for (const auto& chunk : chunked->chunks())
-    {
-      const auto& a = static_cast<const arrow::DoubleArray&>(*chunk);
-      for (int64_t i = 0; i < a.length(); ++i)
-      {
-        if (!a.IsNull(i)) { values.push_back(a.Value(i)); }
-      }
-    }
-    return values;
-  }
-
-  /// Report the layout of an mzPeak archive.
+  /// Report the DIA layout of an mzPeak archive.
   ///
-  /// Deliberately goes through the low-level Parquet interface rather than
-  /// Index::spectra(). Two reasons: the high-level Spectrum type exposes only
-  /// m/z, intensity and MS level, so retention time would be unreachable; and
-  /// on archives written by mzpeak-convert >= 0.7.0 the high-level path throws
-  /// outright, because the C++ library still expects the pre-0.7.0 layout that
-  /// nested the per-spectrum metadata under a "spectrum" group, while 0.7.0
-  /// writes those fields flat. Reading the metadata table directly is both
-  /// version-tolerant and the access pattern ODIA needs anyway.
-  ExitCodes describeMzPeak_(const std::string& in, std::ostringstream& report)
+  /// Reports the same quantities as the mzML path, deliberately: running both
+  /// on the two encodings of the same run is the cheapest cross-check we have
+  /// that the mzPeak reader agrees with OpenMS.
+  ExitCodes describeMzPeak_(const std::string& in, bool list_windows,
+                            bool count_peaks, std::ostringstream& report)
   {
     try
     {
       MzPeak::Index index = MzPeak::open(in.c_str());
+      MzPeak::Spectra spectra = index.spectra();
 
       report << "file:          " << in << "\n";
       report << "format:        mzPeak\n";
       report << "archive members:\n";
       for (const auto& f : index.files()) { report << "  - " << f.file_name << "\n"; }
 
-      constexpr const char* kMetadata = "spectra_metadata.parquet";
-      auto it = std::ranges::find(index.files(), kMetadata,
-                                  &MzPeak::Schema::File::file_name);
-      if (it == index.files().end())
+      std::map<int, Size> level_counts;
+      std::map<Int64, WindowStat> windows;
+      double rt_min = std::numeric_limits<double>::max();
+      double rt_max = std::numeric_limits<double>::lowest();
+      Size im_spectra = 0;
+      UInt64 peaks = 0;
+      Size undecodable = 0;
+
+      ProgressLogger progress;
+      progress.setLogType(log_type_);
+      progress.startProgress(0, spectra.size(), "reading spectra");
+      Size i = 0;
+      for (const auto& s : spectra)
       {
-        writeLogError_(std::string("archive has no ") + kMetadata);
-        return INPUT_FILE_CORRUPT;
-      }
+        progress.setProgress(i++);
+        ++level_counts[static_cast<int>(s.ms_level())];
 
-      auto parquet = index.parquet(*it);
-      std::shared_ptr<arrow::Table> table;
-      if (auto st = parquet->reader().ReadTable(&table); !st.ok())
-      {
-        writeLogError_("Cannot read " + std::string(kMetadata) + ": " + st.ToString());
-        return INPUT_FILE_CORRUPT;
-      }
-
-      report << "spectra:       " << table->num_rows() << "\n";
-
-      const auto levels = readNumericColumn_(table, "ms_level");
-      const auto times = readNumericColumn_(table, "time");
-
-      if (!levels.empty())
-      {
-        std::map<int, Size> level_counts;
-        for (double l : levels) { ++level_counts[static_cast<int>(l)]; }
-        report << "MS levels:\n";
-        for (const auto& [level, count] : level_counts)
+        // Peak decoding is off by default, and deliberately so. It is not
+        // needed for an acquisition summary, and in the current reader it costs
+        // ~277 ms per spectrum -- about a thousand times slower than OpenMS
+        // parses the same run out of mzML -- so counting peaks over 12_80 takes
+        // an hour. It also cannot decode every encoding in these archives:
+        // "chunked array decoding is not implemented (MS:1000515)" on the first
+        // MS2 spectrum. Both are recorded in doc/01-constraints.md.
+        if (count_peaks)
         {
-          report << "  MS" << level << ": " << count << " spectra\n";
+          try { peaks += s.mz().size(); }
+          catch (const std::exception&) { ++undecodable; }
+        }
+
+        // Retention time is in seconds here, matching mzML; the underlying
+        // table stores minutes and the reader converts.
+        if (const auto rt = s.retention_time())
+        {
+          rt_min = std::min(rt_min, *rt);
+          rt_max = std::max(rt_max, *rt);
+        }
+        if (s.ion_mobility()) { ++im_spectra; }
+
+        for (const auto& prec : s.precursors())
+        {
+          const auto& w = prec.isolation_window;
+          if (!w.target_mz) { continue; }
+          const double lower = *w.target_mz - (w.lower_offset ? *w.lower_offset : 0.0f);
+          const double upper = *w.target_mz + (w.upper_offset ? *w.upper_offset : 0.0f);
+          auto& stat = windows[quantise(lower)];
+          stat.lower = lower;
+          stat.upper = upper;
+          ++stat.count;
         }
       }
+      progress.endProgress();
 
-      if (!times.empty())
+      report << "spectra:       " << spectra.size() << "\n";
+      report << "peaks:         " << (count_peaks ? std::to_string(peaks) : std::string("(not decoded; -peaks to enable)"));
+      if (undecodable)
       {
-        // mzPeak stores the scan start time in minutes, unlike mzML's seconds.
-        const auto [lo, hi] = std::ranges::minmax(times);
-        report << "RT range:      " << lo << " .. " << hi << " min\n";
+        report << "  (" << undecodable << " spectra could not be decoded)";
       }
-
-      report << "\nnote: read through the low-level Parquet interface; the\n"
-                "mzpeak high-level API exposes only m/z, intensity and MS\n"
-                "level per spectrum.\n";
+      report << "\n";
+      if (rt_max >= rt_min)
+      {
+        report << "RT range:      " << rt_min << " .. " << rt_max << " s\n";
+      }
+      report << "MS levels:\n";
+      for (const auto& [level, count] : level_counts)
+      {
+        report << "  MS" << level << ": " << count << " spectra\n";
+      }
+      report << "IM spectra:    " << im_spectra
+             << (im_spectra ? " (ion mobility present)" : " (no ion mobility)") << "\n";
+      report << "distinct isolation windows: " << windows.size() << "\n";
+      writeWindows_(windows, list_windows, report);
     }
     catch (const std::exception& e)
     {
@@ -224,6 +222,31 @@ private:
       return INPUT_FILE_CORRUPT;
     }
     return EXECUTION_OK;
+  }
+
+  /// Shared tail of both reports: cycle count and, optionally, the window list.
+  static void writeWindows_(const std::map<Int64, WindowStat>& windows,
+                            bool list_windows, std::ostringstream& report)
+  {
+    if (windows.empty()) { return; }
+
+    // A DIA run repeats its window scheme once per cycle, so the number of
+    // cycles is the number of times each window was acquired.
+    Size max_count = 0;
+    for (const auto& [key, w] : windows) { max_count = std::max(max_count, w.count); }
+    report << "cycles (max window repeats): " << max_count << "\n";
+
+    if (!list_windows) { return; }
+    report << "\nisolation windows:\n";
+    report << "  lower_mz    upper_mz    width    count\n";
+    for (const auto& [key, w] : windows)
+    {
+      report << "  " << std::fixed << std::setprecision(4)
+             << std::setw(10) << w.lower << "  "
+             << std::setw(10) << w.upper << "  "
+             << std::setw(7) << (w.upper - w.lower) << "  "
+             << std::setw(7) << w.count << "\n";
+    }
   }
 
   /// Report the DIA layout of an mzML run using OpenMS.
@@ -276,29 +299,8 @@ private:
     report << "IM spectra:    " << im_spectra
            << (im_spectra ? " (ion mobility present)" : " (no ion mobility)") << "\n";
     report << "distinct isolation windows: " << windows.size() << "\n";
+    writeWindows_(windows, list_windows, report);
 
-    // A DIA run repeats its window scheme once per cycle, so the number of
-    // cycles is the number of times each window was acquired.
-    if (!windows.empty())
-    {
-      Size max_count = 0;
-      for (const auto& [key, w] : windows) { max_count = std::max(max_count, w.count); }
-      report << "cycles (max window repeats): " << max_count << "\n";
-    }
-
-    if (list_windows && !windows.empty())
-    {
-      report << "\nisolation windows:\n";
-      report << "  lower_mz    upper_mz    width    count\n";
-      for (const auto& [key, w] : windows)
-      {
-        report << "  " << std::fixed << std::setprecision(4)
-               << std::setw(10) << w.lower << "  "
-               << std::setw(10) << w.upper << "  "
-               << std::setw(7) << (w.upper - w.lower) << "  "
-               << std::setw(7) << w.count << "\n";
-      }
-    }
     return EXECUTION_OK;
   }
 };
