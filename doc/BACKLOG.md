@@ -138,7 +138,11 @@ self-test of literal values. Mutation testing: 21 injected defects, all of the
 ones re-tested after repair are now caught.*
 
 - ONNX prediction: iRT, MS2 intensities, CCS — with CUDA attempted and CPU
-  fallback, and ODIA's own `mod_x` encoder.
+  fallback, and ODIA's own `mod_x` encoder. The reference encoder and RT
+  predictor (`test/peptdeep_reference.py`) are in place as the validation oracle,
+  written from the spec rather than from the C++; the element list is generated
+  from the authoritative yaml into `data/peptdeep_mod_elements.txt` and
+  `include/odia/PeptDeepElements.h`. The C++ side is still to be written.
 - Replace the placeholder fragment ranking. `LibraryGenerator` currently caps
   fragments by descending m/z because there are no predicted intensities yet;
   prediction should drive the selection.
@@ -171,6 +175,11 @@ ones re-tested after repair are now caught.*
 - **OpenMS**: `WITH_ONNX=ON` cannot configure as shipped —
   `cmake/FindONNXRuntime.cmake` is not on the `CMAKE_MODULE_PATH` that OpenMS
   sets (`cmake/Modules` and `cmake/Windows` only).
+- **OpenMS**: `WITH_ONNX=ON` compiles and exports the PeptDeep classes but never
+  installs their headers. `libOpenMS.so` carries 18 PeptDeep symbols, and 26 ML
+  headers are installed — every `ML/` subdirectory except `PEPTDEEP/` and
+  `ONNX/`, the two the flag exists to enable. No external project can include
+  them, so the feature is unusable outside the OpenMS tree.
 - **OpenMS**: no mzPeak entry in `FileTypes`, so a TOPP tool cannot declare
   mzPeak as an input format.
 - **OpenMS**: `ParquetFile::getColumn()` returns only the first chunk while

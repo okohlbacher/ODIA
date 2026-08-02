@@ -191,3 +191,10 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv" AND ODIA_PYTHON)
                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/precision.out.tsv
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_precision.cmake)
 endif()
+
+# The PeptDeep reference encoder is the oracle ODIA's C++ encoder will be checked
+# against, so it carries its own guard.
+if(ODIA_PYTHON)
+  add_test(NAME peptdeep_reference_encoding
+           COMMAND ${ODIA_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/check_peptdeep_encoding.py)
+endif()
