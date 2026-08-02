@@ -108,12 +108,16 @@ protected:
         params.decoy_method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
 
         const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
-        const auto decoys = ODIA::LibraryGenerator::appendDecoys(library, params.decoy_method);
+        std::size_t decoys_skipped = 0;
+        const auto decoys = ODIA::LibraryGenerator::appendDecoys(
+          library, params.decoy_method, &decoys_skipped);
 
         std::ostringstream gen;
         gen << "generated from " << stats.proteins << " proteins: "
             << stats.peptides << " peptides, " << stats.precursors << " target precursors, "
-            << decoys << " decoys\n"
+            << decoys << " decoys";
+        if (decoys_skipped) { gen << " (" << decoys_skipped << " targets got none)"; }
+        gen << "\n"
             << "  dropped: " << stats.dropped_precursor_mz << " outside the precursor m/z range, "
             << stats.dropped_too_few_fragments << " with too few fragments";
         writeLogInfo_(gen.str());
@@ -182,6 +186,13 @@ private:
 
     // A target/decoy imbalance makes a 1% FDR unreachable by construction, and
     // seeing it here costs nothing compared with finding out after extraction.
+    if (const auto bad = library.invalidMzCount(); bad != 0)
+    {
+      writeLogWarn_(std::to_string(bad) + " precursors have an unusable m/z "
+                    "(empty, negative, NaN or out of range) and cannot match any "
+                    "isolation window.");
+    }
+
     if (decoys == 0)
     {
       writeLogWarn_("Library contains no decoys; target-decoy FDR will not be computable.");

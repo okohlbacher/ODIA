@@ -4,6 +4,7 @@
 #include <odia/Library.h>
 
 #include <algorithm>
+#include <stdexcept>
 #include <cstring>
 #include <numeric>
 
@@ -131,6 +132,12 @@ namespace ODIA
       std::count(precursors_.decoy.begin(), precursors_.decoy.end(), std::uint8_t{1}));
   }
 
+  std::size_t Library::invalidMzCount() const
+  {
+    return static_cast<std::size_t>(
+      std::count(precursors_.mz.begin(), precursors_.mz.end(), MZ_INVALID));
+  }
+
   void Library::reserve(std::size_t precursors, std::size_t transitions)
   {
     auto& p = precursors_;
@@ -177,7 +184,13 @@ namespace ODIA
       // Ties broken deterministically: run-to-run reproducibility is a
       // precondition for every later measurement, not a nicety.
       if (precursors_.charge[a] != precursors_.charge[b]) { return precursors_.charge[a] < precursors_.charge[b]; }
-      return precursors_.modified_sequence[a] < precursors_.modified_sequence[b];
+      if (precursors_.decoy[a] != precursors_.decoy[b]) { return precursors_.decoy[a] < precursors_.decoy[b]; }
+      // On the sequence TEXT, not the arena handle. The handle is
+      // first-appearance order, so tie-breaking on it made the sort a function
+      // of how the input happened to be ordered: re-sorting our own output
+      // reordered 4,532 rows of the fixture.
+      return strings_.get(precursors_.modified_sequence[a])
+           < strings_.get(precursors_.modified_sequence[b]);
     });
 
     PrecursorArrays np;
@@ -227,7 +240,10 @@ namespace ODIA
 
   std::size_t Library::lowerBound(double mz_low) const
   {
-    if (!sorted_by_mz_) { return 0; }
+    if (!sorted_by_mz_)
+    {
+      throw std::logic_error("Library::lowerBound called before sortByPrecursorMz");
+    }
     const MzFixed key = toFixed(mz_low);
     const auto it = std::lower_bound(precursors_.mz.begin(), precursors_.mz.end(), key);
     return static_cast<std::size_t>(it - precursors_.mz.begin());

@@ -161,14 +161,20 @@ namespace ODIA
     std::size_t transitionCount() const { return transitions_.product_mz.size(); }
     std::size_t decoyCount() const;
 
+    /// Precursors whose m/z could not be represented (see MZ_INVALID). They can
+    /// never match an isolation window, so they are silently lost work unless
+    /// reported.
+    std::size_t invalidMzCount() const;
+
     const PrecursorArrays& precursors() const { return precursors_; }
     const TransitionArrays& transitions() const { return transitions_; }
     const StringArena& strings() const { return strings_; }
 
-    // Handing out a mutable reference can invalidate the m/z ordering, and the
-    // caller has no way to tell us. Assume the worst rather than let lowerBound
-    // quietly return 0 on an unsorted array.
-    PrecursorArrays& precursors() { sorted_by_mz_ = false; return precursors_; }
+    // Clearing sorted_by_mz_ here would be wrong: the non-const overload is what
+    // any read-only `auto& p = lib.precursors()` binds to on a non-const
+    // Library, so the ordinary reading idiom would silently disarm lowerBound.
+    // A caller that actually reorders must say so with markUnsorted().
+    PrecursorArrays& precursors() { return precursors_; }
     TransitionArrays& transitions() { return transitions_; }
     StringArena& strings() { return strings_; }
 
@@ -178,9 +184,17 @@ namespace ODIA
     /// locatable by binary search.
     void sortByPrecursorMz();
 
-    /// First precursor with m/z >= @p mz_low, for window slicing. Requires
-    /// sortByPrecursorMz() to have been called.
+    /// First precursor with m/z >= @p mz_low, for window slicing.
+    ///
+    /// Throws if the library is not sorted. Returning 0 instead would be
+    /// indistinguishable from a legitimate answer, and every window would
+    /// silently slice from the start of the library.
     std::size_t lowerBound(double mz_low) const;
+
+    /// Declare that the arrays have been reordered behind our back.
+    void markUnsorted() { sorted_by_mz_ = false; }
+
+    bool isSortedByMz() const { return sorted_by_mz_; }
 
     /// Bytes held by the arrays and the arena. Reported so the design claim in
     /// doc/02-decisions.md D3 is measured rather than asserted.

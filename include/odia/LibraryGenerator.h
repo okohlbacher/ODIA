@@ -84,7 +84,11 @@ namespace ODIA
     ///
     /// Decoys keep the target's precursor m/z, iRT and intensity pattern; only
     /// fragment m/z values move. See DecoyMethod.
-    static std::size_t appendDecoys(Library& library, DecoyMethod method);
+    /// @param skipped_out receives the number of targets for which no decoy
+    ///        could be built. Reported rather than dropped silently: 1.3% of the
+    ///        DIA-NN fixture is affected, all of them N-terminally modified.
+    static std::size_t appendDecoys(Library& library, DecoyMethod method,
+                                    std::size_t* skipped_out = nullptr);
   };
 
 } // namespace ODIA

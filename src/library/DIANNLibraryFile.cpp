@@ -14,8 +14,8 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
-#include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ODIA
 {
@@ -76,7 +76,10 @@ namespace ODIA
           // one precursor silently becomes several single-transition ones with
           // a plausible-looking count -- which is what any library that has been
           // sorted by m/z or concatenated will do.
-          const auto key = std::make_pair(std::string(r.precursor_id), r.decoy != 0);
+          // Hash rather than store the id: a set<pair<string,bool>> measured
+          // 128 B per precursor, ~0.9 GB at the scale D3 is written against.
+          std::size_t key = std::hash<std::string_view>{}(r.precursor_id);
+          key = key * 31 + (r.decoy != 0 ? 1u : 0u);
           if (!seen_.insert(key).second) { ++reopened_; }
           startPrecursor(r);
         }
@@ -122,7 +125,7 @@ namespace ODIA
       }
 
       Library& lib_;
-      std::set<std::pair<std::string, bool>> seen_;
+      std::unordered_set<std::size_t> seen_;
       std::size_t reopened_ = 0;
       std::string current_id_owned_;
       std::string_view current_id_;
@@ -352,10 +355,14 @@ namespace ODIA
       r.rt = at(a_rt, i);
       r.im = at(a_im, i);
       r.intensity = at(a_int, i);
-      r.precursor_charge = static_cast<long>(at(a_z, i));
-      r.fragment_charge = static_cast<long>(at(a_fz, i));
-      r.ordinal = static_cast<long>(at(a_ord, i));
-      r.decoy = static_cast<long>(at(a_dec, i));
+      // at() yields NaN for a type it cannot decode or a null cell; casting
+      // that to long is undefined behaviour, which is exactly what the toFixed
+      // guard was added to eliminate two functions away.
+      auto as_long = [](double v) -> long { return std::isnan(v) ? 0L : static_cast<long>(v); };
+      r.precursor_charge = as_long(at(a_z, i));
+      r.fragment_charge = as_long(at(a_fz, i));
+      r.ordinal = as_long(at(a_ord, i));
+      r.decoy = as_long(at(a_dec, i));
       builder.append(r);
     }
     builder.finish();

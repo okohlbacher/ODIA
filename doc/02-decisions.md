@@ -70,8 +70,9 @@ Two properties follow, and both matter beyond memory:
   reason the Parquet path is faster than TSV, rather than a vague claim.
 
 **Measured, human proteome** (20,416 proteins; 3,987,909 precursors, 47,347,795
-transitions): **860 MiB of arrays, 19.1 bytes per transition**, 1.23 GB peak RSS,
-27 s.
+transitions): **759 MiB of arrays, 16.8 bytes per transition**, 1.20 GB peak RSS,
+26 s. (Was 19.1 before decoys began sharing their target's sequence handle
+rather than interning a mutated copy — see D7.)
 
 Projected to the predecessor's library (78.6 M transitions) that is ~1.5 GB,
 against **32.65 GB RSS / 7.26 GB live** there — roughly 22x on resident memory
@@ -152,7 +153,15 @@ precision of 1e-7 is far more than the prediction warrants.
 ## D7 — Decoys by residue mutation, following DIA-NN
 
 **Decided.** DIA-NN's approach: mutate a residue near each terminus via a fixed
-substitution table, shifting only the fragment m/z values *(DIA-NN §2.6)*.
+substitution table *(DIA-NN §2.6)*. Fragment m/z are **recomputed from the
+mutated sequence**, not shifted — shifting is only valid for ions spanning one
+mutated residue, and the long b/y ions span both.
+
+The decoy row stores the **target's** sequence, as DIA-NN does. Two reasons: the
+substitution table is many-to-one, so distinct targets collide on a decoy
+sequence and the synthesised identifiers stopped being unique; and since the
+decoy inherits the target's precursor m/z by design, storing the mutated
+sequence left the row internally inconsistent by up to 76 Th.
 
 **Two things this obliges us to do**, because the DIA-NN document itself flags
 this design as the weak point of its FDR model — the decoy keeps the target's

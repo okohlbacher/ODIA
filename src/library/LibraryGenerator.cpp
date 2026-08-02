@@ -4,6 +4,7 @@
 #include <odia/LibraryGenerator.h>
 
 #include <OpenMS/CHEMISTRY/AASequence.h>
+#include <OpenMS/CHEMISTRY/EmpiricalFormula.h>
 #include <OpenMS/CHEMISTRY/ModifiedPeptideGenerator.h>
 #include <OpenMS/CHEMISTRY/ProteaseDigestion.h>
 #include <OpenMS/CHEMISTRY/Residue.h>
@@ -44,6 +45,32 @@ namespace ODIA
         pos = sep + 1;
       }
       return false;
+    }
+
+    /// Neutral-loss mass for a label, in Da.
+    ///
+    /// Recomputing a decoy fragment from the bare ion series and then copying
+    /// the target's loss label onto it leaves the m/z ~18 Da (H2O), ~17 (NH3)
+    /// or ~98 (H3PO4) too high. That is the same anti-conservative asymmetry the
+    /// shift-based version had -- target m/z come from the file and include the
+    /// loss, decoy m/z would not -- restricted to loss-bearing transitions. The
+    /// b/y-only fixture cannot show it; a phospho library is wrong by ~98 Th.
+    double lossMass(LossType loss)
+    {
+      static const double water = EmpiricalFormula("H2O").getMonoWeight();
+      static const double ammonia = EmpiricalFormula("NH3").getMonoWeight();
+      static const double phospho = EmpiricalFormula("H3PO4").getMonoWeight();
+      static const double carbon_monoxide = EmpiricalFormula("CO").getMonoWeight();
+      switch (loss)
+      {
+        case LossType::None: return 0.0;
+        case LossType::Water: return water;
+        case LossType::Ammonia: return ammonia;
+        case LossType::Phospho: return phospho;
+        case LossType::CO: return carbon_monoxide;
+        case LossType::Other: break;
+      }
+      return std::nan("");   // unknown loss: caller drops the transition
     }
 
     char mutateResidue(char aa)
@@ -233,12 +260,14 @@ namespace ODIA
     return stats;
   }
 
-  std::size_t LibraryGenerator::appendDecoys(Library& library, DecoyMethod method)
+  std::size_t LibraryGenerator::appendDecoys(Library& library, DecoyMethod method,
+                                             std::size_t* skipped_out)
   {
     if (method == DecoyMethod::None) { return 0; }
 
     const std::size_t n_targets = library.precursorCount();
     std::size_t made = 0;
+    std::size_t skipped = 0;
 
     for (std::size_t i = 0; i < n_targets; ++i)
     {
@@ -265,7 +294,7 @@ namespace ODIA
         }
         tokens.push_back(std::move(tok));
       }
-      if (tokens.size() < 4) { continue; }
+      if (tokens.size() < 4) { ++skipped; continue; }
 
       std::string decoy_sequence;
 
@@ -284,7 +313,7 @@ namespace ODIA
           if (!tokens[k].modified && k != n_pos) { c_pos = k; break; }
           if (k == 1) { break; }
         }
-        if (n_pos == tokens.size() || c_pos == tokens.size()) { continue; }
+        if (n_pos == tokens.size() || c_pos == tokens.size()) { ++skipped; continue; }
 
         tokens[n_pos].text = std::string(1, mutateResidue(tokens[n_pos].residue));
         tokens[c_pos].text = std::string(1, mutateResidue(tokens[c_pos].residue));
@@ -313,7 +342,7 @@ namespace ODIA
       // classes is the anti-conservative FDR mode D7 exists to avoid.
       AASequence decoy;
       try { decoy = AASequence::fromString(decoy_sequence); }
-      catch (const std::exception&) { continue; }
+      catch (const std::exception&) { ++skipped; continue; }
 
       auto& p = library.precursors();
       auto& t = library.transitions();
@@ -349,28 +378,43 @@ namespace ODIA
         }
         catch (const std::exception&) { continue; }
 
+        const double loss = lossMass(t.loss[s]);
+        if (std::isnan(loss)) { continue; }   // cannot be reproduced faithfully
+        mz -= loss / charge;
+
         t.product_mz.push_back(toFixed(mz));
         t.library_intensity.push_back(t.library_intensity[s]);
         t.type.push_back(t.type[s]);
         t.ordinal.push_back(t.ordinal[s]);
-        t.charge.push_back(t.charge[s]);
+        // Store the charge actually used, not the file's 0 placeholder, or the
+        // decoy would carry a singly-charged mass under a charge-0 label.
+        t.charge.push_back(charge);
         t.loss.push_back(t.loss[s]);
       }
 
       const auto written = static_cast<std::uint32_t>(t.product_mz.size() - new_begin);
-      if (written == 0) { continue; }
+      if (written == 0) { ++skipped; continue; }
 
       p.mz.push_back(p.mz[i]);
       p.irt.push_back(p.irt[i]);
       p.im.push_back(p.im[i]);
       p.charge.push_back(p.charge[i]);
       p.decoy.push_back(1);
-      p.modified_sequence.push_back(library.strings().intern(decoy_sequence));
+      // The decoy keeps the target's sequence, which is DIA-NN's own convention
+      // and fixes two things at once. The mutation table is many-to-one, so
+      // distinct targets collide on a decoy sequence (18 collisions per 33,075
+      // targets in the fixture); with the mutated sequence stored, two decoys
+      // synthesised the same Precursor.Id and the tool could not reload its own
+      // output. It also makes the row self-consistent: the decoy already
+      // inherits the target's precursor m/z by design (D7), so storing the
+      // mutated sequence left the two disagreeing by up to 76 Th.
+      p.modified_sequence.push_back(p.modified_sequence[i]);
       p.protein_group.push_back(p.protein_group[i]);
       p.transition_begin.push_back(new_begin);
       p.transition_count.push_back(written);
       ++made;
     }
+    if (skipped_out) { *skipped_out = skipped; }
     return made;
   }
 

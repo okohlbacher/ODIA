@@ -70,32 +70,27 @@ target/decoy round-trip merge, non-contiguous row detection, Parquet numeric and
 string type coverage), plus the `toFixed` domain, the unchecked output stream and
 the exit-code-6-on-success. These remain:
 
-- **Decoy `Modified.Sequence` and `Precursor.Mz` are mutually inconsistent** by
-  up to tens of Th, because the decoy inherits the target's precursor m/z (D7,
-  deliberate) while storing the mutated sequence. DIA-NN resolves this by keeping
-  the *target* sequence on the decoy row. Ours is self-consistent for fragment
-  recomputation but is not a valid DIA-NN library as written; decide which
-  convention to follow on output.
 - **N-terminal modifications break the decoy tokeniser.** `(UniMod:1)PEPTIDE`
-  has its modification name tokenised as residues. Not reachable from the FASTA
-  path today (no N-term variable mods configured), but `appendDecoys` is public
-  and DIA-NN writes exactly this syntax.
-- **Generated libraries write `nan` in the RT column** until prediction lands.
-  No TSV consumer will accept it; write an empty field or omit the row instead.
-- **`footprintBytes()` under-reports by ~2.6×** — `StringArena::lookup_` is one
-  hash node per distinct string and is never counted, nor is unused block
-  capacity. D3 exists to make the memory claim measured, so the measurement must
-  be honest: at the 7.1 M-distinct-peptide scale the missing map term alone is
-  ~400 MB.
+  has its modification name tokenised as residues. **Reachable from the supplied
+  DIA-NN fixture**, which holds 441 such precursors — 428 targets (1.3%) get no
+  decoy as a result. The count is now reported rather than silently dropped, but
+  the tokeniser still needs fixing.
+- **The Parquet reader still cannot open a library past 2 GB of characters.** The
+  `large_string` handling casts down to `arrow::utf8()`, which has the 32-bit
+  offsets `large_string` exists to avoid, and the plain-`string` path fails in
+  `CombineChunks`. Both emit a message blaming the file for a missing column that
+  is present. `LargeStringArray` needs to be a first-class case.
 - **`sortByPrecursorMz` doubles peak memory** (+483 MiB, +39% on the human
   proteome) by materialising complete copies before moving. An in-place
   permutation or a block-streamed rebuild avoids it.
-- **Protein-group accumulation uses a substring test**, so `P1` is dropped when
-  `P12` is already present. Order-dependent, and routine with isoform accessions.
-  Split and compare on `;` boundaries.
-- **`sorted_by_mz_` is never invalidated** and the non-const accessors let any
-  caller break the invariant; `lowerBound` then returns 0 silently rather than
-  erroring.
+- **The contiguity check is order-dependent.** Two blocks of one precursor that
+  are *adjacent* still merge silently, discarding the second block's RT, IM,
+  precursor m/z and protein group; only non-adjacent repeats are detected.
+- **Generated libraries write `nan` in the RT column** until prediction lands.
+  No TSV consumer will accept it; write an empty field instead.
+- **Null cells are indistinguishable from zero** for `Decoy`, `Precursor.Charge`,
+  `Fragment.Series.Number` and the string columns — a null `Decoy` column makes
+  every decoy a target, the same effect the BOOL case was added to fix.
 - **D5's mandated warning is not implemented** — the reader should warn once when
   an input's transition names disagree with what ODIA would synthesise. The
   accepted round-trip risk is currently unmitigated.
