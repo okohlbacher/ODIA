@@ -54,6 +54,7 @@ message(STATUS "Arrow:  ${Arrow_VERSION}")
 set(ODIA_LIB_SOURCES
   src/library/Library.cpp
   src/library/DIANNLibraryFile.cpp
+  src/library/LibraryGenerator.cpp
 )
 
 if(ODIA_LIB_SOURCES)

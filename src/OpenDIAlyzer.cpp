@@ -4,6 +4,7 @@
 #include <OpenMS/APPLICATIONS/TOPPBase.h>
 
 #include <odia/DIANNLibraryFile.h>
+#include <odia/LibraryGenerator.h>
 #include <odia/Library.h>
 
 #include <chrono>
@@ -46,6 +47,16 @@ protected:
   void registerOptionsAndFlags_() override
   {
     registerInputFile_("tr", "<file>", "", "Assay library (DIA-NN TSV or Parquet).", false);
+    registerInputFile_("fasta", "<file>", "", "Generate the library from these protein sequences instead.", false);
+    setValidFormats_("fasta", {"fasta"}, false);
+
+    registerStringOption_("decoys", "<method>", "mutate",
+                          "Decoy construction when generating from FASTA.", false);
+    setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
+
+    registerIntOption_("missed_cleavages", "<n>", 1, "Maximum missed cleavages.", false, true);
+    registerIntOption_("min_peptide_length", "<n>", 7, "Minimum peptide length.", false, true);
+    registerIntOption_("max_peptide_length", "<n>", 30, "Maximum peptide length.", false, true);
 
     registerOutputFile_("out_lib", "<file>", "",
                         "Write the assay library here (DIA-NN TSV).", false);
@@ -61,15 +72,14 @@ protected:
   ExitCodes main_(int, const char**) override
   {
     const std::string tr = getStringOption_("tr");
+    const std::string fasta = getStringOption_("fasta");
     const std::string out_lib = getStringOption_("out_lib");
     const std::string stop_after = getStringOption_("stop_after");
     const bool sort_library = getFlag_("sort_library");
 
-    if (tr.empty())
+    if (tr.empty() == fasta.empty())
     {
-      // The FASTA + ONNX generation path is not implemented yet, so a library
-      // must be supplied.
-      writeLogError_("No assay library given. Use -tr <library>.");
+      writeLogError_("Give exactly one of -tr <library> or -fasta <proteins>.");
       return ILLEGAL_PARAMETERS;
     }
 
@@ -77,11 +87,35 @@ protected:
     const auto t0 = std::chrono::steady_clock::now();
     try
     {
-      ODIA::DIANNLibraryFile::load(tr, library);
+      if (!tr.empty())
+      {
+        ODIA::DIANNLibraryFile::load(tr, library);
+      }
+      else
+      {
+        ODIA::DigestParams params;
+        params.missed_cleavages = static_cast<std::size_t>(getIntOption_("missed_cleavages"));
+        params.min_length = static_cast<std::size_t>(getIntOption_("min_peptide_length"));
+        params.max_length = static_cast<std::size_t>(getIntOption_("max_peptide_length"));
+        params.decoy_method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
+
+        const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
+        const auto decoys = ODIA::LibraryGenerator::appendDecoys(library, params.decoy_method);
+
+        std::ostringstream gen;
+        gen << "generated from " << stats.proteins << " proteins: "
+            << stats.peptides << " peptides, " << stats.precursors << " target precursors, "
+            << decoys << " decoys\n"
+            << "  dropped: " << stats.dropped_precursor_mz << " outside the precursor m/z range, "
+            << stats.dropped_too_few_fragments << " with too few fragments";
+        writeLogInfo_(gen.str());
+        writeLogWarn_("Fragment intensities and retention times are placeholders; "
+                      "prediction is not wired up yet.");
+      }
     }
     catch (const std::exception& e)
     {
-      writeLogError_(std::string("Failed to read assay library: ") + e.what());
+      writeLogError_(std::string("Failed to build assay library: ") + e.what());
       return INPUT_FILE_CORRUPT;
     }
     const auto load_ms = std::chrono::duration<double, std::milli>(
