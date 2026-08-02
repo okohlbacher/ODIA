@@ -23,8 +23,30 @@ endif()
 find_package(OpenMS REQUIRED)
 find_package(MzPeak REQUIRED)
 
+# Arrow/Parquet are a direct dependency, not just a transitive one: reaching
+# the per-spectrum metadata (retention time, isolation windows) means going
+# through mzpeak's low-level interface, which hands back Arrow objects.
+# Version 23 is the floor OpenMS 3.6 and mzpeak both impose.
+find_package(Arrow CONFIG REQUIRED)
+find_package(Parquet CONFIG REQUIRED)
+if(Arrow_VERSION VERSION_LESS 23)
+  message(FATAL_ERROR "Apache Arrow >= 23 required (found ${Arrow_VERSION}).")
+endif()
+
+if(TARGET Arrow::arrow_shared)
+  set(ODIA_ARROW_TARGET Arrow::arrow_shared)
+else()
+  set(ODIA_ARROW_TARGET Arrow::arrow_static)
+endif()
+if(TARGET Parquet::parquet_shared)
+  set(ODIA_PARQUET_TARGET Parquet::parquet_shared)
+else()
+  set(ODIA_PARQUET_TARGET Parquet::parquet_static)
+endif()
+
 message(STATUS "OpenMS: ${OpenMS_DIR}")
 message(STATUS "mzPeak: ${MzPeak_LIBRARY}")
+message(STATUS "Arrow:  ${Arrow_VERSION}")
 
 # ---------------------------------------------------------------------------
 # Shared code lives in a library so tools stay thin and are testable.
@@ -34,7 +56,8 @@ set(ODIA_LIB_SOURCES)
 if(ODIA_LIB_SOURCES)
   add_library(odia_core STATIC ${ODIA_LIB_SOURCES})
   target_include_directories(odia_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak)
+  target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak
+                                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
   set_target_properties(odia_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
@@ -49,7 +72,8 @@ set(ODIA_TOOLS
 
 foreach(tool ${ODIA_TOOLS})
   add_executable(${tool} "src/${tool}.cpp")
-  target_link_libraries(${tool} PRIVATE OpenMS MzPeak::MzPeak)
+  target_link_libraries(${tool} PRIVATE OpenMS MzPeak::MzPeak
+                                        ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
   if(TARGET odia_core)
     target_link_libraries(${tool} PRIVATE odia_core)
   endif()
