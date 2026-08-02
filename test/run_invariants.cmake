@@ -11,7 +11,7 @@ if(NOT rc EQUAL 0)
   message(FATAL_ERROR "OpenDIAlyzer failed on ${INPUT}${FASTA}:\n${out}${err}")
 endif()
 
-execute_process(COMMAND ${PYTHON} ${CHECKER} ${OUTPUT} ${CHECK_DECOYS}
+execute_process(COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${PYTHON} ${CHECKER} ${OUTPUT} ${CHECK_DECOYS}
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
 message(STATUS "${out}${err}")
 if(NOT rc EQUAL 0)

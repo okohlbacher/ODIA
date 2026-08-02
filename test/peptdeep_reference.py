@@ -39,6 +39,11 @@ COMPOSITION = {
     "GG": {"H": 6, "C": 4, "N": 2, "O": 2},
     "Deamidated": {"H": -1, "N": -1, "O": 1},          # counts are signed
     "Phospho": {"H": 1, "O": 3, "P": 1},
+    "Amidated": {"H": 1, "N": 1, "O": -1},             # a C-terminal modification
+    "Dehydrated": {"H": -2, "O": -1},
+    "2": {"H": 1, "N": 1, "O": -1},
+    "23": {"H": -2, "O": -1},
+    "7": {"H": -1, "N": -1, "O": 1},
     "1": {"H": 2, "C": 2, "O": 1},
     "4": {"H": 3, "C": 2, "N": 1, "O": 1},
     "35": {"O": 1},
@@ -46,6 +51,7 @@ COMPOSITION = {
     "121": {"H": 6, "C": 4, "N": 2, "O": 2},
 }
 
+# Applied by the CCS/MS2 models, which this reference does not yet drive.
 CHARGE_SCALE = 0.1
 NCE_SCALE = 0.01
 
@@ -62,7 +68,19 @@ def mod_vector(name):
 
 
 def parse(seq):
-    """(residues, [(site, mod_name)]). Site 0 is the N-terminus, 1..n residues."""
+    """(residues, [(site, mod_name)]).
+
+    Sites follow AlphaPeptDeep: 0 is the peptide N-terminus, 1..nAA are
+    residues, and -1 is the peptide C-terminus (row nAA+1).
+
+    OpenMS's AASequence::toString marks a terminal modification with a '.'
+    immediately against the bracket -- ".(Acetyl)PEPTIDEK" and
+    "PEPTIDER.(Amidated)" -- which is the only thing distinguishing a C-terminal
+    modification from one on the last residue. Ignoring the marker put an
+    Amidated C-terminus on residue 8 instead of row 9, and the resulting iRT
+    error (0.0495) was larger than the modification's entire true effect
+    (0.0429), silently.
+    """
     residues, mods, i = [], [], 0
     while i < len(seq):
         c = seq[i]
@@ -72,7 +90,11 @@ def parse(seq):
             name = seq[i + 1:j]
             if name.startswith("UniMod:"):
                 name = name.split(":")[1]
-            mods.append((len(residues), name))          # attaches to the last residue
+            terminal = i > 0 and seq[i - 1] == "."
+            if terminal and residues:
+                mods.append((-1, name))                 # C-terminus
+            else:
+                mods.append((len(residues), name))      # N-terminus, or a residue
             i = j + 1
             continue
         if c.isalpha():
@@ -88,8 +110,16 @@ def encode(seq):
     aa = np.zeros(n + 2, dtype=np.int64)
     for k, r in enumerate(residues):
         aa[k + 1] = ord(r) - ord("A") + 1                # A->1 .. Z->26, 0 pads
+    if n == 0:
+        raise ValueError("empty peptide sequence")
+    if any(ord(r) - ord("A") + 1 > 26 or ord(r) - ord("A") + 1 < 1 for r in residues):
+        # Out-of-range indices are one-hot encoded to an all-off row, i.e. they
+        # become indistinguishable from padding -- and padding is not inert.
+        raise ValueError(f"residue outside A-Z in {seq!r}")
     mod_x = np.zeros((n + 2, len(MOD_ELEMENTS)), dtype=np.float32)
     for site, name in mods:
+        # site -1 indexes the last row, n+1, exactly as numpy negative indexing
+        # does in AlphaPeptDeep's own parse_mod_feature.
         mod_x[site] += mod_vector(name)                  # accumulates
     return aa, mod_x
 
@@ -99,18 +129,18 @@ def predict_rt(model_path, sequences):
 
     session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
     names = [i.name for i in session.get_inputs()]
-    out = {}
+    out = [None] * len(sequences)
     # One batch per encoded length: padding is not inert, because index 0 is
     # one-hot encoded and no model applies a padding mask.
     by_length = {}
-    for s in sequences:
-        by_length.setdefault(len(parse(s)[0]), []).append(s)
+    for k, s in enumerate(sequences):
+        by_length.setdefault(len(parse(s)[0]), []).append(k)
     for _, group in sorted(by_length.items()):
-        aas, mods = zip(*(encode(s) for s in group))
+        aas, mods = zip(*(encode(sequences[k]) for k in group))
         feed = {names[0]: np.stack(aas), names[1]: np.stack(mods)}
         values = session.run(None, feed)[0].reshape(-1)
-        for s, v in zip(group, values):
-            out[s] = float(v)
+        for k, v in zip(group, values):
+            out[k] = float(v)          # by position: duplicates must not collapse
     return out
 
 
@@ -125,5 +155,6 @@ if __name__ == "__main__":
                                   for i in range(mod_x.shape[0]) if mod_x[i].any()},
         }))
     elif sys.argv[1] == "rt":
-        for seq, rt in predict_rt(sys.argv[2], sys.argv[3:]).items():
+        seqs = sys.argv[3:]
+        for seq, rt in zip(seqs, predict_rt(sys.argv[2], seqs)):
             print(f"{seq}\t{rt:.6f}")

@@ -2,10 +2,10 @@
 # position in the 109-wide mod_x tensor, so the order is load-bearing.
 #
 # Source: MannLabs/alphapeptdeep, peptdeep/constants/model_const.yaml,
-# key `mod_elements`. Extracted, never hand-typed: a hand-typed copy
-# came out with 112 entries and diverged at index 38.
-# Corroborated independently by the shipped models, whose mod_x input
-# is declared [batch, seq_length, 109].
+# key `mod_elements`. Extracted by scripts/generate_peptdeep_elements.py,
+# never hand-typed: a hand-typed copy had 112 entries and diverged at 38.
+# Corroborated independently by the shipped models, whose mod_x input is
+# declared [batch, seq_length, 109].
 C
 H
 N
