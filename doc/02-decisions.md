@@ -95,15 +95,83 @@ Consequences to settle in Phase 1:
 - conda-forge ships `onnxruntime-cpp` 1.26.0 in both CPU and CUDA builds; which
   one the environment carries is a packaging decision, not just a runtime one.
 
+## D5 — `transition_name` is not stored
+
+**Decided.** Synthesised on output from the peptide reference and the fragment
+annotation; never held in memory.
+
+**Why:** it is a derived identifier with ~78.5 M distinct values stored 78.5 M
+times — the single largest string cost in the library *(OSW §2.2)*. The
+annotation it is built from is itself reconstructible from
+(type, ordinal, charge, loss), which we store in 4 bytes.
+
+**Accepted risk:** round-trip fidelity is lost if an upstream producer encodes
+something non-derivable in that field. The reader should therefore warn, once,
+when an input's transition names do not match what ODIA would synthesise, so a
+silent mismatch cannot go unnoticed.
+
+## D6 — m/z is stored in 4 bytes as `uint32` fixed-point at 1e-5 Th
+
+**Decided.** 4-byte m/z, using fixed-point rather than `float32`.
+
+**Why:** both are 4 bytes, but they distribute error differently, and what
+matters is *relative* precision because every tolerance in DIA is expressed in
+ppm. Half-quantum error:
+
+| m/z | `f32` | `u32` @1e-4 Th | `u32` @1e-5 Th |
+|---:|---:|---:|---:|
+| 150 | 0.051 ppm | 0.333 ppm | **0.033 ppm** |
+| 500 | 0.031 ppm | 0.100 ppm | **0.010 ppm** |
+| 2000 | 0.031 ppm | 0.025 ppm | **0.0025 ppm** |
+
+`u32` at 1e-5 Th is at least as good as `f32` everywhere and an order of
+magnitude better at the high end, while `u32` at 1e-4 Th is notably worse at low
+m/z — fixed-point error is constant in absolute terms, so the scale has to be
+chosen against the *bottom* of the range, not the top. It spans 0–42,949 Th,
+far beyond any useful range.
+
+Against a ~10 ppm extraction tolerance this contributes ~0.3% of the tolerance
+width, and it stays well below the sub-ppm scale at which mass calibration fits
+its residuals. Decode to `double` on use; the cost is one multiply.
+
+`library_intensity` stays `f32` — it is relative and normalised, so relative
+precision of 1e-7 is far more than the prediction warrants.
+
+## D7 — Decoys by residue mutation, following DIA-NN
+
+**Decided.** DIA-NN's approach: mutate a residue near each terminus via a fixed
+substitution table, shifting only the fragment m/z values *(DIA-NN §2.6)*.
+
+**Two things this obliges us to do**, because the DIA-NN document itself flags
+this design as the weak point of its FDR model — the decoy keeps the target's
+precursor m/z, its iRT and its library intensity pattern, so it is searched in
+the same isolation window over the same RT range with the same expected spectrum
+shape, and only the fragment masses differ:
+
+1. **Keep the decoy generator pluggable.** Pseudo-reverse and shuffle must be
+   selectable, so Phase 3 can measure this choice against entrapment rather than
+   inherit it.
+2. **Label symmetry is mandatory downstream.** Any filter or gate must be
+   applied to targets and decoys by an identical criterion. If decoys are ever
+   admitted via their target partner, every searched target has cleared a bar its
+   decoy never faced, and since such criteria correlate with score the result is
+   an *anti-conservative* FDR *(OSW §3.4)*.
+
+## D8 — The library stage is a stop-point in the main tool
+
+**Decided.** No separate library executable; the main tool can terminate after
+the library stage and write it out.
+
+**Why:** keeps one process and one data model, which is the point of D3 — every
+process boundary would mean re-materialising the table we are working to keep
+flat.
+
 ---
 
 ## Open
 
 | # | Question | Blocks |
 |---|---|---|
-| O1 | Which ONNX models? None are on disk; `onnxruntime-cpp` is packageable but the weights are not sourced. AlphaPeptDeep, Prosit, or something the prior OpenDIAlyzer carried? | Phase 1 generate path |
-| O2 | Drop `transition_name` and synthesise it on output? It is derived, and it is the single largest string cost (~78.5 M distinct values). Risk is round-trip fidelity if an upstream tool puts meaning in it. | D3 |
-| O3 | `product_mz` as `f64`, or fixed-point `u32` at 1e-4 Th (~0.05 ppm at 2000 Th)? Halves the transition array. | D3 |
-| O4 | Decoy strategy: DIA-NN's fixed-table residue mutation, or pseudo-reverse/shuffle? DIA-NN's keeps the target's precursor m/z, iRT and intensity pattern, which its own document flags as the weak point of the FDR model *(DIA-NN §2.6)*. Propagates to Phase 3 entrapment. | Phase 1, Phase 3 |
-| O5 | Standalone TOPP tool as well as a stop-point in the main tool? | Phase 1 packaging |
-| O6 | No TSV/Parquet library exists on disk to test the reader against; only DIA-NN's binary `.speclib`. Export one with DIA-NN? | Phase 1 read path |
+| O1 | Which ONNX models? None are on disk; `onnxruntime-cpp` 1.26.0 is packageable but the weights are not sourced. AlphaPeptDeep, Prosit, or something the prior OpenDIAlyzer carried? | Phase 1 generate path |
+| O6 | No TSV/Parquet library exists on disk to test the reader against; only DIA-NN's binary `.speclib` (2.08 GB, in the bench directories). Export one with DIA-NN? | Phase 1 read path |
+| O7 | Which TSV dialects must the reader accept? DIA-NN's own column names and the OpenSWATH set differ; DIA-NN normalises via synonym lists *(DIA-NN §2.1)*. Read both, write DIA-NN's? | Phase 1 read/write |
