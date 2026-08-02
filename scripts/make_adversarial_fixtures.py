@@ -90,7 +90,16 @@ def main(dest):
     for i, loss in enumerate(
         ["noloss", "H2O", "NH3", "H3PO4", "HPO3", "CO", "H2O+H2O", "CH3SOH", ""]
     ):
-        rows.append(row("PEPTIDEK", 2, 0, 466.7, loss=loss, ordinal=3 + i % 4))
+        # Labels the checker cannot model get no invented mass: writing one
+        # would certify the wrong answer and later punish a correct fix.
+        known = loss in ("noloss", "H2O", "NH3", "H3PO4", "HPO3", "CO")
+        rows.append(row("PEPTIDEK", 2, 0, 466.7, None if known else "",
+                        loss=loss, ordinal=3 + i % 4))
+        # A loss on a multiply-charged fragment. Every loss row was singly
+        # charged, so dropping the /charge in the subtraction was a no-op and
+        # the mutation survived the whole suite.
+        if known:
+            rows.append(row("PEPTIDEK", 2, 0, 466.7, loss=loss, ordinal=5, fz=2))
     write_tsv(f"{dest}/adv_losses.tsv", rows)
 
     # --- modifications: N-terminal, C-terminal, several on one peptide -------
@@ -125,6 +134,10 @@ def main(dest):
     rows.append(row("PEPTIDEK", 2, 0, 466.7, 451.0, ordinal=0))    # meaningless
     rows.append(row("PEPTIDEK", 2, 0, 466.7, 452.0, fz=0))         # no charge
     rows.append(row("PEPTIDEK", 2, 0, 466.7, 453.0, fz=-1))        # negative
+    # Fragment.Series.Number is stored in a uint8; 300 wraps to 44, which is a
+    # plausible ordinal and therefore survives every downstream check as a
+    # different, wrong fragment.
+    rows.append(row("PEPTIDEK", 2, 0, 466.7, 454.0, ordinal=300))
     write_tsv(f"{dest}/adv_fragments.tsv", rows)
 
     # --- target/decoy pairs sharing sequence, charge and m/z, as DIA-NN emits -
@@ -196,10 +209,21 @@ def main(dest):
     write_tsv(f"{dest}/adv_interleaved.tsv", rows)
 
     # --- protein accessions where one is a prefix of another ----------------
+    # Accessions where one is a prefix of another, for the protein-grouping
+    # check, plus peptides that put every residue of the substitution table at a
+    # position the decoy generator actually mutates.
+    #
+    # ODIA mutates the first and last unmodified residue strictly inside the
+    # peptide, so a peptide A-X-...-X-K exposes X at both. Without this, a
+    # substitution-table entry could be swapped and no test would notice: the
+    # earlier fixture's peptides never had N or D at a mutated position.
+    residues = "GAVLIFMPWSCTYHKRQEND"
+    exercise = "".join(f"A{x}CDEFG{x}K" for x in residues)
     with open(f"{dest}/adv_proteins.fasta", "w") as fh:
         fh.write(">P12345-2 isoform\nPEPTIDEKAAAAAAAAAAR\n")
         fh.write(">P12345 canonical\nPEPTIDEKAAAAAAAAAAR\n")
         fh.write(">P1 short\nPEPTIDEKAAAAAAAAAAR\n")
+        fh.write(f">P2 substitution-table coverage\n{exercise}\n")
 
     print(f"wrote adversarial fixtures to {dest}")
     for f in sorted(os.listdir(dest)):

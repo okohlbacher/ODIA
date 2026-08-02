@@ -12,9 +12,8 @@ foreach(tool ${ODIA_TOOLS})
   add_test(NAME ${tool}_write_ini
            COMMAND ${tool} -write_ini "${CMAKE_CURRENT_BINARY_DIR}/${tool}.ini")
 
-  add_test(NAME ${tool}_read_ini
-           COMMAND ${CMAKE_COMMAND} -E true)
-  set_tests_properties(${tool}_read_ini PROPERTIES DEPENDS ${tool}_write_ini)
+  # (An INI round-trip test belongs here; the previous placeholder ran
+  # `cmake -E true` and asserted nothing at all.)
 endforeach()
 
 if(EXISTS "${ODIA_DATA_DIR}/12_80.mzpeak")
@@ -110,10 +109,15 @@ endif()
 
 # Rows out of precursor order must be refused, not silently split.
 if(EXISTS "${ODIA_FIXTURE_DIR}/adv_interleaved.tsv")
+  # WILL_FAIL alone passes on any non-zero exit -- it passed even with the
+  # contiguity check deleted outright -- and it cannot be combined with
+  # PASS_REGULAR_EXPRESSION, which it inverts. Assert both from a script.
   add_test(NAME adversarial_interleaved_rejected
-           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/adv_interleaved.tsv"
-                                -stop_after library)
-  set_tests_properties(adversarial_interleaved_rejected PROPERTIES WILL_FAIL TRUE)
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DINPUT=${ODIA_FIXTURE_DIR}/adv_interleaved.tsv
+                   -DEXPECT=not grouped by precursor
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/expect_rejection.cmake)
 endif()
 
 # Unusual Parquet types must decode, including a bool decoy flag.
@@ -128,14 +132,62 @@ endif()
 # A library ODIA generated itself, decoys included. This is the only test where
 # the decoy substitution table is ours end to end, so the mutation check is
 # meaningful.
-if(EXISTS "/scratch/kohlbach/AGXT.fasta" AND ODIA_PYTHON)
+# adv_proteins.fasta comes from make_fixtures.sh, so this test travels. It
+# previously pointed at a file in one user's scratch that no script produces,
+# which made it the only test reaching -fasta *and* the only one that silently
+# vanished on any other machine -- taking the sole guard for the substitution
+# table, the fragment ordinals and the RT write path with it.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON)
   add_test(NAME adversarial_generated
            COMMAND ${CMAKE_COMMAND}
                    -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
                    -DPYTHON=${ODIA_PYTHON}
                    -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_invariants.py
-                   -DFASTA=/scratch/kohlbach/AGXT.fasta
+                   -DFASTA=${ODIA_FIXTURE_DIR}/adv_proteins.fasta
                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/generated.out.tsv
                    -DCHECK_DECOYS=--decoy-table
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
+endif()
+
+# Malformed numbers must be reported, not silently accepted.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_badnumbers.tsv")
+  add_test(NAME adversarial_badnumbers
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/adv_badnumbers.tsv"
+                                -stop_after library)
+  set_tests_properties(adversarial_badnumbers PROPERTIES
+    PASS_REGULAR_EXPRESSION "precursors have an unusable m/z")
+endif()
+
+# All-null columns must not silently become zeros without a word.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_nulls.parquet")
+  add_test(NAME adversarial_nulls
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/adv_nulls.parquet"
+                                -stop_after library)
+  set_tests_properties(adversarial_nulls PROPERTIES
+    PASS_REGULAR_EXPRESSION "precursors:")
+endif()
+
+# Sorting must be a property of the data: re-sorting our own output must be a
+# fixed point. Nothing detected a tie-break keyed on input order before this.
+if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
+  add_test(NAME sort_is_a_fixed_point
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DINPUT=${ODIA_FIXTURE_DIR}/diann_library_small.tsv
+                   -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/sort_fixed_point.cmake)
+endif()
+
+# m/z must survive load-store to the precision D6 claims. A mutation making
+# toFixed truncate, or the writer drop two significant digits, passed every
+# other test in the suite.
+if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv" AND ODIA_PYTHON)
+  add_test(NAME mz_precision_round_trip
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DPYTHON=${ODIA_PYTHON}
+                   -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_precision.py
+                   -DINPUT=${ODIA_FIXTURE_DIR}/diann_library_small.tsv
+                   -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/precision.out.tsv
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/run_precision.cmake)
 endif()

@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -45,6 +46,25 @@ namespace ODIA
       while (first != last && (*first == ' ' || *first == '+')) { ++first; }
       if (std::from_chars(first, last, v).ec != std::errc{}) { return 0; }
       return v;
+    }
+
+    /// Residues in a modified sequence, ignoring bracketed modification names.
+    ///
+    /// The name must not be scanned for residues: "UniMod" contains an M.
+    std::size_t residueCount(std::string_view seq)
+    {
+      std::size_t n = 0;
+      for (std::size_t i = 0; i < seq.size(); ++i)
+      {
+        if (seq[i] == '(' || seq[i] == '[')
+        {
+          const char close = seq[i] == '(' ? ')' : ']';
+          while (i < seq.size() && seq[i] != close) { ++i; }
+          continue;
+        }
+        if (seq[i] >= 'A' && seq[i] <= 'Z') { ++n; }
+      }
+      return n;
     }
 
     /// One parsed row, in the order the builder needs it.
@@ -83,6 +103,20 @@ namespace ODIA
           if (!seen_.insert(key).second) { ++reopened_; }
           startPrecursor(r);
         }
+        // Reject fragments that cannot exist, rather than storing them.
+        //
+        // An ordinal past the stored width wraps into a *plausible* ordinal --
+        // 300 becomes 44 -- so the row would survive every downstream check as
+        // a different, wrong fragment. Ordinal 0, an ordinal at or beyond the
+        // peptide length, and a non-positive charge are not fragments at all.
+        if (r.ordinal <= 0 || r.ordinal > 255 ||
+            r.fragment_charge <= 0 || r.fragment_charge > 127 ||
+            static_cast<std::size_t>(r.ordinal) >= residueCount(r.modified_sequence))
+        {
+          ++out_of_range_;
+          return;
+        }
+
         auto& t = lib_.transitions();
         t.product_mz.push_back(toFixed(r.product_mz));
         t.library_intensity.push_back(static_cast<float>(r.intensity));
@@ -97,6 +131,9 @@ namespace ODIA
 
       /// Number of precursors whose rows were not contiguous.
       std::size_t reopened() const { return reopened_; }
+
+      /// Transitions dropped because an ordinal or charge could not be stored.
+      std::size_t outOfRange() const { return out_of_range_; }
 
     private:
       void startPrecursor(const Row& r)
@@ -131,6 +168,7 @@ namespace ODIA
       Library& lib_;
       std::unordered_set<std::size_t> seen_;
       std::size_t reopened_ = 0;
+      std::size_t out_of_range_ = 0;
       std::string current_id_owned_;
       std::string_view current_id_;
       bool have_current_ = false;
@@ -235,6 +273,12 @@ namespace ODIA
       builder.append(r);
     }
     builder.finish();
+    if (builder.outOfRange())
+    {
+      std::cerr << "warning: dropped " << builder.outOfRange()
+                << " transitions whose fragment ordinal or charge cannot describe "
+                   "a fragment of the stated peptide\n";
+    }
     if (builder.reopened())
     {
       throw std::runtime_error(
@@ -378,6 +422,12 @@ namespace ODIA
       builder.append(r);
     }
     builder.finish();
+    if (builder.outOfRange())
+    {
+      std::cerr << "warning: dropped " << builder.outOfRange()
+                << " transitions whose fragment ordinal or charge cannot describe "
+                   "a fragment of the stated peptide\n";
+    }
     if (builder.reopened())
     {
       throw std::runtime_error(

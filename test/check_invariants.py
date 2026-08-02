@@ -105,8 +105,39 @@ def fragment_mz(tokens, ftype, ordinal, charge, loss):
     if ftype not in SERIES or charge <= 0 or ordinal <= 0 or ordinal >= len(tokens):
         return None
     part = tokens[:ordinal] if ftype in "abc" else tokens[len(tokens) - ordinal:]
-    neutral = sum(RESIDUE[r] + d for r, d in part) + SERIES[ftype] - LOSS.get(loss, 0.0)
+    # LOSS[loss], not LOSS.get(loss, 0.0). Defaulting to zero made the checker
+    # unable to distinguish "loss applied" from "loss ignored" for every label
+    # it does not know -- which is exactly the set LossType::Other covers -- and
+    # baked a physically wrong mass into the fixtures that import this function.
+    neutral = sum(RESIDUE[r] + d for r, d in part) + SERIES[ftype] - LOSS[loss]
     return (neutral + charge * PROTON) / charge
+
+
+def self_test():
+    """Pin the tables against values typed in from a reference.
+
+    The fixtures import fragment_mz() to generate the masses this module later
+    verifies, so for target rows the check is circular. These literals are the
+    only thing anchoring the tables to reality.
+    """
+    cases = [
+        # (sequence, type, ordinal, charge, loss, expected m/z)
+        # Derived by hand from standard monoisotopic residue masses:
+        #   b = sum(residues) + proton
+        #   y = sum(residues) + H2O + proton
+        # PEPTIDEK = P 97.05276, E 129.04259, P, T 101.04768, I 113.08406,
+        #            D 115.02694, E, K 128.09496
+        ("PEPTIDEK", "b", 2, 1, "noloss", 227.10263),   # P+E
+        ("PEPTIDEK", "y", 2, 1, "noloss", 276.15539),   # E+K
+        ("PEPTIDEK", "y", 2, 2, "noloss", 138.58133),   # same, doubly charged
+        ("PEPTIDEK", "y", 4, 1, "H2O", 486.25583),      # I+D+E+K, water lost
+        ("PEPTIDEK", "b", 3, 1, "NH3", 307.12884),      # P+E+P, ammonia lost
+    ]
+    for seq, ftype, ordinal, charge, loss, want in cases:
+        got = fragment_mz(tokenise(seq), ftype, ordinal, charge, loss)
+        if got is None or abs(got - want) > 1e-4:
+            raise SystemExit(f"self-test failed: {seq} {ftype}{ordinal}^{charge} "
+                             f"loss={loss} got {got} want {want}")
 
 
 def main(path, check_decoys):
@@ -142,17 +173,26 @@ def main(path, check_decoys):
             tokens = mutate(tokens)
             if tokens is None:
                 continue
+        got = float(r["Product.Mz"]) if r["Product.Mz"].strip() else 0.0
+        if got == 0.0:
+            continue          # unusable m/z, counted separately by the tool
         try:
             expect = fragment_mz(tokens, r["Fragment.Type"],
                                  int(r["Fragment.Series.Number"]),
                                  int(r["Fragment.Charge"]), r["Fragment.Loss.Type"])
-        except (ValueError, KeyError):
+        except KeyError as e:
+            failures.append(f"unrecognised label {e} on a row carrying m/z {got}")
+            continue
+        except ValueError:
             continue
         if expect is None:
+            # The checker cannot model this row, but the tool wrote a mass for
+            # it. Skipping here is what let a mutation that relabels every
+            # unknown fragment type as "y" pass the whole suite.
+            failures.append(f"row has m/z {got} but type/ordinal/charge "
+                            f"({r['Fragment.Type']}/{r['Fragment.Series.Number']}/"
+                            f"{r['Fragment.Charge']}) cannot be modelled")
             continue
-        got = float(r["Product.Mz"])
-        if got == 0.0:
-            continue          # flagged separately as an unusable m/z
         checked += 1
         d = abs(expect - got)
         if d > 2e-4:
@@ -180,5 +220,6 @@ def main(path, check_decoys):
 
 
 if __name__ == "__main__":
+    self_test()
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     sys.exit(main(args[0], "--decoy-table" in sys.argv))

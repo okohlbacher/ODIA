@@ -122,10 +122,20 @@ the exit-code-6-on-success. These remain:
 
 ## Implementation, unblocked
 
-*Fixture coverage is now addressed: `scripts/make_adversarial_fixtures.py` plus
+*Still uncovered by any fixture, from the mutation-testing review: neutral loss
+on 3+ charged fragments; a phosphorylated modification (the checker's MOD table
+has no UniMod 21, so it cannot yet be pointed at a phospho library, which is the
+library type `lossMass`'s own comment cites); `pseudo_reverse` decoys, which no
+test invokes and which `check_invariants.py` cannot validate since its `mutate()`
+implements only the substitution table; and a precursor split across two
+**adjacent** blocks.*
+
+*Fixture coverage is otherwise addressed: `scripts/make_adversarial_fixtures.py` plus
 `test/check_invariants.py` give 20 tests over losses, modifications, decoy
 collisions, unusual Parquet types, nulls and malformed input, with masses
-verified against a residue table independent of OpenMS.*
+verified against a residue table independent of OpenMS and pinned by a
+self-test of literal values. Mutation testing: 21 injected defects, all of the
+ones re-tested after repair are now caught.*
 
 - ONNX prediction: iRT, MS2 intensities, CCS — with CUDA attempted and CPU
   fallback, and ODIA's own `mod_x` encoder.
