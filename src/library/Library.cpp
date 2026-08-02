@@ -32,7 +32,11 @@ namespace ODIA
     if (s.empty() || s == "noloss" || s == "none" || s == "-") { return LossType::None; }
     if (s == "H2O" || s == "h2o") { return LossType::Water; }
     if (s == "NH3" || s == "nh3") { return LossType::Ammonia; }
-    if (s == "H3PO4" || s == "HPO3") { return LossType::Phospho; }
+    // HPO3 and H3PO4 differ by exactly one water (79.96633 vs 97.97690 Da).
+    // Aliasing them was harmless while the label was only round-tripped; it
+    // stopped being harmless once the label started feeding a mass.
+    if (s == "H3PO4") { return LossType::Phospho; }
+    if (s == "HPO3") { return LossType::Metaphosphate; }
     if (s == "CO" || s == "co") { return LossType::CO; }
     return LossType::Other;
   }
@@ -61,6 +65,7 @@ namespace ODIA
       case LossType::Water: return "H2O";
       case LossType::Ammonia: return "NH3";
       case LossType::Phospho: return "H3PO4";
+      case LossType::Metaphosphate: return "HPO3";
       case LossType::CO: return "CO";
       case LossType::Other: break;
     }
@@ -97,7 +102,9 @@ namespace ODIA
     if (auto it = lookup_.find(s); it != lookup_.end()) { return it->second; }
 
     char* p = allocate(s.size());
-    std::memcpy(p, s.data(), s.size());
+    // memcpy with a null source is UB even for a zero count, and an absent
+    // column yields an empty string_view whose data() is null.
+    if (!s.empty()) { std::memcpy(p, s.data(), s.size()); }
     bytes_ += s.size();
 
     entries_.push_back({p, static_cast<std::uint32_t>(s.size())});
@@ -136,6 +143,12 @@ namespace ODIA
   {
     return static_cast<std::size_t>(
       std::count(precursors_.mz.begin(), precursors_.mz.end(), MZ_INVALID));
+  }
+
+  std::size_t Library::invalidMzTransitionCount() const
+  {
+    return static_cast<std::size_t>(
+      std::count(transitions_.product_mz.begin(), transitions_.product_mz.end(), MZ_INVALID));
   }
 
   void Library::reserve(std::size_t precursors, std::size_t transitions)

@@ -14,6 +14,7 @@
 #include <string_view>
 #include <cmath>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -60,6 +61,7 @@ namespace ODIA
       static const double water = EmpiricalFormula("H2O").getMonoWeight();
       static const double ammonia = EmpiricalFormula("NH3").getMonoWeight();
       static const double phospho = EmpiricalFormula("H3PO4").getMonoWeight();
+      static const double metaphosphate = EmpiricalFormula("HPO3").getMonoWeight();
       static const double carbon_monoxide = EmpiricalFormula("CO").getMonoWeight();
       switch (loss)
       {
@@ -67,6 +69,7 @@ namespace ODIA
         case LossType::Water: return water;
         case LossType::Ammonia: return ammonia;
         case LossType::Phospho: return phospho;
+        case LossType::Metaphosphate: return metaphosphate;
         case LossType::CO: return carbon_monoxide;
         case LossType::Other: break;
       }
@@ -261,17 +264,34 @@ namespace ODIA
   }
 
   std::size_t LibraryGenerator::appendDecoys(Library& library, DecoyMethod method,
-                                             std::size_t* skipped_out)
+                                             std::size_t* skipped_out,
+                                             std::size_t min_fragments)
   {
     if (method == DecoyMethod::None) { return 0; }
 
     const std::size_t n_targets = library.precursorCount();
+
+    // Targets that already have a decoy, keyed as the decoy stores them.
+    // Without this a second call appends a duplicate set: the copies are
+    // byte-identical rows sharing a synthesised Precursor.Id, so they merge
+    // silently on reload and a precursor plus half its transitions disappear.
+    std::set<std::pair<std::uint32_t, std::uint8_t>> already;
+    for (std::size_t i = 0; i < n_targets; ++i)
+    {
+      if (library.precursors().decoy[i])
+      {
+        already.emplace(library.precursors().modified_sequence[i],
+                        library.precursors().charge[i]);
+      }
+    }
     std::size_t made = 0;
     std::size_t skipped = 0;
 
     for (std::size_t i = 0; i < n_targets; ++i)
     {
       if (library.precursors().decoy[i]) { continue; }
+      if (already.count({library.precursors().modified_sequence[i],
+                         library.precursors().charge[i]})) { continue; }
 
       const std::string sequence(library.strings().get(library.precursors().modified_sequence[i]));
 
@@ -392,8 +412,22 @@ namespace ODIA
         t.loss.push_back(t.loss[s]);
       }
 
+      // The same fragment-count bar the target had to clear. A gate applied to
+      // one class and not the other is the anti-conservative FDR mode D7 rule 2
+      // names: decoys admitted below their target's bar score lower, so the
+      // decoy distribution is not the null the targets were drawn against.
       const auto written = static_cast<std::uint32_t>(t.product_mz.size() - new_begin);
-      if (written == 0) { ++skipped; continue; }
+      if (written == 0 || written < min_fragments)
+      {
+        t.product_mz.resize(new_begin);
+        t.library_intensity.resize(new_begin);
+        t.type.resize(new_begin);
+        t.ordinal.resize(new_begin);
+        t.charge.resize(new_begin);
+        t.loss.resize(new_begin);
+        ++skipped;
+        continue;
+      }
 
       p.mz.push_back(p.mz[i]);
       p.irt.push_back(p.irt[i]);
@@ -414,6 +448,7 @@ namespace ODIA
       p.transition_count.push_back(written);
       ++made;
     }
+    if (made) { library.markUnsorted(); }
     if (skipped_out) { *skipped_out = skipped; }
     return made;
   }

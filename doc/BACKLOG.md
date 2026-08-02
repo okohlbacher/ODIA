@@ -91,6 +91,24 @@ the exit-code-6-on-success. These remain:
 - **Null cells are indistinguishable from zero** for `Decoy`, `Precursor.Charge`,
   `Fragment.Series.Number` and the string columns — a null `Decoy` column makes
   every decoy a target, the same effect the BOOL case was added to fix.
+- **Unusual loss labels are not round-tripped.** `H2O+H2O`, `CH3SOH`,
+  `H3PO4+H2O` all parse to `LossType::Other` and are written back as `other`, so
+  the label is lost and the transition is dropped from decoys. Either carry the
+  label as an interned string or refuse the input.
+- **A decoy's `Product.Mz` can no longer be checked against its own row.** Since
+  the decoy stores the target's sequence (DIA-NN convention), reproducing its
+  fragment m/z requires applying the mutation table — which has become an
+  unwritten part of the file format. Defensible, but it should be stated in D7.
+- **The `_decoy` id suffix deviates from DIA-NN**, whose decoy `Precursor.Id` is
+  exactly `sequence+charge`, identical in form to a target's. Ours has to differ
+  because we emit both rows; worth documenting as an intentional divergence.
+- **Contiguity-check hash collisions are a hard failure.** 4.3e-7 at 4 M
+  precursors (fine), but 1.7e-4 at the 78.6 M design scale — one load in 6,000 —
+  and the failure is a deterministic `throw` whose message sends the user to
+  re-sort an already-sorted file.
+- **`generate()` interns before deciding whether a precursor survives**, leaving
+  5,532 permanently unreferenced arena entries on the human proteome and
+  over-reporting the distinct-string count by that much.
 - **D5's mandated warning is not implemented** — the reader should warn once when
   an input's transition names disagree with what ODIA would synthesise. The
   accepted round-trip risk is currently unmitigated.

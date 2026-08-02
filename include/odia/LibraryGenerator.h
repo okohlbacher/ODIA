@@ -87,8 +87,12 @@ namespace ODIA
     /// @param skipped_out receives the number of targets for which no decoy
     ///        could be built. Reported rather than dropped silently: 1.3% of the
     ///        DIA-NN fixture is affected, all of them N-terminally modified.
+    /// @param min_fragments the same bar the targets had to clear. Applying it
+    ///        to one class only is an anti-conservative FDR (D7 rule 2).
+    /// Idempotent: targets that already have a decoy are skipped.
     static std::size_t appendDecoys(Library& library, DecoyMethod method,
-                                    std::size_t* skipped_out = nullptr);
+                                    std::size_t* skipped_out = nullptr,
+                                    std::size_t min_fragments = 0);
   };
 
 } // namespace ODIA

@@ -157,7 +157,10 @@ substitution table *(DIA-NN §2.6)*. Fragment m/z are **recomputed from the
 mutated sequence**, not shifted — shifting is only valid for ions spanning one
 mutated residue, and the long b/y ions span both.
 
-The decoy row stores the **target's** sequence, as DIA-NN does. Two reasons: the
+The decoy row stores the **target's** sequence, as DIA-NN does. The cost is that
+a decoy's fragment m/z can no longer be checked against its own row — reproducing
+them requires applying the substitution table, which thereby becomes an unwritten
+part of the file format. Two reasons: the
 substitution table is many-to-one, so distinct targets collide on a decoy
 sequence and the synthesised identifiers stopped being unique; and since the
 decoy inherits the target's precursor m/z by design, storing the mutated

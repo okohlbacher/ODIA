@@ -57,7 +57,7 @@ namespace ODIA
 
   enum class LossType : std::uint8_t
   {
-    None = 0, Water, Ammonia, Phospho, CO, Other
+    None = 0, Water, Ammonia, Phospho, Metaphosphate, CO, Other
   };
 
   FragmentType parseFragmentType(std::string_view s);
@@ -165,6 +165,11 @@ namespace ODIA
     /// never match an isolation window, so they are silently lost work unless
     /// reported.
     std::size_t invalidMzCount() const;
+
+    /// Transitions whose m/z could not be represented. Reachable in more ways
+    /// than the precursor case -- subtracting a neutral loss can drive a small
+    /// fragment to or below zero.
+    std::size_t invalidMzTransitionCount() const;
 
     const PrecursorArrays& precursors() const { return precursors_; }
     const TransitionArrays& transitions() const { return transitions_; }

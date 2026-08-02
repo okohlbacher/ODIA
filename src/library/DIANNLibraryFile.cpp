@@ -111,6 +111,10 @@ namespace ODIA
         p.protein_group.push_back(lib_.strings().intern(r.protein_group));
         p.transition_begin.push_back(static_cast<std::uint32_t>(lib_.transitionCount()));
         p.transition_count.push_back(0);
+        // Appending breaks any m/z ordering; leaving the flag set would make
+        // lowerBound binary-search an unsorted array and return an index
+        // indistinguishable from a real answer.
+        lib_.markUnsorted();
         current_id_owned_.assign(r.precursor_id);
         current_id_ = current_id_owned_;
         current_decoy_ = r.decoy != 0;
@@ -358,7 +362,15 @@ namespace ODIA
       // at() yields NaN for a type it cannot decode or a null cell; casting
       // that to long is undefined behaviour, which is exactly what the toFixed
       // guard was added to eliminate two functions away.
-      auto as_long = [](double v) -> long { return std::isnan(v) ? 0L : static_cast<long>(v); };
+      // NaN was guarded; +-inf and any |v| >= 2^63 still reached the cast and
+      // UBSan flagged them. On x86-64 they yield INT64_MIN, which narrows to
+      // charge 0 -- a wrong value rather than a crash.
+      auto as_long = [](double v) -> long {
+        if (!std::isfinite(v)) { return 0L; }
+        if (v <= static_cast<double>(std::numeric_limits<long>::min())) { return 0L; }
+        if (v >= static_cast<double>(std::numeric_limits<long>::max())) { return 0L; }
+        return static_cast<long>(v);
+      };
       r.precursor_charge = as_long(at(a_z, i));
       r.fragment_charge = as_long(at(a_fz, i));
       r.ordinal = as_long(at(a_ord, i));

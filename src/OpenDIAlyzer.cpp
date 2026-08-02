@@ -110,7 +110,7 @@ protected:
         const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
         std::size_t decoys_skipped = 0;
         const auto decoys = ODIA::LibraryGenerator::appendDecoys(
-          library, params.decoy_method, &decoys_skipped);
+          library, params.decoy_method, &decoys_skipped, params.min_fragments);
 
         std::ostringstream gen;
         gen << "generated from " << stats.proteins << " proteins: "
@@ -191,6 +191,11 @@ private:
       writeLogWarn_(std::to_string(bad) + " precursors have an unusable m/z "
                     "(empty, negative, NaN or out of range) and cannot match any "
                     "isolation window.");
+    }
+    if (const auto bad = library.invalidMzTransitionCount(); bad != 0)
+    {
+      writeLogWarn_(std::to_string(bad) + " transitions have an unusable m/z and "
+                    "cannot be extracted.");
     }
 
     if (decoys == 0)
