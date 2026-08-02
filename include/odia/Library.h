@@ -24,8 +24,24 @@ namespace ODIA
 
   inline constexpr double MZ_QUANTUM = 1e-5;
 
+  /// Largest representable m/z: 2^32 quanta of 1e-5 Th.
+  inline constexpr double MZ_MAX = 42949.67295;
+
+  /// Sentinel for "no valid m/z". Distinguishable from a real value, which is
+  /// never 0 in practice.
+  inline constexpr MzFixed MZ_INVALID = 0;
+
+  /// Convert to fixed-point, or MZ_INVALID if the value cannot be represented.
+  ///
+  /// The domain check is not defensive padding: a NaN or out-of-range double
+  /// converted by a bare cast is undefined behaviour, and on this toolchain it
+  /// silently produced m/z 0, 42,448 and 2,764 Th from an empty field, "-500.1"
+  /// and "1e9" respectively. Those precursors then sort to the ends of the
+  /// library and never match a window, so a truncated or mis-columned input
+  /// loads without complaint and quietly loses peptides.
   inline MzFixed toFixed(double mz)
   {
+    if (!(mz > 0.0) || mz > MZ_MAX) { return MZ_INVALID; }   // false for NaN
     return static_cast<MzFixed>(mz / MZ_QUANTUM + 0.5);
   }
 

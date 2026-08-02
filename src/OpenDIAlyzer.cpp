@@ -83,6 +83,14 @@ protected:
       return ILLEGAL_PARAMETERS;
     }
 
+    // Checked before any work is done. Doing it afterwards meant a run that
+    // built and wrote a library still exited 6.
+    if (stop_after != "library")
+    {
+      writeLogError_("Only the library stage is implemented; use -stop_after library.");
+      return ILLEGAL_PARAMETERS;
+    }
+
     ODIA::Library library;
     const auto t0 = std::chrono::steady_clock::now();
     try
@@ -139,10 +147,7 @@ protected:
       }
     }
 
-    if (stop_after == "library") { return EXECUTION_OK; }
-
-    writeLogError_("Only the library stage is implemented; use -stop_after library.");
-    return ILLEGAL_PARAMETERS;
+    return EXECUTION_OK;
   }
 
 private:

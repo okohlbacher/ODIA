@@ -4,6 +4,7 @@
 #include <odia/DIANNLibraryFile.h>
 
 #include <arrow/api.h>
+#include <arrow/compute/api.h>
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <set>
 #include <unordered_map>
 
 namespace ODIA
@@ -66,9 +68,16 @@ namespace ODIA
 
       void append(const Row& r)
       {
-        if (!have_current_ || r.precursor_id != current_id_)
+        if (!have_current_ || r.precursor_id != current_id_ || (r.decoy != 0) != current_decoy_)
         {
           closeCurrent();
+          // A precursor's rows must be contiguous, because grouping keys off a
+          // change of Precursor.Id. If they are not, the same id reappears and
+          // one precursor silently becomes several single-transition ones with
+          // a plausible-looking count -- which is what any library that has been
+          // sorted by m/z or concatenated will do.
+          const auto key = std::make_pair(std::string(r.precursor_id), r.decoy != 0);
+          if (!seen_.insert(key).second) { ++reopened_; }
           startPrecursor(r);
         }
         auto& t = lib_.transitions();
@@ -82,6 +91,9 @@ namespace ODIA
       }
 
       void finish() { closeCurrent(); }
+
+      /// Number of precursors whose rows were not contiguous.
+      std::size_t reopened() const { return reopened_; }
 
     private:
       void startPrecursor(const Row& r)
@@ -98,6 +110,7 @@ namespace ODIA
         p.transition_count.push_back(0);
         current_id_owned_.assign(r.precursor_id);
         current_id_ = current_id_owned_;
+        current_decoy_ = r.decoy != 0;
         have_current_ = true;
         count_ = 0;
       }
@@ -109,9 +122,12 @@ namespace ODIA
       }
 
       Library& lib_;
+      std::set<std::pair<std::string, bool>> seen_;
+      std::size_t reopened_ = 0;
       std::string current_id_owned_;
       std::string_view current_id_;
       bool have_current_ = false;
+      bool current_decoy_ = false;
       std::size_t count_ = 0;
     };
   } // namespace
@@ -212,6 +228,13 @@ namespace ODIA
       builder.append(r);
     }
     builder.finish();
+    if (builder.reopened())
+    {
+      throw std::runtime_error(
+        "library rows are not grouped by precursor: " + std::to_string(builder.reopened())
+        + " precursors reappear after another precursor's rows. Sort the file so each "
+        "precursor's transitions are contiguous.");
+    }
   }
 
   void DIANNLibraryFile::loadParquet(const std::string& filename, Library& library)
@@ -240,10 +263,25 @@ namespace ODIA
       table = *combined;
     }
 
+    // Decode dictionary and large_string columns rather than rejecting them.
+    // Parquet writes repeated strings dictionary-encoded by default -- which is
+    // the very property that makes this path cheap -- and any library over 2 GB
+    // of characters needs large_string. Casting straight to StringArray yields
+    // nullptr for both, after which the reader blamed the file for "missing
+    // Precursor.Id" when the column was present all along.
+    std::vector<std::shared_ptr<arrow::Array>> keep_alive;
     auto str = [&](const char* n) -> std::shared_ptr<arrow::StringArray> {
       const int i = table->schema()->GetFieldIndex(n);
       if (i < 0) { return nullptr; }
-      return std::dynamic_pointer_cast<arrow::StringArray>(table->column(i)->chunk(0));
+      std::shared_ptr<arrow::Array> a = table->column(i)->chunk(0);
+      if (a->type_id() != arrow::Type::STRING)
+      {
+        auto casted = arrow::compute::Cast(arrow::Datum(a), arrow::utf8());
+        if (!casted.ok()) { return nullptr; }
+        a = casted->make_array();
+        keep_alive.push_back(a);
+      }
+      return std::dynamic_pointer_cast<arrow::StringArray>(a);
     };
     auto num = [&](const char* n) -> std::shared_ptr<arrow::Array> {
       const int i = table->schema()->GetFieldIndex(n);
@@ -257,7 +295,16 @@ namespace ODIA
         case arrow::Type::FLOAT:  return static_cast<const arrow::FloatArray&>(*a).Value(i);
         case arrow::Type::INT64:  return static_cast<double>(static_cast<const arrow::Int64Array&>(*a).Value(i));
         case arrow::Type::INT32:  return static_cast<double>(static_cast<const arrow::Int32Array&>(*a).Value(i));
-        default: return 0.0;
+        case arrow::Type::INT16:  return static_cast<double>(static_cast<const arrow::Int16Array&>(*a).Value(i));
+        case arrow::Type::INT8:   return static_cast<double>(static_cast<const arrow::Int8Array&>(*a).Value(i));
+        case arrow::Type::UINT64: return static_cast<double>(static_cast<const arrow::UInt64Array&>(*a).Value(i));
+        case arrow::Type::UINT32: return static_cast<double>(static_cast<const arrow::UInt32Array&>(*a).Value(i));
+        case arrow::Type::UINT16: return static_cast<double>(static_cast<const arrow::UInt16Array&>(*a).Value(i));
+        case arrow::Type::UINT8:  return static_cast<double>(static_cast<const arrow::UInt8Array&>(*a).Value(i));
+        // Decoy is naturally a bool, and that is what pandas and polars write.
+        // Falling through to 0.0 here silently made every decoy a target.
+        case arrow::Type::BOOL:   return static_cast<const arrow::BooleanArray&>(*a).Value(i) ? 1.0 : 0.0;
+        default: return std::nan("");
       }
     };
     auto sv = [](const std::shared_ptr<arrow::StringArray>& a, int64_t i) -> std::string_view {
@@ -312,6 +359,13 @@ namespace ODIA
       builder.append(r);
     }
     builder.finish();
+    if (builder.reopened())
+    {
+      throw std::runtime_error(
+        "library rows are not grouped by precursor: " + std::to_string(builder.reopened())
+        + " precursors reappear after another precursor's rows. Sort the file so each "
+        "precursor's transitions are contiguous.");
+    }
   }
 
   void DIANNLibraryFile::storeTSV(const std::string& filename, const Library& library)
@@ -340,7 +394,13 @@ namespace ODIA
       for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
       {
         const std::uint32_t j = begin + k;
-        out << seq << z << '\t' << seq << '\t' << z << '\t'
+        // DIA-NN gives a decoy the same Modified.Sequence, charge and
+        // Precursor.Mz as its target, so <sequence><charge> alone is not unique.
+        // Without the suffix, reloading our own output merged each such pair and
+        // re-labelled the decoy's transitions as target evidence -- 33,390
+        // precursors became 33,386, silently, with no transitions lost.
+        out << seq << z << (p.decoy[i] ? "_decoy" : "") << '\t'
+            << seq << '\t' << z << '\t'
             << static_cast<int>(p.decoy[i]) << '\t';
         out.precision(9);
         out << p.irt[i] << '\t';
@@ -355,6 +415,11 @@ namespace ODIA
             << toString(t.loss[j]) << '\t' << pg << '\n';
       }
     }
+
+    // A stream checked only at open reports success on a full disk, an exceeded
+    // quota or a broken mount, leaving a truncated library behind.
+    out.flush();
+    if (!out) { throw std::runtime_error("failed while writing library: " + filename); }
   }
 
 } // namespace ODIA

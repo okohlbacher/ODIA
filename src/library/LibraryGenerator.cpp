@@ -246,8 +246,6 @@ namespace ODIA
       }
       if (tokens.size() < 4) { continue; }
 
-      double n_shift = 0.0;
-      double c_shift = 0.0;
       std::string decoy_sequence;
 
       if (method == DecoyMethod::Mutate)
@@ -267,20 +265,8 @@ namespace ODIA
         }
         if (n_pos == tokens.size() || c_pos == tokens.size()) { continue; }
 
-        const char n_from = tokens[n_pos].residue;
-        const char c_from = tokens[c_pos].residue;
-        const char n_to = mutateResidue(n_from);
-        const char c_to = mutateResidue(c_from);
-        try
-        {
-          n_shift = AASequence::fromString(std::string(1, n_to)).getMonoWeight(Residue::Internal)
-                  - AASequence::fromString(std::string(1, n_from)).getMonoWeight(Residue::Internal);
-          c_shift = AASequence::fromString(std::string(1, c_to)).getMonoWeight(Residue::Internal)
-                  - AASequence::fromString(std::string(1, c_from)).getMonoWeight(Residue::Internal);
-        }
-        catch (const std::exception&) { continue; }
-        tokens[n_pos].text = std::string(1, n_to);
-        tokens[c_pos].text = std::string(1, c_to);
+        tokens[n_pos].text = std::string(1, mutateResidue(tokens[n_pos].residue));
+        tokens[c_pos].text = std::string(1, mutateResidue(tokens[c_pos].residue));
         for (const auto& tok : tokens) { decoy_sequence += tok.text; }
       }
       else // PseudoReverse: reverse everything but the C-terminal residue
@@ -291,12 +277,26 @@ namespace ODIA
         for (const auto& tok : reordered) { decoy_sequence += tok.text; }
       }
 
+      // Recompute every fragment from the decoy sequence rather than shifting
+      // the target's.
+      //
+      // Shifting b ions by the N-terminal mass difference and y ions by the
+      // C-terminal one is wrong whenever an ion spans *both* mutated residues,
+      // which the long b and y ions always do -- and those are exactly the ions
+      // enumerateFragments keeps, since it caps by descending m/z. Measured on
+      // the human proteome before this change: 15.3% of decoy fragment m/z did
+      // not correspond to the decoy sequence stored beside them, worst case
+      // 76 Th out. The failure is worse than it sounds because it is asymmetric:
+      // recomputing from the sequence disagrees on ~15% of decoy transitions and
+      // 0% of target ones, and a criterion that behaves differently for the two
+      // classes is the anti-conservative FDR mode D7 exists to avoid.
+      AASequence decoy;
+      try { decoy = AASequence::fromString(decoy_sequence); }
+      catch (const std::exception&) { continue; }
+
       auto& p = library.precursors();
       auto& t = library.transitions();
 
-      // The decoy inherits precursor m/z, iRT, ion mobility and the intensity
-      // pattern. That is DIA-NN's design and its acknowledged weakness; see
-      // DecoyMethod.
       const std::uint32_t begin = p.transition_begin[i];
       const std::uint32_t count = p.transition_count[i];
       const std::uint32_t new_begin = static_cast<std::uint32_t>(t.product_mz.size());
@@ -304,26 +304,30 @@ namespace ODIA
       for (std::uint32_t k = 0; k < count; ++k)
       {
         const std::uint32_t s = begin + k;
-        double mz = fromFixed(t.product_mz[s]);
         const auto charge = t.charge[s] == 0 ? std::int8_t{1} : t.charge[s];
-        if (method == DecoyMethod::Mutate)
+        const Size ord = t.ordinal[s];
+        if (ord == 0 || ord >= decoy.size()) { continue; }
+
+        double mz = 0.0;
+        try
         {
-          if (t.type[s] == FragmentType::B) { mz += n_shift / charge; }
-          else if (t.type[s] == FragmentType::Y) { mz += c_shift / charge; }
-        }
-        else
-        {
-          try
+          switch (t.type[s])
           {
-            const AASequence decoy = AASequence::fromString(decoy_sequence);
-            const Size ord = t.ordinal[s];
-            if (ord == 0 || ord >= decoy.size()) { continue; }
-            mz = (t.type[s] == FragmentType::B)
-                   ? decoy.getPrefix(ord).getMZ(charge, Residue::BIon)
-                   : decoy.getSuffix(ord).getMZ(charge, Residue::YIon);
+            case FragmentType::A: mz = decoy.getPrefix(ord).getMZ(charge, Residue::AIon); break;
+            case FragmentType::B: mz = decoy.getPrefix(ord).getMZ(charge, Residue::BIon); break;
+            case FragmentType::C: mz = decoy.getPrefix(ord).getMZ(charge, Residue::CIon); break;
+            case FragmentType::X: mz = decoy.getSuffix(ord).getMZ(charge, Residue::XIon); break;
+            case FragmentType::Y: mz = decoy.getSuffix(ord).getMZ(charge, Residue::YIon); break;
+            case FragmentType::Z: mz = decoy.getSuffix(ord).getMZ(charge, Residue::ZIon); break;
+            default:
+              // Precursor and unrecognised types cannot be recomputed. Copying
+              // the target's value would give the decoy a transition identical
+              // to its target's, so drop it instead.
+              continue;
           }
-          catch (const std::exception&) { continue; }
         }
+        catch (const std::exception&) { continue; }
+
         t.product_mz.push_back(toFixed(mz));
         t.library_intensity.push_back(t.library_intensity[s]);
         t.type.push_back(t.type[s]);
