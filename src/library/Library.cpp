@@ -111,6 +111,18 @@ namespace ODIA
     return std::string_view(entries_[handle].data, entries_[handle].length);
   }
 
+  std::size_t StringArena::footprintBytes() const
+  {
+    std::size_t blocks = 0;
+    for (const auto& b : blocks_) { blocks += b.capacity(); }
+    // One hash node per distinct string, plus the bucket array. Approximated as
+    // the node payload (key view + value + a next pointer) and one pointer per
+    // bucket; exact enough to stop the figure being wrong by a factor.
+    const std::size_t node = sizeof(std::string_view) + sizeof(std::uint32_t) + sizeof(void*);
+    const std::size_t map = lookup_.size() * node + lookup_.bucket_count() * sizeof(void*);
+    return blocks + entries_.capacity() * sizeof(Entry) + map;
+  }
+
   // ------------------------------------------------------------------ Library
 
   std::size_t Library::decoyCount() const
@@ -231,7 +243,7 @@ namespace ODIA
          + vec(p.transition_begin) + vec(p.transition_count)
          + vec(t.product_mz) + vec(t.library_intensity) + vec(t.type)
          + vec(t.ordinal) + vec(t.charge) + vec(t.loss)
-         + strings_.bytes() + strings_.size() * sizeof(void*) * 2;
+         + strings_.footprintBytes();
   }
 
 } // namespace ODIA

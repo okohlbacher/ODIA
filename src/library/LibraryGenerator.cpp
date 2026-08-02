@@ -10,6 +10,7 @@
 #include <OpenMS/FORMAT/FASTAFile.h>
 
 #include <algorithm>
+#include <string_view>
 #include <cmath>
 #include <map>
 #include <stdexcept>
@@ -27,6 +28,23 @@ namespace ODIA
     /// reference engine would produce.
     constexpr std::string_view MUTATE_FROM = "GAVLIFMPWSCTYHKRQEND";
     constexpr std::string_view MUTATE_TO   = "LLLVVLLLLTSSSSLLNDQE";
+    static_assert(MUTATE_FROM.size() == MUTATE_TO.size(),
+                  "the substitution tables must correspond position by position");
+
+    /// True if @p list, a ';'-delimited set, already holds @p accession.
+    bool containsAccession(std::string_view list, std::string_view accession)
+    {
+      std::size_t pos = 0;
+      while (pos <= list.size())
+      {
+        const std::size_t sep = list.find(';', pos);
+        const std::size_t end = sep == std::string_view::npos ? list.size() : sep;
+        if (list.substr(pos, end - pos) == accession) { return true; }
+        if (sep == std::string_view::npos) { break; }
+        pos = sep + 1;
+      }
+      return false;
+    }
 
     char mutateResidue(char aa)
     {
@@ -119,8 +137,11 @@ namespace ODIA
       for (const auto& pep : peptides)
       {
         auto& proteins = peptide_to_proteins[pep.toUnmodifiedString()];
+        // Compare on ';' boundaries, not by substring: a plain find() drops P1
+        // when P12 is already present, which is routine with isoform accessions
+        // (P12345 / P12345-2) and with the sp|X|Y form we emit.
         if (proteins.empty()) { proteins = entry.identifier; }
-        else if (proteins.find(entry.identifier) == std::string::npos)
+        else if (!containsAccession(proteins, entry.identifier))
         {
           proteins += ';';
           proteins += entry.identifier;

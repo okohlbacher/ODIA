@@ -86,6 +86,12 @@ namespace ODIA
     std::size_t size() const { return entries_.size(); }
     std::size_t bytes() const { return bytes_; }
 
+    /// Everything the arena holds, including the interning map and unused block
+    /// capacity -- not just the characters. Reporting only bytes() understated
+    /// the arena by 2.6x, which matters because D3's whole point is that the
+    /// memory claim is measured rather than asserted.
+    std::size_t footprintBytes() const;
+
     void reserve(std::size_t entries, std::size_t chars);
 
   private:
@@ -159,7 +165,10 @@ namespace ODIA
     const TransitionArrays& transitions() const { return transitions_; }
     const StringArena& strings() const { return strings_; }
 
-    PrecursorArrays& precursors() { return precursors_; }
+    // Handing out a mutable reference can invalidate the m/z ordering, and the
+    // caller has no way to tell us. Assume the worst rather than let lowerBound
+    // quietly return 0 on an unsorted array.
+    PrecursorArrays& precursors() { sorted_by_mz_ = false; return precursors_; }
     TransitionArrays& transitions() { return transitions_; }
     StringArena& strings() { return strings_; }
 

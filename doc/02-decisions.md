@@ -69,9 +69,21 @@ Two properties follow, and both matter beyond memory:
   indices, never materialise a per-row `std::string`. This is the concrete
   reason the Parquet path is faster than TSV, rather than a vague claim.
 
-**This is a hypothesis and Phase 1 must measure it.** The same hand-off records
-that `reserve()` on the reader's vectors was predicted to save several GB and
-measured exactly zero *(OSW §2.4)*.
+**Measured, human proteome** (20,416 proteins; 3,987,909 precursors, 47,347,795
+transitions): **860 MiB of arrays, 19.1 bytes per transition**, 1.23 GB peak RSS,
+27 s.
+
+Projected to the predecessor's library (78.6 M transitions) that is ~1.5 GB,
+against **32.65 GB RSS / 7.26 GB live** there — roughly 22x on resident memory
+and 4.8x on live data. The gap between those two ratios is the arena
+fragmentation the allocation count caused, which is the part interning removes.
+
+The figure was first reported as 16.5 bytes/transition. That was wrong:
+`footprintBytes()` counted the character arena but not `StringArena::lookup_`,
+one hash node per distinct string, nor unused block capacity — an understatement
+of about 2.6x on a string-heavy library. Adversarial review caught it. The point
+of D3 is that the memory claim is *measured*, so the measurement has to include
+what is actually held.
 
 ## D4 — Use GPUs for ONNX inference when present, fall back to CPU
 
