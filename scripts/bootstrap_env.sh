@@ -71,8 +71,28 @@ echo "==> creating environment at ${ENV_PREFIX}"
   "libboost-headers=${BOOST_VERSION}.*" \
   xerces-c libsvm eigen hdf5 libcurl libxml2 libxml2-devel \
   coin-or-cbc coin-or-clp coin-or-cgl coin-or-osi coin-or-utils \
-  qt6-main \
+  qt6-main "pyarrow=${ARROW_VERSION}.*" \
   zlib bzip2 zstd xz sqlite openssl
+
+# Pin the versions the built artefacts are linked against.
+#
+# conda/micromamba refuse to change a spec listed in conda-meta/pinned. Without
+# this, an unrelated `micromamba install` silently resolves Arrow and Boost
+# forward -- installing pyarrow once moved Arrow 23 -> 25 and Boost 1.89 -> 1.91,
+# after which libmzpeak.so and the ODIA tools could no longer resolve
+# libarrow.so.2300 and libboost_json.so.1.89.0 and simply stopped running.
+echo "==> pinning versions"
+cat > "${ENV_PREFIX}/conda-meta/pinned" <<PINNED
+libarrow ${ARROW_VERSION}.0.*
+libparquet ${ARROW_VERSION}.0.*
+libarrow-dataset ${ARROW_VERSION}.0.*
+libarrow-acero ${ARROW_VERSION}.0.*
+libboost ${BOOST_VERSION}.*
+libboost-devel ${BOOST_VERSION}.*
+libboost-headers ${BOOST_VERSION}.*
+gcc_linux-64 ${GCC_VERSION}.*
+gxx_linux-64 ${GCC_VERSION}.*
+PINNED
 
 echo "==> environment created"
 

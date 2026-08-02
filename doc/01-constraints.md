@@ -148,6 +148,45 @@ Both are carried locally; both should go upstream.
 - conda-forge splits libxml2 headers into `libxml2-devel`; without it OpenMS
   fails at `find_package(LibXml2)`.
 
+## 5a. Enabling ONNX in OpenMS: two build traps
+
+`WITH_ONNX=ON` gives OpenMS's PeptDeep bindings *and* makes the build download
+the three PeptDeep ONNX models from `archive.openms.de` against pinned SHA256s.
+ODIA therefore vendors no model weights. Getting it to configure took two
+workarounds, both in `build_openms.sh`:
+
+1. **Upstream bug: the Find module is not on the module path.**
+   `cmake/FindONNXRuntime.cmake` lives in `cmake/`, but OpenMS only appends
+   `cmake/Modules` and `cmake/Windows` to `CMAKE_MODULE_PATH`. So
+   `find_package(ONNXRuntime REQUIRED)` never sees it, falls through to config
+   mode, and fails looking for `ONNXRuntimeConfig.cmake` — which conda-forge does
+   not provide under that name. Passing `-DCMAKE_MODULE_PATH=<src>/cmake` fixes
+   it, because OpenMS's own `list(APPEND ...)` preserves a command-line value.
+   **`WITH_ONNX=ON` cannot configure as shipped; worth reporting upstream.**
+
+2. **The build rediscovers its own previous install.** `find_package` searches
+   `CMAKE_INSTALL_PREFIX` implicitly, so configuring picks up the opentims
+   package exported by the last OpenMS install, whose exported target references
+   a `zstd::libzstd_shared` target that does not exist in that scope. Restricting
+   `CMAKE_PREFIX_PATH` is not sufficient; `-DCMAKE_FIND_USE_INSTALL_PREFIX=OFF`
+   is. Non-destructive — the previous install stays usable if the build fails.
+
+## 5b. The environment is pinned, and must stay that way
+
+The conda prefix is not just a build environment; the built artefacts link
+against its exact sonames. Installing `pyarrow` into it once resolved Arrow
+23 → 25 and Boost 1.89 → 1.91, after which `libmzpeak.so` and the ODIA tools
+could no longer find `libarrow.so.2300`, `libparquet.so.2300` and
+`libboost_json.so.1.89.0`, and stopped running. Two rules follow:
+
+- `bootstrap_env.sh` writes `conda-meta/pinned`. conda and micromamba refuse to
+  move a pinned spec, so an incidental install can no longer drag the ABI
+  forward. Verified: `pyarrow` now resolves to 23.0.1 rather than forcing 25.
+- **Never mutate the environment while a build against it is running.** The same
+  transaction unlinked Boost mid-compile and produced a burst of
+  `boost/assert.hpp: No such file or directory` errors that look like a missing
+  dependency rather than a moving one.
+
 ## 6. Benchmarking discipline
 
 `data/` is on ceph, a shared network filesystem — reading from it measures the
