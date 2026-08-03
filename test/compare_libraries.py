@@ -36,6 +36,7 @@ import math
 import os
 import random
 import sys
+import zlib
 
 # Column synonyms. DIA-NN reads many dialects and writes one of them; ODIA
 # writes another. Neither is canonical, so both are resolved by synonym.
@@ -119,7 +120,20 @@ def rows_of(path):
     return header, reader
 
 
-def load(path, want=None):
+def in_sample(key, fraction):
+    """Deterministic, content-based subsampling applied identically to both.
+
+    Taking every Nth row would sample differently on two files with different
+    row orders. Hashing the key means the same precursors are drawn from both,
+    which is the only way a subsample can be compared at all.
+    """
+    if fraction >= 1.0:
+        return True
+    h = zlib.crc32(f"{key[0]}/{key[1]}".encode()) & 0xFFFFFFFF
+    return h < fraction * 0x100000000
+
+
+def load(path, want=None, fraction=1.0):
     """{(sequence, charge): {rt, im, mz, protein, frags {(t,n,z): intensity}}}."""
     precursors = {}
     header, reader = rows_of(path)
@@ -133,6 +147,8 @@ def load(path, want=None):
                 continue
             key = (strip_mods(row[at["sequence"]]), int(float(row[at["charge"]])))
             if want is not None and key not in want:
+                continue
+            if not in_sample(key, fraction):
                 continue
             entry = precursors.get(key)
             if entry is None:
@@ -211,14 +227,17 @@ def main():
     ap.add_argument("diann")
     ap.add_argument("--sample", type=int, default=0,
                     help="compare only this many shared precursors (0 = all)")
+    ap.add_argument("--fraction", type=float, default=1.0,
+                    help="load only this fraction of precursors, chosen by a hash "
+                         "of the key so both files yield the same ones")
     ap.add_argument("--json", default="")
     args = ap.parse_args()
 
     sys.stderr.write("loading ODIA library...\n")
-    odia = load(args.odia)
+    odia = load(args.odia, fraction=args.fraction)
     sys.stderr.write(f"  {len(odia)} target precursors\n")
     sys.stderr.write("loading DIA-NN library...\n")
-    diann = load(args.diann)
+    diann = load(args.diann, fraction=args.fraction)
     sys.stderr.write(f"  {len(diann)} target precursors\n")
 
     shared = sorted(set(odia) & set(diann))
