@@ -384,12 +384,15 @@ Two things the integration fixed over the prototype:
 Still open, and both are in `doc/06-rt-refinement-plan.md`:
 
 - **Method choices settled by measurement**, not preference:
-  - *Direct target beats residual learning.* Calibrating first (linear, then
-    isotonic) and fine-tuning only the remainder gives 0.635 min against direct
-    fine-tuning's 0.429 at n=500 / 500 epochs -- barely better than the
-    calibration it sits on. Retargeting pretrained weights at a small centred
-    residual fights the initialisation. One implementation tested; freezing the
-    trunk might do better, and was not tried.
+  - *Direct target beats residual learning ON S08, which is one file.* Both
+    mechanisms are implemented and selectable (`--method direct|residual`)
+    precisely because a single benchmark should not decide it. Measured here:
+    direct 0.429 against residual 0.635 at n=500 / 500 epochs, and 0.415 against
+    0.591 at n=600 / 60 epochs. Residual IS a real improvement over the stock
+    model (42%), just a smaller one than direct (59%). The likely reason is that
+    retargeting pretrained weights at a small centred residual fights the
+    initialisation; freezing the trunk was not tried and might reverse it.
+    `--evaluate` makes every run report which method won on its own data.
   - *Data beats optimisation steps.* 500 peptides at 500 epochs reaches 0.429;
     10,000 peptides at 40 epochs reaches 0.359. Twelve times the gradient steps
     does not close what more peptides close easily.

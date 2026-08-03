@@ -18,6 +18,20 @@ carrying a UniMod id, rather than a hand-written dictionary. The prototype this
 replaces knew five modifications and raised on the sixth; that is a fine failure
 mode and a poor limit.
 
+**Two mechanisms, both kept.** `--method direct` retrains the model to predict
+normalised retention time. `--method residual` fits a calibration first --
+linear, then isotonic on top of it -- and retrains only on what the calibration
+could not explain, adding the two back at prediction time.
+
+On S08 direct won by a wide margin: held-out sd 0.429 against 0.635 at 500
+peptides and 500 epochs, with residual barely beating the calibration it sits
+on. **That is one file, and one file is not a result.** The likely reason is
+that retargeting pretrained weights at a small centred residual fights the
+initialisation rather than exploiting it -- but a different gradient, instrument
+or organism could reverse it, and freezing the trunk (untested) could too. Both
+mechanisms are therefore selectable, and `--evaluate` makes every run report
+which one won on ITS data rather than inheriting a verdict from ours.
+
 **The retention times must come from a search of the run being tuned for.** That
 is the point -- the model learns this chromatography -- and it is also the
 hazard: if those identifications came from searching with the library this model
@@ -129,6 +143,15 @@ def main():
                          "for the rest. Default 2000.")
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--q-value", type=float, default=0.01)
+    ap.add_argument("--method", choices=("direct", "residual"), default="direct",
+                    help="direct retrains on normalised RT; residual calibrates "
+                         "first and retrains on the remainder. direct won on S08 "
+                         "by 0.429 against 0.635, on one file. Use --evaluate.")
+    ap.add_argument("--evaluate", action="store_true",
+                    help="hold out a fifth of the peptides, and report held-out "
+                         "residual for the stock model and for this method. Costs "
+                         "a fifth of the training data and answers the only "
+                         "question that matters on a new file: did this help?")
     args = ap.parse_args()
 
     import numpy as np
@@ -150,23 +173,94 @@ def main():
 
     df = pd.DataFrame(rows, columns=["sequence", "mods", "mod_sites", "rt"])
     df["nAA"] = df["sequence"].str.len()
-    lo, hi = float(df["rt"].min()), float(df["rt"].max())
+
+    # Held out BY SEQUENCE, so a peptide's charge states cannot straddle the
+    # split. Deterministic, so re-running reports the same number.
+    import zlib
+    held = np.array([(zlib.crc32(s.encode()) & 0xFFFFFFFF) % 5 == 0
+                     for s in df["sequence"]]) if args.evaluate else np.zeros(len(df), bool)
+    train_df = df[~held].reset_index(drop=True)
+    test_df = df[held].reset_index(drop=True)
+    if args.evaluate and len(test_df) < 50:
+        raise SystemExit("too few peptides to hold any out; drop --evaluate")
+
+    lo, hi = float(train_df["rt"].min()), float(train_df["rt"].max())
     if not hi > lo:
         raise SystemExit("every identification has the same retention time")
-    # The model's target. Recorded in the sidecar because it is the scale the
-    # exported model predicts on, and nothing downstream can recover it.
-    df["rt_norm"] = (df["rt"] - lo) / (hi - lo)
 
     mgr = ModelManager(mask_modloss=False)
     mgr.load_installed_models()
     if args.base_model:
         mgr.rt_model.load(args.base_model)
     mgr.epoch_to_train_rt_ccs = args.epochs
-    mgr.train_rt_model(df)
+
+    stock_pred = mgr.rt_model.predict(df.copy())["rt_pred"].values
+    calibration = None
+
+    if args.method == "direct":
+        # Absolute normalised retention time; the exported model predicts it
+        # directly and ODIA consumes it with -rt_model.
+        train_df = train_df.assign(rt_norm=(train_df["rt"] - lo) / (hi - lo))
+    else:
+        # Calibrate first -- linear, then isotonic -- and learn the remainder.
+        from sklearn.isotonic import IsotonicRegression
+        sp = stock_pred[~held]
+        A = np.vstack([sp, np.ones_like(sp)]).T
+        m0, c0 = np.linalg.lstsq(A, train_df["rt"].values, rcond=None)[0]
+        iso = IsotonicRegression(increasing=True, out_of_bounds="clip").fit(
+            m0 * sp + c0, train_df["rt"].values)
+        cal_tr = iso.predict(m0 * sp + c0)
+        resid = train_df["rt"].values - cal_tr
+        rlo, rhi = float(resid.min()), float(resid.max())
+        train_df = train_df.assign(rt_norm=(resid - rlo) / (rhi - rlo))
+        calibration = dict(slope=float(m0), intercept=float(c0),
+                           knots_x=[float(x) for x in iso.X_thresholds_],
+                           knots_y=[float(y) for y in iso.y_thresholds_],
+                           residual_min=rlo, residual_max=rhi)
+
+    mgr.train_rt_model(train_df)
 
     os.makedirs(args.output, exist_ok=True)
     pth = os.path.join(args.output, "rt.pth")
     mgr.rt_model.save(pth)
+
+    evaluation = None
+    if args.evaluate:
+        tuned = mgr.rt_model.predict(df.copy())["rt_pred"].values
+
+        def sd(pred, truth, tr_mask, te_mask):
+            p, t = pred[tr_mask], truth[tr_mask]
+            A = np.vstack([p, np.ones_like(p)]).T
+            m, c = np.linalg.lstsq(A, t, rcond=None)[0]
+            return float(np.std(truth[te_mask] - (m * pred[te_mask] + c)))
+
+        truth = df["rt"].values
+        if args.method == "residual":
+            # A residual model predicts a CORRECTION. Scoring its raw output as
+            # though it were a retention time reports a catastrophe that is an
+            # artefact of the scoring, and would condemn the method on every
+            # dataset. The prediction is calibration(stock) + correction.
+            cal_all = iso.predict(m0 * stock_pred + c0)
+            combined = cal_all + (tuned * (rhi - rlo) + rlo)
+            tuned_sd = float(np.std(truth[held] - combined[held]))
+        else:
+            tuned_sd = sd(tuned, truth, ~held, held)
+
+        evaluation = {
+            "held_out_peptides": int(held.sum()),
+            "stock_sd_minutes": round(sd(stock_pred, truth, ~held, held), 4),
+            "tuned_sd_minutes": round(tuned_sd, 4),
+            "method": args.method,
+        }
+        evaluation["improvement"] = round(
+            1.0 - evaluation["tuned_sd_minutes"] / evaluation["stock_sd_minutes"], 4)
+        # Said plainly, because the alternative is a user inheriting our verdict
+        # from a different instrument.
+        if evaluation["tuned_sd_minutes"] >= evaluation["stock_sd_minutes"]:
+            print(f"WARNING: --method {args.method} did NOT improve on this data "
+                  f"({evaluation['tuned_sd_minutes']:.3f} against "
+                  f"{evaluation['stock_sd_minutes']:.3f} min held out). Try the "
+                  f"other method before using this model.", file=sys.stderr)
 
     digest = hashlib.sha256(open(pth, "rb").read()).hexdigest()
     sidecar = {
@@ -178,7 +272,13 @@ def main():
         "q_value": args.q_value,
         "rt_norm_min_minutes": lo,
         "rt_norm_max_minutes": hi,
+        "method": args.method,
         "seconds": round(time.time() - t0, 1),
+        "evaluation": evaluation,
+        # Residual mode's model predicts a CORRECTION, not a retention time, so
+        # it is not consumable with -rt_model alone; the calibration below has
+        # to be applied and added back. ODIA cannot do that yet.
+        "calibration": calibration,
         # The caller must decide whether this closes a loop; see the module
         # docstring. Recorded, not judged.
         "warning": "This model is specific to the run it was tuned on and must "
@@ -186,6 +286,11 @@ def main():
     }
     with open(os.path.join(args.output, "rt_provenance.json"), "w") as f:
         json.dump(sidecar, f, indent=2)
+    if args.method == "residual":
+        print("NOTE: a residual model predicts a correction, not a retention "
+              "time. ODIA cannot consume it with -rt_model -- the calibration in "
+              "the sidecar must be applied and added back first. Use it to "
+              "compare methods, not yet to build a library.", file=sys.stderr)
     print(json.dumps(sidecar, indent=2))
     return 0
 
