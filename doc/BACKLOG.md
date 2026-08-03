@@ -15,8 +15,15 @@ external fix are marked **[you]**; the rest are mine to work through.
   prompted to refute instead, which is a weaker substitute: same model family,
   so correlated blind spots. Install the CLIs and provide keys and I will switch.
 
-- **[you] mzPeak decode is still the Phase 2 blocker, now with a precise
-  diagnosis.** At `f93f938` the batch API exists but does not amortise:
+- **[decided 2026-08-03, user] Phase 2 proceeds on the slow mzPeak reader.**
+  The decode fix is being worked on elsewhere; ODIA does not wait for it. The
+  extractor is written against `SpectrumSource` (D10), so when the batched
+  decoder lands it is a substitution, not a rewrite.
+  **Do not let this be forgotten:** every extraction timing measured before the
+  replacement lands is a measurement of the reader, not of ODIA, and must be
+  re-taken afterwards. `doc/05-mzpeak-batched-reader-handoff.md` is the spec.
+
+- **[for the reader author, not us] mzPeak decode diagnosis.** At `f93f938` the batch API exists but does not amortise:
   284.4 ms/spectrum via `get_spectra_batch`, against 0.082 ms/spectrum if each
   Parquet row group were decoded once and its 873 spectra served from it.
   Measured, not estimated -- a row group decodes in 0.07 s with pyarrow, and a
@@ -29,7 +36,11 @@ external fix are marked **[you]**; the rest are mine to work through.
   `03-mzpeak-streaming-requirements.md` (R1, R2, R5 are the blocking set).
   Phase 2 cannot start until this moves.
 
-- **[you] `library_intensity` `float64` vs `float32` in `.oswpq`.** The
+- **[decided 2026-08-03, user] `.oswpq` writing is not needed.** Dropped from
+  scope. Reading stays, and accepts either intensity width. The note below is
+  kept only because the reader's behaviour depends on it.
+
+- **[was: you] `library_intensity` `float64` vs `float32` in `.oswpq`.** The
   predecessor's `float32` change is a breaking on-disk change that was never
   upstreamed, and we cannot apply it without modifying OpenMS. Proposal on the
   table: read both, write upstream-compatible `float64` by default with
@@ -217,6 +228,27 @@ ones re-tested after repair are now caught.*
 
 ---
 
+## Decisions taken 2026-08-03 (user)
+
+- **Development proceeds against a DIA-NN library**, not ours, so that Phase 2
+  work is not confounded by library differences. Ours stays the deliverable;
+  it is simply not the variable under test while the extractor is built.
+
+- **Decoy construction is deferred, not solved.** Ours cost 14,082 precursors
+  (45%) when DIA-NN searched with them instead of building its own. They keep
+  the target's m/z, iRT and intensity pattern with only fragment masses moved,
+  which is DIA-NN's published design, so the fault is more likely in how the
+  intensity pattern is copied than in the mutation scheme. Until this is
+  understood a library written for another engine should probably carry no
+  decoys at all. **This is an FDR question, and it blocks Phase 3, not Phase 2.**
+
+- **NCE and instrument stay guesses for now** (30.0 and "QE"). Nothing derives
+  them from the data and they materially change every predicted spectrum, so a
+  library generated for one instrument is not right for another. Revisit when
+  the extractor can measure the mismatch rather than assume it.
+
+---
+
 ## Phase 1 measured against DIA-NN on S08 (2026-08-03)
 
 Both libraries predicted from the same FASTA with the same digest settings;
@@ -257,6 +289,20 @@ Still open from this:
 - **CCS agrees with DIA-NN's ion mobility to 1.43% median** over 1,873,932
   precursors, with no charge or length dependence and a split-half held-out
   median of -0.004%. Both predictors are sound; see `test/compare_ccs_to_diann.py`.
+
+---
+
+## Retention time — the largest remaining scoring gap
+
+DIA-NN set an RT window of 2.29 min for our library against 1.44 for its own,
+so our iRT is about 1.6x less predictive after its calibration, despite a rank
+correlation of 0.992 with DIA-NN's own predictions over 200,000 precursors.
+Identifications per library precursor are otherwise identical, so this is a
+scoring-dimension weakness rather than coverage.
+
+A research task is running on how to improve it -- model choice, run-specific
+calibration, transfer learning, and whether the raw normalised output loses
+local accuracy. Findings land here.
 
 ---
 
