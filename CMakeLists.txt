@@ -27,6 +27,16 @@ find_package(MzPeak REQUIRED)
 # the per-spectrum metadata (retention time, isolation windows) means going
 # through mzpeak's low-level interface, which hands back Arrow objects.
 # Version 23 is the floor OpenMS 3.6 and mzpeak both impose.
+# ONNX Runtime drives the PeptDeep models. OpenMS's own binding cannot be used:
+# it rejects modified peptides and its headers are never installed.
+find_path(ONNXRuntime_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
+          PATH_SUFFIXES include onnxruntime/core/session)
+find_library(ONNXRuntime_LIBRARY NAMES onnxruntime PATH_SUFFIXES lib)
+if(NOT ONNXRuntime_INCLUDE_DIR OR NOT ONNXRuntime_LIBRARY)
+  message(FATAL_ERROR "ONNX Runtime not found; scripts/bootstrap_env.sh provides it")
+endif()
+message(STATUS "ONNX Runtime: ${ONNXRuntime_LIBRARY}")
+
 find_package(Arrow CONFIG REQUIRED)
 find_package(Parquet CONFIG REQUIRED)
 if(Arrow_VERSION VERSION_LESS 23)
@@ -56,13 +66,16 @@ set(ODIA_LIB_SOURCES
   src/library/DIANNLibraryFile.cpp
   src/library/LibraryGenerator.cpp
   src/predict/PeptDeepEncoder.cpp
+  src/predict/PeptDeepPredictor.cpp
 )
 
 if(ODIA_LIB_SOURCES)
   add_library(odia_core STATIC ${ODIA_LIB_SOURCES})
   target_include_directories(odia_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak
-                                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
+                                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET}
+                                         ${ONNXRuntime_LIBRARY})
+  target_include_directories(odia_core PUBLIC ${ONNXRuntime_INCLUDE_DIR})
   set_target_properties(odia_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
@@ -89,7 +102,7 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 
 # Built only for the test suite: it dumps ODIA's encoding so it can be compared
 # against the independent Python reference.
-foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols)
+foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})

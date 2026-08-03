@@ -137,12 +137,26 @@ verified against a residue table independent of OpenMS and pinned by a
 self-test of literal values. Mutation testing: 21 injected defects, all of the
 ones re-tested after repair are now caught.*
 
-- ONNX prediction: iRT, MS2 intensities, CCS — with CUDA attempted and CPU
-  fallback. The **encoder is done and validated**: `PeptDeepEncoder` agrees
+- **iRT prediction is done and validated**: `PeptDeepPredictor` runs the RT model
+  with CUDA attempted and CPU fallback, and its predictions match the
+  independent Python reference to 1e-5 on mixed-length batches including
+  residue, N-terminal and C-terminal modifications. Still to write: MS2 and CCS,
+  which add `charges` (×0.1), `nce` (×0.01) and a rank-1 `instrument_indices`,
+  and the wiring that replaces the placeholder intensities and iRT in
+  `LibraryGenerator`.
+- Earlier note, retained: the **encoder is validated**: `PeptDeepEncoder` agrees
   exactly with the independent Python reference on residue, N-terminal and
   C-terminal modifications, multiple modifications, signed counts and
-  `aa_indices`. Still to write: the inference session with provider selection,
-  and the MS2/CCS inputs (charge ×0.1, NCE ×0.01, rank-1 `instrument_indices`). The reference encoder and RT
+  `aa_indices`.
+- **The CUDA path is still untested** — `spock`/`data` remain unreachable, so
+  only the CPU branch has ever run. `Ort::GetAvailableProviders()` is queried
+  before attempting, so a CPU-only build no longer logs a scary provider-load
+  error, but that also means the CUDA branch is skipped rather than exercised
+  here.
+- **A doubly-modified residue is under-encoded.** OpenMS's `AASequence` keeps
+  only the last modification on a residue, so it is lost before the encoder sees
+  it; AlphaPeptDeep would accumulate. Decide whether to detect and refuse, or to
+  carry modifications outside `AASequence`. The reference encoder and RT
   predictor (`test/peptdeep_reference.py`) are in place as the validation oracle,
   written from the spec rather than from the C++; the element list is generated
   from the authoritative yaml into `data/peptdeep_mod_elements.txt` and

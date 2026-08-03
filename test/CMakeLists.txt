@@ -242,3 +242,16 @@ set_tests_properties(peptdeep_rejects_massshift_modification PROPERTIES
 add_test(NAME peptdeep_modification_symbols COMMAND odia_mod_symbols)
 set_tests_properties(peptdeep_modification_symbols PROPERTIES
   PASS_REGULAR_EXPRESSION "unmapped symbols: \\(35\\)Cl \\(37\\)Cl \\(79\\)Br \\(81\\)Br")
+
+# Predictions, not just tensors. Encoded values can match while dtype, layout or
+# ordering assumptions differ, and the sequence list mixes lengths so a broken
+# grouping or a lost reordering shows up as wrong values rather than an error.
+set(ODIA_RT_MODEL_PATH
+    "/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/opt/openms-3.6.0/share/OpenMS/models/peptdeep_rt_dynamic.onnx"
+    CACHE FILEPATH "PeptDeep RT model")
+if(EXISTS "${ODIA_RT_MODEL_PATH}" AND ODIA_PYTHON)
+  add_test(NAME peptdeep_predictions_match_reference
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/compare_predictions.py
+                   $<TARGET_FILE:odia_predict_rt> "${ODIA_RT_MODEL_PATH}")
+endif()
