@@ -11,6 +11,23 @@ namespace ODIA
 
   namespace
   {
+    /// Resolve a dictionary-encoded cell to its underlying array and index.
+    ///
+    /// Dictionary encoding is what any Arrow-native writer reaches for on a
+    /// column like `type` or `annotation`, where a handful of values repeat
+    /// across millions of rows -- exactly the columns this format has. It also
+    /// arrives as one chunk per Parquet row group rather than one chunk for
+    /// the file, which makes it the only way to reach the multi-chunk path at
+    /// test scale.
+    const arrow::Array* undictionary(const arrow::Array* a, std::int64_t& i)
+    {
+      if (a->type_id() != arrow::Type::DICTIONARY) { return a; }
+      const auto* d = static_cast<const arrow::DictionaryArray*>(a);
+      const auto index = d->GetValueIndex(i);
+      i = index;
+      return d->dictionary().get();
+    }
+
     [[noreturn]] void badType(const std::string& name, const arrow::Array& a,
                               const char* wanted)
     {
@@ -86,6 +103,7 @@ namespace ODIA
     std::int64_t i = 0;
     const arrow::Array* a = resolve(row, i);
     if (a->IsNull(i)) { return if_null; }
+    a = undictionary(a, i);
     switch (a->type_id())
     {
       case arrow::Type::DOUBLE: return static_cast<const arrow::DoubleArray*>(a)->Value(i);
@@ -109,6 +127,7 @@ namespace ODIA
     std::int64_t i = 0;
     const arrow::Array* a = resolve(row, i);
     if (a->IsNull(i)) { return if_null; }
+    a = undictionary(a, i);
     switch (a->type_id())
     {
       case arrow::Type::INT64:  return static_cast<const arrow::Int64Array*>(a)->Value(i);
@@ -130,13 +149,27 @@ namespace ODIA
     std::int64_t i = 0;
     const arrow::Array* a = resolve(row, i);
     if (a->IsNull(i)) { return if_null; }
+    a = undictionary(a, i);
     if (a->type_id() == arrow::Type::BOOL)
     {
       return static_cast<const arrow::BooleanArray*>(a)->Value(i);
     }
     // Writers disagree about the decoy flag's type: DIA-NN spells it as an
-    // integer, OpenSWATH as a bool. Anything non-zero is a decoy.
-    return getInt64(row, if_null ? 1 : 0) != 0;
+    // integer, OpenSWATH as a bool. Anything non-zero is a decoy. Read from the
+    // already-resolved array rather than calling getInt64, which would resolve
+    // the row again and undo the dictionary hop above.
+    switch (a->type_id())
+    {
+      case arrow::Type::INT64:  return static_cast<const arrow::Int64Array*>(a)->Value(i) != 0;
+      case arrow::Type::INT32:  return static_cast<const arrow::Int32Array*>(a)->Value(i) != 0;
+      case arrow::Type::INT16:  return static_cast<const arrow::Int16Array*>(a)->Value(i) != 0;
+      case arrow::Type::INT8:   return static_cast<const arrow::Int8Array*>(a)->Value(i) != 0;
+      case arrow::Type::UINT64: return static_cast<const arrow::UInt64Array*>(a)->Value(i) != 0;
+      case arrow::Type::UINT32: return static_cast<const arrow::UInt32Array*>(a)->Value(i) != 0;
+      case arrow::Type::UINT16: return static_cast<const arrow::UInt16Array*>(a)->Value(i) != 0;
+      case arrow::Type::UINT8:  return static_cast<const arrow::UInt8Array*>(a)->Value(i) != 0;
+      default: badType(name_, *a, "boolean or integral");
+    }
   }
 
   std::string_view ChunkedColumn::getString(std::int64_t row, std::string_view if_null) const
@@ -145,14 +178,19 @@ namespace ODIA
     std::int64_t i = 0;
     const arrow::Array* a = resolve(row, i);
     if (a->IsNull(i)) { return if_null; }
+    a = undictionary(a, i);
     switch (a->type_id())
     {
       case arrow::Type::STRING:
         return static_cast<const arrow::StringArray*>(a)->GetView(i);
       case arrow::Type::LARGE_STRING:
         return static_cast<const arrow::LargeStringArray*>(a)->GetView(i);
+      case arrow::Type::STRING_VIEW:
+        return static_cast<const arrow::StringViewArray*>(a)->GetView(i);
       case arrow::Type::BINARY:
         return static_cast<const arrow::BinaryArray*>(a)->GetView(i);
+      case arrow::Type::LARGE_BINARY:
+        return static_cast<const arrow::LargeBinaryArray*>(a)->GetView(i);
       default: badType(name_, *a, "a string");
     }
   }

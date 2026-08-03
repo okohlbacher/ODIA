@@ -61,6 +61,12 @@ namespace ODIA
       std::size_t unusable_transition_charges = 0;
       std::size_t unusable_ordinals = 0;
 
+      /// Annotations naming a neutral loss this reader does not recognise.
+      /// LossType::Other carries no mass, so such a fragment silently becomes
+      /// one at the parent mass; without a count, a library written in a
+      /// foreign annotation dialect loads with a clean stats block.
+      std::size_t unrecognised_losses = 0;
+
       /// Whether library/metadata.json carried a census, and whether the rows
       /// actually read agree with it. A mismatch is the cheapest possible
       /// detector for a truncated read: it costs one comparison and it fires

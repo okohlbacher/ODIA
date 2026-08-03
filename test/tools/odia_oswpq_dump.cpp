@@ -41,6 +41,7 @@ int main(int argc, char** argv)
   std::printf("duplicate_precursor_ids\t%zu\n", stats.duplicate_precursor_ids);
   std::printf("decoy_mismatches\t%zu\n", stats.decoy_mismatches);
   std::printf("unusable_ordinals\t%zu\n", stats.unusable_ordinals);
+  std::printf("unrecognised_losses\t%zu\n", stats.unrecognised_losses);
   std::printf("unusable_transition_charges\t%zu\n", stats.unusable_transition_charges);
   std::printf("unusable_precursor_charges\t%zu\n", stats.unusable_precursor_charges);
   std::printf("census_present\t%d\n", stats.census_present ? 1 : 0);
@@ -62,13 +63,20 @@ int main(int argc, char** argv)
   {
     const auto seq = arena.get(p.modified_sequence[i]);
     const auto prot = arena.get(p.protein_group[i]);
-    std::printf("P\t%.*s\t%.*s\t%.5f\t%u\t%u\t%.6g\t%.6g\t%u\n",
+    // NaN is printed as NaN rather than mapped to a number. Printing an absent
+    // retention time as 0.0 made it indistinguishable from a real 0.0, so a
+    // null read as zero -- which puts that precursor at the start of the RT
+    // axis -- could not be detected by any test.
+    char irt[32], im[32];
+    if (std::isnan(p.irt[i])) { std::snprintf(irt, sizeof(irt), "NaN"); }
+    else { std::snprintf(irt, sizeof(irt), "%.6g", double(p.irt[i])); }
+    if (std::isnan(p.im[i])) { std::snprintf(im, sizeof(im), "NaN"); }
+    else { std::snprintf(im, sizeof(im), "%.6g", double(p.im[i])); }
+    std::printf("P\t%.*s\t%.*s\t%.5f\t%u\t%u\t%s\t%s\t%u\n",
                 static_cast<int>(seq.size()), seq.data(),
                 static_cast<int>(prot.size()), prot.data(),
                 ODIA::fromFixed(p.mz[i]), unsigned(p.charge[i]), unsigned(p.decoy[i]),
-                std::isnan(p.irt[i]) ? 0.0 : double(p.irt[i]),
-                std::isnan(p.im[i]) ? -999.0 : double(p.im[i]),
-                p.transition_count[i]);
+                irt, im, p.transition_count[i]);
     for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
     {
       const std::size_t j = p.transition_begin[i] + k;

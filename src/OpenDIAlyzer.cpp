@@ -58,6 +58,18 @@ protected:
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
+    registerInputFile_("ms2_model", "<file>", "",
+                       "PeptDeep MS2 fragment-intensity model. Defaults to the one OpenMS "
+                       "downloads when built with WITH_ONNX=ON.", false);
+    registerDoubleOption_("nce", "<energy>", 30.0,
+                          "Normalised collision energy assumed for fragment-intensity "
+                          "prediction. It changes the spectrum materially and nothing here "
+                          "derives it from the data.", false);
+    registerStringOption_("instrument", "<name>", "QE",
+                          "Instrument assumed for fragment-intensity prediction. An "
+                          "unrecognised name uses the model's 'unknown' slot rather than "
+                          "silently predicting for a different instrument.", false);
+
     registerInputFile_("rt_model", "<file>", "",
                        "PeptDeep retention-time model. Defaults to the one OpenMS "
                        "downloads when built with WITH_ONNX=ON.", false);
@@ -145,15 +157,10 @@ protected:
         params.decoy_method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
 
         const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
-        std::size_t decoys_skipped = 0;
-        const auto decoys = ODIA::LibraryGenerator::appendDecoys(
-          library, params.decoy_method, &decoys_skipped, params.min_fragments);
 
         std::ostringstream gen;
         gen << "generated from " << stats.proteins << " proteins: "
-            << stats.peptides << " peptides, " << stats.precursors << " target precursors, "
-            << decoys << " decoys";
-        if (decoys_skipped) { gen << " (" << decoys_skipped << " targets got none)"; }
+            << stats.peptides << " peptides, " << stats.precursors << " target precursors";
         gen << "\n"
             << "  dropped: " << stats.dropped_precursor_mz << " outside the precursor m/z range, "
             << stats.dropped_too_few_fragments << " with too few fragments";
@@ -208,8 +215,60 @@ protected:
           }
         }
 
-        writeLogWarn_("Fragment intensities are still placeholders; the MS2 model "
-                      "is not wired up yet.");
+        // Fragment intensities, and with them the choice of which fragments to
+        // keep. This runs before decoys are appended, because a decoy copies
+        // its target's intensity pattern and would otherwise copy the
+        // placeholder.
+        std::string ms2_model = getStringOption_("ms2_model");
+        if (ms2_model.empty())
+        {
+          if (const char* prefix = std::getenv("ODIA_OPENMS"))
+          {
+            const auto candidate = std::filesystem::path(prefix) /
+              "share/OpenMS/models/peptdeep_ms2_dynamic.onnx";
+            if (std::filesystem::exists(candidate)) { ms2_model = candidate.string(); }
+          }
+        }
+
+        if (ms2_model.empty())
+        {
+          writeLogWarn_("No MS2 model available; fragment intensities stay as "
+                        "placeholders and fragments are chosen by descending m/z. "
+                        "Give one with -ms2_model.");
+        }
+        else
+        {
+          try
+          {
+            const auto t_ms2 = std::chrono::steady_clock::now();
+            const auto unpredicted = ODIA::LibraryGenerator::predictFragmentIntensities(
+              library, ms2_model, params,
+              static_cast<float>(getDoubleOption_("nce")), getStringOption_("instrument"));
+            const auto ms2_ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t_ms2).count();
+            std::ostringstream ms2;
+            ms2 << "predicted fragment intensities in " << ms2_ms << " ms at NCE "
+                << getDoubleOption_("nce") << " for " << getStringOption_("instrument");
+            if (unpredicted)
+            {
+              ms2 << "; " << unpredicted << " precursors kept m/z-ranked placeholders";
+            }
+            writeLogInfo_(ms2.str());
+          }
+          catch (const std::exception& e)
+          {
+            writeLogWarn_(std::string("fragment-intensity prediction failed, "
+                                      "placeholders kept: ") + e.what());
+          }
+        }
+
+        std::size_t decoys_skipped = 0;
+        const auto decoys = ODIA::LibraryGenerator::appendDecoys(
+          library, params.decoy_method, &decoys_skipped, params.min_fragments);
+        std::ostringstream dec;
+        dec << "appended " << decoys << " decoys";
+        if (decoys_skipped) { dec << " (" << decoys_skipped << " targets got none)"; }
+        writeLogInfo_(dec.str());
       }
     }
     catch (const std::exception& e)

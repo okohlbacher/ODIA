@@ -93,6 +93,32 @@ namespace ODIA
                                              const std::string& rt_model_path,
                                              bool prefer_gpu = true);
 
+    /// Replace placeholder intensities with predicted ones, and re-choose the
+    /// fragments now that there is a basis for ranking.
+    ///
+    /// This necessarily rebuilds the transition arrays rather than editing
+    /// them: generate() caps fragments by descending m/z because it has no
+    /// intensities, and the top twelve by m/z are not the top twelve by
+    /// intensity, so re-ranking what survived that cap would not give the same
+    /// answer as ranking before it.
+    ///
+    /// Predicts in blocks. A whole-proteome call would materialise ~4 M
+    /// spectra -- about 2.2 GiB of payload in as many allocations -- all live
+    /// at once, on top of the library being built.
+    ///
+    /// Call before appendDecoys: a decoy copies its target's intensity
+    /// pattern, so predicting afterwards would leave every decoy with the
+    /// placeholder.
+    ///
+    /// @returns the number of precursors left with placeholder intensities
+    ///          because prediction failed for them.
+    static std::size_t predictFragmentIntensities(Library& library,
+                                                  const std::string& ms2_model_path,
+                                                  const DigestParams& params,
+                                                  float nce = 30.0f,
+                                                  const std::string& instrument = "QE",
+                                                  bool prefer_gpu = true);
+
     /// Append a decoy for every target currently in @p library.
     ///
     /// Decoys keep the target's precursor m/z, iRT and intensity pattern; only

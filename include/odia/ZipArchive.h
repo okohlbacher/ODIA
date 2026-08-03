@@ -32,11 +32,21 @@ namespace ODIA
 
     bool has(const std::string& entry) const;
 
+    /// How many entries carry this exact name. ZIP permits repeats and
+    /// readers disagree about which wins, so a consumer that cares must ask.
+    std::size_t count(const std::string& entry) const;
+
     /// Every entry name, in archive order, including directory entries.
     std::vector<std::string> entries() const;
 
     /// The whole entry as bytes. For metadata, not for Parquet.
-    std::string read(const std::string& entry) const;
+    ///
+    /// @param max_bytes refuse an entry declaring more than this. The size
+    ///        comes from the archive's central directory, which is the file's
+    ///        own unverified claim about itself: a 4 MB bundle declaring a
+    ///        4 GB entry allocated 4.25 GB here and then loaded normally.
+    std::string read(const std::string& entry,
+                     std::size_t max_bytes = 64u << 20) const;
 
     /// A seekable view of one entry, for Parquet, which reads its footer first
     /// and then seeks to the column chunks it wants. Nothing is materialised:

@@ -92,8 +92,8 @@ namespace ODIA
       std::int8_t charge;
     };
 
-    void enumerateFragments(const AASequence& peptide, const DigestParams& p,
-                            int precursor_charge, std::vector<Fragment>& out)
+    void enumerateAllFragments(const AASequence& peptide, const DigestParams& p,
+                               int precursor_charge, std::vector<Fragment>& out)
     {
       out.clear();
       const Size n = peptide.size();
@@ -119,9 +119,18 @@ namespace ODIA
         }
       }
 
+    }
+
+    void enumerateFragments(const AASequence& peptide, const DigestParams& p,
+                            int precursor_charge, std::vector<Fragment>& out)
+    {
+      enumerateAllFragments(peptide, p, precursor_charge, out);
+
       // Without predicted intensities there is no basis for ranking, so the cap
       // is applied by descending m/z: high-m/z fragments carry more sequence and
-      // sit in a less crowded part of the spectrum. Prediction replaces this.
+      // sit in a less crowded part of the spectrum. predictFragmentIntensities
+      // replaces this, and must re-enumerate to do so -- the top twelve by m/z
+      // are not the top twelve by intensity.
       std::sort(out.begin(), out.end(), [](const Fragment& a, const Fragment& b) {
         if (a.mz != b.mz) { return a.mz > b.mz; }
         if (a.type != b.type) { return a.type < b.type; }
@@ -316,6 +325,143 @@ namespace ODIA
     }
     // Appending nothing, but the accessor is non-const; the ordering is
     // unchanged, so restore the flag rather than forcing a needless re-sort.
+    return unpredicted;
+  }
+
+
+  std::size_t LibraryGenerator::predictFragmentIntensities(
+    Library& library, const std::string& ms2_model_path, const DigestParams& params,
+    float nce, const std::string& instrument, bool prefer_gpu)
+  {
+    auto& p = library.precursors();
+    auto& t = library.transitions();
+    const std::size_t n = library.precursorCount();
+    if (n == 0) { return 0; }
+
+    PeptDeepPredictor predictor(ms2_model_path, prefer_gpu);
+
+    // The new transition arrays are built alongside the old ones and swapped in
+    // at the end. Editing in place is not possible: a precursor's fragment
+    // count changes, so every later precursor's CSR offset moves.
+    Library::TransitionArrays built;
+    built.product_mz.reserve(t.product_mz.size());
+    built.library_intensity.reserve(t.product_mz.size());
+    built.type.reserve(t.product_mz.size());
+    built.ordinal.reserve(t.product_mz.size());
+    built.charge.reserve(t.product_mz.size());
+    built.loss.reserve(t.product_mz.size());
+
+    std::vector<std::uint32_t> begin(n, 0), count(n, 0);
+
+    // Blocked so that peak memory is set by the block, not by the proteome.
+    constexpr std::size_t BLOCK = 20000;
+    std::size_t unpredicted = 0;
+    std::vector<Fragment> fragments;
+    std::vector<std::pair<float, Fragment>> ranked;
+
+    for (std::size_t base = 0; base < n; base += BLOCK)
+    {
+      const std::size_t last = std::min(base + BLOCK, n);
+
+      std::vector<AASequence> peptides;
+      std::vector<int> charges;
+      peptides.reserve(last - base);
+      charges.reserve(last - base);
+      for (std::size_t i = base; i < last; ++i)
+      {
+        peptides.push_back(
+          AASequence::fromString(std::string(library.strings().get(p.modified_sequence[i]))));
+        charges.push_back(static_cast<int>(p.charge[i]));
+      }
+
+      std::vector<PeptDeepPredictor::Failure> failures;
+      const auto spectra = predictor.predictMS2(peptides, charges, nce, instrument, &failures);
+
+      for (std::size_t i = base; i < last; ++i)
+      {
+        const auto& spectrum = spectra[i - base];
+        begin[i] = static_cast<std::uint32_t>(built.product_mz.size());
+
+        if (spectrum.positions == 0)
+        {
+          // Prediction failed for this one. Keep what generate() chose rather
+          // than dropping the precursor: an m/z-ranked assay is worse than a
+          // predicted one but better than none, and it is counted.
+          ++unpredicted;
+          for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
+          {
+            const std::size_t j = p.transition_begin[i] + k;
+            built.product_mz.push_back(t.product_mz[j]);
+            built.library_intensity.push_back(t.library_intensity[j]);
+            built.type.push_back(t.type[j]);
+            built.ordinal.push_back(t.ordinal[j]);
+            built.charge.push_back(t.charge[j]);
+            built.loss.push_back(t.loss[j]);
+          }
+          count[i] = p.transition_count[i];
+          continue;
+        }
+
+        // Re-enumerate without the m/z cap: the cap is what has to be redone.
+        enumerateAllFragments(peptides[i - base], params, charges[i - base], fragments);
+
+        const std::size_t residues = peptides[i - base].size();
+        ranked.clear();
+        for (const auto& f : fragments)
+        {
+          // Position and channel follow alphabase's layout: fragment position
+          // q separates prefix q+1 from suffix nAA-q-1, so a b ion of ordinal
+          // o sits at q = o-1 and a y ion of ordinal o at q = nAA-1-o.
+          std::size_t position = 0;
+          std::size_t channel = 0;
+          if (f.type == FragmentType::B)
+          {
+            position = static_cast<std::size_t>(f.ordinal) - 1;
+            channel = f.charge == 1 ? 0 : 1;
+          }
+          else
+          {
+            position = residues - 1 - static_cast<std::size_t>(f.ordinal);
+            channel = f.charge == 1 ? 2 : 3;
+          }
+          if (position >= spectrum.positions) { continue; }
+          const float intensity = spectrum.at(position, channel);
+          // A predicted zero is a fragment the model says is not there. Keeping
+          // it would fill the cap with assays that cannot be extracted.
+          if (!(intensity > 0.0f)) { continue; }
+          ranked.emplace_back(intensity, f);
+        }
+
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& a, const auto& b) {
+                    if (a.first != b.first) { return a.first > b.first; }
+                    // Ties broken deterministically, so the library does not
+                    // depend on sort implementation.
+                    if (a.second.mz != b.second.mz) { return a.second.mz > b.second.mz; }
+                    if (a.second.type != b.second.type) { return a.second.type < b.second.type; }
+                    if (a.second.ordinal != b.second.ordinal)
+                    { return a.second.ordinal < b.second.ordinal; }
+                    return a.second.charge < b.second.charge;
+                  });
+        if (ranked.size() > params.max_fragments) { ranked.resize(params.max_fragments); }
+
+        for (const auto& [intensity, f] : ranked)
+        {
+          built.product_mz.push_back(toFixed(f.mz));
+          built.library_intensity.push_back(intensity);
+          built.type.push_back(f.type);
+          built.ordinal.push_back(f.ordinal);
+          built.charge.push_back(f.charge);
+          built.loss.push_back(LossType::None);
+        }
+        count[i] = static_cast<std::uint32_t>(ranked.size());
+      }
+    }
+
+    t = std::move(built);
+    p.transition_begin = std::move(begin);
+    p.transition_count = std::move(count);
+    library.shrinkToFit();
     return unpredicted;
   }
 

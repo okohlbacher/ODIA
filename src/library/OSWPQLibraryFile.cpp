@@ -4,6 +4,7 @@
 #include <odia/OSWPQLibraryFile.h>
 
 #include <odia/ArrowColumn.h>
+#include <odia/MiniJson.h>
 #include <odia/ZipArchive.h>
 
 #include <arrow/api.h>
@@ -34,6 +35,13 @@ namespace ODIA
     /// change on disk (library_intensity's width), and guessing at an unknown
     /// version would produce a library rather than an error.
     constexpr int SUPPORTED_SCHEMA_VERSION = 1;
+
+    /// Ceiling on library/metadata.json. The real one is about a kilobyte.
+    constexpr std::size_t MAX_METADATA_BYTES = 16u << 20;
+
+    /// Stands for "this row has no precursor id". Chosen outside the domain of
+    /// ids a writer can emit, unlike -1, which is a legal id.
+    constexpr std::int64_t NO_ID = std::numeric_limits<std::int64_t>::min();
 
     [[noreturn]] void fail(const std::string& what)
     {
@@ -89,47 +97,6 @@ namespace ODIA
       return table;
     }
 
-    /// Pull one field out of the metadata blob.
-    ///
-    /// A JSON dependency is not warranted for four scalars, and OpenMS writes
-    /// this block itself with a fixed shape. The extraction is deliberately
-    /// narrow: it finds `"key"` and takes the token after the colon.
-    std::string jsonField(std::string_view json, std::string_view key)
-    {
-      const std::string needle = "\"" + std::string(key) + "\"";
-      const auto k = json.find(needle);
-      if (k == std::string_view::npos) { return {}; }
-      auto p = json.find(':', k + needle.size());
-      if (p == std::string_view::npos) { return {}; }
-      ++p;
-      while (p < json.size() && (json[p] == ' ' || json[p] == '\n' || json[p] == '\t' ||
-                                 json[p] == '\r')) { ++p; }
-      if (p >= json.size()) { return {}; }
-      if (json[p] == '"')
-      {
-        const auto end = json.find('"', p + 1);
-        if (end == std::string_view::npos) { return {}; }
-        return std::string(json.substr(p + 1, end - p - 1));
-      }
-      const auto end = json.find_first_of(",}\n", p);
-      return std::string(json.substr(p, (end == std::string_view::npos ? json.size() : end) - p));
-    }
-
-    /// The census for one table, e.g. counts.precursors.total.
-    ///
-    /// Scoped to the object that follows the table's name, so "total" is read
-    /// from the right one of the five count blocks.
-    std::size_t censusTotal(std::string_view json, std::string_view table)
-    {
-      const std::string needle = "\"" + std::string(table) + "\"";
-      const auto k = json.find(needle);
-      if (k == std::string_view::npos) { return 0; }
-      const auto value = jsonField(json.substr(k), "total");
-      if (value.empty()) { return 0; }
-      try { return static_cast<std::size_t>(std::stoull(value)); }
-      catch (const std::exception&) { return 0; }
-    }
-
     /// The neutral loss, recovered from the annotation.
     ///
     /// The transition schema has no loss column: type, ordinal and charge are
@@ -141,10 +108,25 @@ namespace ODIA
       const auto minus = annotation.find('-');
       if (minus == std::string_view::npos) { return LossType::None; }
       auto rest = annotation.substr(minus + 1);
-      // A charge suffix ("y7-H2O^2") is not part of the loss.
+      // A charge suffix is not part of the loss. Both spellings occur:
+      // "y7-H2O^2" and "y7(2+)-H2O" -- and in the second the suffix precedes
+      // the hyphen, which is why the loss is taken from the FIRST hyphen
+      // rather than the last.
       const auto caret = rest.find('^');
       if (caret != std::string_view::npos) { rest = rest.substr(0, caret); }
       return parseLossType(rest);
+    }
+
+    /// True when an annotation names a loss this reader does not recognise.
+    ///
+    /// LossType::Other carries no mass -- LibraryGenerator gives it zero -- so
+    /// an unrecognised loss silently becomes a fragment at the parent mass.
+    /// Without a counter, a library whose whole annotation dialect is foreign
+    /// loads with a clean stats block.
+    bool lossIsUnrecognised(std::string_view annotation)
+    {
+      return annotation.find('-') != std::string_view::npos &&
+             lossFromAnnotation(annotation) == LossType::Other;
     }
   } // namespace
 
@@ -175,17 +157,41 @@ namespace ODIA
       fail(filename + " is a ZIP archive but carries no library bundle; its entries are:" + have);
     }
 
+    // A repeated entry name is refused rather than resolved: libzip takes the
+    // first, Python's zipfile and unzip take the last, so a crafted bundle
+    // would give ODIA a different library from the one the test oracle and
+    // every other tool read, silently.
+    for (const auto* needed : {PRECURSORS, TRANSITIONS, METADATA})
+    {
+      if (zip.count(needed) > 1)
+      {
+        fail(filename + " carries " + std::to_string(zip.count(needed)) + " entries named " +
+             needed + "; readers disagree about which one wins");
+      }
+    }
+
     // The version gate comes before any parsing, which is the whole reason the
     // field exists.
     std::string metadata;
     if (zip.has(METADATA))
     {
-      metadata = zip.read(METADATA);
-      const auto version = jsonField(metadata, "schema_version");
-      if (!version.empty())
+      // Bounded before it is read. The size comes from the archive's central
+      // directory, which is the file's own claim about itself: a 4 MB bundle
+      // declaring a 4 GB metadata entry made this allocate 4.25 GB and then
+      // load normally. Nothing legitimate needs a megabyte here.
+      metadata = zip.read(METADATA, MAX_METADATA_BYTES);
+
+      const auto declared = MiniJson::get(metadata, {"openms", "schema_version"});
+      if (declared)
       {
-        try { s.schema_version = std::stoi(version); }
-        catch (const std::exception&) { s.schema_version = 0; }
+        const auto version = MiniJson::getInt(metadata, {"openms", "schema_version"});
+        if (!version)
+        {
+          fail(filename + " declares schema_version " + *declared +
+               ", which is not a version number. Guessing would produce a library "
+               "rather than an error.");
+        }
+        s.schema_version = static_cast<int>(*version);
       }
       if (s.schema_version > SUPPORTED_SCHEMA_VERSION)
       {
@@ -193,11 +199,17 @@ namespace ODIA
              ", and this reader understands " + std::to_string(SUPPORTED_SCHEMA_VERSION) +
              ". Reading it anyway would produce a library rather than an error.");
       }
-      s.generator = jsonField(metadata, "generator");
-      s.openms_version = jsonField(metadata, "openms_version");
-      s.census_precursors = censusTotal(metadata, "precursors");
-      s.census_transitions = censusTotal(metadata, "transitions");
-      s.census_present = s.census_precursors != 0 || s.census_transitions != 0;
+      s.generator = MiniJson::getString(metadata, {"openms", "generator"}).value_or("");
+      s.openms_version =
+        MiniJson::getString(metadata, {"openms", "openms_version"}).value_or("");
+
+      const auto np = MiniJson::getInt(metadata, {"openms", "counts", "precursors", "total"});
+      const auto nt = MiniJson::getInt(metadata, {"openms", "counts", "transitions", "total"});
+      // Present means the file made a claim, not that the claim is non-zero.
+      // An empty library declaring 0 and 0 is a claim like any other.
+      s.census_present = np.has_value() && nt.has_value();
+      s.census_precursors = np ? static_cast<std::size_t>(*np) : 0;
+      s.census_transitions = nt ? static_cast<std::size_t>(*nt) : 0;
     }
 
     library = Library{};
@@ -228,13 +240,23 @@ namespace ODIA
 
     for (std::int64_t r = 0; r < nprec; ++r)
     {
-      const auto id = c_pid.getInt64(r, -1);
-      // A duplicate id makes the join ambiguous, so the first row wins. Silence
-      // here would be indistinguishable from a precursor that genuinely has no
-      // fragments, so it is counted.
-      if (!id_to_index.emplace(id, static_cast<std::uint32_t>(p.mz.size())).second)
+      // A null id must not collide with a real one. -1 is in the value domain
+      // -- the orphan fixture uses it -- so a null read as -1 would attach a
+      // transition to whichever precursor genuinely has id -1, silently, under
+      // the wrong peptide.
+      const auto id = c_pid.isNull(r) ? NO_ID : c_pid.getInt64(r, NO_ID);
+      // A precursor with no id cannot be joined to, and must not become the
+      // bucket every id-less transition falls into: two rows that are both
+      // missing an id are not the same precursor.
+      if (id != NO_ID)
       {
-        ++s.duplicate_precursor_ids;
+        // A duplicate id makes the join ambiguous, so the first row wins.
+        // Silence here would be indistinguishable from a precursor that
+        // genuinely has no fragments, so it is counted.
+        if (!id_to_index.emplace(id, static_cast<std::uint32_t>(p.mz.size())).second)
+        {
+          ++s.duplicate_precursor_ids;
+        }
       }
 
       p.mz.push_back(toFixed(c_pmz.getDouble(r, 0.0)));
@@ -287,7 +309,8 @@ namespace ODIA
 
     for (std::int64_t r = 0; r < ntrans; ++r)
     {
-      const auto it = id_to_index.find(c_tpid.getInt64(r, -1));
+      const auto id = c_tpid.isNull(r) ? NO_ID : c_tpid.getInt64(r, NO_ID);
+      const auto it = id == NO_ID ? id_to_index.end() : id_to_index.find(id);
       if (it == id_to_index.end()) { ++s.orphan_transitions; continue; }
       owner[static_cast<std::size_t>(r)] = it->second;
       ++p.transition_count[it->second];
@@ -297,12 +320,15 @@ namespace ODIA
     for (std::size_t i = 0; i < p.transition_count.size(); ++i)
     {
       if (p.transition_count[i] == 0) { ++s.childless_precursors; }
+      p.transition_begin[i] = static_cast<std::uint32_t>(running);
+      running += p.transition_count[i];
+      // Checked after adding, not before: the previous order let a total of
+      // UINT32_MAX + count(last) through, and the scatter cursor is 32-bit, so
+      // it would wrap to 0 and write the tail onto row 0 rather than fail.
       if (running > std::numeric_limits<std::uint32_t>::max())
       {
         fail("more than 2^32 transitions; the CSR index is 32-bit");
       }
-      p.transition_begin[i] = static_cast<std::uint32_t>(running);
-      running += p.transition_count[i];
     }
 
     const std::size_t kept = static_cast<std::size_t>(running);
@@ -346,7 +372,9 @@ namespace ODIA
       else { t.ordinal[at] = static_cast<std::uint8_t>(ordinal); }
 
       t.type[at] = parseFragmentType(c_ttype.getString(r));
-      t.loss[at] = lossFromAnnotation(c_tann.getString(r));
+      const auto annotation = c_tann.getString(r);
+      t.loss[at] = lossFromAnnotation(annotation);
+      if (lossIsUnrecognised(annotation)) { ++s.unrecognised_losses; }
 
       if (c_tdec.valid() && (c_tdec.getBool(r, false) ? 1 : 0) != p.decoy[o])
       {

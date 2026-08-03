@@ -83,6 +83,7 @@ set(ODIA_LIB_SOURCES
   src/library/LibraryGenerator.cpp
   src/library/OSWPQLibraryFile.cpp
   src/io/ArrowColumn.cpp
+  src/io/MiniJson.cpp
   src/io/ZipArchive.cpp
   src/predict/PeptDeepEncoder.cpp
   src/predict/PeptDeepPredictor.cpp

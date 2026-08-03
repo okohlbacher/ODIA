@@ -225,14 +225,16 @@ ones re-tested after repair are now caught.*
   across the 2048 boundary was verified by hand (indices 2046-2050 bit-identical
   to solo runs) but nothing holds it.
 
-- **CCS is predicted; ion mobility is not.** `predictCCS` returns collision
-  cross-section in square angstroms, which is what the model gives and where
-  OpenMS's own `PeptDeepCCSInference` stops. Turning it into the 1/K0 a timsTOF
-  reports needs the Mason-Schamp relation with the drift gas mass and a
-  calibration constant, both of which live in alphabase -- not on this machine.
-  They were deliberately not reconstructed from memory: plausible numbers in the
-  wrong units are worse than none. **The library's `im` column therefore still
-  has no source.**
+- **CCS stays in square angstroms. Decided, not open** (user, 2026-08-03).
+  `predictCCS` returns collision cross-section and must keep doing so. The
+  conversion to 1/K0 is deliberately *not* ODIA's: it is instrument-specific and
+  is applied downstream via the Mason-Schamp equation, where the drift gas and
+  the instrument's calibration are known. ODIA must therefore never convert, and
+  must not acquire a `-ion_mobility_unit` option that implies it could.
+  Consequence to settle: the library's `im` column is 1/K0-shaped, so predicted
+  CCS needs either its own column or an explicit unit tag -- writing CCS into a
+  field consumers read as 1/K0 is precisely the silent unit error this decision
+  avoids.
 
 - **The model guard's reject path is untested.** All three shipped models are
   accepted, so nothing here exercises the case it exists for -- a model that is
@@ -249,6 +251,32 @@ ones re-tested after repair are now caught.*
   out of bounds. `predictRT` uses NaN for the same situation; there is no
   equivalent value here, so the contract is "check `positions` first" and it is
   only documented, not enforced.
+
+---
+
+## `.oswpq` reading — still open after the second review
+
+- **`getInt64` on a `uint32`/`uint64` above the signed range is an equivalent
+  mutant.** Narrowing the cast wraps the value, but ids are used only as join
+  keys and the wrap is bijective, so precursors and transitions still meet.
+  Only `UINT64_MAX` would alias the null sentinel. Nothing here can catch a
+  narrowing cast, and nothing here needs to.
+
+- **The two null-id guards mask each other.** A precursor with no id is kept out
+  of the join map, and a transition with no id never looks one up; removing
+  either alone changes nothing, and only removing both attaches an id-less
+  fragment to an id-less precursor. Kept as belt and braces, with the pair
+  covered by a test.
+
+- **`ChunkedColumn` is not thread-safe** and now says so. The cursor is shared
+  mutable state, so two threads scanning one column return each other's rows
+  rather than colliding visibly. The header advertises the class as the hot
+  path for a 64-thread scan, so this needs a per-thread cursor before any
+  parallel reader is written.
+
+- **A precursor whose m/z cannot be represented is kept at m/z 0** and can never
+  match a window. `invalidMzCount()` reports it -- one on the real upstream
+  bundle -- but `load()` does not surface it to the caller.
 
 ---
 

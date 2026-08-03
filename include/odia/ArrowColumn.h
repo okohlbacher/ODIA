@@ -32,6 +32,9 @@ namespace ODIA
   /// every call is an atomic pair on a control block shared by all threads, so
   /// the cost *grows* with thread count: a measured 20.1 s serial became 34.5 s
   /// on 64 threads. The pointer is valid as long as the owning table is.
+  /// Not thread-safe: the cursor is shared mutable state, so two threads
+  /// scanning one column return each other's rows rather than colliding
+  /// visibly. One cursor per thread.
   class ChunkedColumn
   {
   public:

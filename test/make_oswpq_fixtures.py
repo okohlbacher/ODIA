@@ -150,6 +150,26 @@ def basic_content():
     return precursors, transitions
 
 
+def widths_content():
+    """The same library in the widest types a writer might legitimately choose.
+
+    Every one of these was a surviving mutation: dropping LARGE_STRING from
+    getString, reading UINT32 as int32, and removing getBool's integer
+    fallback all passed a suite whose only fixtures were int64/string/bool.
+    Dictionary encoding is here for a second reason -- it is the only way to
+    make Arrow return more than one chunk per column at test scale, because it
+    is not concatenated across row groups the way a plain string column is.
+    """
+    precursors, transitions = basic_content()
+    # Ids beyond int32, to catch a narrowing cast in the join.
+    for i, p in enumerate(precursors):
+        p["precursor_id"] = 3_000_000_000 + i * 7
+    for t in transitions:
+        t["precursor_id"] = 3_000_000_000 + {10: 0, 20: 1, 30: 2, 40: 3, 50: 4}[
+            t["precursor_id"]] * 7
+    return precursors, transitions
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     p, t = basic_content()
@@ -223,6 +243,217 @@ def main(outdir):
     # DEFLATEd entries. Parquet cannot be read without random access, so this
     # must fail loudly rather than return a short table.
     bundle(f"{outdir}/deflated.oswpq", p, t, compress=zipfile.ZIP_DEFLATED)
+
+    # Wide and unusual column types, written with several row groups so the
+    # dictionary columns arrive as several Arrow chunks.
+    wp, wt = widths_content()
+    wide_precursor_fields = [
+        ("precursor_id", pa.uint64()), ("precursor_mz", pa.float32()),
+        ("charge", pa.int8()), ("library_rt", pa.float32()),
+        ("library_drift_time", pa.float64()), ("decoy", pa.int64()),
+        ("traml_id", pa.large_string()), ("modified_sequence", pa.large_string()),
+        ("unmodified_sequence", pa.string()),
+        ("protein_accessions", pa.dictionary(pa.int32(), pa.string())),
+    ]
+    wide_transition_fields = [
+        ("transition_id", pa.uint32()), ("precursor_id", pa.uint64()),
+        ("traml_id", pa.string()), ("product_mz", pa.float64()),
+        ("charge", pa.int16()), ("type", pa.dictionary(pa.int32(), pa.string())),
+        ("annotation", pa.dictionary(pa.int32(), pa.string())),
+        ("ordinal", pa.int64()), ("detecting", pa.bool_()),
+        ("identifying", pa.bool_()), ("quantifying", pa.bool_()),
+        ("library_intensity", pa.float32()), ("decoy", pa.uint8()),
+    ]
+    # Not `for p in wp` -- p and t are the fixture data for every later bundle,
+    # and rebinding them here made the next bundle() receive a single dict.
+    for row in wp:
+        row["decoy"] = 1 if row["decoy"] else 0
+    for row in wt:
+        row["decoy"] = 1 if row["decoy"] else 0
+
+    def wide_bundle(path):
+        ptab = table(wide_precursor_fields, wp)
+        ttab = table(wide_transition_fields, wt)
+        meta = {"openms": {"schema_version": 1, "generator": "make_oswpq_fixtures",
+                           "counts": {
+                               "precursors": {"total": len(wp)},
+                               "transitions": {"total": len(wt)}}}}
+
+        def pbytes(tab):
+            sink = pa.BufferOutputStream()
+            pq.write_table(tab, sink, row_group_size=1)
+            return sink.getvalue().to_pybytes()
+
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("library/metadata.json", json.dumps(meta))
+            z.writestr("library/precursors.parquet", pbytes(ptab))
+            z.writestr("library/transitions.parquet", pbytes(ttab))
+
+    wide_bundle(f"{outdir}/widths.oswpq")
+
+    # Annotation dialects. Every one of these appears in real libraries, and
+    # the two lines that handle them -- stripping the charge suffix, and taking
+    # the loss from the FIRST hyphen -- were both deletable without failing a
+    # test, because no fixture combined a loss with a charge.
+    ap, at_ = basic_content()
+    dialects = [
+        ("y7-H2O", "y", 7, 1), ("b3^2", "b", 3, 2), ("y10-NH3^2", "y", 10, 2),
+        ("y7(2+)-H2O", "y", 7, 2), ("y2^2-H3PO4", "y", 2, 2),
+        ("b4-HPO3", "b", 4, 1), ("y5-CO", "y", 5, 1),
+        # Unrecognised, and it must be counted: LossType::Other carries no mass,
+        # so such a fragment silently becomes one at the parent mass.
+        ("y6-Hex", "y", 6, 1), ("b8-H2O-NH3", "b", 8, 1),
+        ("precursor", "p", 0, 1), ("y3-", "y", 3, 1),
+    ]
+    at_ = [transition(500 + i, 10, 300.0 + i, 1.0 - 0.05 * i, ty, n, z, annotation=a)
+           for i, (a, ty, n, z) in enumerate(dialects)]
+    bundle(f"{outdir}/annotations.oswpq", ap[:1], at_)
+
+    # A null precursor_id must not collide with a real precursor whose id is
+    # -1. Before the sentinel moved out of the value domain, the transition
+    # below was silently attached to REALMINUSONE.
+    np_ = [precursor(-1, "REALMINUSONE", 500.0), precursor(7, "NULLID", 600.0)]
+    np_[1]["precursor_id"] = None
+    nt_ = [transition(1, -1, 300.0, 1.0), transition(2, None, 400.0, 1.0)]
+    bundle(f"{outdir}/nullpid.oswpq", np_, nt_)
+
+    # Charges at the edge of the stored width. An off-by-one in the range check
+    # is invisible unless a fixture sits on the boundary.
+    cp, _ = basic_content()
+    ct = [transition(1, 10, 300.0, 1.0, charge=127),
+          transition(2, 10, 301.0, 1.0, charge=128),
+          transition(3, 10, 302.0, 1.0, charge=-128),
+          transition(4, 10, 303.0, 1.0, charge=-129)]
+    bundle(f"{outdir}/edgecharge.oswpq", cp[:1], ct)
+
+    # A census whose "total" lives in a block the reader must not wander into.
+    # The substring scan this replaced took the first "total" after the first
+    # "transitions" at any depth, so it read a neighbouring block's count and
+    # reported that a truncated bundle agreed with its census.
+    liar = f"{outdir}/census_falsepass.oswpq"
+    bundle(liar, p, t)
+    with zipfile.ZipFile(liar) as z:
+        items = {n: z.read(n) for n in z.namelist()}
+    items["library/metadata.json"] = json.dumps({"openms": {
+        "schema_version": 1,
+        "generator": "make_oswpq_fixtures",
+        "fragment_type_counts": {"precursors": {"total": 6}, "transitions": {"total": 12}},
+        "counts": {
+            "precursors": {"target": 4, "decoy": 2, "total": 6},
+            "transitions": {"target": 8, "decoy": 4, "total": 999},
+        }}}).encode()
+    with zipfile.ZipFile(liar, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items.items():
+            z.writestr(n, b)
+
+    # Minified metadata, which must parse exactly as the indented form does.
+    mini = f"{outdir}/minified.oswpq"
+    bundle(mini, p, t)
+    with zipfile.ZipFile(mini) as z:
+        items = {n: z.read(n) for n in z.namelist()}
+    items["library/metadata.json"] = json.dumps(
+        json.loads(items["library/metadata.json"]), separators=(",", ":")).encode()
+    with zipfile.ZipFile(mini, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items.items():
+            z.writestr(n, b)
+
+    # No metadata entry at all: legal, and the false branch of zip.has(METADATA)
+    # had no fixture.
+    nometa = f"{outdir}/nometa.oswpq"
+    bundle(nometa, p, t)
+    with zipfile.ZipFile(nometa) as z:
+        items = {n: z.read(n) for n in z.namelist() if n != "library/metadata.json"}
+    with zipfile.ZipFile(nometa, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items.items():
+            z.writestr(n, b)
+
+    # Two entries with the same name. libzip takes the first, Python's zipfile
+    # and unzip take the last, so a reader that resolves rather than refuses
+    # gives a different library from every other tool.
+    dupentry = f"{outdir}/dupentry.oswpq"
+    bundle(dupentry, p, t)
+    with zipfile.ZipFile(dupentry) as z:
+        items = [(n, z.read(n)) for n in z.namelist()]
+    other, _ = basic_content()
+    other[0]["modified_sequence"] = "IMPOSTOR"
+    sink = pa.BufferOutputStream()
+    pq.write_table(table(PRECURSOR_FIELDS, other), sink)
+    with zipfile.ZipFile(dupentry, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items:
+            z.writestr(n, b)
+        z.writestr("library/precursors.parquet", sink.getvalue().to_pybytes())
+
+    # A metadata entry declaring far more than it holds. The declared size is
+    # the archive's own unverified claim, and allocating on it made a 4 MB
+    # bundle take 4.25 GB.
+    bomb = f"{outdir}/metabomb.oswpq"
+    bundle(bomb, p, t)
+    with zipfile.ZipFile(bomb) as z:
+        items = {n: z.read(n) for n in z.namelist()}
+    items["library/metadata.json"] = json.dumps({"openms": {"schema_version": 1}}).encode() + \
+        b" " * (48 << 20)
+    with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, b in items.items():
+            z.writestr(n, b, zipfile.ZIP_STORED if n.endswith(".parquet") else zipfile.ZIP_DEFLATED)
+
+    # A census whose named block has no "total". Scoped lookup finds nothing
+    # and must say the census is absent; a scan that wanders on finds the 12 in
+    # the block after it and reports a census that was never declared.
+    unscoped = f"{outdir}/census_unscoped.oswpq"
+    bundle(unscoped, p, t)
+    with zipfile.ZipFile(unscoped) as z:
+        items = {n: z.read(n) for n in z.namelist()}
+    items["library/metadata.json"] = json.dumps({"openms": {
+        "schema_version": 1,
+        "counts": {"precursors": {"target": 4, "decoy": 2},
+                   "transitions": {"target": 8, "decoy": 4}},
+        "elsewhere": {"precursors": {"total": 6}, "transitions": {"total": 12}},
+    }}).encode()
+    with zipfile.ZipFile(unscoped, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items.items():
+            z.writestr(n, b)
+
+    # A census with no "counts" block at all, but blocks of the right names one
+    # level up. A path lookup that skips a missing element instead of failing
+    # walks into them and reports a census the file never declared.
+    unnested = f"{outdir}/census_unnested.oswpq"
+    bundle(unnested, p, t)
+    with zipfile.ZipFile(unnested) as z:
+        items = {n: z.read(n) for n in z.namelist()}
+    items["library/metadata.json"] = json.dumps({"openms": {
+        "schema_version": 1,
+        "precursors": {"total": 6},
+        "transitions": {"total": 12},
+    }}).encode()
+    with zipfile.ZipFile(unnested, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items.items():
+            z.writestr(n, b)
+
+    # A metadata entry whose compressed stream is corrupt.
+    #
+    # Not an overstated size: within a well-formed archive that reads the
+    # neighbouring entry's bytes rather than hitting EOF, so the short-read
+    # branch is unreachable that way. A broken deflate stream is the realistic
+    # corruption, and it must fail rather than yield a truncated document --
+    # a JSON census cut short is still valid JSON, with a smaller count.
+    corrupt = f"{outdir}/corrupt_meta.oswpq"
+    bundle(corrupt, p, t)
+    with zipfile.ZipFile(corrupt) as z:
+        items = {n: z.read(n) for n in z.namelist()}
+    with zipfile.ZipFile(corrupt, "w", zipfile.ZIP_STORED) as z:
+        for n, b in items.items():
+            if n.endswith("metadata.json"):
+                z.writestr(zipfile.ZipInfo(n), b, compress_type=zipfile.ZIP_DEFLATED)
+            else:
+                z.writestr(n, b)
+    raw = bytearray(open(corrupt, "rb").read())
+    at = raw.find(b"library/metadata.json")
+    # Past the local header's name field is the deflate stream; flipping bytes
+    # in the middle of it leaves the sizes intact and the data unrecoverable.
+    body = at + len("library/metadata.json")
+    for i in range(body + 8, body + 40):
+        raw[i] ^= 0xFF
+    open(corrupt, "wb").write(bytes(raw))
 
     # A ZIP that is not a library bundle at all.
     with zipfile.ZipFile(f"{outdir}/notalibrary.oswpq", "w") as z:

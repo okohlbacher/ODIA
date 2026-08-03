@@ -219,6 +219,23 @@ namespace ODIA
     return locate(za_, entry) >= 0;
   }
 
+  std::size_t ZipArchive::count(const std::string& entry) const
+  {
+    // zip_name_locate returns the first match, while Python's zipfile and
+    // unzip take the last. A bundle with two library/precursors.parquet
+    // entries would therefore give ODIA a different library from the one every
+    // other tool sees, with no error anywhere -- so a repeat is refused rather
+    // than resolved.
+    std::size_t n = 0;
+    const auto total = zip_get_num_entries(za_, 0);
+    for (zip_int64_t i = 0; i < total; ++i)
+    {
+      const char* name = zip_get_name(za_, i, 0);
+      if (name != nullptr && entry == name) { ++n; }
+    }
+    return n;
+  }
+
   std::vector<std::string> ZipArchive::entries() const
   {
     std::vector<std::string> names;
@@ -232,7 +249,7 @@ namespace ODIA
     return names;
   }
 
-  std::string ZipArchive::read(const std::string& entry) const
+  std::string ZipArchive::read(const std::string& entry, std::size_t max_bytes) const
   {
     const auto index = locate(za_, entry);
     if (index < 0) { fail("no entry " + entry, path_); }
@@ -242,6 +259,13 @@ namespace ODIA
     if (zip_stat_index(za_, index, 0, &st) != 0 || (st.valid & ZIP_STAT_SIZE) == 0)
     {
       fail("entry " + entry + " has no recorded size", path_);
+    }
+
+    if (st.size > max_bytes)
+    {
+      fail("entry " + entry + " declares " + std::to_string(st.size) +
+           " bytes, over the " + std::to_string(max_bytes) + " byte ceiling; "
+           "the size is the archive's own unverified claim", path_);
     }
 
     zip_file_t* zf = zip_fopen_index(za_, index, 0);
