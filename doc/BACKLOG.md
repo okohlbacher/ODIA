@@ -138,7 +138,11 @@ self-test of literal values. Mutation testing: 21 injected defects, all of the
 ones re-tested after repair are now caught.*
 
 - ONNX prediction: iRT, MS2 intensities, CCS — with CUDA attempted and CPU
-  fallback, and ODIA's own `mod_x` encoder. The reference encoder and RT
+  fallback. The **encoder is done and validated**: `PeptDeepEncoder` agrees
+  exactly with the independent Python reference on residue, N-terminal and
+  C-terminal modifications, multiple modifications, signed counts and
+  `aa_indices`. Still to write: the inference session with provider selection,
+  and the MS2/CCS inputs (charge ×0.1, NCE ×0.01, rank-1 `instrument_indices`). The reference encoder and RT
   predictor (`test/peptdeep_reference.py`) are in place as the validation oracle,
   written from the spec rather than from the C++; the element list is generated
   from the authoritative yaml into `data/peptdeep_mod_elements.txt` and

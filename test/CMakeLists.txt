@@ -202,3 +202,14 @@ if(ODIA_PYTHON)
   add_test(NAME peptdeep_element_table
            COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/check_element_table.py)
 endif()
+
+# ODIA's C++ encoder against the independent Python reference. Written from the
+# same spec but from different inputs -- OpenMS AASequence versus the raw string
+# -- so agreement is evidence the spec was implemented, not that one copied the
+# other.
+if(ODIA_PYTHON)
+  add_test(NAME peptdeep_encoder_matches_reference
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/compare_encoders.py
+                   $<TARGET_FILE:odia_encode_dump>)
+endif()

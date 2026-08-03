@@ -55,6 +55,7 @@ set(ODIA_LIB_SOURCES
   src/library/Library.cpp
   src/library/DIANNLibraryFile.cpp
   src/library/LibraryGenerator.cpp
+  src/predict/PeptDeepEncoder.cpp
 )
 
 if(ODIA_LIB_SOURCES)
@@ -85,6 +86,12 @@ foreach(tool ${ODIA_TOOLS})
 endforeach()
 
 install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
+
+# Built only for the test suite: it dumps ODIA's encoding so it can be compared
+# against the independent Python reference.
+add_executable(odia_encode_dump test/tools/odia_encode_dump.cpp)
+target_link_libraries(odia_encode_dump PRIVATE OpenMS odia_core
+                      ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
 
 enable_testing()
 add_subdirectory(test)
