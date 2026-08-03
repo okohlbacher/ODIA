@@ -208,6 +208,49 @@ ones re-tested after repair are now caught.*
 
 ---
 
+## Phase 1 measured against DIA-NN on S08 (2026-08-03)
+
+Both libraries predicted from the same FASTA with the same digest settings;
+DIA-NN searched the same diaPASEF run with each, everything identical but the
+library.
+
+| library | precursors | proteins |
+|---|---:|---:|
+| DIA-NN's own | 37,170 | 5,255 |
+| ODIA, first attempt | 17,478 | 3,263 |
+| + targets only (DIA-NN makes its own decoys) | 31,560 | 4,776 |
+| + ion mobility from predicted CCS | 33,732 | 5,021 |
+| + fragment charge up to precursor charge | 34,609 | 5,053 |
+
+**Yield per library precursor is identical**: DIA-NN 1.732%, ODIA 1.736%. The
+assays are as good, one for one; every remaining difference was coverage.
+
+Still open from this:
+
+- **Our decoys cost 14,082 precursors, 45% of the total.** Shipping them made
+  DIA-NN use ours instead of building its own, and ours are too target-like to
+  separate: same m/z, same iRT, same intensity pattern, only fragment masses
+  moved. That is DIA-NN's own published design, so the fault is more likely in
+  how the pattern is copied than in the mutation scheme. **Until this is
+  understood, a library written for another engine should probably not carry
+  decoys at all** -- which is a decision, not a default to pick silently.
+
+- **Retention time is the weakest remaining signal.** DIA-NN set an RT window of
+  2.29 min for our library against 1.44 for its own, so our iRT is about half as
+  predictive after calibration despite a rank correlation of 0.992 with theirs.
+  Worth attacking next; it is a scoring dimension, not a coverage problem.
+
+- **Fragment selection overlaps only 0.60** with DIA-NN's, and base peaks agree
+  62% of the time, while intensities on the fragments both keep correlate at
+  r = 0.861. So the models mostly agree and the caps diverge. Not obviously
+  wrong, but not understood either.
+
+- **CCS agrees with DIA-NN's ion mobility to 1.43% median** over 1,873,932
+  precursors, with no charge or length dependence and a split-half held-out
+  median of -0.004%. Both predictors are sound; see `test/compare_ccs_to_diann.py`.
+
+---
+
 ## MS2 prediction — what the review left open
 
 - **`predictMS2` materialises every spectrum.** 100,000 peptides measured at

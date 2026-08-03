@@ -58,6 +58,13 @@ protected:
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
+    registerInputFile_("ccs_model", "<file>", "",
+                       "PeptDeep collision-cross-section model. Defaults to the one OpenMS "
+                       "downloads when built with WITH_ONNX=ON. Predicts CCS in square "
+                       "angstroms; converting that to the 1/K0 an instrument reports is "
+                       "deliberately left to the consumer, which knows the drift gas and "
+                       "the calibration.", false);
+
     registerInputFile_("ms2_model", "<file>", "",
                        "PeptDeep MS2 fragment-intensity model. Defaults to the one OpenMS "
                        "downloads when built with WITH_ONNX=ON.", false);
@@ -259,6 +266,44 @@ protected:
           {
             writeLogWarn_(std::string("fragment-intensity prediction failed, "
                                       "placeholders kept: ") + e.what());
+          }
+        }
+
+        // Collision cross-sections, before decoys so a decoy inherits its
+        // target's value the way it inherits iRT and the intensity pattern.
+        std::string ccs_model = getStringOption_("ccs_model");
+        if (ccs_model.empty())
+        {
+          if (const char* prefix = std::getenv("ODIA_OPENMS"))
+          {
+            const auto candidate = std::filesystem::path(prefix) /
+              "share/OpenMS/models/peptdeep_ccs_dynamic.onnx";
+            if (std::filesystem::exists(candidate)) { ccs_model = candidate.string(); }
+          }
+        }
+        if (ccs_model.empty())
+        {
+          writeLogWarn_("No CCS model available; the cross-section column is left "
+                        "empty. Give one with -ccs_model.");
+        }
+        else
+        {
+          try
+          {
+            const auto t_ccs = std::chrono::steady_clock::now();
+            const auto unpredicted =
+              ODIA::LibraryGenerator::predictCollisionCrossSections(library, ccs_model);
+            const auto ccs_ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t_ccs).count();
+            std::ostringstream ccs;
+            ccs << "predicted collision cross-sections in " << ccs_ms << " ms";
+            if (unpredicted) { ccs << "; " << unpredicted << " left unpredicted"; }
+            writeLogInfo_(ccs.str());
+          }
+          catch (const std::exception& e)
+          {
+            writeLogWarn_(std::string("CCS prediction failed, the column is left "
+                                      "empty: ") + e.what());
           }
         }
 

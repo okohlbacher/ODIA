@@ -138,7 +138,18 @@ namespace ODIA
     {
       std::vector<MzFixed> mz;
       std::vector<float> irt;              ///< library prediction, not an observation
-      std::vector<float> im;               ///< NaN when absent
+      std::vector<float> im;               ///< 1/K0 as read from a file; NaN when absent
+
+      /// Predicted collision cross-section, in square angstroms. NaN when
+      /// absent.
+      ///
+      /// A separate field from `im` on purpose. CCS and the 1/K0 an instrument
+      /// reports are different quantities, related by the Mason-Schamp equation
+      /// through the drift gas and the instrument's calibration. ODIA does not
+      /// convert -- that is done downstream, where the instrument is known --
+      /// so writing angstroms into a field consumers read as 1/K0 would be
+      /// exactly the silent unit error the separation avoids.
+      std::vector<float> ccs;
       std::vector<std::uint8_t> charge;
       std::vector<std::uint8_t> decoy;
       std::vector<std::uint32_t> modified_sequence;  ///< StringArena handle

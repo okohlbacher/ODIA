@@ -29,6 +29,13 @@ namespace ODIA
       static constexpr const char* DECOY = "Decoy";
       static constexpr const char* RT = "RT";
       static constexpr const char* IM = "IM";
+      /// Predicted collision cross-section, square angstroms.
+      ///
+      /// Its own column, not IM. DIA-NN's IM is 1/K0; converting to it needs
+      /// the Mason-Schamp relation with the drift gas and the instrument's
+      /// calibration, which is done downstream where the instrument is known.
+      /// A consumer that wants ion mobility must convert this, deliberately.
+      static constexpr const char* CCS = "CCS";
       static constexpr const char* PRECURSOR_MZ = "Precursor.Mz";
       static constexpr const char* PRODUCT_MZ = "Product.Mz";
       static constexpr const char* RELATIVE_INTENSITY = "Relative.Intensity";

@@ -4,6 +4,7 @@
 #include <odia/Library.h>
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <cstring>
 #include <numeric>
@@ -157,6 +158,7 @@ namespace ODIA
     p.mz.reserve(precursors);
     p.irt.reserve(precursors);
     p.im.reserve(precursors);
+    p.ccs.reserve(precursors);
     p.charge.reserve(precursors);
     p.decoy.reserve(precursors);
     p.modified_sequence.reserve(precursors);
@@ -177,6 +179,7 @@ namespace ODIA
   {
     auto& p = precursors_;
     p.mz.shrink_to_fit(); p.irt.shrink_to_fit(); p.im.shrink_to_fit();
+    p.ccs.shrink_to_fit();
     p.charge.shrink_to_fit(); p.decoy.shrink_to_fit();
     p.modified_sequence.shrink_to_fit(); p.protein_group.shrink_to_fit();
     p.transition_begin.shrink_to_fit(); p.transition_count.shrink_to_fit();
@@ -208,7 +211,7 @@ namespace ODIA
 
     PrecursorArrays np;
     TransitionArrays nt;
-    np.mz.resize(n); np.irt.resize(n); np.im.resize(n);
+    np.mz.resize(n); np.irt.resize(n); np.im.resize(n); np.ccs.resize(n);
     np.charge.resize(n); np.decoy.resize(n);
     np.modified_sequence.resize(n); np.protein_group.resize(n);
     np.transition_begin.resize(n); np.transition_count.resize(n);
@@ -225,6 +228,8 @@ namespace ODIA
       np.mz[i] = precursors_.mz[src];
       np.irt[i] = precursors_.irt[src];
       np.im[i] = precursors_.im[src];
+      np.ccs[i] = precursors_.ccs.empty() ? std::numeric_limits<float>::quiet_NaN()
+                                          : precursors_.ccs[src];
       np.charge[i] = precursors_.charge[src];
       np.decoy[i] = precursors_.decoy[src];
       np.modified_sequence[i] = precursors_.modified_sequence[src];
@@ -267,7 +272,7 @@ namespace ODIA
     auto vec = [](const auto& v) { return v.capacity() * sizeof(typename std::decay_t<decltype(v)>::value_type); };
     const auto& p = precursors_;
     const auto& t = transitions_;
-    return vec(p.mz) + vec(p.irt) + vec(p.im) + vec(p.charge) + vec(p.decoy)
+    return vec(p.mz) + vec(p.irt) + vec(p.im) + vec(p.ccs) + vec(p.charge) + vec(p.decoy)
          + vec(p.modified_sequence) + vec(p.protein_group)
          + vec(p.transition_begin) + vec(p.transition_count)
          + vec(t.product_mz) + vec(t.library_intensity) + vec(t.type)

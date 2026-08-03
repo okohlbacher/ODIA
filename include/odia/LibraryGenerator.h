@@ -32,7 +32,16 @@ namespace ODIA
 
   struct DigestParams
   {
-    std::string enzyme = "Trypsin";
+    /// "Trypsin/P" rather than "Trypsin": cleave after K and R even when the
+    /// next residue is proline.
+    ///
+    /// The no-cut-before-proline rule is a partial one, and search engines
+    /// have largely abandoned it -- DIA-NN's default is `--cut K*,R*`, which
+    /// cuts regardless. Measured against DIA-NN's library on the human
+    /// proteome, keeping "Trypsin" cost 169,044 peptides, and 48.6% of those
+    /// began with a proline while none of ours did. That was the single
+    /// largest source of the coverage gap, well ahead of methionine excision.
+    std::string enzyme = "Trypsin/P";
     std::size_t missed_cleavages = 1;
     std::size_t min_length = 7;
     std::size_t max_length = 30;
@@ -43,6 +52,17 @@ namespace ODIA
     std::vector<std::string> fixed_modifications{"Carbamidomethyl (C)"};
     std::vector<std::string> variable_modifications{};
     std::size_t max_variable_modifications = 1;
+
+    /// Digest the sequence again with the initiator methionine removed.
+    ///
+    /// Not an option in practice, though it is one here. The initiator Met is
+    /// cleaved co-translationally from a large fraction of proteins, so the
+    /// observed N-terminal peptide usually begins one residue in. Leaving this
+    /// off cost 272,565 precursors against DIA-NN on the human proteome --
+    /// 7.1% of the library, every one of them inside the m/z window and evenly
+    /// split across charge, which is what identified it: a filter would not be
+    /// charge-neutral.
+    bool n_terminal_methionine_excision = true;
 
     double precursor_mz_min = 350.0;
     double precursor_mz_max = 1200.0;
@@ -118,6 +138,21 @@ namespace ODIA
                                                   float nce = 30.0f,
                                                   const std::string& instrument = "QE",
                                                   bool prefer_gpu = true);
+
+    /// Fill in predicted collision cross-sections, in square angstroms.
+    ///
+    /// Per precursor, not per peptide: the CCS model takes charge, and a
+    /// peptide's charge states have genuinely different cross-sections.
+    ///
+    /// This does NOT populate the ion-mobility column. CCS and 1/K0 are
+    /// different quantities, related through the drift gas and the
+    /// instrument's calibration, and that conversion belongs downstream where
+    /// the instrument is known.
+    ///
+    /// @returns the number of precursors left without a value; theirs are NaN.
+    static std::size_t predictCollisionCrossSections(Library& library,
+                                                    const std::string& ccs_model_path,
+                                                    bool prefer_gpu = true);
 
     /// Append a decoy for every target currently in @p library.
     ///

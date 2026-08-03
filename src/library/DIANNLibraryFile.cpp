@@ -448,7 +448,8 @@ namespace ODIA
         << Columns::PRECURSOR_MZ << '\t' << Columns::PRODUCT_MZ << '\t'
         << Columns::RELATIVE_INTENSITY << '\t' << Columns::FRAGMENT_TYPE << '\t'
         << Columns::FRAGMENT_CHARGE << '\t' << Columns::FRAGMENT_SERIES_NUMBER << '\t'
-        << Columns::FRAGMENT_LOSS_TYPE << '\t' << Columns::PROTEIN_GROUP << '\n';
+        << Columns::FRAGMENT_LOSS_TYPE << '\t' << Columns::PROTEIN_GROUP << '\t'
+        << Columns::CCS << '\n';
 
     out << std::defaultfloat;
     const auto& p = library.precursors();
@@ -459,6 +460,7 @@ namespace ODIA
       const auto pg = library.strings().get(p.protein_group[i]);
       const int z = p.charge[i];
       const bool has_im = !std::isnan(p.im[i]);
+      const bool has_ccs = i < p.ccs.size() && !std::isnan(p.ccs[i]);
       const std::uint32_t begin = p.transition_begin[i];
       for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
       {
@@ -485,7 +487,11 @@ namespace ODIA
         out << t.library_intensity[j] << '\t' << toString(t.type[j]) << '\t'
             << static_cast<int>(t.charge[j]) << '\t'
             << static_cast<int>(t.ordinal[j]) << '\t'
-            << toString(t.loss[j]) << '\t' << pg << '\n';
+            << toString(t.loss[j]) << '\t' << pg << '\t';
+        // Empty rather than "nan" when absent, as for RT: no TSV consumer
+        // accepts the latter, and a 0 here would read as a real cross-section.
+        if (has_ccs) { out << p.ccs[i]; }
+        out << '\n';
       }
     }
 
