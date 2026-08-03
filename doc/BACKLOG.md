@@ -326,6 +326,45 @@ Consequences to keep in view:
 
 ---
 
+## RT fine-tuning: the controlled result (2026-08-03)
+
+Five searches of S08, everything identical but the library's RT column.
+
+| library | RT source | RTPredAcc | DIA-NN's window | precursors | proteins |
+|---|---|---:|---:|---:|---:|
+| DIA-NN's own | DIA-NN | 0.2133 | 1.4397 | 37,170 | 5,255 |
+| ODIA v3 | stock PeptDeep | 0.3610 | 2.18905 | 35,296 | 5,109 |
+| ODIA + DIA-NN's RT | DIA-NN, pasted | 0.2189 | 1.36581 | 35,523 | 5,130 |
+| **ODIA v5** | **fine-tuned on 500** | **0.2107** | -- | **35,131** | **5,091** |
+| ODIA v4 | fine-tuned on 23,179 | 0.1642 | 1.05543 | 37,466 | 5,295 |
+
+**v4 is contaminated and must not be quoted.** 62.5% of the peptides it
+identified had their observed retention time in its own training set. It is
+train-on-test at the run level, and the +296 over DIA-NN is memorisation.
+
+**v5 is the honest one** -- 500 training peptides, 1.5% of the run's
+identifiable peptides -- and it settles the question:
+
+**RT accuracy improved from 0.361 to 0.211, reaching DIA-NN's own 0.213, and
+identifications went DOWN by 165.**
+
+That reproduces the earlier RT-swap ablation (+227, also noise) with an
+independent mechanism, and it means the original conclusion was right: **on this
+run, retention-time accuracy does not buy identifications.** Two libraries with
+equal RT accuracy -- v5 at 0.2107 and DIA-NN at 0.2133 -- differ by 2,039
+precursors, so the remaining gap is somewhere else entirely.
+
+**Where "somewhere else" is** remains the fragment-charge and intensity question
+recorded below: we emit 78.7% singly-charged fragments where DIA-NN emits 72.4%,
+and the precursors we miss are enriched in charge 3.
+
+**What fine-tuning is still for:** the extraction window, which v4 measured at
+1.055 min against v3's 2.189. That is a Phase 2 compute and feasibility argument
+(`doc/06-rt-refinement-plan.md` section 4a), not a sensitivity one -- and it now
+has an experiment behind it rather than an assertion.
+
+---
+
 ## Retention-time fine-tuning is integrated (2026-08-03)
 
 `scripts/finetune_rt.sh <report.parquet> <outdir> [n]` fine-tunes the RT model on
@@ -343,6 +382,20 @@ Two things the integration fixed over the prototype:
   predicts on -- which nothing downstream can recover otherwise.
 
 Still open, and both are in `doc/06-rt-refinement-plan.md`:
+
+- **Method choices settled by measurement**, not preference:
+  - *Direct target beats residual learning.* Calibrating first (linear, then
+    isotonic) and fine-tuning only the remainder gives 0.635 min against direct
+    fine-tuning's 0.429 at n=500 / 500 epochs -- barely better than the
+    calibration it sits on. Retargeting pretrained weights at a small centred
+    residual fights the initialisation. One implementation tested; freezing the
+    trunk might do better, and was not tried.
+  - *Data beats optimisation steps.* 500 peptides at 500 epochs reaches 0.429;
+    10,000 peptides at 40 epochs reaches 0.359. Twelve times the gradient steps
+    does not close what more peptides close easily.
+  - *40 epochs is about right.* At n=2000, going to 120 buys 4.7% while the
+    train/held-out gap doubles from 0.097 to 0.198 -- overfitting onset without
+    the held-out curve having turned up yet.
 
 - **The library does not carry the model's identity.** The sidecar sits beside
   the model, not beside the library, so two libraries built with different
