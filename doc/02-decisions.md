@@ -192,6 +192,35 @@ flat.
 
 ---
 
+## D9 — `.oswpq` is read directly, without a patched OpenMS
+
+**Decided.** ODIA opens the bundle itself, with libzip for the container and
+Arrow for the Parquet entries, rather than going through OpenMS's
+`TransitionParquetFile` / `ParquetFile`.
+
+**Why:** the format's known reader defects were fixed upstream *in a patch*
+(`ParquetFile::getColumn` returns `chunk(0)` while the row loop runs to
+`num_rows`, which reads past the end of any column split by the 2 GB string
+cap). ODIA is not allowed to modify OpenMS, so consuming the unpatched reader
+would mean inheriting that defect, and the patched one does not exist here.
+Reading the bundle directly also lets ODIA project columns: `traml_id` is
+denormalised into the transition table -- 78.6 M copies of ~7.1 M distinct
+strings, the single largest contributor to bundle size -- and ODIA addresses
+precursors by index, so it never materialises it.
+
+**Consequences.** ODIA reads the file, not the specification, and the two
+disagree. The upstream sample bundle carries transitions with no annotation at
+all (`type` `""`, `ordinal` `-1`), a precursor with m/z 0, and a precursor with
+no transitions. All three are legitimate and all three would have been dropped
+or mis-stored by a reader built from the document alone.
+
+`library_intensity` is accepted as either `float64` (upstream) or `float32`
+(the OpenDIAlyzer patch's breaking on-disk change). Pinning either width would
+reject half the files this reader exists to open. The *writer*'s choice is a
+separate question and is still open.
+
+---
+
 ## Open
 
 | # | Question | Blocks |

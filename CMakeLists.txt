@@ -37,6 +37,22 @@ if(NOT ONNXRuntime_INCLUDE_DIR OR NOT ONNXRuntime_LIBRARY)
 endif()
 message(STATUS "ONNX Runtime: ${ONNXRuntime_LIBRARY}")
 
+# libzip reads the .oswpq container. It is already in the environment as a
+# dependency of mzpeak; ODIA uses it directly because a bundle must be opened
+# without a patched OpenMS.
+find_package(libzip CONFIG QUIET)
+if(NOT libzip_FOUND)
+  find_path(LIBZIP_INCLUDE_DIR NAMES zip.h)
+  find_library(LIBZIP_LIBRARY NAMES zip)
+  if(NOT LIBZIP_INCLUDE_DIR OR NOT LIBZIP_LIBRARY)
+    message(FATAL_ERROR "libzip not found; scripts/bootstrap_libzip.sh provides it")
+  endif()
+  add_library(libzip::zip UNKNOWN IMPORTED)
+  set_target_properties(libzip::zip PROPERTIES
+    IMPORTED_LOCATION "${LIBZIP_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LIBZIP_INCLUDE_DIR}")
+endif()
+
 find_package(Arrow CONFIG REQUIRED)
 find_package(Parquet CONFIG REQUIRED)
 if(Arrow_VERSION VERSION_LESS 23)
@@ -65,6 +81,9 @@ set(ODIA_LIB_SOURCES
   src/library/Library.cpp
   src/library/DIANNLibraryFile.cpp
   src/library/LibraryGenerator.cpp
+  src/library/OSWPQLibraryFile.cpp
+  src/io/ArrowColumn.cpp
+  src/io/ZipArchive.cpp
   src/predict/PeptDeepEncoder.cpp
   src/predict/PeptDeepPredictor.cpp
 )
@@ -74,7 +93,7 @@ if(ODIA_LIB_SOURCES)
   target_include_directories(odia_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak
                                          ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET}
-                                         ${ONNXRuntime_LIBRARY})
+                                         ${ONNXRuntime_LIBRARY} libzip::zip)
   target_include_directories(odia_core PUBLIC ${ONNXRuntime_INCLUDE_DIR})
   set_target_properties(odia_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -102,7 +121,8 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 
 # Built only for the test suite: it dumps ODIA's encoding so it can be compared
 # against the independent Python reference.
-foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt odia_predict_ms2)
+foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
+               odia_predict_ms2 odia_oswpq_dump odia_chunked_column_test)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})

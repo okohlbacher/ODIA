@@ -17,6 +17,11 @@ export ODIA_MZPEAK="${ODIA_OPT}/mzpeak"
 # Scratch is node-local NVMe; sources and build trees live there, not on ceph.
 export ODIA_SCRATCH="${ODIA_SCRATCH:-/scratch/$(id -un)/odia}"
 
+# The OpenMS checkout, for its test data only -- ODIA builds against the
+# installed prefix, never the source tree. Absent on a node that has not been
+# bootstrapped, which the tests treat as "skip", not "fail".
+export ODIA_OPENMS_SOURCE="${ODIA_OPENMS_SOURCE:-${ODIA_SCRATCH}/src/OpenMS}"
+
 export PATH="${ODIA_ENV}/bin:${ODIA_OPT}/tools/bin:${PATH}"
 
 export CC="${ODIA_ENV}/bin/x86_64-conda-linux-gnu-gcc"

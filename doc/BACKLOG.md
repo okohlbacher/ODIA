@@ -24,7 +24,8 @@ external fix are marked **[you]**; the rest are mine to work through.
   predecessor's `float32` change is a breaking on-disk change that was never
   upstreamed, and we cannot apply it without modifying OpenMS. Proposal on the
   table: read both, write upstream-compatible `float64` by default with
-  `float32` behind an option.
+  `float32` behind an option. **The reader now does accept both**, verified
+  against fixtures of each width, so only the writer is still blocked on this.
 
 - **[you] GPU access.** `spock` and `data` both refuse: `Permission denied
   (publickey)`. The CUDA path in the predictor cannot be tested until then, and
@@ -200,11 +201,53 @@ ones re-tested after repair are now caught.*
   derives them from the data. They materially change the spectrum, so a library
   generated for one instrument is not right for another.
 - CCS prediction, for the ion-mobility column.
-- `.oswpq` read and write (gated on the `float64`/`float32` decision above for
-  writing; reading can proceed and should accept both).
+- `.oswpq` **write** (still gated on the `float64`/`float32` decision above).
 - Phase instrumentation: wall, CPU, RSS, `mallinfo2`, and node load per run,
   charging un-phased time to the preceding phase.
 - mzPeak chromatogram writer, using the fork's writer.
+
+---
+
+## `.oswpq` reading — what it does not yet do
+
+- **The multi-chunk path is never exercised against a real file.** It is the
+  reason `ChunkedColumn` exists, and it is unreachable below 2 GB of characters
+  in one column: Arrow's Parquet reader concatenates row groups, so a fixture
+  written with one row group per row still comes back as a single chunk. The
+  cursor is therefore tested against chunk layouts built directly in
+  `test/tools/odia_chunked_column_test.cpp`, which catches the defect but does
+  not prove Arrow splits where we think it does. A proteome-scale bundle would
+  settle it; none exists here.
+
+- **Both tables are materialised whole before conversion.** For the benchmark
+  library that is 78.6 M transitions of Arrow on top of the ODIA library being
+  built. Column projection removes the largest contributor (`traml_id`), but the
+  peak is still roughly double what it needs to be. Reading row group by row
+  group would fix it and was not done, because nothing here can measure it: the
+  largest bundle available is 18 transitions.
+
+- **Fields read and then dropped**: `traml_id`, `unmodified_sequence`,
+  `transition_id`, and the `detecting` / `identifying` / `quantifying` flags.
+  The first is deliberate (D3: no per-transition strings) but it means ODIA
+  cannot round-trip a bundle -- the human-facing precursor id is gone, and a
+  written bundle would have to synthesise one. The three booleans matter for
+  OpenSWATH scoring and will have to be carried before Phase 3.
+
+- **The census check is advisory.** A disagreement between the row counts and
+  `library/metadata.json` is recorded in `Stats` and nothing acts on it. It
+  should probably be a hard failure by default, since the whole point is to
+  catch a truncated read before an hour of extraction, but "probably" is not
+  enough to make a load fail.
+
+- **`schema_version` is checked; nothing else in the metadata is.** The
+  `fragment_type_counts` and `charge_counts` blocks are a second, finer census
+  that would catch a mis-parsed `type` column, and they are ignored.
+
+- **The spec document disagrees with the file in three places** and should be
+  corrected: it does not mention that `type`/`annotation` may be empty and
+  `ordinal` `-1`; it does not mention that a precursor may have no transitions;
+  and it says the transition `traml_id` is the precursor's, denormalised, where
+  the sample bundle carries the transition's own id there instead.
 
 ---
 

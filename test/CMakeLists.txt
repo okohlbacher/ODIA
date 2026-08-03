@@ -275,3 +275,50 @@ if(EXISTS "${ODIA_MS2_MODEL_PATH}" AND ODIA_PYTHON)
                    ${CMAKE_CURRENT_SOURCE_DIR}/compare_ms2.py
                    $<TARGET_FILE:odia_predict_ms2> "${ODIA_MS2_MODEL_PATH}")
 endif()
+
+# ---------------------------------------------------------------------------
+# .oswpq, OpenMS's Parquet-in-ZIP assay-library bundle.
+#
+# The fixtures are generated rather than committed because each one exists to
+# encode a specific hazard, and a binary blob cannot say which. They are built
+# with pyarrow and Python's zipfile -- independent implementations of both
+# formats -- so agreement with ODIA is evidence, not a tautology.
+# ---------------------------------------------------------------------------
+# Multi-chunk columns cannot be produced through a Parquet fixture -- Arrow
+# concatenates row groups -- so the cursor is exercised against chunk layouts
+# built directly. Without this, a "chunk(0) is the whole column" defect, which
+# is the exact failure this class exists to prevent, passes every other test.
+add_test(NAME chunked_column COMMAND odia_chunked_column_test)
+
+if(ODIA_PYTHON)
+  set(ODIA_OSWPQ_FIXTURES "${CMAKE_CURRENT_BINARY_DIR}/oswpq")
+
+  add_test(NAME oswpq_fixtures
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/make_oswpq_fixtures.py
+                   "${ODIA_OSWPQ_FIXTURES}")
+  set_tests_properties(oswpq_fixtures PROPERTIES FIXTURES_SETUP oswpq)
+
+  # The one bundle written by an OpenMS build nobody here controls. It is the
+  # only evidence that this reads what upstream actually writes, as opposed to
+  # what the fixtures and the specification agree it writes -- and it already
+  # disagrees with the specification in three places (unannotated transitions,
+  # a precursor with m/z 0, and a precursor with no fragments at all).
+  set(ODIA_UPSTREAM_OSWPQ
+      "$ENV{ODIA_OPENMS_SOURCE}/src/tests/class_tests/openms/data/OpenSwathWorkflow_tworuns_1_17.output.oswpq"
+      CACHE FILEPATH "An .oswpq bundle written by upstream OpenMS")
+  set(ODIA_UPSTREAM_ARG "")
+  if(EXISTS "${ODIA_UPSTREAM_OSWPQ}")
+    set(ODIA_UPSTREAM_ARG "${ODIA_UPSTREAM_OSWPQ}")
+  else()
+    message(STATUS "oswpq: no upstream bundle at ${ODIA_UPSTREAM_OSWPQ}; "
+                   "testing against generated fixtures only")
+  endif()
+
+  add_test(NAME oswpq_matches_pyarrow
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/check_oswpq.py
+                   $<TARGET_FILE:odia_oswpq_dump> "${ODIA_OSWPQ_FIXTURES}"
+                   ${ODIA_UPSTREAM_ARG})
+  set_tests_properties(oswpq_matches_pyarrow PROPERTIES FIXTURES_REQUIRED oswpq)
+endif()
