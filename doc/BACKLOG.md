@@ -292,6 +292,40 @@ Still open from this:
 
 ---
 
+## Phase 2 first slice, measured 2026-08-03
+
+Extraction runs end to end: library -> window assignment -> one forward pass ->
+chromatograms. On `12_80.mzpeak`, 200 precursors / 2,400 transitions over a 60 s
+retention-time slice (797 spectra):
+
+| | |
+|---|---|
+| points | 176,268, 14.9% non-zero |
+| **decode** | **262.03 s** (328.8 ms/spectrum) |
+| **match** | **0.02 s** (0.021 ms/spectrum) |
+| memory | 1.4 MiB |
+
+**The reader costs 13,000x what the matching costs.** ODIA's own work is 0.006%
+of the runtime. With the batched decoder specified in
+`05-mzpeak-batched-reader-handoff.md` the same extraction would take about
+0.09 s rather than 262 s, and matching would become the dominant term -- which
+is the point at which optimising ODIA starts to be worth anything.
+
+Consequences to keep in view:
+
+- **No timing taken through the current reader means anything about ODIA.**
+  Recorded here so it is not quoted later as an ODIA benchmark.
+- **The retention-time range must be resolved to a spectrum index range before
+  decoding**, not filtered afterwards. Filtering afterwards read the whole run
+  and discarded most of it -- an hour instead of seconds. Fixed, and worth
+  remembering as the shape of mistake this reader punishes.
+- **Still missing before this is useful**: an iRT-to-RT calibration, so a
+  precursor is extracted over a window around where it should elute rather than
+  over the whole run; and an output format. Without the first, a whole library
+  over a whole run is billions of points.
+
+---
+
 ## Retention time — the largest remaining scoring gap
 
 DIA-NN set an RT window of 2.29 min for our library against 1.44 for its own,
