@@ -32,6 +32,13 @@ if(EXISTS "${ODIA_DATA_DIR}/12_80.mzML")
     PASS_REGULAR_EXPRESSION "distinct isolation windows")
 endif()
 
+# Where the PeptDeep retention-time model lives. Declared once, used by every
+# test that needs it, and every such test is guarded on its existence -- a test
+# that silently vanishes elsewhere is bad, but one that fails elsewhere is worse.
+set(ODIA_RT_MODEL_PATH
+    "$ENV{ODIA_OPENMS}/share/OpenMS/models/peptdeep_rt_dynamic.onnx"
+    CACHE FILEPATH "PeptDeep RT model")
+
 # --------------------------------------------------------------------- library
 # Fixtures are derived, not committed; scripts/make_fixtures.sh builds them onto
 # node-local scratch. Skip these tests where they are absent rather than fail.
@@ -137,7 +144,8 @@ endif()
 # which made it the only test reaching -fasta *and* the only one that silently
 # vanished on any other machine -- taking the sole guard for the substitution
 # table, the fragment ordinals and the RT write path with it.
-if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON)
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
+   AND EXISTS "${ODIA_RT_MODEL_PATH}")
   add_test(NAME adversarial_generated
            COMMAND ${CMAKE_COMMAND}
                    -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
@@ -147,6 +155,7 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON)
                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/generated.out.tsv
                    -DCHECK_DECOYS=--decoy-table
                    -DREQUIRE_RT=--require-rt
+                   -DRT_MODEL=${ODIA_RT_MODEL_PATH}
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
 endif()
 
@@ -247,9 +256,6 @@ set_tests_properties(peptdeep_modification_symbols PROPERTIES
 # Predictions, not just tensors. Encoded values can match while dtype, layout or
 # ordering assumptions differ, and the sequence list mixes lengths so a broken
 # grouping or a lost reordering shows up as wrong values rather than an error.
-set(ODIA_RT_MODEL_PATH
-    "/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/opt/openms-3.6.0/share/OpenMS/models/peptdeep_rt_dynamic.onnx"
-    CACHE FILEPATH "PeptDeep RT model")
 if(EXISTS "${ODIA_RT_MODEL_PATH}" AND ODIA_PYTHON)
   add_test(NAME peptdeep_predictions_match_reference
            COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}

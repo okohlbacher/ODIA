@@ -153,6 +153,25 @@ ones re-tested after repair are now caught.*
   exactly with the independent Python reference on residue, N-terminal and
   C-terminal modifications, multiple modifications, signed counts and
   `aa_indices`.
+- **Predicted iRT is the model's normalised output, and nothing says so in the
+  file.** Measured range over 109,864 human sequences: -0.039 to 0.940, with
+  14.6% above 0.85 (saturation) and 1.24% negative. Nothing converts it to iRT
+  units or minutes, and the invariant checker treats a literal `0` as missing
+  while accepting -0.039. Decide the unit and declare it.
+- **Prediction costs 3 h 07 m of CPU time** (11,267 CPU-seconds at 4688% for
+  206 s wall) for one proteome library. Fine here; worth knowing before it runs
+  anywhere metered, and an argument for the GPU path.
+- **ONNX Runtime's arena accounts for +610 MiB of the +688 MiB** prediction adds
+  at proteome scale, and it never shrinks. It is bounded by `MAX_BATCH_ROWS` x
+  encoded length, so `-max_peptide_length` scales it linearly with nothing
+  capping or testing that.
+- **Peptides longer than the model was validated on are unreachable only by
+  accident**: `precursor_mz_max = 1200` at charges 2-3 caps peptides at ~32
+  residues before a precursor exists. `PeptDeepEncoder` has no length guard, so
+  widening the m/z window would feed the model lengths it has never seen.
+- **The library records neither the model nor the execution provider used.**
+  CUDA and CPU differ in the last bits, so a written library is currently
+  unattributable.
 - **Predictions depend on batch composition at the last bit.** Within one build,
   repeated calls are bit-identical, but batch size moves the result by ~1 ULP
   (1.5e-8) and the two ONNX Runtime builds compared in the tests differ by up to

@@ -11,8 +11,13 @@ Exit 0 if every invariant holds, 1 otherwise.
 """
 
 import csv
+import math
+import os
 import sys
 from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import peptdeep_reference as ref
 
 # Monoisotopic residue masses, independent of OpenMS.
 RESIDUE = {
@@ -140,7 +145,7 @@ def self_test():
                              f"loss={loss} got {got} want {want}")
 
 
-def main(path, check_decoys, require_rt=False):
+def main(path, check_decoys, require_rt=False, rt_model=None):
     rows = list(csv.DictReader(open(path), delimiter="\t"))
     failures = []
 
@@ -206,20 +211,54 @@ def main(path, check_decoys, require_rt=False):
         failures.append(f"{mismatched}/{checked} fragment m/z not reproducible; "
                         f"worst {worst[0]:.4f} Th: {worst[1]}")
 
-    # 4. Retention times must be real and varied.
+    # 4. Retention times must be the model's, for this peptide.
     #
-    # "Present" is not enough: a predictor returning a constant, or the
-    # placeholder left in place, both yield a column full of numbers. Distinct
-    # peptides must get distinct values.
+    # "Non-empty and varied" was not enough by a wide margin: the entire model
+    # call could be replaced by a hash of the peptide string and the suite
+    # stayed green, as could permuting, reversing or affinely distorting every
+    # value. So the values are predicted independently and compared.
     if require_rt:
-        rts = [r["RT"].strip() for r in rows]
-        missing = sum(1 for v in rts if not v or v.lower() in ("nan", "0", "0.0"))
-        if missing:
-            failures.append(f"{missing} rows have no usable retention time")
-        distinct = len({v for v in rts if v})
-        if distinct < 2:
-            failures.append(f"every row has the same retention time ({distinct} distinct); "
-                            f"a constant predictor would look like this")
+        by_sequence = {}
+        for r in rows:
+            value = r["RT"].strip()
+            if not value:
+                failures.append("a row has no retention time")
+                break
+            try:
+                rt = float(value)
+            except ValueError:
+                failures.append(f"retention time {value!r} is not a number")
+                break
+            if not math.isfinite(rt):
+                failures.append(f"retention time {value!r} is not finite")
+                break
+            # One sequence must have exactly one retention time, targets and
+            # decoys alike -- a decoy stores its target's sequence (D7), so a
+            # decoy given a different peptide's value shows up here.
+            previous = by_sequence.setdefault(r["Modified.Sequence"], rt)
+            if previous != rt:
+                failures.append(f"{r['Modified.Sequence']} has two retention times: "
+                                f"{previous} and {rt}")
+                break
+        else:
+            if len(by_sequence) > 1 and len(set(by_sequence.values())) < 2:
+                failures.append("every sequence has the same retention time")
+
+            if rt_model:
+                sequences = sorted(by_sequence)
+                predicted = ref.predict_rt(rt_model, sequences)
+                worst = (0.0, "")
+                for seq, want in zip(sequences, predicted):
+                    d = abs(by_sequence[seq] - want)
+                    if d > worst[0]:
+                        worst = (d, f"{seq}: file {by_sequence[seq]:.6f}, "
+                                    f"model {want:.6f}")
+                # The written value is float32 printed at 9 significant digits;
+                # the reference and the C++ link different ONNX Runtime builds,
+                # which differ by a few ULP.
+                if worst[0] > 1e-6:
+                    failures.append(f"retention times do not match the model "
+                                    f"(worst {worst[0]:.2e}): {worst[1]}")
 
     # 5. Values that no downstream parser accepts.
     for col in ("RT", "IM", "Precursor.Mz", "Product.Mz", "Relative.Intensity"):
@@ -237,4 +276,7 @@ def main(path, check_decoys, require_rt=False):
 if __name__ == "__main__":
     self_test()
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    sys.exit(main(args[0], "--decoy-table" in sys.argv, "--require-rt" in sys.argv))
+    model = next((a.split("=", 1)[1] for a in sys.argv[1:]
+                  if a.startswith("--rt-model=")), None)
+    sys.exit(main(args[0], "--decoy-table" in sys.argv,
+                  "--require-rt" in sys.argv, model))

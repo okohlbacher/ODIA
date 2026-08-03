@@ -8,6 +8,8 @@
 #include <odia/Library.h>
 
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -118,6 +120,21 @@ protected:
           if (skipped) { msg << " (" << skipped << " targets got none)"; }
           writeLogInfo_(msg.str());
         }
+
+        // Retention times are not predicted for a supplied library: it is
+        // expected to carry its own. Say so if it does not, rather than writing
+        // an empty column silently.
+        std::size_t without_rt = 0;
+        for (const auto v : library.precursors().irt)
+        {
+          if (std::isnan(v)) { ++without_rt; }
+        }
+        if (without_rt)
+        {
+          writeLogWarn_(std::to_string(without_rt) + " precursors in the supplied "
+                        "library have no retention time; prediction is only applied "
+                        "to libraries generated with -fasta.");
+        }
       }
       else
       {
@@ -144,13 +161,18 @@ protected:
 
         // Predict retention times, if a model is available. Fragment
         // intensities still need the MS2 model.
+        // No absolute path baked into the binary. OpenMS installs the model it
+        // downloads under its own share directory, so derive it from the
+        // environment or let the user say.
         std::string rt_model = getStringOption_("rt_model");
         if (rt_model.empty())
         {
-          const std::string fallback =
-            "/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/opt/openms-3.6.0/share/OpenMS/"
-            "models/peptdeep_rt_dynamic.onnx";
-          if (std::filesystem::exists(fallback)) { rt_model = fallback; }
+          if (const char* prefix = std::getenv("ODIA_OPENMS"))
+          {
+            const auto candidate = std::filesystem::path(prefix) /
+              "share/OpenMS/models/peptdeep_rt_dynamic.onnx";
+            if (std::filesystem::exists(candidate)) { rt_model = candidate.string(); }
+          }
         }
 
         if (rt_model.empty())
@@ -160,18 +182,30 @@ protected:
         }
         else
         {
-          const auto t_rt = std::chrono::steady_clock::now();
-          const auto unpredicted =
-            ODIA::LibraryGenerator::predictRetentionTimes(library, rt_model);
-          const auto rt_ms = std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - t_rt).count();
-          std::ostringstream rt;
-          rt << "predicted retention times in " << rt_ms << " ms";
-          if (unpredicted)
+          // A prediction failure must not discard a library that is already
+          // built: the unpredicted path warns and writes anyway, so this one
+          // should too, rather than throwing the work away and reporting it as
+          // a corrupt input.
+          try
           {
-            rt << "; " << unpredicted << " precursors left unpredicted";
+            const auto t_rt = std::chrono::steady_clock::now();
+            const auto unpredicted =
+              ODIA::LibraryGenerator::predictRetentionTimes(library, rt_model);
+            const auto rt_ms = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - t_rt).count();
+            std::ostringstream rt;
+            rt << "predicted retention times in " << rt_ms << " ms";
+            if (unpredicted)
+            {
+              rt << "; " << unpredicted << " precursors left unpredicted";
+            }
+            writeLogInfo_(rt.str());
           }
-          writeLogInfo_(rt.str());
+          catch (const std::exception& e)
+          {
+            writeLogWarn_(std::string("retention-time prediction failed, iRT left "
+                                      "unset: ") + e.what());
+          }
         }
 
         writeLogWarn_("Fragment intensities are still placeholders; the MS2 model "
