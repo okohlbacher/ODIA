@@ -331,3 +331,16 @@ if(ODIA_PYTHON)
            COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
                    ${CMAKE_CURRENT_SOURCE_DIR}/check_meta_inputs.py)
 endif()
+
+# CCS, the third model kind. Its three inputs match neither the RT model's two
+# nor the MS2 model's five, so the model guard rejected it outright until it
+# grew a third arm.
+set(ODIA_CCS_MODEL_PATH
+    "$ENV{ODIA_OPENMS}/share/OpenMS/models/peptdeep_ccs_dynamic.onnx"
+    CACHE FILEPATH "PeptDeep CCS model")
+if(EXISTS "${ODIA_CCS_MODEL_PATH}" AND ODIA_PYTHON)
+  add_test(NAME peptdeep_ccs_matches_reference
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/compare_ccs.py
+                   $<TARGET_FILE:odia_predict_ccs> "${ODIA_CCS_MODEL_PATH}")
+endif()

@@ -108,11 +108,26 @@ namespace ODIA
                                      const std::string& instrument = "QE",
                                      std::vector<Failure>* failures = nullptr);
 
+    /// Predict collision cross-section in square angstroms, one per peptide.
+    ///
+    /// This is CCS, not ion mobility. Converting it to the 1/K0 a timsTOF
+    /// reports needs the Mason-Schamp relation with the drift gas mass and a
+    /// calibration constant, and those live in alphabase, which is not on this
+    /// machine -- inventing them would produce plausible numbers in the wrong
+    /// units. OpenMS's own PeptDeepCCSInference likewise stops at CCS.
+    ///
+    /// @param failures as for predictMS2; unfilled entries are left NaN.
+    std::vector<float> predictCCS(const std::vector<OpenMS::AASequence>& peptides,
+                                  const std::vector<int>& charges,
+                                  std::vector<Failure>* failures = nullptr);
+
   private:
     void runBatch_(const PeptDeepEncoder::Batch& batch,
                    const std::vector<std::size_t>& group, std::vector<float>& out);
     void runMS2Batch_(const PeptDeepEncoder::Batch& batch,
                       const std::vector<std::size_t>& group, std::vector<Spectrum>& out);
+    void runCCSBatch_(const PeptDeepEncoder::Batch& batch,
+                      const std::vector<std::size_t>& group, std::vector<float>& out);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

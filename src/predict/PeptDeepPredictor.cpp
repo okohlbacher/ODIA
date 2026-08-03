@@ -113,12 +113,16 @@ namespace ODIA
       (impl_->input_names[0] == "input_sequences" || impl_->input_names[0] == "aa_indices") &&
       impl_->input_names[1] == "mod_x" && impl_->input_names[2] == "charges" &&
       impl_->input_names[3] == "nce" && impl_->input_names[4] == "instrument_indices";
-    if (!looks_like_rt && !looks_like_ms2)
+    const bool looks_like_ccs =
+      impl_->input_names.size() == 3 &&
+      (impl_->input_names[0] == "input_sequences" || impl_->input_names[0] == "aa_indices") &&
+      impl_->input_names[1] == "mod_x" && impl_->input_names[2] == "charges";
+    if (!looks_like_rt && !looks_like_ms2 && !looks_like_ccs)
     {
       std::string names;
       for (const auto& n : impl_->input_names) { names += (names.empty() ? "" : ", ") + n; }
       throw std::runtime_error(
-        "model " + model_path + " is not a PeptDeep retention-time or MS2 model: "
+        "model " + model_path + " is not a PeptDeep retention-time, CCS or MS2 model: "
         "found inputs (" + names + ")");
     }
   }
@@ -404,6 +408,131 @@ namespace ODIA
      }
     }
     return out;
+  }
+
+  std::vector<float>
+  PeptDeepPredictor::predictCCS(const std::vector<OpenMS::AASequence>& peptides,
+                                const std::vector<int>& charges,
+                                std::vector<Failure>* failures)
+  {
+    if (charges.size() != peptides.size())
+    {
+      throw std::invalid_argument("one charge per peptide is required");
+    }
+    if (impl_->input_names.size() != 3)
+    {
+      throw std::runtime_error("predictCCS was given a model with " +
+                               std::to_string(impl_->input_names.size()) +
+                               " inputs; the CCS model takes 3");
+    }
+
+    // NaN, as in predictRT: an unfilled entry must be recognisable as "no
+    // prediction" rather than pass for a collision cross-section of zero.
+    std::vector<float> out(peptides.size(), std::numeric_limits<float>::quiet_NaN());
+
+    for (const auto& whole_group : PeptDeepEncoder::groupByLength(peptides))
+    {
+     for (std::size_t offset = 0; offset < whole_group.size(); offset += MAX_BATCH_ROWS)
+     {
+      const std::vector<std::size_t> group(
+        whole_group.begin() + static_cast<std::ptrdiff_t>(offset),
+        whole_group.begin() + static_cast<std::ptrdiff_t>(
+          std::min(offset + MAX_BATCH_ROWS, whole_group.size())));
+
+      std::vector<OpenMS::AASequence> subset;
+      std::vector<int> subset_charges;
+      subset.reserve(group.size());
+      subset_charges.reserve(group.size());
+      for (const auto index : group)
+      {
+        subset.push_back(peptides[index]);
+        subset_charges.push_back(charges[index]);
+      }
+
+      PeptDeepEncoder::Batch batch;
+      try
+      {
+        // The CCS model takes no NCE and no instrument, but the encoder's meta
+        // overload fills both; they are simply not bound below. Reusing it
+        // keeps the charge validation and scaling in one place.
+        batch = PeptDeepEncoder::encode(subset, subset_charges, 30.0f, "QE");
+      }
+      catch (const std::exception&)
+      {
+        // One unencodable peptide, or one impossible charge, must not discard
+        // its chunk. As in predictRT and predictMS2.
+        if (failures == nullptr) { throw; }
+        for (std::size_t i = 0; i < group.size(); ++i)
+        {
+          try
+          {
+            const auto single = PeptDeepEncoder::encode(
+              std::vector<OpenMS::AASequence>{subset[i]},
+              std::vector<int>{subset_charges[i]}, 30.0f, "QE");
+            runCCSBatch_(single, {group[i]}, out);
+          }
+          catch (const std::exception& inner)
+          {
+            failures->push_back({group[i], inner.what()});
+          }
+        }
+        continue;
+      }
+
+      runCCSBatch_(batch, group, out);
+     }
+    }
+    return out;
+  }
+
+  void PeptDeepPredictor::runCCSBatch_(const PeptDeepEncoder::Batch& batch,
+                                       const std::vector<std::size_t>& group,
+                                       std::vector<float>& out)
+  {
+    const std::int64_t rows = static_cast<std::int64_t>(batch.rows);
+    const std::int64_t length = static_cast<std::int64_t>(batch.sequence_length);
+    const std::int64_t width = static_cast<std::int64_t>(PEPTDEEP_MOD_ELEMENTS.size());
+
+    std::array<std::int64_t, 2> aa_shape{rows, length};
+    std::array<std::int64_t, 3> mod_shape{rows, length, width};
+    std::array<std::int64_t, 2> charge_shape{rows, 1};
+
+    std::vector<Ort::Value> inputs;
+    inputs.push_back(Ort::Value::CreateTensor<std::int64_t>(
+      impl_->memory, const_cast<std::int64_t*>(batch.aa_indices.data()),
+      batch.aa_indices.size(), aa_shape.data(), aa_shape.size()));
+    inputs.push_back(Ort::Value::CreateTensor<float>(
+      impl_->memory, const_cast<float*>(batch.mod_x.data()),
+      batch.mod_x.size(), mod_shape.data(), mod_shape.size()));
+    inputs.push_back(Ort::Value::CreateTensor<float>(
+      impl_->memory, const_cast<float*>(batch.charges.data()),
+      batch.charges.size(), charge_shape.data(), charge_shape.size()));
+
+    std::vector<const char*> in_names;
+    for (const auto& n : impl_->input_names) { in_names.push_back(n.c_str()); }
+    std::vector<const char*> out_names{impl_->output_names[0].c_str()};
+
+    auto results = impl_->session->Run(Ort::RunOptions{nullptr}, in_names.data(),
+                                       inputs.data(), inputs.size(),
+                                       out_names.data(), out_names.size());
+
+    const auto info = results.front().GetTensorTypeAndShapeInfo();
+    const auto shape = info.GetShape();
+    // Rank 1, like the RT model and unlike what the format notes claim. A
+    // [batch, 1] output would still have the right element count, so checking
+    // the count alone would not notice.
+    if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+        shape.size() != 1 || shape[0] != rows)
+    {
+      throw std::runtime_error("CCS output is not [batch]");
+    }
+
+    const float* values = results.front().GetTensorData<float>();
+    for (std::size_t i = 0; i < group.size(); ++i)
+    {
+      // Indexed by group[i]: the peptides were reordered into length groups.
+      out[group[i]] = values[i];
+    }
   }
 
 } // namespace ODIA

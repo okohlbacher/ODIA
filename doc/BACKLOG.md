@@ -225,9 +225,25 @@ ones re-tested after repair are now caught.*
   across the 2048 boundary was verified by hand (indices 2046-2050 bit-identical
   to solo runs) but nothing holds it.
 
-- **The CCS model will not load.** The constructor identifies a model by input
-  count, and CCS has three, matching neither the RT model's two nor the MS2
-  model's five. The guard needs a third arm before CCS prediction can start.
+- **CCS is predicted; ion mobility is not.** `predictCCS` returns collision
+  cross-section in square angstroms, which is what the model gives and where
+  OpenMS's own `PeptDeepCCSInference` stops. Turning it into the 1/K0 a timsTOF
+  reports needs the Mason-Schamp relation with the drift gas mass and a
+  calibration constant, both of which live in alphabase -- not on this machine.
+  They were deliberately not reconstructed from memory: plausible numbers in the
+  wrong units are worse than none. **The library's `im` column therefore still
+  has no source.**
+
+- **The model guard's reject path is untested.** All three shipped models are
+  accepted, so nothing here exercises the case it exists for -- a model that is
+  none of the three. Testing it needs a synthetic ONNX file and the `onnx`
+  Python package is not in the environment. The per-call guards *are* tested,
+  by feeding each `predict*` the other two models.
+
+- **Two output-shape checks are equivalent mutants.** Removing the CCS rank
+  check, or the batch-size check, changes nothing observable, because the real
+  model always returns the right shape. They are cheap insurance against a
+  re-exported model, not something any test here can hold.
 
 - **A failed peptide is an empty spectrum**, which `Spectrum::at()` will index
   out of bounds. `predictRT` uses NaN for the same situation; there is no

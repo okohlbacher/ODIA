@@ -202,6 +202,40 @@ def predict_ms2(model_path, sequences, charges, nce=30.0, instrument="QE"):
     return out
 
 
+def predict_ccs(model_path, sequences, charges):
+    """Predict collision cross-section, one value per peptide.
+
+    Three inputs, not two and not five, and a rank-1 output like the RT model's.
+    Charge carries the same 0.1 scale as in MS2.
+    """
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    threads = int(os.environ.get("ODIA_ORT_THREADS", "0"))
+    if threads > 0:
+        options.intra_op_num_threads = threads
+    session = ort.InferenceSession(model_path, options,
+                                   providers=["CPUExecutionProvider"])
+    names = [i.name for i in session.get_inputs()]
+
+    out = [float("nan")] * len(sequences)
+    by_length = {}
+    for k, s in enumerate(sequences):
+        by_length.setdefault(len(parse(s)[0]), []).append(k)
+
+    for _, group in sorted(by_length.items()):
+        aas, mods = zip(*(encode(sequences[k]) for k in group))
+        values = session.run(None, {
+            names[0]: np.stack(aas),
+            names[1]: np.stack(mods),
+            names[2]: np.array([[charges[k] * CHARGE_SCALE] for k in group],
+                               dtype=np.float32),
+        })[0]
+        for i, k in enumerate(group):
+            out[k] = float(values[i])
+    return out
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "encode":
         aa, mod_x = encode(sys.argv[2])
