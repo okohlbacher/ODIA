@@ -5,7 +5,30 @@
 a targeted DIA extraction engine needs from the reader, what the reader does
 today, and how to reproduce every number.
 
-**Status.** Measured on 2026-08-02 against `587a4fb` (branch `writer_test`),
+**Status update, 2026-08-03, against `f93f938` (trunk).** The fork now provides
+the *entry points* this document asked for -- `get_spectra_batch`,
+`indices_in_time_range`, `extract_ion_chromatogram`, per-peak ion mobility -- and
+R2 is satisfied as an API. **R1 is not.** Peak decode is still
+**284.4 ms/spectrum** through `get_spectra_batch` (2,000 spectra of `12_80` in
+568.7 s, batches of 512), against 276.8 ms/spectrum for the per-spectrum path
+measured a day earlier. The batch call is a loop over spectra, not a shared
+decode.
+
+The cost this *should* carry is now measured rather than asserted.
+`spectra_peaks.parquet` holds 21,172,704 rows in 21 row groups of ~1,048,576,
+and one row group covers **873 distinct spectra**. Decoding row group 0 whole,
+with pyarrow, takes **0.07 s** -- so a reader that decodes each row group once
+and serves every spectrum in it would cost **0.082 ms/spectrum**, and a full
+pass over the run would take **1.5 s** (0.116 ms/spectrum). That is *better than
+mzML parity* (0.27 ms/spectrum), and it is 2,450x faster than the reader
+achieves today.
+
+So the gap is entirely in how the reader traverses, not in the format or the
+layout: each spectrum access decodes a whole row group and keeps ~0.1% of it.
+`extract_ion_chromatogram` inherits the same cost -- five XICs over the full RT
+range did not finish in 10 minutes.
+
+**Original status.** Measured on 2026-08-02 against `587a4fb` (branch `writer_test`),
 built with GCC 14.4, Arrow/Parquet 23.0.1, Boost 1.89, on a 128-core node with
 the archives on node-local NVMe.
 

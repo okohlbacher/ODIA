@@ -221,6 +221,36 @@ separate question and is still open.
 
 ---
 
+## D10 — Phase 2 is extraction, behind a spectrum-source interface
+
+**Decided.** Phase 2 delivers extracted-ion chromatograms for the precursors of
+a library from a DIA run, end to end and independently usable, with the run
+reached through an interface rather than through mzPeak directly.
+
+The slice: map library precursors onto the run's isolation windows, extract one
+chromatogram per transition over the retention-time range that matters, and
+write them out. Scoring is Phase 3.
+
+**Why the interface.** The mzPeak reader cannot serve this yet -- peak access is
+~1000x slower per spectrum than parsing the same data from mzML
+(`03-mzpeak-streaming-requirements.md`), and the streaming interface that would
+fix it is not available here. Waiting would stall the phase behind a dependency
+nobody in this project controls.
+
+The data directory carries both `.mzML` and `.mzpeak` for the same three runs,
+so an mzML implementation is not a detour: it is the reference the mzPeak
+implementation will be checked against, value for value, once the reader can
+serve peaks at a usable rate. Building the extractor against an interface makes
+that a substitution rather than a rewrite.
+
+**What this must not become.** An mzML-shaped interface that mzPeak then has to
+emulate. The requirements document was written from what extraction needs, not
+from what mzML offers, and the interface follows it: windows and time ranges are
+asked for by value, not by scan index, so a reader that can seek by them is not
+forced to scan.
+
+---
+
 ## Open
 
 | # | Question | Blocks |

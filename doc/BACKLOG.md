@@ -15,7 +15,16 @@ external fix are marked **[you]**; the rest are mine to work through.
   prompted to refute instead, which is a weaker substitute: same model family,
   so correlated blind spots. Install the CLIs and provide keys and I will switch.
 
-- **[you] mzPeak peak decoding is ~1000× too slow to extract with.** ~277 ms per
+- **[you] mzPeak decode is still the Phase 2 blocker, now with a precise
+  diagnosis.** At `f93f938` the batch API exists but does not amortise:
+  284.4 ms/spectrum via `get_spectra_batch`, against 0.082 ms/spectrum if each
+  Parquet row group were decoded once and its 873 spectra served from it.
+  Measured, not estimated -- a row group decodes in 0.07 s with pyarrow, and a
+  full pass over `12_80` would take 1.5 s, beating mzML's 3.5 s. The reader
+  decodes a whole row group per spectrum and keeps ~0.1% of it. Everything that
+  touches peaks inherits this, including `extract_ion_chromatogram`.
+
+- **[superseded, kept for the measurement] mzPeak peak decoding is ~1000× too slow.** ~277 ms per
   spectrum against ~0.27 ms for OpenMS parsing mzML. Full requirements in
   `03-mzpeak-streaming-requirements.md` (R1, R2, R5 are the blocking set).
   Phase 2 cannot start until this moves.

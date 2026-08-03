@@ -26,7 +26,7 @@ source "${here}/env.sh"
 #
 # Pinned to a commit because this is an active WIP branch, not a release.
 MZPEAK_REPO="${MZPEAK_REPO:-https://github.com/okohlbacher/mzpeak-openms.git}"
-MZPEAK_COMMIT="${MZPEAK_COMMIT:-587a4fb733d089ccf61a601af98e4176dc547fd3}"
+MZPEAK_COMMIT="${MZPEAK_COMMIT:-f93f9387a0343e9916edbc222a968bb80748e8eb}"
 src="${ODIA_SCRATCH}/src/mzpeak-openms"
 build="${ODIA_SCRATCH}/build/mzpeak"
 
