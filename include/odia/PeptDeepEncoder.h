@@ -37,7 +37,23 @@ namespace ODIA
       std::size_t sequence_length = 0;  ///< nAA + 2, including both terminal tokens
       std::vector<std::int64_t> aa_indices;   ///< [rows, sequence_length]
       std::vector<float> mod_x;              ///< [rows, sequence_length, 109]
+
+      // MS2 and CCS only, empty otherwise. The scale factors are applied here
+      // rather than left to the caller: passing raw NCE gives a spectrum with
+      // cosine 0.0028 against the correct one, and raw charge 0.6377 -- both
+      // unrelated output with no error, so the scaling must not be optional.
+      std::vector<float> charges;                  ///< [rows, 1], already x0.1
+      std::vector<float> nces;                     ///< [rows, 1], already x0.01
+      std::vector<std::int64_t> instrument_indices; ///< [rows], rank 1, not [rows, 1]
     };
+
+    static constexpr float CHARGE_SCALE = 0.1f;
+    static constexpr float NCE_SCALE = 0.01f;
+
+    /// Instrument index. Anything unrecognised maps to max_instrument_num - 1,
+    /// not to 0: mapping an unknown instrument onto QE would quietly predict
+    /// for the wrong one.
+    static std::int64_t instrumentIndex(const std::string& name);
 
     /// Encode one peptide. Throws if it is empty or carries a residue outside
     /// A-Z, which would one-hot to an all-off row and so be indistinguishable
@@ -47,6 +63,12 @@ namespace ODIA
     /// Encode several peptides of equal length into one batch.
     /// Throws if the lengths differ.
     static Batch encode(const std::vector<OpenMS::AASequence>& peptides);
+
+    /// As above, plus the meta inputs the MS2 model needs.
+    /// @param charges one per peptide, unscaled; scaling is applied here.
+    static Batch encode(const std::vector<OpenMS::AASequence>& peptides,
+                        const std::vector<int>& charges,
+                        float nce, const std::string& instrument);
 
     /// Group by residue count, so each batch is length-homogeneous. Returns the
     /// index groups; the caller encodes and runs each in turn.

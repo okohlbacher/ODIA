@@ -191,11 +191,14 @@ ones re-tested after repair are now caught.*
   written from the spec rather than from the C++; the element list is generated
   from the authoritative yaml into `data/peptdeep_mod_elements.txt` and
   `include/odia/PeptDeepElements.h`. The C++ side is still to be written.
-- MS2 intensity prediction, and with it the placeholder fragment ranking:
-  `LibraryGenerator` still caps fragments by descending m/z because there are no
-  predicted intensities. The MS2 model needs `charges` (×0.1), `nce` (×0.01) and
-  a rank-1 `instrument_indices`, and returns `[batch, seq_len-3, 8]` whose
-  channel order is documented in `04-peptdeep-encoding.md` §6.
+- **MS2 prediction works and matches the reference**; still to do is *using* it:
+  `LibraryGenerator` caps fragments by descending m/z because it has no
+  intensities yet. Wiring it in means mapping the `[positions, 8]` output onto
+  b/y ions at charge 1-2, choosing a cap by predicted intensity, and deciding
+  what NCE and instrument to assume when the caller does not say.
+- **NCE and instrument are guesses.** They default to 30.0 and "QE", and nothing
+  derives them from the data. They materially change the spectrum, so a library
+  generated for one instrument is not right for another.
 - CCS prediction, for the ion-mobility column.
 - `.oswpq` read and write (gated on the `float64`/`float32` decision above for
   writing; reading can proceed and should accept both).

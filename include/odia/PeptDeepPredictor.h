@@ -74,6 +74,31 @@ namespace ODIA
     std::vector<float> predictRT(const std::vector<OpenMS::AASequence>& peptides,
                                  std::vector<Failure>* failures = nullptr);
 
+    /// One predicted fragment spectrum: (nAA - 1) positions x 8 channels.
+    ///
+    /// Channel order comes from alphabase's sort_charged_frag_types, which is
+    /// sorted(no_loss) + sorted(loss):
+    ///   0 b_z1  1 b_z2  2 y_z1  3 y_z2
+    ///   4 b_modloss_z1  5 b_modloss_z2  6 y_modloss_z1  7 y_modloss_z2
+    struct Spectrum
+    {
+      std::size_t positions = 0;
+      static constexpr std::size_t CHANNELS = 8;
+      std::vector<float> intensities;   ///< [positions, CHANNELS], row-major
+
+      float at(std::size_t position, std::size_t channel) const
+      {
+        return intensities[position * CHANNELS + channel];
+      }
+    };
+
+    /// Predict fragment intensities. @p charges is one per peptide.
+    std::vector<Spectrum> predictMS2(const std::vector<OpenMS::AASequence>& peptides,
+                                     const std::vector<int>& charges,
+                                     float nce = 30.0f,
+                                     const std::string& instrument = "QE",
+                                     std::vector<Failure>* failures = nullptr);
+
   private:
     void runBatch_(const PeptDeepEncoder::Batch& batch,
                    const std::vector<std::size_t>& group, std::vector<float>& out);

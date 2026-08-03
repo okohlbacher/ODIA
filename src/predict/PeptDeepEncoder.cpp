@@ -9,6 +9,7 @@
 #include <OpenMS/CHEMISTRY/ModificationsDB.h>
 #include <OpenMS/CHEMISTRY/ResidueModification.h>
 
+#include <cctype>
 #include <map>
 #include <stdexcept>
 
@@ -161,6 +162,39 @@ namespace ODIA
       {
         addModification_(batch, row, n + 1, mod->getFullId());
       }
+    }
+    return batch;
+  }
+
+  std::int64_t PeptDeepEncoder::instrumentIndex(const std::string& name)
+  {
+    static const std::map<std::string, std::int64_t> known{
+      {"QE", 0}, {"LUMOS", 1}, {"TIMSTOF", 2}, {"SCIEXTOF", 3}, {"THERMOTOF", 4},
+    };
+    std::string upper;
+    for (const char c : name) { upper.push_back(static_cast<char>(std::toupper(c))); }
+    const auto it = known.find(upper);
+    // max_instrument_num - 1, the "unknown" slot.
+    return it == known.end() ? 7 : it->second;
+  }
+
+  PeptDeepEncoder::Batch
+  PeptDeepEncoder::encode(const std::vector<AASequence>& peptides,
+                          const std::vector<int>& charges,
+                          float nce, const std::string& instrument)
+  {
+    if (charges.size() != peptides.size())
+    {
+      throw std::invalid_argument("one charge per peptide is required");
+    }
+    Batch batch = encode(peptides);
+
+    batch.charges.reserve(batch.rows);
+    batch.nces.assign(batch.rows, nce * NCE_SCALE);
+    batch.instrument_indices.assign(batch.rows, instrumentIndex(instrument));
+    for (const int z : charges)
+    {
+      batch.charges.push_back(static_cast<float>(z) * CHARGE_SCALE);
     }
     return batch;
   }

@@ -150,6 +150,58 @@ def predict_rt(model_path, sequences):
     return out
 
 
+# Instrument index, from featurize.py. Anything unrecognised maps to
+# max_instrument_num - 1 = 7, not to 0 -- mapping an unknown instrument onto QE
+# would silently predict for the wrong one.
+INSTRUMENTS = {"QE": 0, "LUMOS": 1, "TIMSTOF": 2, "SCIEXTOF": 3, "THERMOTOF": 4}
+UNKNOWN_INSTRUMENT = 7
+
+# MS2 output channels, from alphabase's sort_charged_frag_types:
+# sorted(no_loss) + sorted(loss) over [b, y, b_modloss, y_modloss] x charge 1-2.
+MS2_CHANNELS = ["b_z1", "b_z2", "y_z1", "y_z2",
+                "b_modloss_z1", "b_modloss_z2", "y_modloss_z1", "y_modloss_z2"]
+
+
+def predict_ms2(model_path, sequences, charges, nce=30.0, instrument="QE"):
+    """Predict fragment intensities: [n_peptides][nAA-1][8].
+
+    charges is per peptide. The scale factors are not cosmetic: passing raw NCE
+    gives a spectrum with cosine 0.0028 against the correct one, and raw charge
+    0.6377 -- unrelated output, with no error.
+    """
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    threads = int(os.environ.get("ODIA_ORT_THREADS", "0"))
+    if threads > 0:
+        options.intra_op_num_threads = threads
+    session = ort.InferenceSession(model_path, options,
+                                   providers=["CPUExecutionProvider"])
+    names = [i.name for i in session.get_inputs()]
+    instrument_index = INSTRUMENTS.get(instrument.upper(), UNKNOWN_INSTRUMENT)
+
+    out = [None] * len(sequences)
+    by_length = {}
+    for k, s in enumerate(sequences):
+        by_length.setdefault(len(parse(s)[0]), []).append(k)
+
+    for _, group in sorted(by_length.items()):
+        aas, mods = zip(*(encode(sequences[k]) for k in group))
+        feed = {
+            names[0]: np.stack(aas),
+            names[1]: np.stack(mods),
+            names[2]: np.array([[charges[k] * CHARGE_SCALE] for k in group],
+                               dtype=np.float32),
+            names[3]: np.full((len(group), 1), nce * NCE_SCALE, dtype=np.float32),
+            # Rank 1, unlike every other meta input.
+            names[4]: np.full((len(group),), instrument_index, dtype=np.int64),
+        }
+        values = session.run(None, feed)[0]
+        for i, k in enumerate(group):
+            out[k] = values[i]
+    return out
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "encode":
         aa, mod_x = encode(sys.argv[2])
@@ -159,6 +211,14 @@ if __name__ == "__main__":
                               for i in range(mod_x.shape[0]) if mod_x[i].any()},
             "mod_x_nonzero_idx": {str(i): np.nonzero(mod_x[i])[0].tolist()
                                   for i in range(mod_x.shape[0]) if mod_x[i].any()},
+        }))
+    elif sys.argv[1] == "ms2":
+        model, seq, charge = sys.argv[2], sys.argv[3], int(sys.argv[4])
+        spectrum = predict_ms2(model, [seq], [charge])[0]
+        print(json.dumps({
+            "shape": list(spectrum.shape),
+            "channels": MS2_CHANNELS,
+            "values": [[round(float(v), 6) for v in row] for row in spectrum],
         }))
     elif sys.argv[1] == "rt":
         seqs = sys.argv[3:]

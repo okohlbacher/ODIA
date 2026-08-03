@@ -262,3 +262,16 @@ if(EXISTS "${ODIA_RT_MODEL_PATH}" AND ODIA_PYTHON)
                    ${CMAKE_CURRENT_SOURCE_DIR}/compare_predictions.py
                    $<TARGET_FILE:odia_predict_rt> "${ODIA_RT_MODEL_PATH}")
 endif()
+
+# MS2 intensities, covering the inputs the RT model does not have: charge, NCE
+# and the rank-1 instrument index. Each is varied across the cases, because a
+# defect that ignores one of them passes any fixture that holds it constant.
+set(ODIA_MS2_MODEL_PATH
+    "$ENV{ODIA_OPENMS}/share/OpenMS/models/peptdeep_ms2_dynamic.onnx"
+    CACHE FILEPATH "PeptDeep MS2 model")
+if(EXISTS "${ODIA_MS2_MODEL_PATH}" AND ODIA_PYTHON)
+  add_test(NAME peptdeep_ms2_matches_reference
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/compare_ms2.py
+                   $<TARGET_FILE:odia_predict_ms2> "${ODIA_MS2_MODEL_PATH}")
+endif()
