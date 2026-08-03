@@ -24,3 +24,8 @@ compile_commands.json
 # Python bytecode from the test helpers
 __pycache__/
 *.pyc
+
+# Editor and review leftovers.
+*.bak
+*.orig
+*~
