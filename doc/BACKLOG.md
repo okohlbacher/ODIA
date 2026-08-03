@@ -409,6 +409,53 @@ AlphaPeptDeep's torch predictions.
 
 ---
 
+## Fragment charge rules and ranking — the live suspect
+
+Raised by the RT research (2026-08-03), which ruled retention time out and left
+this as the leading explanation for the remaining identification gap.
+
+**The measurements.** With RT equalised between the two libraries, ODIA still
+misses 4,937 of DIA-NN's precursors while finding 3,378 it does not. The missed
+ones are **enriched in charge 3 -- 37.0% against 24.5% of the shared set** --
+and have **median quantity 0.40x** the shared ones. The libraries are otherwise
+structurally matched: 12.00 fragments per precursor against 11.92, b/y split
+29/71 in both. But **ODIA emits 78.7% singly-charged fragments where DIA-NN
+emits 72.4%**.
+
+**Why this is not already fixed.** The enumeration rule was corrected earlier:
+fragments may now carry up to the precursor's own charge, which was worth 44.7%
+of the assays DIA-NN had and we lacked. What was never checked is whether the
+*ranking* then selects them. Raising the cap only puts doubly-charged ions into
+the candidate list; the top-12 cut is by predicted intensity, and if the model's
+z2 channels are systematically weaker than its z1 channels, the cap change adds
+candidates that never survive. The 78.7%/72.4% split says exactly that is
+happening.
+
+**Questions to answer, in order.**
+
+1. Is the z2 deficit in the *model* or in our *use* of it? Compare the predicted
+   intensity distribution of channels 1 and 3 (b_z2, y_z2) against channels 0
+   and 2, for 3+ precursors specifically. The MS2 comparison already
+   demonstrated that channel 1 is barely reached at charge 2 and needs a 4+
+   precursor with two basic residues to appear at all.
+2. Does DIA-NN cap fragments the same way? 11.92 per precursor is close enough
+   to our 12 to suggest a similar cap, but the composition differs, so either
+   the ranking or the candidate set does.
+3. Would a charge-aware cap help -- for example reserving slots for z2 ions on
+   3+ precursors rather than letting one global ranking decide?
+4. Do the missed precursors' assays actually extract? Their 0.40x median
+   quantity says they are low-abundance, so some of the gap may be sensitivity
+   rather than assay choice. Phase 2 can answer this directly once it can
+   extract at scale, and that is the cleanest test available.
+
+**Do not assume the answer.** The last two confident diagnoses on this project
+-- methionine excision for the coverage gap, retention time for the
+identification gap -- were both wrong, and both were settled in minutes by an
+ablation. Run the equivalent here before changing the ranking: rebuild the
+library with a charge-aware cap and search it, rather than reasoning about it.
+
+---
+
 ## MS2 prediction — what the review left open
 
 - **`predictMS2` materialises every spectrum.** 100,000 peptides measured at
