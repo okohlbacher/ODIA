@@ -326,17 +326,86 @@ Consequences to keep in view:
 
 ---
 
-## Retention time — the largest remaining scoring gap
+## Retention time — accurate diagnosis, and it does NOT cost identifications
 
-DIA-NN set an RT window of 2.29 min for our library against 1.44 for its own,
-so our iRT is about 1.6x less predictive after its calibration, despite a rank
-correlation of 0.992 with DIA-NN's own predictions over 200,000 precursors.
-Identifications per library precursor are otherwise identical, so this is a
-scoring-dimension weakness rather than coverage.
+Researched 2026-08-03. **The framing that sent this investigation was wrong,
+and the correction matters more than the investigation.** RT was called "the
+most likely source of the remaining 5%". It is not.
 
-A research task is running on how to improve it -- model choice, run-specific
-calibration, transfer learning, and whether the raw normalised output loses
-local accuracy. Findings land here.
+**The controlled ablation.** ODIA's library with DIA-NN's RT column pasted in,
+everything else identical:
+
+| library | RT column | DIA-NN's window | precursors | proteins |
+|---|---|---:|---:|---:|
+| DIA-NN's own | DIA-NN | 1.4397 | 37,247 | 5,255 |
+| ODIA v3 as shipped | PeptDeep raw | 2.18905 | 35,796 | 5,109 |
+| **ODIA + DIA-NN's RT** | DIA-NN | **1.36581** | **35,688** | **5,130** |
+| ODIA + linear iRT calibration | 152.2356x - 39.2322 | 2.18905 | 35,831 | 5,088 |
+
+A *perfect* RT column buys **-108 precursors and +21 proteins**. The gap to
+DIA-NN survives intact. The window is a faithful measure of RT accuracy -- the
+peptide sets are identical, so library size cannot be the confound -- but RT
+accuracy is not what is costing identifications on this run.
+
+**The iRT calibration is a no-op, bit-exactly.** Applying the AlphaPeptDeep
+Biognosys linear calibration produced an *identical* window, 2.18905. This is
+structural, not luck: DIA-NN fits its own monotone calibration, so any monotone
+reparametrisation of our iRT axis cannot change anything. Worth applying anyway
+for **unit hygiene** -- a field named `irt` holding a training-gradient
+coordinate is the same silent-units hazard the CCS decision exists to avoid --
+but it must never be described as an accuracy fix. If applied, recompute the
+constants at runtime from the 11 Biognosys peptides; they are checkpoint-specific
+and would rot silently on a model swap.
+
+**The real RT defect is output saturation, and it is unfixable by calibration.**
+Local calibration slope by decile of our predicted iRT, normalised to the median:
+
+```
+ODIA    1.05 0.97 0.97 0.96 0.90 0.95 0.95 1.22 5.11 11.88
+DIA-NN  0.89 1.04 1.03 0.98 1.09 1.01 1.02 0.97 0.97 0.84
+```
+
+The top two deciles are compressed 5x and 12x; 12.8% of the library piles into
+the single bin 0.85-0.90. Confirmed against the model directly with synthetic
+ladders: `G14` 0.016 -> `G9L5` 0.876 -> `L14` 0.936, so five leucines spend 0.89
+of the range and the next nine spend 0.06. This is the standard artefact of a
+min-max-normalised training target. The information is gone, not misplaced,
+which is exactly why the calibration experiment came back null.
+
+Worst classes, all one axis seen four ways (long, hydrophobic, charge 3, late):
+length 25-30 is 2.06x DIA-NN's spread, late RT 1.73x, GRAVY top decile 1.67x,
+charge 3 1.55x. Nothing systematic in modifications or terminal residue.
+
+**Where the effort should go instead (R1).** With RT equalised we still miss
+4,937 of DIA-NN's precursors while finding 3,378 it does not. The missed ones
+have **median quantity 0.40x** the shared ones and are **enriched in charge 3
+(37.0% vs 24.5%)**. Libraries are structurally matched (12.00 vs 11.92
+fragments/precursor, b/y 29/71 both) but ODIA emits **78.7% singly-charged
+fragments against DIA-NN's 72.4%**. That is the thread to pull: fragment
+selection for multiply-charged precursors, not retention time.
+
+**Where RT still pays (R3).** Extraction cost. A 1.6x narrower window is 1.6x
+less XIC per precursor -- ~128 cycles against ~80 on this run. That is a direct
+constant factor on Phase 2's runtime and peak memory, which is the one place
+this still matters.
+
+**Deferred, with reasons.** Fine-tuning the RT model on a run's own
+identifications is the only thing that can touch the saturation (Zeng et al.,
+Nat Commun 13:7238, report R2 0.927 -> 0.986 from 500 peptides). But R1 says the
+identification benefit is ~0, and the self-contained path costs a torch
+dependency ODIA does not have. DIA-NN can do it in minutes with bundled libtorch
+(`--tune-rt`), which would make ODIA depend on DIA-NN at library-build time --
+probably unacceptable for a tool positioning itself as an alternative.
+A run-learned residual correction is worth -21% sd, cross-validated by peptide,
+and becomes useful only once ODIA scores its own data.
+
+**Caveats that must travel with these numbers.** Single run, single gradient,
+single library size -- every result is n=1 at the experiment level, and the
+RT-swap null deserves a second run before being treated as settled. No verified
+cross-tool RT accuracy comparison exists in a common unit on a common dataset;
+do not let one into this document as fact. The tensor-level encoding is verified
+correct: ODIA's outputs are bit-identical to OpenMS's reference values and to
+AlphaPeptDeep's torch predictions.
 
 ---
 
