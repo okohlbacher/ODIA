@@ -208,6 +208,34 @@ ones re-tested after repair are now caught.*
 
 ---
 
+## MS2 prediction — what the review left open
+
+- **`predictMS2` materialises every spectrum.** 100,000 peptides measured at
+  94.8 s and +1717 MiB, the payload being 14.4 M floats spread over 100,000
+  separate vectors. MS2 takes charge as an input, so the proteome case is ~4.0 M
+  precursors rather than the 1.25 M distinct sequences RT needs: extrapolating,
+  ~63 min and ~2.2 GiB of payload in ~4 M allocations, all live at once, on top
+  of the generator's existing 1.23 GB. `predictRT` returns 4 bytes per peptide.
+  There is no streaming or callback form, and this should be decided before the
+  intensities are wired into `LibraryGenerator`.
+
+- **`MAX_BATCH_ROWS` is not covered by any test.** Its purpose is to bound
+  memory -- without it a 2 M-peptide run peaked at 26.7 GiB -- and removing the
+  chunking entirely still passes, because values do not change. Correctness
+  across the 2048 boundary was verified by hand (indices 2046-2050 bit-identical
+  to solo runs) but nothing holds it.
+
+- **The CCS model will not load.** The constructor identifies a model by input
+  count, and CCS has three, matching neither the RT model's two nor the MS2
+  model's five. The guard needs a third arm before CCS prediction can start.
+
+- **A failed peptide is an empty spectrum**, which `Spectrum::at()` will index
+  out of bounds. `predictRT` uses NaN for the same situation; there is no
+  equivalent value here, so the contract is "check `positions` first" and it is
+  only documented, not enforced.
+
+---
+
 ## `.oswpq` reading — what it does not yet do
 
 - **The multi-chunk path is never exercised against a real file.** It is the

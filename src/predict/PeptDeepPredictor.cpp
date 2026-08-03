@@ -199,6 +199,15 @@ namespace ODIA
                                " inputs, not 5");
     }
 
+    // NCE is one value for the whole call, so a bad one is not a per-peptide
+    // failure and must not be reported as 2048 of them. It is also silent: the
+    // model returns a plausible spectrum for any float it is given.
+    if (!std::isfinite(nce) || nce <= 0.0f || nce > 1000.0f)
+    {
+      throw std::invalid_argument("collision energy " + std::to_string(nce) +
+                                  " is not a usable NCE");
+    }
+
     std::vector<Spectrum> out(peptides.size());
 
     for (const auto& whole_group : PeptDeepEncoder::groupByLength(peptides))
@@ -223,13 +232,43 @@ namespace ODIA
       {
         batch = PeptDeepEncoder::encode(subset, subset_charges, nce, instrument);
       }
-      catch (const std::exception& e)
+      catch (const std::exception&)
       {
+        // As in predictRT: one unencodable peptide, or one impossible charge,
+        // must not discard its whole chunk and take 2047 good peptides with it.
+        // Retry singly so only the offending rows are recorded -- reporting the
+        // whole chunk also gave every peptide a reason naming another one's
+        // modification.
         if (failures == nullptr) { throw; }
-        for (const auto index : group) { failures->push_back({index, e.what()}); }
+        for (std::size_t i = 0; i < group.size(); ++i)
+        {
+          try
+          {
+            const auto single = PeptDeepEncoder::encode(
+              std::vector<OpenMS::AASequence>{subset[i]},
+              std::vector<int>{subset_charges[i]}, nce, instrument);
+            runMS2Batch_(single, {group[i]}, out);
+          }
+          catch (const std::exception& inner)
+          {
+            failures->push_back({group[i], inner.what()});
+          }
+        }
         continue;
       }
 
+      runMS2Batch_(batch, group, out);
+     }
+    }
+    return out;
+  }
+
+  void PeptDeepPredictor::runMS2Batch_(const PeptDeepEncoder::Batch& batch,
+                                       const std::vector<std::size_t>& group,
+                                       std::vector<Spectrum>& out)
+  {
+    {
+      {
       const std::int64_t rows = static_cast<std::int64_t>(batch.rows);
       const std::int64_t length = static_cast<std::int64_t>(batch.sequence_length);
       const std::int64_t width = static_cast<std::int64_t>(PEPTDEEP_MOD_ELEMENTS.size());
@@ -268,11 +307,19 @@ namespace ODIA
 
       const auto info = results.front().GetTensorTypeAndShapeInfo();
       const auto shape = info.GetShape();
+      // shape[1] is checked as well as shape[0] and shape[2]. The comparison
+      // against the reference cannot detect a wrong positions count -- both
+      // sides take it from the same model -- and upstream OpenMS does not
+      // trust it either, slicing to size()-1 rather than using what came back.
       if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
           shape.size() != 3 || shape[0] != rows ||
+          shape[1] != length - 3 ||
           shape[2] != static_cast<std::int64_t>(Spectrum::CHANNELS))
       {
-        throw std::runtime_error("MS2 output is not [batch, positions, 8]");
+        throw std::runtime_error(
+          "MS2 output is not [batch, nAA - 1, 8]: the model returned a tensor of "
+          "rank " + std::to_string(shape.size()) + " for " + std::to_string(rows) +
+          " peptides of " + std::to_string(length - 2) + " residues");
       }
 
       const auto positions = static_cast<std::size_t>(shape[1]);
@@ -281,13 +328,15 @@ namespace ODIA
       {
         auto& spectrum = out[group[i]];
         spectrum.positions = positions;
+        // Indexed by group[i], not i: the peptides were reordered into length
+        // groups, and writing them back in batch order would silently permute
+        // whole spectra between peptides of the same length.
         spectrum.intensities.assign(
           values + i * positions * Spectrum::CHANNELS,
           values + (i + 1) * positions * Spectrum::CHANNELS);
       }
      }
     }
-    return out;
   }
 
   std::vector<float>

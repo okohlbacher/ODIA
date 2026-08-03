@@ -356,7 +356,7 @@ namespace ODIA
 
     s.census_agrees = s.census_present &&
                       s.census_precursors == s.precursor_rows &&
-                      s.census_transitions == kept;
+                      s.census_transitions == s.transition_rows;
 
     library.markUnsorted();
     library.shrinkToFit();

@@ -322,3 +322,12 @@ if(ODIA_PYTHON)
                    ${ODIA_UPSTREAM_ARG})
   set_tests_properties(oswpq_matches_pyarrow PROPERTIES FIXTURES_REQUIRED oswpq)
 endif()
+
+# The MS2 meta-input constants, pinned. A comparison between ODIA and the
+# oracle cannot see a constant that is wrong in both, and one of these -- the
+# instrument order -- is documented incorrectly in OpenMS's own headers.
+if(ODIA_PYTHON)
+  add_test(NAME peptdeep_meta_inputs
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/check_meta_inputs.py)
+endif()

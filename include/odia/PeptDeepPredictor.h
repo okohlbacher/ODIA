@@ -93,6 +93,15 @@ namespace ODIA
     };
 
     /// Predict fragment intensities. @p charges is one per peptide.
+    ///
+    /// @param failures if given, receives the peptides that could not be
+    ///        encoded -- an unsupported modification, or a charge below 1 --
+    ///        and their entries in the result are left with positions == 0 and
+    ///        no intensities. If not given, any of those throws.
+    ///
+    /// A failed entry is an empty spectrum, so Spectrum::at() must not be
+    /// called on one; check positions first. Unlike predictRT there is no NaN
+    /// to carry the distinction, because there is no value to carry it in.
     std::vector<Spectrum> predictMS2(const std::vector<OpenMS::AASequence>& peptides,
                                      const std::vector<int>& charges,
                                      float nce = 30.0f,
@@ -102,6 +111,8 @@ namespace ODIA
   private:
     void runBatch_(const PeptDeepEncoder::Batch& batch,
                    const std::vector<std::size_t>& group, std::vector<float>& out);
+    void runMS2Batch_(const PeptDeepEncoder::Batch& batch,
+                      const std::vector<std::size_t>& group, std::vector<Spectrum>& out);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

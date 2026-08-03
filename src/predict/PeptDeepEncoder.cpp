@@ -194,6 +194,19 @@ namespace ODIA
     batch.instrument_indices.assign(batch.rows, instrumentIndex(instrument));
     for (const int z : charges)
     {
+      // A charge below 1 is not a charge, and the model does not say so: it
+      // returns a plausible, base-peak-normalised spectrum for 0 and for -3
+      // alike. The DIA-NN reader has a live path to charge 0, because a null
+      // Precursor.Charge parses to it, so this is reachable from a file rather
+      // than only from a caller's mistake. Refusing here rather than in
+      // predictMS2 means the per-peptide retry records the offending row and
+      // keeps the rest of the chunk.
+      if (z < 1 || z > MAX_PRECURSOR_CHARGE)
+      {
+        throw std::invalid_argument("precursor charge " + std::to_string(z) +
+                                    " is outside 1.." +
+                                    std::to_string(MAX_PRECURSOR_CHARGE));
+      }
       batch.charges.push_back(static_cast<float>(z) * CHARGE_SCALE);
     }
     return batch;

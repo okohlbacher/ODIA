@@ -48,6 +48,12 @@ namespace ODIA
     };
 
     static constexpr float CHARGE_SCALE = 0.1f;
+
+    /// Upper bound on a precursor charge the model is asked to predict for.
+    /// Not a model limit -- there is none -- but a bound past which the input
+    /// is certainly wrong rather than unusual. AlphaPeptDeep's own training
+    /// data tops out well below this.
+    static constexpr int MAX_PRECURSOR_CHARGE = 10;
     static constexpr float NCE_SCALE = 0.01f;
 
     /// Instrument index. Anything unrecognised maps to max_instrument_num - 1,
