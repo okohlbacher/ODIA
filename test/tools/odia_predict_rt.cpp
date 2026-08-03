@@ -11,6 +11,7 @@
 #include <OpenMS/CHEMISTRY/AASequence.h>
 
 #include <iomanip>
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -29,7 +30,13 @@ int main(int argc, char** argv)
       peptides.push_back(OpenMS::AASequence::fromString(argv[i]));
     }
 
-    ODIA::PeptDeepPredictor predictor(argv[1]);
+    // ODIA_ORT_THREADS pins the intra-op thread count. Reduction order depends
+    // on it, so leaving it to the core-count heuristic makes a cross-process
+    // comparison noisy at the 1e-7 level.
+    int threads = 0;
+    if (const char* env = std::getenv("ODIA_ORT_THREADS")) { threads = std::atoi(env); }
+
+    ODIA::PeptDeepPredictor predictor(argv[1], true, threads);
     const auto rt = predictor.predictRT(peptides);
 
     std::cerr << "provider: "

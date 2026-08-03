@@ -150,8 +150,8 @@ is dead code and has never been exercised against anything.
 
 | model | output shape | meaning |
 |---|---|---|
-| RT | `[batch, 1]` | normalised iRT |
-| CCS | `[batch, 1]` | CCS |
+| RT | `[batch]` (rank 1) | normalised iRT |
+| CCS | `[batch, 1]` | CCS (unverified) |
 | MS2 | `[batch, seq_len - 3, 8]` | `nAA - 1` fragment positions × 8 channels |
 
 MS2 returns `out_x[:, 3:, :]` (`ms2.py:270`); for an 11-mer that is `(1, 10, 8)`.

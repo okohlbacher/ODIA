@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <odia/PeptDeepEncoder.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,15 +44,40 @@ namespace ODIA
     /// care must ask rather than assume.
     Provider provider() const;
 
+    /// Largest number of peptides submitted to the model in one call.
+    ///
+    /// Not a tuning knob. Without a cap, a length group is submitted whole:
+    /// 2 M peptides with a tryptic length distribution put 234,593 in the
+    /// largest group and peaked at 26.7 GiB, and under a memory limit it did
+    /// not degrade but aborted inside the BLAS allocator with no indication of
+    /// which stage failed. Capping also fixes the batch size, which the result
+    /// depends on at the last bit.
+    static constexpr std::size_t MAX_BATCH_ROWS = 2048;
+
+    /// Peptides that could not be encoded, by index into the input, with the
+    /// reason. One unencodable peptide must not discard a whole run's work.
+    struct Failure
+    {
+      std::size_t index;
+      std::string reason;
+    };
+
     /// Predict normalised iRT, one value per peptide, in the input order.
     ///
     /// Peptides are grouped by length internally: padding is not inert, because
     /// index 0 is one-hot encoded and no model applies a padding mask, so a
     /// mixed-length batch would give every peptide a different answer from the
     /// one it gets alone.
-    std::vector<float> predictRT(const std::vector<OpenMS::AASequence>& peptides);
+    /// @param failures if given, receives the peptides that could not be
+    ///        encoded; their entries in the result are left NaN. If not given,
+    ///        an unencodable peptide throws.
+    std::vector<float> predictRT(const std::vector<OpenMS::AASequence>& peptides,
+                                 std::vector<Failure>* failures = nullptr);
 
   private:
+    void runBatch_(const PeptDeepEncoder::Batch& batch,
+                   const std::vector<std::size_t>& group, std::vector<float>& out);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
   };

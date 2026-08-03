@@ -127,7 +127,13 @@ def encode(seq):
 def predict_rt(model_path, sequences):
     import onnxruntime as ort
 
-    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    options = ort.SessionOptions()
+    # Matches ODIA_ORT_THREADS on the C++ side; reduction order depends on it.
+    threads = int(os.environ.get("ODIA_ORT_THREADS", "0"))
+    if threads > 0:
+        options.intra_op_num_threads = threads
+    session = ort.InferenceSession(model_path, options,
+                                   providers=["CPUExecutionProvider"])
     names = [i.name for i in session.get_inputs()]
     out = [None] * len(sequences)
     # One batch per encoded length: padding is not inert, because index 0 is

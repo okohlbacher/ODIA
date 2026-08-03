@@ -148,6 +148,12 @@ ones re-tested after repair are now caught.*
   exactly with the independent Python reference on residue, N-terminal and
   C-terminal modifications, multiple modifications, signed counts and
   `aa_indices`.
+- **Predictions depend on batch composition at the last bit.** Within one build,
+  repeated calls are bit-identical, but batch size moves the result by ~1 ULP
+  (1.5e-8) and the two ONNX Runtime builds compared in the tests differ by up to
+  2.7e-7. `MAX_BATCH_ROWS` pins the batch size, which bounds it, but D1 asks for
+  determinism as a precondition and this is not zero. Decide whether that
+  matters at the iRT-window scale.
 - **The CUDA path is still untested** — `spock`/`data` remain unreachable, so
   only the CPU branch has ever run. `Ort::GetAvailableProviders()` is queried
   before attempting, so a CPU-only build no longer logs a scary provider-load
