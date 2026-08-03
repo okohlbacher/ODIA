@@ -326,6 +326,33 @@ Consequences to keep in view:
 
 ---
 
+## Retention-time fine-tuning is integrated (2026-08-03)
+
+`scripts/finetune_rt.sh <report.parquet> <outdir> [n]` fine-tunes the RT model on
+a run's own identifications and exports ONNX that ODIA reads with `-rt_model`.
+No C++ changed, and torch stays out of the runtime -- OpenMS's own exporter
+already emits the input names ODIA expects.
+
+Two things the integration fixed over the prototype:
+
+- **Modifications resolve through alphabase's own table**, 1,524 UniMod ids
+  against the prototype's five, with the residue disambiguating candidates and
+  a refusal rather than a guess when it cannot.
+- **A provenance sidecar** records the model's SHA-256, the identifications it
+  was tuned from, the peptide count, and the minute range defining the scale it
+  predicts on -- which nothing downstream can recover otherwise.
+
+Still open, and both are in `doc/06-rt-refinement-plan.md`:
+
+- **The library does not carry the model's identity.** The sidecar sits beside
+  the model, not beside the library, so two libraries built with different
+  models still look identical. That is the remaining half of provenance.
+- **Feeding this from ODIA's own first pass closes a loop.** The script cannot
+  tell an external search from its own and records the source rather than
+  judging it. The entrapment measurement is the precondition.
+
+---
+
 ## Retention time — accurate diagnosis, and it does NOT cost identifications
 
 Researched 2026-08-03. **The framing that sent this investigation was wrong,
