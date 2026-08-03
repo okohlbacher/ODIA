@@ -80,6 +80,19 @@ namespace ODIA
                           const DigestParams& params,
                           Library& library);
 
+    /// Fill in predicted retention times, replacing the placeholders.
+    ///
+    /// Predicts once per distinct modified sequence rather than once per
+    /// precursor: the RT model takes no charge input, so the charge states of
+    /// one peptide would otherwise be predicted identically several times over.
+    /// On the human proteome that is 1.25 M predictions instead of 4.0 M.
+    ///
+    /// @returns the number of precursors whose iRT could not be predicted;
+    ///          theirs are left NaN rather than given a made-up value.
+    static std::size_t predictRetentionTimes(Library& library,
+                                             const std::string& rt_model_path,
+                                             bool prefer_gpu = true);
+
     /// Append a decoy for every target currently in @p library.
     ///
     /// Decoys keep the target's precursor m/z, iRT and intensity pattern; only

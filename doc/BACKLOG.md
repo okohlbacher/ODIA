@@ -137,6 +137,11 @@ verified against a residue table independent of OpenMS and pinned by a
 self-test of literal values. Mutation testing: 21 injected defects, all of the
 ones re-tested after repair are now caught.*
 
+- **iRT prediction is wired into library generation.** Predicted once per
+  distinct modified sequence rather than per precursor, since the RT model has
+  no charge input: 1.25 M predictions instead of 4.0 M on the human proteome,
+  206 s, and 232 s for the whole run at 1.9 GB peak. Unpredictable peptides are
+  left NaN and counted, never given a made-up value.
 - **iRT prediction is done and validated**: `PeptDeepPredictor` runs the RT model
   with CUDA attempted and CPU fallback, and its predictions match the
   independent Python reference to 1e-5 on mixed-length batches including
@@ -167,9 +172,12 @@ ones re-tested after repair are now caught.*
   written from the spec rather than from the C++; the element list is generated
   from the authoritative yaml into `data/peptdeep_mod_elements.txt` and
   `include/odia/PeptDeepElements.h`. The C++ side is still to be written.
-- Replace the placeholder fragment ranking. `LibraryGenerator` currently caps
-  fragments by descending m/z because there are no predicted intensities yet;
-  prediction should drive the selection.
+- MS2 intensity prediction, and with it the placeholder fragment ranking:
+  `LibraryGenerator` still caps fragments by descending m/z because there are no
+  predicted intensities. The MS2 model needs `charges` (×0.1), `nce` (×0.01) and
+  a rank-1 `instrument_indices`, and returns `[batch, seq_len-3, 8]` whose
+  channel order is documented in `04-peptdeep-encoding.md` §6.
+- CCS prediction, for the ion-mobility column.
 - `.oswpq` read and write (gated on the `float64`/`float32` decision above for
   writing; reading can proceed and should accept both).
 - Phase instrumentation: wall, CPU, RSS, `mallinfo2`, and node load per run,

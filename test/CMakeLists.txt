@@ -146,6 +146,7 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON)
                    -DFASTA=${ODIA_FIXTURE_DIR}/adv_proteins.fasta
                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/generated.out.tsv
                    -DCHECK_DECOYS=--decoy-table
+                   -DREQUIRE_RT=--require-rt
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
 endif()
 

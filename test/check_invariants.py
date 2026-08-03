@@ -140,7 +140,7 @@ def self_test():
                              f"loss={loss} got {got} want {want}")
 
 
-def main(path, check_decoys):
+def main(path, check_decoys, require_rt=False):
     rows = list(csv.DictReader(open(path), delimiter="\t"))
     failures = []
 
@@ -206,7 +206,22 @@ def main(path, check_decoys):
         failures.append(f"{mismatched}/{checked} fragment m/z not reproducible; "
                         f"worst {worst[0]:.4f} Th: {worst[1]}")
 
-    # 4. Values that no downstream parser accepts.
+    # 4. Retention times must be real and varied.
+    #
+    # "Present" is not enough: a predictor returning a constant, or the
+    # placeholder left in place, both yield a column full of numbers. Distinct
+    # peptides must get distinct values.
+    if require_rt:
+        rts = [r["RT"].strip() for r in rows]
+        missing = sum(1 for v in rts if not v or v.lower() in ("nan", "0", "0.0"))
+        if missing:
+            failures.append(f"{missing} rows have no usable retention time")
+        distinct = len({v for v in rts if v})
+        if distinct < 2:
+            failures.append(f"every row has the same retention time ({distinct} distinct); "
+                            f"a constant predictor would look like this")
+
+    # 5. Values that no downstream parser accepts.
     for col in ("RT", "IM", "Precursor.Mz", "Product.Mz", "Relative.Intensity"):
         bad = sum(1 for r in rows if r[col].strip().lower() in ("nan", "-nan", "inf", "-inf"))
         if bad:
@@ -222,4 +237,4 @@ def main(path, check_decoys):
 if __name__ == "__main__":
     self_test()
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    sys.exit(main(args[0], "--decoy-table" in sys.argv))
+    sys.exit(main(args[0], "--decoy-table" in sys.argv, "--require-rt" in sys.argv))

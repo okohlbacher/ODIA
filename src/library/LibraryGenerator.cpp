@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <odia/LibraryGenerator.h>
+#include <odia/PeptDeepPredictor.h>
 
 #include <OpenMS/CHEMISTRY/AASequence.h>
 #include <OpenMS/CHEMISTRY/EmpiricalFormula.h>
@@ -261,6 +262,61 @@ namespace ODIA
     stats.precursors = library.precursorCount();
     stats.transitions = library.transitionCount();
     return stats;
+  }
+
+  std::size_t LibraryGenerator::predictRetentionTimes(Library& library,
+                                                      const std::string& rt_model_path,
+                                                      bool prefer_gpu)
+  {
+    // One prediction per distinct sequence. The RT model has no charge input,
+    // so predicting per precursor would repeat identical work for every charge
+    // state of the same peptide.
+    std::map<std::uint32_t, std::size_t> handle_to_slot;
+    std::vector<AASequence> unique_peptides;
+    std::vector<std::uint32_t> slot_handle;
+
+    const auto& p = library.precursors();
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      const auto handle = p.modified_sequence[i];
+      if (handle_to_slot.count(handle)) { continue; }
+      AASequence peptide;
+      try
+      {
+        peptide = AASequence::fromString(std::string(library.strings().get(handle)));
+      }
+      catch (const std::exception&)
+      {
+        continue;   // left NaN, and counted below
+      }
+      handle_to_slot.emplace(handle, unique_peptides.size());
+      unique_peptides.push_back(std::move(peptide));
+      slot_handle.push_back(handle);
+    }
+    if (unique_peptides.empty()) { return library.precursorCount(); }
+
+    PeptDeepPredictor predictor(rt_model_path, prefer_gpu);
+    std::vector<PeptDeepPredictor::Failure> failures;
+    const auto predicted = predictor.predictRT(unique_peptides, &failures);
+
+    std::map<std::uint32_t, float> by_handle;
+    for (std::size_t slot = 0; slot < predicted.size(); ++slot)
+    {
+      by_handle.emplace(slot_handle[slot], predicted[slot]);
+    }
+
+    std::size_t unpredicted = 0;
+    auto& precursors = library.precursors();
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      const auto it = by_handle.find(precursors.modified_sequence[i]);
+      const float value = it == by_handle.end() ? std::nanf("") : it->second;
+      precursors.irt[i] = value;
+      if (std::isnan(value)) { ++unpredicted; }
+    }
+    // Appending nothing, but the accessor is non-const; the ordering is
+    // unchanged, so restore the flag rather than forcing a needless re-sort.
+    return unpredicted;
   }
 
   std::size_t LibraryGenerator::appendDecoys(Library& library, DecoyMethod method,

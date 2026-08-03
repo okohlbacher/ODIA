@@ -8,6 +8,7 @@
 #include <odia/Library.h>
 
 #include <chrono>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -54,6 +55,10 @@ protected:
                           "Decoy construction. Applied to a library read with -tr "
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
+
+    registerInputFile_("rt_model", "<file>", "",
+                       "PeptDeep retention-time model. Defaults to the one OpenMS "
+                       "downloads when built with WITH_ONNX=ON.", false);
 
     registerIntOption_("missed_cleavages", "<n>", 1, "Maximum missed cleavages.", false, true);
     registerIntOption_("min_peptide_length", "<n>", 7, "Minimum peptide length.", false, true);
@@ -136,8 +141,41 @@ protected:
             << "  dropped: " << stats.dropped_precursor_mz << " outside the precursor m/z range, "
             << stats.dropped_too_few_fragments << " with too few fragments";
         writeLogInfo_(gen.str());
-        writeLogWarn_("Fragment intensities and retention times are placeholders; "
-                      "prediction is not wired up yet.");
+
+        // Predict retention times, if a model is available. Fragment
+        // intensities still need the MS2 model.
+        std::string rt_model = getStringOption_("rt_model");
+        if (rt_model.empty())
+        {
+          const std::string fallback =
+            "/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/opt/openms-3.6.0/share/OpenMS/"
+            "models/peptdeep_rt_dynamic.onnx";
+          if (std::filesystem::exists(fallback)) { rt_model = fallback; }
+        }
+
+        if (rt_model.empty())
+        {
+          writeLogWarn_("No retention-time model available; iRT is left unset. "
+                        "Give one with -rt_model.");
+        }
+        else
+        {
+          const auto t_rt = std::chrono::steady_clock::now();
+          const auto unpredicted =
+            ODIA::LibraryGenerator::predictRetentionTimes(library, rt_model);
+          const auto rt_ms = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - t_rt).count();
+          std::ostringstream rt;
+          rt << "predicted retention times in " << rt_ms << " ms";
+          if (unpredicted)
+          {
+            rt << "; " << unpredicted << " precursors left unpredicted";
+          }
+          writeLogInfo_(rt.str());
+        }
+
+        writeLogWarn_("Fragment intensities are still placeholders; the MS2 model "
+                      "is not wired up yet.");
       }
     }
     catch (const std::exception& e)
