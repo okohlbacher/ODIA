@@ -156,6 +156,7 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
                    -DCHECK_DECOYS=--decoy-table
                    -DREQUIRE_RT=--require-rt
                    -DRT_MODEL=${ODIA_RT_MODEL_PATH}
+                   -DIRT_STANDARDS=${CMAKE_CURRENT_SOURCE_DIR}/../data/irt_standards.tsv
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
 endif()
 
@@ -343,4 +344,55 @@ if(EXISTS "${ODIA_CCS_MODEL_PATH}" AND ODIA_PYTHON)
            COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
                    ${CMAKE_CURRENT_SOURCE_DIR}/compare_ccs.py
                    $<TARGET_FILE:odia_predict_ccs> "${ODIA_CCS_MODEL_PATH}")
+endif()
+
+# The iRT calibration, against OpenMS's own fixture rather than against a
+# constant this project wrote down. The fixture carries both the raw ONNX
+# prediction and the calibrated iRT for the 11 Biognosys standards, so it tests
+# our inference and our line separately.
+set(ODIA_IRT_FIXTURE
+    "$ENV{ODIA_OPENMS_SOURCE}/src/tests/class_tests/openms/data/peptdeep_irt_peptides_predicted.csv"
+    CACHE FILEPATH "OpenMS's predicted iRT standards fixture")
+if(EXISTS "${ODIA_IRT_FIXTURE}" AND EXISTS "${ODIA_RT_MODEL_PATH}" AND ODIA_PYTHON)
+  add_test(NAME irt_calibration_matches_openms
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 ${ODIA_PYTHON}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/check_irt.py
+                   $<TARGET_FILE:odia_irt_calibration> "${ODIA_RT_MODEL_PATH}"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/../data/irt_standards.tsv"
+                   "${ODIA_IRT_FIXTURE}")
+else()
+  message(STATUS "iRT calibration test skipped; no fixture at ${ODIA_IRT_FIXTURE}")
+endif()
+
+# A standards file whose peptides all predict the same retention time has no
+# line to fit. Rejecting it matters because the alternative is a slope of
+# infinity silently applied to every precursor in the library.
+if(EXISTS "${ODIA_RT_MODEL_PATH}")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/degenerate_irt.tsv"
+       "# every peptide identical, so every prediction is identical\nPEPTIDEK\t0.0\nPEPTIDEK\t50.0\nPEPTIDEK\t100.0\n")
+  add_test(NAME irt_calibration_rejects_degenerate
+           COMMAND odia_irt_calibration "${ODIA_RT_MODEL_PATH}"
+                   "${CMAKE_CURRENT_BINARY_DIR}/degenerate_irt.tsv")
+  set_tests_properties(irt_calibration_rejects_degenerate PROPERTIES WILL_FAIL TRUE)
+
+  # Two standards is not a calibration, it is a line through two points with no
+  # residual to check. Three is the documented floor.
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/too_few_irt.tsv"
+       "LGGNEQVTR\t-24.92\nLFLQFGAQGSPFLK\t100.0\n")
+  add_test(NAME irt_calibration_rejects_too_few
+           COMMAND odia_irt_calibration "${ODIA_RT_MODEL_PATH}"
+                   "${CMAKE_CURRENT_BINARY_DIR}/too_few_irt.tsv")
+  set_tests_properties(irt_calibration_rejects_too_few PROPERTIES WILL_FAIL TRUE)
+endif()
+
+# Standards that parse but cannot be encoded. One bad standard must cost
+# precision, not the calibration; three bad ones out of four must fail loudly
+# rather than fit a line through the survivor.
+if(EXISTS "${ODIA_RT_MODEL_PATH}")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/unencodable_irt.tsv"
+       "LGGNEQVTR\t-24.92\nPEPTIDEC[999]K\t20.0\nSAMPLEC[999]R\t60.0\nAAAAC[999]K\t90.0\n")
+  add_test(NAME irt_calibration_rejects_unencodable
+           COMMAND odia_irt_calibration "${ODIA_RT_MODEL_PATH}"
+                   "${CMAKE_CURRENT_BINARY_DIR}/unencodable_irt.tsv")
+  set_tests_properties(irt_calibration_rejects_unencodable PROPERTIES WILL_FAIL TRUE)
 endif()

@@ -347,7 +347,17 @@ DIA-NN survives intact. The window is a faithful measure of RT accuracy -- the
 peptide sets are identical, so library size cannot be the confound -- but RT
 accuracy is not what is costing identifications on this run.
 
-**The iRT calibration is a no-op, bit-exactly.** Applying the AlphaPeptDeep
+**Implemented 2026-08-03.** The calibration is applied, refitted at run time
+from `data/irt_standards.tsv` rather than pinned, and verified against OpenMS's
+own fixture (`peptdeep_irt_peptides_predicted.csv`), which carries both the raw
+ONNX prediction and the calibrated iRT for the 11 standards. ODIA reproduces the
+published line to six digits: 152.2356 x raw - 39.2322, worst standard off by
+8.7570 iRT. The invariant checker no longer demands the library's RT equal the
+model's output -- it recovers the affine map from the data and requires it to be
+the one the standards give, which catches both a missing calibration and a
+dropped intercept.
+
+**The iRT calibration is a no-op for accuracy, bit-exactly.** Applying the AlphaPeptDeep
 Biognosys linear calibration produced an *identical* window, 2.18905. This is
 structural, not luck: DIA-NN fits its own monotone calibration, so any monotone
 reparametrisation of our iRT axis cannot change anything. Worth applying anyway

@@ -145,7 +145,7 @@ def self_test():
                              f"loss={loss} got {got} want {want}")
 
 
-def main(path, check_decoys, require_rt=False, rt_model=None):
+def main(path, check_decoys, require_rt=False, rt_model=None, irt_standards=None):
     rows = list(csv.DictReader(open(path), delimiter="\t"))
     failures = []
 
@@ -247,18 +247,81 @@ def main(path, check_decoys, require_rt=False, rt_model=None):
             if rt_model:
                 sequences = sorted(by_sequence)
                 predicted = ref.predict_rt(rt_model, sequences)
-                worst = (0.0, "")
-                for seq, want in zip(sequences, predicted):
-                    d = abs(by_sequence[seq] - want)
-                    if d > worst[0]:
-                        worst = (d, f"{seq}: file {by_sequence[seq]:.6f}, "
-                                    f"model {want:.6f}")
-                # The written value is float32 printed at 9 significant digits;
-                # the reference and the C++ link different ONNX Runtime builds,
-                # which differ by a few ULP.
-                if worst[0] > 1e-6:
-                    failures.append(f"retention times do not match the model "
-                                    f"(worst {worst[0]:.2e}): {worst[1]}")
+
+                # The library's RT is the model's output put through one affine
+                # map -- the iRT calibration -- so requiring equality would only
+                # test whether calibration happened to be off. What must hold is
+                # that ONE line explains every peptide: a per-peptide corruption,
+                # a permutation, or a calibration applied to some rows and not
+                # others all break that while leaving the range plausible.
+                #
+                # The line is recovered from the data rather than recomputed, so
+                # this stays independent of how ODIA fits it.
+                n = len(sequences)
+                xs = [predicted[i] for i in range(n)]
+                ys = [by_sequence[s] for s in sequences]
+                sx, sy = sum(xs), sum(ys)
+                sxx = sum(x * x for x in xs)
+                sxy = sum(x * y for x, y in zip(xs, ys))
+                denom = n * sxx - sx * sx
+                if n < 3 or abs(denom) < 1e-12:
+                    failures.append("too few distinct retention times to check the "
+                                    "calibration")
+                else:
+                    slope = (n * sxy - sx * sy) / denom
+                    intercept = (sy - slope * sx) / n
+                    if slope <= 0:
+                        failures.append(f"retention-time calibration has slope {slope:.4f}; "
+                                        f"a non-positive slope reverses elution order")
+                    worst = (0.0, "")
+                    for seq, x, y in zip(sequences, xs, ys):
+                        d = abs(y - (slope * x + intercept))
+                        if d > worst[0]:
+                            worst = (d, f"{seq}: file {y:.6f}, model {x:.6f}, "
+                                        f"line predicts {slope * x + intercept:.6f}")
+                    # Tolerance scales with the iRT range, because the written
+                    # value is float32 at 9 significant digits and the residual
+                    # is measured after multiplying by the slope. On the raw
+                    # 0..1 scale this is the same 1e-6 as before.
+                    tol = 1e-6 * max(1.0, abs(slope))
+                    if worst[0] > tol:
+                        failures.append(f"retention times are not one affine map of the "
+                                        f"model (worst {worst[0]:.2e} > {tol:.2e}): "
+                                        f"{worst[1]}")
+
+                    # Which affine map, not merely that there is one. Accepting
+                    # any line would accept the identity -- i.e. calibration
+                    # never applied -- and would accept a dropped intercept.
+                    # The expected line is refitted here from the standards
+                    # through the Python reference, so it is independent of
+                    # ODIA's own fit.
+                    if irt_standards:
+                        std_seq, std_irt = [], []
+                        for raw_line in open(irt_standards):
+                            raw_line = raw_line.strip()
+                            if not raw_line or raw_line.startswith("#"):
+                                continue
+                            name, _, value = raw_line.partition("\t")
+                            std_seq.append(name)
+                            std_irt.append(float(value))
+                        std_pred = ref.predict_rt(rt_model, std_seq)
+                        m = len(std_seq)
+                        tx, ty = sum(std_pred), sum(std_irt)
+                        txx = sum(x * x for x in std_pred)
+                        txy = sum(x * y for x, y in zip(std_pred, std_irt))
+                        d2 = m * txx - tx * tx
+                        want_slope = (m * txy - tx * ty) / d2
+                        want_intercept = (ty - want_slope * tx) / m
+                        if abs(slope - want_slope) > 1e-3 * abs(want_slope):
+                            failures.append(
+                                f"retention times are on the wrong scale: the file's line "
+                                f"has slope {slope:.4f}, the iRT standards give "
+                                f"{want_slope:.4f}. A slope of 1 means the raw 0..1 model "
+                                f"output was written as though it were iRT.")
+                        if abs(intercept - want_intercept) > 1e-3 * max(1.0, abs(want_intercept)):
+                            failures.append(
+                                f"retention-time intercept is {intercept:.4f}, the iRT "
+                                f"standards give {want_intercept:.4f}")
 
     # 5. Values that no downstream parser accepts.
     for col in ("RT", "IM", "Precursor.Mz", "Product.Mz", "Relative.Intensity"):
@@ -278,5 +341,7 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     model = next((a.split("=", 1)[1] for a in sys.argv[1:]
                   if a.startswith("--rt-model=")), None)
+    standards = next((a.split("=", 1)[1] for a in sys.argv[1:]
+                      if a.startswith("--irt-standards=")), None)
     sys.exit(main(args[0], "--decoy-table" in sys.argv,
-                  "--require-rt" in sys.argv, model))
+                  "--require-rt" in sys.argv, model, standards))

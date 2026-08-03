@@ -111,8 +111,12 @@ set(ODIA_TOOLS
   OpenDIAlyzer
 )
 
+# Where the shipped data tables live, so the tool finds them without a path
+# baked in at an absolute location.
 foreach(tool ${ODIA_TOOLS})
   add_executable(${tool} "src/${tool}.cpp")
+  target_compile_definitions(${tool} PRIVATE
+    ODIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
   target_link_libraries(${tool} PRIVATE OpenMS MzPeak::MzPeak
                                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
   if(TARGET odia_core)
@@ -125,7 +129,7 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 # Built only for the test suite: it dumps ODIA's encoding so it can be compared
 # against the independent Python reference.
 foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
-               odia_predict_ms2 odia_predict_ccs odia_oswpq_dump odia_run_info odia_extract
+               odia_predict_ms2 odia_predict_ccs odia_oswpq_dump odia_run_info odia_extract odia_irt_calibration
                odia_chunked_column_test)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core

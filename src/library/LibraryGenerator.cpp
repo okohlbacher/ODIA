@@ -12,6 +12,7 @@
 #include <OpenMS/FORMAT/FASTAFile.h>
 
 #include <algorithm>
+#include <fstream>
 #include <string_view>
 #include <cmath>
 #include <limits>
@@ -500,6 +501,97 @@ namespace ODIA
     return unpredicted;
   }
 
+
+
+  LibraryGenerator::IrtCalibration
+  LibraryGenerator::fitIrtCalibration(const std::string& rt_model_path,
+                                      const std::string& standards_file,
+                                      bool prefer_gpu)
+  {
+    std::vector<AASequence> peptides;
+    std::vector<double> known;
+    std::ifstream in(standards_file);
+    if (!in) { throw std::runtime_error("cannot read iRT standards: " + standards_file); }
+    std::string line;
+    while (std::getline(in, line))
+    {
+      if (line.empty() || line[0] == '#') { continue; }
+      const auto tab = line.find('\t');
+      if (tab == std::string::npos) { continue; }
+      try
+      {
+        peptides.push_back(AASequence::fromString(line.substr(0, tab)));
+        known.push_back(std::stod(line.substr(tab + 1)));
+      }
+      catch (const std::exception&) { continue; }
+    }
+    if (peptides.size() < 3)
+    {
+      throw std::runtime_error("iRT standards file has fewer than 3 usable peptides: " +
+                               standards_file);
+    }
+
+    PeptDeepPredictor predictor(rt_model_path, prefer_gpu);
+    // Tolerate a standard that cannot be encoded rather than abandoning the
+    // calibration: with eleven points, losing one to an exotic modification
+    // should cost precision, not the whole line. Their entries come back NaN
+    // and are skipped below, which is what makes the "at least three survived"
+    // check reachable.
+    std::vector<PeptDeepPredictor::Failure> failures;
+    const auto raw = predictor.predictRT(peptides, &failures);
+
+    // Ordinary least squares of known iRT on the model's raw output. Eleven
+    // points and one line; nothing here warrants a solver.
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < raw.size(); ++i)
+    {
+      if (std::isnan(raw[i])) { continue; }   // a standard we could not encode
+      const double x = raw[i], y = known[i];
+      sx += x; sy += y; sxx += x * x; sxy += x * y;
+      ++n;
+    }
+    if (n < 3)
+    {
+      throw std::runtime_error("only " + std::to_string(n) + " of " +
+                               std::to_string(peptides.size()) +
+                               " iRT standards could be predicted; at least 3 are "
+                               "needed to fit a line with a residual worth checking");
+    }
+    const double denom = static_cast<double>(n) * sxx - sx * sx;
+    if (!(std::abs(denom) > 0.0))
+    {
+      // Every standard predicted the same value, so there is no line. This is
+      // what a saturated or broken model looks like, and it must not silently
+      // produce a slope of infinity.
+      throw std::runtime_error("iRT standards all predicted the same retention time; "
+                               "the model cannot be calibrated");
+    }
+
+    IrtCalibration c;
+    c.slope = (static_cast<double>(n) * sxy - sx * sy) / denom;
+    c.intercept = (sy - c.slope * sx) / static_cast<double>(n);
+    c.peptides = n;
+    for (std::size_t i = 0; i < raw.size(); ++i)
+    {
+      if (std::isnan(raw[i])) { continue; }
+      c.max_abs_error = std::max(c.max_abs_error, std::abs(c.apply(raw[i]) - known[i]));
+    }
+    return c;
+  }
+
+  void LibraryGenerator::applyIrtCalibration(Library& library,
+                                             const IrtCalibration& calibration)
+  {
+    auto& p = library.precursors();
+    for (auto& v : p.irt)
+    {
+      // NaN means "not predicted" and must stay that way; a calibrated NaN is
+      // still NaN, but going through the multiply would be a lie about having
+      // a value.
+      if (!std::isnan(v)) { v = static_cast<float>(calibration.apply(v)); }
+    }
+  }
 
   std::size_t LibraryGenerator::predictCollisionCrossSections(
     Library& library, const std::string& ccs_model_path, bool prefer_gpu)

@@ -139,6 +139,38 @@ namespace ODIA
                                                   const std::string& instrument = "QE",
                                                   bool prefer_gpu = true);
 
+    /// The line mapping the RT model's raw output onto the iRT scale.
+    struct IrtCalibration
+    {
+      double slope = 1.0;
+      double intercept = 0.0;
+      std::size_t peptides = 0;      ///< standards that could be predicted
+      double max_abs_error = 0.0;    ///< worst standard, in iRT units
+
+      double apply(double raw) const { return slope * raw + intercept; }
+    };
+
+    /// Fit the raw-to-iRT line from the Biognosys standards, using @p model.
+    ///
+    /// Recomputed rather than pinned: the line depends on the model checkpoint,
+    /// and a hardcoded one would rot silently on a model swap -- the outputs
+    /// would still look like iRT and simply be wrong.
+    static IrtCalibration fitIrtCalibration(const std::string& rt_model_path,
+                                            const std::string& standards_file,
+                                            bool prefer_gpu = true);
+
+    /// Rescale a library's retention times onto the iRT scale in place.
+    ///
+    /// This does NOT make the predictions more accurate, and must not be
+    /// described as though it does. It is monotone, so any consumer that fits
+    /// its own retention-time calibration -- DIA-NN does -- is unaffected:
+    /// measured on the human proteome, applying it left DIA-NN's search window
+    /// unchanged to the last digit (2.18905 both ways). It is applied because a
+    /// column named iRT holding a 0..1 training-gradient coordinate is a
+    /// silent-units error waiting for a consumer that applies a tolerance in
+    /// iRT units without calibrating first.
+    static void applyIrtCalibration(Library& library, const IrtCalibration& calibration);
+
     /// Fill in predicted collision cross-sections, in square angstroms.
     ///
     /// Per precursor, not per peptide: the CCS model takes charge, and a

@@ -58,6 +58,13 @@ protected:
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
+    registerInputFile_("irt_standards", "<file>", "",
+                       "Biognosys iRT standard peptides, for rescaling the RT model's "
+                       "raw 0..1 output onto the iRT scale. Defaults to data/irt_standards.tsv "
+                       "beside the tool. This changes units, not accuracy: the mapping is "
+                       "monotone, so a consumer that fits its own RT calibration is "
+                       "unaffected.", false);
+
     registerInputFile_("ccs_model", "<file>", "",
                        "PeptDeep collision-cross-section model. Defaults to the one OpenMS "
                        "downloads when built with WITH_ONNX=ON. Predicts CCS in square "
@@ -266,6 +273,53 @@ protected:
           {
             writeLogWarn_(std::string("fragment-intensity prediction failed, "
                                       "placeholders kept: ") + e.what());
+          }
+        }
+
+        // Rescale the raw retention times onto the iRT scale, before decoys so
+        // a decoy inherits a calibrated value like everything else.
+        //
+        // Units, not accuracy. Measured on the human proteome: DIA-NN's search
+        // window was 2.18905 min with and without this, identical to the last
+        // digit, because DIA-NN fits its own monotone calibration. It is here
+        // so that a column named iRT holds an iRT, which matters for any
+        // consumer that applies a tolerance in those units without calibrating.
+        if (!rt_model.empty())
+        {
+          std::string standards = getStringOption_("irt_standards");
+          if (standards.empty())
+          {
+            for (const auto& candidate :
+                 {std::filesystem::path("data/irt_standards.tsv"),
+                  std::filesystem::path(ODIA_DATA_DIR) / "irt_standards.tsv"})
+            {
+              if (std::filesystem::exists(candidate)) { standards = candidate.string(); break; }
+            }
+          }
+          if (standards.empty())
+          {
+            writeLogWarn_("No iRT standards available; retention times are left on the "
+                          "model's raw 0..1 scale, which is NOT iRT. Give a file with "
+                          "-irt_standards.");
+          }
+          else
+          {
+            try
+            {
+              const auto cal =
+                ODIA::LibraryGenerator::fitIrtCalibration(rt_model, standards);
+              ODIA::LibraryGenerator::applyIrtCalibration(library, cal);
+              std::ostringstream msg;
+              msg << "rescaled retention times to iRT: " << cal.slope << " * raw + "
+                  << cal.intercept << " from " << cal.peptides << " standards"
+                  << " (worst standard off by " << cal.max_abs_error << " iRT)";
+              writeLogInfo_(msg.str());
+            }
+            catch (const std::exception& e)
+            {
+              writeLogWarn_(std::string("iRT calibration failed; retention times stay on "
+                                        "the raw 0..1 scale: ") + e.what());
+            }
           }
         }
 
