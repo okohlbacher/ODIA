@@ -213,3 +213,32 @@ if(ODIA_PYTHON)
                    ${CMAKE_CURRENT_SOURCE_DIR}/compare_encoders.py
                    $<TARGET_FILE:odia_encode_dump>)
 endif()
+
+# groupByLength and the homogeneity guard. Collapsing every peptide into one
+# group, or removing the guard, previously passed the whole suite -- and mixing
+# lengths changes a prediction by more than most modifications do.
+add_test(NAME peptdeep_length_grouping
+         COMMAND odia_group_dump PEPTIDEK PEPTIDER PEPTIDEKK PEPTIDEKKK PEPTIDEM)
+set_tests_properties(peptdeep_length_grouping PROPERTIES
+  PASS_REGULAR_EXPRESSION "groups: \\[0,1,4\\] \\[2\\] \\[3\\]\nmixed_batch_refused: yes")
+
+# A modification with no elemental composition encodes to all zeros, which is
+# indistinguishable from no modification. OpenMS accepts bare mass shifts.
+add_test(NAME peptdeep_rejects_massshift_modification
+         COMMAND odia_encode_dump "PEPTIDEC[999]")
+set_tests_properties(peptdeep_rejects_massshift_modification PROPERTIES
+  WILL_FAIL TRUE)
+
+# Every element symbol in every modification OpenMS knows must either map into
+# AlphaPeptDeep's 109-element list or be a deliberate '?' bucket entry.
+#
+# This is the only check that covers the isotope translation: the Python
+# reference cannot parse a name like Label:13C(6)15N(2) -- its parser splits on
+# the first ')' -- so deleting the rename table entirely passed the encoder
+# comparison. The four symbols pinned here are halogen isotopes from PSI-MOD,
+# which AlphaPeptDeep does not load at all, so there is no upstream behaviour to
+# match; they are recorded so a new unmapped symbol fails instead of silently
+# landing in '?'.
+add_test(NAME peptdeep_modification_symbols COMMAND odia_mod_symbols)
+set_tests_properties(peptdeep_modification_symbols PROPERTIES
+  PASS_REGULAR_EXPRESSION "unmapped symbols: \\(35\\)Cl \\(37\\)Cl \\(79\\)Br \\(81\\)Br")

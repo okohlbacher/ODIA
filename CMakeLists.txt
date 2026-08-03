@@ -89,9 +89,11 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 
 # Built only for the test suite: it dumps ODIA's encoding so it can be compared
 # against the independent Python reference.
-add_executable(odia_encode_dump test/tools/odia_encode_dump.cpp)
-target_link_libraries(odia_encode_dump PRIVATE OpenMS odia_core
-                      ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
+foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols)
+  add_executable(${helper} test/tools/${helper}.cpp)
+  target_link_libraries(${helper} PRIVATE OpenMS odia_core
+                        ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
+endforeach()
 
 enable_testing()
 add_subdirectory(test)

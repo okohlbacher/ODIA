@@ -26,7 +26,14 @@ namespace ODIA
     std::string toPeptDeepSymbol(const std::string& openms_symbol)
     {
       static const std::map<std::string, std::string> renames{
+        // Heavy isotopes have their own slots in AlphaPeptDeep's list.
         {"(2)H", "2H"}, {"(13)C", "13C"}, {"(15)N", "15N"}, {"(18)O", "18O"},
+        // Light isotopes are the base element there, and they do occur:
+        // ModificationsDB loads PSI-MOD and XLMOD as well as UniMod (3610
+        // modifications, not 2859), and Label:13C(8)15N(2) is spelled with
+        // explicit (12)C and (14)N. Without these, its C and N counts were
+        // dropped into the '?' bucket instead of cancelling the heavy ones.
+        {"(1)H", "H"}, {"(12)C", "C"}, {"(14)N", "N"}, {"(16)O", "O"},
       };
       const auto it = renames.find(openms_symbol);
       return it == renames.end() ? openms_symbol : it->second;
@@ -47,6 +54,18 @@ namespace ODIA
       throw std::runtime_error("unknown modification: " + mod_id);
     }
     if (mod == nullptr) { throw std::runtime_error("unknown modification: " + mod_id); }
+
+    // A modification with no elemental composition would encode to an all-zero
+    // vector -- indistinguishable from no modification at all. OpenMS accepts
+    // bare mass shifts such as C[999] and registers them with an empty diff
+    // formula, so this is reachable from ordinary input, and zero is not a safe
+    // default for something the models are supposed to see.
+    if (mod->getDiffFormula().isEmpty())
+    {
+      throw std::runtime_error(
+        "modification '" + mod_id + "' has no elemental composition, so it "
+        "cannot be encoded; PeptDeep needs a composition, not a mass shift");
+    }
 
     for (const auto& [element, count] : mod->getDiffFormula())
     {

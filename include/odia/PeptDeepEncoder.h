@@ -53,6 +53,13 @@ namespace ODIA
     static std::vector<std::vector<std::size_t>>
     groupByLength(const std::vector<OpenMS::AASequence>& peptides);
 
+    /// Known limitation: OpenMS's AASequence keeps only one modification per
+    /// residue, so a doubly-modified residue loses all but the last one before
+    /// the encoder ever sees it. AlphaPeptDeep would accumulate them. The
+    /// accumulation in addModification_ is therefore correct but currently
+    /// unreachable, and a doubly-modified residue is silently under-encoded.
+    /// See doc/BACKLOG.md.
+    ///
     /// The 109-wide feature vector for a modification's elemental composition.
     ///
     /// Counts are signed -- roughly a fifth of UniMod has negative entries, and

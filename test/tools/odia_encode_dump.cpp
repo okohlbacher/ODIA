@@ -9,46 +9,60 @@
 #include <OpenMS/CHEMISTRY/AASequence.h>
 
 #include <iostream>
+#include <vector>
 
 int main(int argc, char** argv)
 {
   if (argc < 2)
   {
-    std::cerr << "usage: odia_encode_dump <modified-sequence>\n";
+    std::cerr << "usage: odia_encode_dump <modified-sequence>...\n"
+                 "Several sequences of equal length are encoded as one batch, so\n"
+                 "every row can be checked -- not just row 0.\n";
     return 2;
   }
   try
   {
-    const auto peptide = OpenMS::AASequence::fromString(argv[1]);
-    const auto batch = ODIA::PeptDeepEncoder::encode(peptide);
-    const auto width = ODIA::PEPTDEEP_MOD_ELEMENTS.size();
-
-    std::cout << "{\"aa_indices\": [";
-    for (std::size_t i = 0; i < batch.aa_indices.size(); ++i)
+    std::vector<OpenMS::AASequence> peptides;
+    for (int i = 1; i < argc; ++i)
     {
-      std::cout << (i ? ", " : "") << batch.aa_indices[i];
+      peptides.push_back(OpenMS::AASequence::fromString(argv[i]));
     }
-    std::cout << "], \"mod_x\": {";
-    bool first_row = true;
-    for (std::size_t r = 0; r < batch.sequence_length; ++r)
+    const auto batch = ODIA::PeptDeepEncoder::encode(peptides);
+    const auto width = ODIA::PEPTDEEP_MOD_ELEMENTS.size();
+    const auto length = batch.sequence_length;
+
+    std::cout << "{\"rows\": " << batch.rows
+              << ", \"sequence_length\": " << length << ", \"peptides\": [";
+    for (std::size_t row = 0; row < batch.rows; ++row)
     {
-      std::string entries;
-      for (std::size_t c = 0; c < width; ++c)
+      std::cout << (row ? ", " : "") << "{\"aa_indices\": [";
+      for (std::size_t i = 0; i < length; ++i)
       {
-        const float v = batch.mod_x[r * width + c];
-        if (v != 0.0f)
+        std::cout << (i ? ", " : "") << batch.aa_indices[row * length + i];
+      }
+      std::cout << "], \"mod_x\": {";
+      bool first_row = true;
+      for (std::size_t r = 0; r < length; ++r)
+      {
+        std::string entries;
+        for (std::size_t c = 0; c < width; ++c)
         {
-          if (!entries.empty()) { entries += ", "; }
-          entries += "\"" + std::to_string(c) + "\": " + std::to_string(v);
+          const float v = batch.mod_x[(row * length + r) * width + c];
+          if (v != 0.0f)
+          {
+            if (!entries.empty()) { entries += ", "; }
+            entries += "\"" + std::to_string(c) + "\": " + std::to_string(v);
+          }
+        }
+        if (!entries.empty())
+        {
+          std::cout << (first_row ? "" : ", ") << "\"" << r << "\": {" << entries << "}";
+          first_row = false;
         }
       }
-      if (!entries.empty())
-      {
-        std::cout << (first_row ? "" : ", ") << "\"" << r << "\": {" << entries << "}";
-        first_row = false;
-      }
+      std::cout << "}}";
     }
-    std::cout << "}}\n";
+    std::cout << "]}\n";
   }
   catch (const std::exception& e)
   {
