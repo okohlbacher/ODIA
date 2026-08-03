@@ -310,7 +310,11 @@ namespace ODIA
     for (std::int64_t r = 0; r < ntrans; ++r)
     {
       const auto id = c_tpid.isNull(r) ? NO_ID : c_tpid.getInt64(r, NO_ID);
-      const auto it = id == NO_ID ? id_to_index.end() : id_to_index.find(id);
+      // No NO_ID special case here: the map never contains it, because a
+      // precursor with no id is not inserted. Guarding on both sides made each
+      // guard individually removable without any test noticing -- two checks
+      // that mask each other are one check and one piece of dead code.
+      const auto it = id_to_index.find(id);
       if (it == id_to_index.end()) { ++s.orphan_transitions; continue; }
       owner[static_cast<std::size_t>(r)] = it->second;
       ++p.transition_count[it->second];
