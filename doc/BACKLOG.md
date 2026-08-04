@@ -856,3 +856,53 @@ because the failure is not reachability.
 Unblocking needs a private key on ibminode05 whose public half is in
 `~/.ssh/authorized_keys` -- the setup step the `ibmi-hpc` skill documents.
 Once that exists the benchmark is one command.
+
+## GPU inference measured on an H100 (2026-08-04)
+
+Full human proteome (20,416 proteins -> 2,127,559 target precursors), `data`,
+one H100 PCIe, against the v5 CPU run on ibminode05:
+
+| stage | CPU (v5) | GPU | |
+|---|---:|---:|---:|
+| retention time | 223.5 s | **17.1 s** | 13.1x |
+| fragment intensities | 2,372.5 s | **67.3 s** | 35.2x |
+| collision cross-sections | 368.1 s | **34.3 s** | 10.7x |
+| **total wall** | **53:23** | **3:58** | **13.5x** |
+| peak RSS | 2.04 GiB | 2.15 GiB | unchanged |
+| CPU used | 5,527% | 105% | ~53x less |
+
+**Read the 35x carefully.** It is against the *old* CPU path, which took ONNX
+Runtime's intra-op default. Same node, same binary, same peptides, GPU against
+the *fixed* CPU path: 54,500 peptides/s against 8,953 at 32 sessions -- **6.1x**.
+That is the honest hardware comparison; the rest of the 35x was the threading
+bug. Note `data` was at load 370 on 224 cores, so the CPU figure is depressed.
+
+**The phase is no longer inference-dominated.** Inference is 119 s of a 238 s
+run; digestion, decoy construction and writing 7.28 GB of TSV are the other
+119 s. Further model speedups now buy at most 2x on this stage.
+
+CPU and GPU are **not** bit-identical, and should not be expected to be --
+different kernels, different reduction order. With the same MS2 model on both,
+over 200,000 fragments: 98.05% agree within 1e-3, 99.99% within 1e-2, and 9
+fragments (0.0045%) differ by more than 0.1 -- ranking ties near the top-12
+boundary. CCS agrees to a median 0.019 A^2. The determinism test's bit-for-bit
+guarantee is *within* a provider, which is what it claims.
+
+RT differed by 3.2 min median between the two libraries, which is **not** a GPU
+effect: v5 used the fine-tuned checkpoint
+(`rtfinetune/integrated/peptdeep_rt_dynamic.onnx`) and the GPU run used the
+stock OpenMS model. MS2 and CCS used the same stock models on both, which is
+exactly why only RT moved.
+
+### Two traps worth keeping
+
+* **GPU 0 is unusable on both nodes.** `cudaSetDevice(0)` returns error 46
+  ("devices busy or unavailable") on spock and data, with both GPUs in Default
+  compute mode, zero memory used and no processes attached -- and world-writable
+  `/dev/nvidia*`. On `data`, `cudaSetDevice(1)` succeeds. On `spock` **both**
+  devices fail, so spock currently has no usable GPU at all. ONNX Runtime
+  defaults to device 0, so **`CUDA_VISIBLE_DEVICES=1` is required** on data.
+  Filed for the admin.
+* **The conda `onnxruntime-cpp` cuda build declares only `cuda-version`**, a
+  metapackage. cudart/cublas/cufft/cudnn must be installed explicitly or the
+  provider fails to load and ONNX Runtime falls back to CPU silently.
