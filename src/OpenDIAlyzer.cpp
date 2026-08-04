@@ -124,9 +124,12 @@ protected:
 
     registerDoubleOption_("fragment_ppm", "<ppm>", 20.0,
                           "Fragment mass tolerance for extraction.", false, true);
-    registerDoubleOption_("rt_window", "<seconds>", 60.0,
+    registerDoubleOption_("rt_window", "<seconds>", 600.0,
                           "Half-width of the retention-time window around the "
-                          "predicted elution.", false, true);
+                          "predicted elution. 600 s matches OpenSWATH's second "
+                          "pass; 60 s was below our own measured calibration "
+                          "residual (76.6 s SD), which put the true peak outside "
+                          "the window for a third of precursors.", false, true);
     registerDoubleOption_("irt_slope", "<a>", 0.0,
                           "Maps library iRT onto this run: rt = a * iRT + b. "
                           "0 spreads the library evenly over the run, which is a "

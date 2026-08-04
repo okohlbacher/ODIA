@@ -158,4 +158,112 @@ inline std::vector<PairScore> allpairs_xcorr(std::vector<std::vector<double>> tr
   return out;
 }
 
+
+// ---------------------------------------------------------------------------
+// ODIA additions. The primitives above are checked against OpenSWATH's own
+// reference values and are deliberately NOT modified -- that verification is
+// the reason this file was adopted rather than rewritten. What follows are
+// separate entry points for the places where OpenSWATH's exact definition is
+// wrong for our data, so both remain available and the divergence is explicit.
+
+/// Like xcorr_max, but selects the largest SIGNED value.
+///
+/// xcorr_max selects on |value| and returns the signed one, so a strong
+/// anti-correlation at some lag beats a moderate genuine co-elution at lag 0
+/// -- and the negative number then lands in the shape score, which is supposed
+/// to reward co-elution. That is right for "find the dominant feature of the
+/// correlogram" and wrong for "how well do these two fragments co-elute".
+inline XCorrPeak xcorr_max_signed(const std::vector<double>& xc, int maxdelay)
+{
+  XCorrPeak best{0, -2.0};
+  bool any = false;
+  for (size_t k = 0; k < xc.size(); ++k)
+  {
+    if (!any || xc[k] > best.value)
+    {
+      best = {static_cast<int>(k) - maxdelay, xc[k]};
+      any = true;
+    }
+  }
+  return any ? best : XCorrPeak{0, 0.0};
+}
+
+/// True when a trace carries no information: constant, or all zero.
+///
+/// standardize() maps such a trace to all zeros, after which every pair it
+/// joins scores 0.0 at every lag -- and xcorr_max's `bestabs = -1.0` seed then
+/// reports lag -maxdelay for it. Counted as evidence, these measure how many
+/// transitions are dead rather than how well the live ones agree.
+inline bool degenerate(const std::vector<double>& t)
+{
+  if (t.size() < 2) { return true; }
+  const double first = t.front();
+  for (const double v : t) { if (v != first) { return false; } }
+  return true;
+}
+
+struct PairOptions
+{
+  /// Self-pairs are autocorrelations: exactly 1.0 at lag 0, always. With 12
+  /// transitions they are 12 of 78 pairs, adding a constant 0.1538 to the mean
+  /// shape of every group, good or bad, and compressing the measured
+  /// target/decoy separation by 18%.
+  bool exclude_self = true;
+
+  /// A candidate window is 5-9 points; a lag of 10 evaluates delays whose
+  /// overlap is empty or one point. Capped at (n-1)/2 so every reported lag
+  /// rests on at least half the trace.
+  bool cap_delay_to_trace = true;
+
+  /// Drop degenerate traces rather than scoring them as agreement.
+  bool skip_degenerate = true;
+
+  /// Shape wants the best co-elution, not the biggest excursion.
+  bool signed_selection = true;
+};
+
+/// Pairwise cross-correlation with the corrections above.
+///
+/// `usable` receives the number of traces that carried information, which is
+/// worth having as a feature in its own right: a precursor scored from three
+/// live fragments is not the same evidence as one scored from twelve, and
+/// without it the two are indistinguishable in the score.
+inline std::vector<PairScore> allpairs_xcorr_ex(std::vector<std::vector<double>> traces,
+                                                int maxdelay, const PairOptions& opt,
+                                                std::size_t* usable = nullptr)
+{
+  std::vector<std::vector<double>> live;
+  live.reserve(traces.size());
+  for (auto& t : traces)
+  {
+    if (opt.skip_degenerate && degenerate(t)) { continue; }
+    live.push_back(std::move(t));
+  }
+  if (usable) { *usable = live.size(); }
+
+  const int F = static_cast<int>(live.size());
+  std::vector<PairScore> out;
+  if (F < 2) { return out; }
+
+  int md = maxdelay;
+  if (opt.cap_delay_to_trace)
+  {
+    std::size_t shortest = live.front().size();
+    for (const auto& t : live) { shortest = std::min(shortest, t.size()); }
+    md = std::max(1, std::min(md, static_cast<int>((shortest - 1) / 2)));
+  }
+
+  for (auto& t : live) { standardize(t); }
+  for (int i = 0; i < F; ++i)
+  {
+    for (int j = opt.exclude_self ? i + 1 : i; j < F; ++j)
+    {
+      const auto xc = xcorr_post(live[i], live[j], md);
+      const auto pk = opt.signed_selection ? xcorr_max_signed(xc, md) : xcorr_max(xc, md);
+      out.push_back({i, j, pk.delay, pk.value});
+    }
+  }
+  return out;
+}
+
 } // namespace ODIA::Scoring

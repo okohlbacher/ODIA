@@ -23,19 +23,92 @@ namespace ODIA
     /// transition's noise as readily as the precursor's peak.
     std::vector<double> summedTrace(const Chromatograms& c,
                                     std::uint32_t begin, std::uint32_t count,
-                                    std::size_t points)
+                                    std::size_t points,
+                                    const std::vector<double>* weights = nullptr)
     {
       std::vector<double> total(points, 0.0);
       for (std::uint32_t t = 0; t < count; ++t)
       {
         const std::uint32_t b = c.begin[begin + t];
         const std::uint32_t n = c.count[begin + t];
+        const double w = weights ? (*weights)[t] : 1.0;
         for (std::uint32_t i = 0; i < n && i < points; ++i)
         {
-          total[i] += c.intensity[b + i];
+          total[i] += w * c.intensity[b + i];
         }
       }
       return total;
+    }
+
+    /// The sum of each transition standardised by its own median and MAD.
+    ///
+    /// MAD rather than standard deviation because a trace containing a real
+    /// peak has that peak in its own noise estimate, and the SD would be
+    /// inflated by exactly the feature being looked for. MAD is unmoved by a
+    /// few large points, so a strong fragment does not suppress itself.
+    std::vector<double> noiseNormalisedTrace(const Chromatograms& c,
+                                             std::uint32_t begin, std::uint32_t count,
+                                             std::size_t points)
+    {
+      std::vector<double> total(points, 0.0);
+      std::vector<double> scratch;
+      for (std::uint32_t t = 0; t < count; ++t)
+      {
+        const std::uint32_t b = c.begin[begin + t];
+        const std::uint32_t n = c.count[begin + t];
+        if (n == 0) { continue; }
+
+        scratch.assign(c.intensity.begin() + b, c.intensity.begin() + b + n);
+        std::sort(scratch.begin(), scratch.end());
+        const double median = scratch[scratch.size() / 2];
+        for (auto& v : scratch) { v = std::abs(v - median); }
+        std::sort(scratch.begin(), scratch.end());
+        const double mad = scratch[scratch.size() / 2];
+
+        // A trace with no variation contributes nothing rather than dividing by
+        // a floor and injecting a scaled copy of its own rounding.
+        if (!(mad > 0.0)) { continue; }
+        const double scale = 1.0 / (1.4826 * mad);   // MAD -> sigma for normal noise
+        for (std::uint32_t i = 0; i < n && i < points; ++i)
+        {
+          total[i] += (c.intensity[b + i] - median) * scale;
+        }
+      }
+      return total;
+    }
+
+    /// Effective number of fragments a weight vector really spreads across,
+    /// 1 / sum(w^2) on normalised weights. Reported rather than assumed: a
+    /// dominant library fragment at 0.6 caps this below 2.7 however many
+    /// transitions are nominally present, which is not multi-fragment picking.
+    double effectiveFragments(const std::vector<double>& w)
+    {
+      double sum = 0.0, sq = 0.0;
+      for (const double v : w) { sum += v; sq += v * v; }
+      if (!(sum > 0.0) || !(sq > 0.0)) { return 0.0; }
+      const double norm = sq / (sum * sum);
+      return norm > 0.0 ? 1.0 / norm : 0.0;
+    }
+
+    /// A robust local background for one trace: the median of its points
+    /// outside the candidate, falling back to the low quantile of the whole
+    /// trace when the candidate spans everything.
+    double localBackground(const std::vector<double>& trace,
+                           std::size_t lo, std::size_t hi)
+    {
+      std::vector<double> outside;
+      outside.reserve(trace.size());
+      for (std::size_t i = 0; i < trace.size(); ++i)
+      {
+        if (i < lo || i > hi) { outside.push_back(trace[i]); }
+      }
+      if (outside.size() < 3)
+      {
+        outside.assign(trace.begin(), trace.end());
+      }
+      if (outside.empty()) { return 0.0; }
+      std::sort(outside.begin(), outside.end());
+      return outside[outside.size() / 2];
     }
 
     std::vector<double> smooth(const std::vector<double>& x, std::size_t half)
@@ -73,17 +146,52 @@ namespace ODIA
       {
         if (smoothed[i] <= 0.0) { continue; }
         if (smoothed[i] < smoothed[i - 1] || smoothed[i] < smoothed[i + 1]) { continue; }
-        // A plateau would otherwise register once per point across its width.
-        if (smoothed[i] == smoothed[i - 1]) { continue; }
+
+        // A plateau is a peak, not a thing to skip. The old `== previous`
+        // guard rejected it outright, so a broad real peak -- exactly what a
+        // moving average produces from a strong one -- yielded no candidate at
+        // all while a narrow noise spike passed. Take the plateau's extent and
+        // report its midpoint, and emit it once by skipping to its end.
+        std::size_t plateau_end = i;
+        while (plateau_end + 1 < n && smoothed[plateau_end + 1] == smoothed[i]) { ++plateau_end; }
+        if (plateau_end + 1 < n && smoothed[plateau_end + 1] > smoothed[i]) { continue; }
 
         Candidate c;
-        c.apex = i;
+        c.apex = (i + plateau_end) / 2;
         c.apex_value = smoothed[i];
         const double floor_value = boundary_fraction * smoothed[i];
-        std::size_t l = i;
-        while (l > 0 && smoothed[l - 1] > floor_value && smoothed[l - 1] <= smoothed[l]) { --l; }
-        std::size_t r = i;
-        while (r + 1 < n && smoothed[r + 1] > floor_value && smoothed[r + 1] <= smoothed[r]) { ++r; }
+
+        // Scale-aware descent. A bare "stop on any uptick" ends the window on
+        // the first noise wobble; "tolerate upticks" without a scale walks
+        // across a valley into the neighbouring peak and integrates both. So:
+        // stop at the floor, stop if the trace rebounds more than a fraction
+        // of the apex above the running minimum, and never run further than a
+        // bounded number of points.
+        const double rebound_limit = 0.25 * smoothed[i];
+        const std::size_t max_span = std::max<std::size_t>(4, n / 4);
+
+        std::size_t l = i, guard = 0;
+        double run_min = smoothed[i];
+        while (l > 0 && guard++ < max_span)
+        {
+          const double v = smoothed[l - 1];
+          if (v <= floor_value) { break; }
+          if (v > run_min + rebound_limit) { break; }
+          run_min = std::min(run_min, v);
+          --l;
+        }
+        std::size_t r = plateau_end;
+        guard = 0;
+        run_min = smoothed[plateau_end];
+        while (r + 1 < n && guard++ < max_span)
+        {
+          const double v = smoothed[r + 1];
+          if (v <= floor_value) { break; }
+          if (v > run_min + rebound_limit) { break; }
+          run_min = std::min(run_min, v);
+          ++r;
+        }
+        i = plateau_end;
         c.left = l;
         c.right = r;
         found.push_back(c);
@@ -151,7 +259,13 @@ namespace ODIA
       const std::size_t points = chromatograms.count[tb];
       if (points < 3) { ++result.precursors_without_candidate; continue; }
 
-      const auto total = summedTrace(chromatograms, tb, tc, points);
+      // D8: each transition standardised against its own local noise before
+      // summing, so no transition dominates by being loud and none is boosted
+      // by what the library expects. See the option's comment for why library
+      // weighting was rejected.
+      const auto total = options.noise_normalised_picking
+        ? noiseNormalisedTrace(chromatograms, tb, tc, points)
+        : summedTrace(chromatograms, tb, tc, points);
       const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
       if (window_total <= 0.0) { ++result.precursors_without_candidate; continue; }
 
@@ -191,10 +305,35 @@ namespace ODIA
           traces.push_back(std::move(tr));
         }
 
-        // OpenSWATH's definitions, from the adopted kernel: the mean maximum
-        // cross-correlation is the shape agreement, the mean |lag| at which
-        // those maxima sit is the coelution.
-        const auto pairs = Scoring::allpairs_xcorr(traces, options.max_delay);
+        // D4: a per-transition local background, subtracted before anything
+        // compares observed intensities to the library. Without it `observed`
+        // is a raw area over a 60 s window and is dominated by baseline and
+        // interference, which is why it correlated with nothing. Clamped at 0
+        // rather than allowed negative: a weak real fragment sitting below its
+        // own local median is absent evidence, not negative evidence.
+        std::vector<double> corrected(tc, 0.0);
+        std::size_t at_apex = 0;
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          const std::uint32_t b = chromatograms.begin[tb + k];
+          const std::uint32_t n = chromatograms.count[tb + k];
+          std::vector<double> whole(n, 0.0);
+          for (std::uint32_t j = 0; j < n; ++j) { whole[j] = chromatograms.intensity[b + j]; }
+          const double bg = localBackground(whole, lo, hi);
+          corrected[k] = std::max(0.0, observed[k] - bg * static_cast<double>(width));
+          if (cand.apex < n && chromatograms.intensity[b + cand.apex] > bg) { ++at_apex; }
+        }
+
+        // D6/D8 gate: a peak group is a co-elution. One transition above its
+        // own background is a spike, and emitting it as a candidate is what
+        // let single-fragment interference into the score matrix.
+        if (at_apex < options.min_fragments_at_apex) { continue; }
+
+        // D1/D2/D3: self-pairs excluded, shape selected on the signed maximum,
+        // lag capped to the trace, degenerate traces dropped. See score.h.
+        Scoring::PairOptions popt;
+        std::size_t usable = 0;
+        const auto pairs = Scoring::allpairs_xcorr_ex(traces, options.max_delay, popt, &usable);
         double shape = 0.0, coelution = 0.0;
         for (const auto& pr : pairs)
         {
@@ -234,11 +373,38 @@ namespace ODIA
         // classifier would learn the sign either way, but a human reading a
         // weight vector should not have to remember which column is inverted.
         g.sub_scores[XCORR_COELUTION] = -coelution;
-        g.sub_scores[LIBRARY_CORR] = pearson(observed, library_intensity);
-        g.sub_scores[LIBRARY_DOTPROD] = dotProduct(observed, library_intensity);
-        g.sub_scores[INTENSITY_SCORE] = group_total / window_total;
-        g.sub_scores[LOG_SN] = std::log(std::max(1e-6, cand.apex_value) /
-                                        std::max(1e-6, background));
+        g.sub_scores[LIBRARY_CORR] = pearson(corrected, library_intensity);
+        g.sub_scores[LIBRARY_DOTPROD] = dotProduct(corrected, library_intensity);
+
+        // D6: the old group/window area ratio carried no library or
+        // co-elution information, and a narrow decoy spike in an empty window
+        // approached 1.0. This is the share of the group's background-corrected
+        // area sitting in the fragments the library says are brightest -- which
+        // a single-transition spike cannot satisfy however tall it is.
+        {
+          std::vector<std::size_t> order(tc);
+          for (std::size_t k = 0; k < tc; ++k) { order[k] = k; }
+          std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b_) {
+            return library_intensity[a] > library_intensity[b_]; });
+          const std::size_t top = std::max<std::size_t>(1, tc / 3);
+          double top_area = 0.0, all_area = 0.0;
+          for (std::size_t r = 0; r < tc; ++r)
+          {
+            all_area += corrected[order[r]];
+            if (r < top) { top_area += corrected[order[r]]; }
+          }
+          g.sub_scores[INTENSITY_SCORE] = all_area > 0.0 ? top_area / all_area : 0.0;
+        }
+
+        // D5: the background floor is derived from the data, not from 1e-6.
+        // With the constant, a decoy in an empty window got
+        // log(apex / 1e-6) ~ 16-25 and outranked a real target on a real
+        // baseline -- the floor did not guard the ratio, it inverted it.
+        const double floor_bg = std::max(background, 0.01 * cand.apex_value);
+        g.sub_scores[LOG_SN] = floor_bg > 0.0
+          ? std::min(10.0, std::log(std::max(1e-12, cand.apex_value) / floor_bg))
+          : 0.0;
+        g.sub_scores[USABLE_FRAGMENTS] = static_cast<double>(usable);
         result.groups.push_back(std::move(g));
       }
     }

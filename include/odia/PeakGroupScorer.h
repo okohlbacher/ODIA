@@ -37,8 +37,20 @@ namespace ODIA
       XCORR_COELUTION,     ///< mean |lag| of those maxima; coelution, so lower is better
       LIBRARY_CORR,        ///< Pearson, observed against library intensities
       LIBRARY_DOTPROD,     ///< normalised dot product, same pair
-      INTENSITY_SCORE,     ///< this group's intensity over the window's total
-      LOG_SN,              ///< log apex over local background
+      /// Replaced the old group/window area ratio (D6). That ratio carried no
+      /// library or co-elution information at all: a narrow decoy spike in an
+      /// otherwise empty window approaches 1.0, while a real target peak on a
+      /// real baseline scores lower -- which is why targets measured WORSE on
+      /// it (0.1582 against 0.1613). This is the fraction of the group's area
+      /// contributed by the fragments the library says should be brightest,
+      /// which a single-transition spike cannot satisfy.
+      INTENSITY_SCORE,
+      LOG_SN,              ///< log apex over a data-derived background floor
+      /// How many fragments actually carried information. A precursor scored
+      /// from three live fragments is not the same evidence as one scored from
+      /// twelve, and without this the two are indistinguishable to the
+      /// classifier.
+      USABLE_FRAGMENTS,
       N_SUB_SCORES
     };
 
@@ -62,8 +74,38 @@ namespace ODIA
       /// this fraction of its apex.
       double boundary_fraction = 0.10;
 
-      /// Maximum lag, in cycles, considered by the cross-correlations.
+      /// Maximum lag, in cycles, considered by the cross-correlations. Capped
+      /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate
+      /// never reports a lag resting on one point of overlap.
       int max_delay = 10;
+
+      /// Minimum fragments with real signal at the apex before a candidate is
+      /// emitted. A peak group is a co-elution; one transition is a spike.
+      std::size_t min_fragments_at_apex = 3;
+
+      /// Candidate picking standardises each transition against its OWN local
+      /// noise (median subtracted, divided by MAD) before summing.
+      ///
+      /// Three formulations were considered and two rejected:
+      ///
+      /// * raw sum -- one bright interference transition sets the apex, which
+      ///   is what produced peak groups that were spikes rather than
+      ///   co-elutions;
+      /// * unit-max per trace -- rescales a pure-noise trace's largest
+      ///   fluctuation to 1.0, so twelve noise traces sum to a taller spurious
+      ///   peak than a weak real one, handing decoys free structure;
+      /// * library-intensity weighting -- rejected on review. Decoys carry a
+      ///   library too, so weighted picking preferentially finds interference
+      ///   matching the DECOY's expected pattern, and the same weights then
+      ///   feed library_corr and library_dotprod. That closes a feedback loop
+      ///   which inflates decoy library scores, and confining the weighting to
+      ///   candidate placement does not open it again -- where a candidate
+      ///   sits determines what gets scored.
+      ///
+      /// MAD standardisation weights each transition relative to its own noise
+      /// rather than to library expectation or to raw intensity, so it is
+      /// independent of everything the sub-scores later measure.
+      bool noise_normalised_picking = true;
 
       /// Classifier for the semi-supervised loop.
       /// "lda" is deterministic and dependency-light; "gbt" is what the
