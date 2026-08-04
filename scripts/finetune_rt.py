@@ -75,14 +75,36 @@ def parse_modified_sequence(seq, index):
         bare.append(seq[pos:m.start()])
         uid = int(m.group(1) or m.group(2))
         site = len("".join(bare))
-        residue = bare[-1][-1] if bare and bare[-1] else ""
+        at_end = m.end() >= len(seq.rstrip())
+        # The residue this modification sits on is the last one written so far.
+        # Two modifications on the same residue leave bare[-1] empty, so the
+        # search walks back rather than reading "" and failing into a fallback.
+        residue = ""
+        for chunk in reversed(bare):
+            if chunk:
+                residue = chunk[-1]
+                break
         candidates = index.get(uid, [])
         chosen = None
         if site == 0:
-            # Before any residue: an N-terminal modification.
-            for c in candidates:
-                if "N-term" in c:
-                    chosen = c
+            # Before any residue. Prefer the peptide N-terminus over the
+            # protein one: "Any_N-term" is what a search engine means unless it
+            # says otherwise, and picking whichever happens to come first in
+            # alphabase's table would flip on an upstream reordering.
+            for want in ("Any_N-term", "N-term"):
+                for c in candidates:
+                    if want in c:
+                        chosen = c
+                        break
+                if chosen:
+                    break
+        elif at_end:
+            for want in ("Any_C-term", "C-term"):
+                for c in candidates:
+                    if want in c:
+                        chosen = c
+                        break
+                if chosen:
                     break
         if chosen is None:
             for c in candidates:
@@ -90,19 +112,29 @@ def parse_modified_sequence(seq, index):
                     chosen = c
                     break
         if chosen is None:
-            for c in candidates:
-                if "N-term" in c or "C-term" in c:
-                    chosen = c
-                    break
-        if chosen is None:
             raise SystemExit(
                 f"UniMod:{uid} on residue {residue!r} in {seq!r} has no alphabase "
                 f"name among {candidates}; refusing to guess")
         mods.append(chosen)
-        sites.append(str(site))
+        # alphabase addresses a C-terminal modification as -1, not as the
+        # peptide length; writing the length puts it one past the end.
+        sites.append("-1" if "C-term" in chosen else str(site))
         pos = m.end()
     bare.append(seq[pos:])
-    return "".join(bare), ";".join(mods), ";".join(sites)
+    sequence = "".join(bare)
+
+    # Anything the UniMod pattern did not match is still in the string. A
+    # named modification -- "S(Phospho (STY))EQK" from Spectronaut or MaxQuant,
+    # or DIA-NN configured to write names -- passes through the loop untouched
+    # and would be handed to the model AS THE SEQUENCE. That is the silent
+    # mis-encoding this parser exists to prevent, so it is checked rather than
+    # assumed.
+    if not re.fullmatch(r"[A-Z]+", sequence):
+        raise SystemExit(
+            f"{seq!r} does not reduce to a bare peptide -- got {sequence!r}. Only "
+            f"(UniMod:N) and [UniMod:N] are understood; named modifications are "
+            f"not, and guessing at them would corrupt the training data silently.")
+    return sequence, ";".join(mods), ";".join(sites)
 
 
 def load_identifications(path, q_max):
@@ -122,9 +154,18 @@ def load_identifications(path, q_max):
     rows = []
     for seq, rts in per.items():
         rts.sort()
-        # Median over charge states. They coelute to within 0.0018 min, so this
-        # collapses a duplicate rather than averaging away a real difference.
-        rt = rts[len(rts) // 2]
+        # Charge states coelute to within 0.0018 min at the median, so this
+        # collapses a duplicate rather than averaging away a real difference --
+        # but the tail is fat: 2.6% disagree by more than 0.2 min and the worst
+        # by 2.1 min, which is label noise, not chemistry. Those are dropped
+        # rather than averaged.
+        if len(rts) > 1 and rts[-1] - rts[0] > 0.2:
+            continue
+        # A true median. rts[len//2] on an even-length sorted list returns the
+        # LATER value, which biased every two-charge peptide late by half its
+        # spread.
+        mid = len(rts) // 2
+        rt = rts[mid] if len(rts) % 2 else 0.5 * (rts[mid - 1] + rts[mid])
         sequence, mods, sites = parse_modified_sequence(seq, index)
         rows.append((sequence, mods, sites, rt))
     return rows

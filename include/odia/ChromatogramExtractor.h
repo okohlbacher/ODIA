@@ -55,13 +55,32 @@ namespace ODIA
       double fragment_ppm = 20.0;
 
       /// Extract only the first N precursors of the library, 0 for all.
-      ///
-      /// Present because a whole library over a whole run is
-      /// (transitions x spectra-per-window) points -- billions -- and nothing
-      /// downstream can use that yet. Retention-time restriction, which is the
-      /// real answer, needs an iRT-to-RT calibration that does not exist until
-      /// the run has been searched once.
       std::size_t max_precursors = 0;
+
+      /// Maps the library's iRT onto this run's retention time, in seconds:
+      /// rt = irt_slope * irt + irt_intercept.
+      ///
+      /// This is what lets a precursor be extracted around where it should
+      /// elute instead of across the whole run, and it is the difference
+      /// between 1.7e10 points and something that fits in memory. It cannot be
+      /// derived here -- it needs the run to have been searched once -- so the
+      /// caller supplies it. A slope of 0 disables the restriction and every
+      /// precursor is extracted over the full range, which is the old
+      /// behaviour and is kept because it is the only option before a first
+      /// pass exists.
+      double irt_slope = 0.0;
+      double irt_intercept = 0.0;
+
+      /// Half-width of the extraction window, seconds. Sized from the
+      /// retention-time residual at a stated quantile -- NOT from its
+      /// standard deviation, because a window has to cover the tail it is
+      /// meant to catch.
+      double rt_window_seconds = 60.0;
+
+      /// Worker threads for the matching. 0 uses the hardware concurrency.
+      /// The decode stays serial: the reader's thread-safety is unverified,
+      /// and decode is a shared cost per spectrum rather than per transition.
+      unsigned threads = 0;
 
       /// Restrict to this retention-time range, seconds. Both zero means all.
       double rt_low = 0.0;
@@ -85,6 +104,13 @@ namespace ODIA
       std::size_t nonzero_points = 0;
       double decode_seconds = 0.0;
       double match_seconds = 0.0;
+      double index_seconds = 0.0;
+
+      /// Precursors whose predicted elution fell outside the run entirely.
+      std::size_t outside_rt_range = 0;
+      /// Mean transitions live at one cycle, which is what the inverted match
+      /// actually costs per spectrum.
+      double mean_live_transitions = 0.0;
     };
 
     static Chromatograms extract(const Library& library, SpectrumSource& source,

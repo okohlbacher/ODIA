@@ -396,3 +396,19 @@ if(EXISTS "${ODIA_RT_MODEL_PATH}")
                    "${CMAKE_CURRENT_BINARY_DIR}/unencodable_irt.tsv")
   set_tests_properties(irt_calibration_rejects_unencodable PROPERTIES WILL_FAIL TRUE)
 endif()
+
+# The fine-tuning modification parser. It had four defects and no test; the
+# worst passed a named modification through into the sequence column, which
+# would have been fine-tuned on as though it were a peptide.
+if(ODIA_FINETUNE_PYTHON OR EXISTS "$ENV{ODIA_FINETUNE_PYTHON}")
+  set(ODIA_FT_PY "$ENV{ODIA_FINETUNE_PYTHON}")
+else()
+  set(ODIA_FT_PY "/scratch/kohlbach/odia/rtfinetune/env/bin/python")
+endif()
+if(EXISTS "${ODIA_FT_PY}")
+  add_test(NAME finetune_parser
+           COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 "${ODIA_FT_PY}"
+                   ${CMAKE_CURRENT_SOURCE_DIR}/check_finetune_parser.py)
+else()
+  message(STATUS "finetune parser test skipped; no python with peptdeep at ${ODIA_FT_PY}")
+endif()

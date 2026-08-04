@@ -26,7 +26,7 @@ source "${here}/env.sh"
 #
 # Pinned to a commit because this is an active WIP branch, not a release.
 MZPEAK_REPO="${MZPEAK_REPO:-https://github.com/okohlbacher/mzpeak-openms.git}"
-MZPEAK_COMMIT="${MZPEAK_COMMIT:-f93f9387a0343e9916edbc222a968bb80748e8eb}"
+MZPEAK_COMMIT="${MZPEAK_COMMIT:-7c1b6e53470a1f674a2c579a201fd1070b74efd9}"
 src="${ODIA_SCRATCH}/src/mzpeak-openms"
 build="${ODIA_SCRATCH}/build/mzpeak"
 
@@ -40,11 +40,11 @@ git -C "${src}" checkout --quiet --force "${MZPEAK_COMMIT}"
 git -C "${src}" clean -qfd
 echo "==> mzpeak at $(git -C "${src}" log -1 --format='%h %ci %s')"
 
-# mzpeak is developed against clang (see its flake.nix, which pins clang_22).
-# GCC rejects one construct that clang accepts, so we carry local patches
-# rather than switching compilers -- ODIA, OpenMS and mzpeak must all be built
-# with the same toolchain. These should be sent upstream; drop each patch here
-# once it lands.
+# mzpeak is developed against clang (see its flake.nix, which pins clang_22),
+# so a construct clang accepts and GCC rejects can appear at any time. Local
+# patches go in patches/ and are dropped once upstream takes them -- the
+# defaulted-move-constructor fix was carried here and is now upstream, so this
+# loop is currently a no-op and the directory is empty.
 for p in "${here}/../patches"/mzpeak-*.patch; do
   [[ -e "${p}" ]] || continue
   echo "==> applying $(basename "${p}")"
@@ -65,7 +65,7 @@ meson setup "${build}" "${src}" \
 # against Arrow 23 (parquet_writer_test.cpp calls FileReader::ReadTable() with a
 # signature this Arrow does not have) -- a WIP-branch issue, not ours.
 echo "==> building mzpeak"
-ninja -C "${build}" libmzpeak.so libmzpeak.a mzp-inspect read_spectra
+ninja -C "${build}" libmzpeak.so libmzpeak.a mzp-inspect mzp-bench read_spectra
 
 echo "==> installing mzpeak to ${ODIA_MZPEAK}"
 meson install -C "${build}" --no-rebuild

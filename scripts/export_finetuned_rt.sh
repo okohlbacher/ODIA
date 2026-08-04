@@ -41,6 +41,22 @@ mkdir -p "${out}"
 echo "==> exporting $(basename "${pth}") through OpenMS's exporter"
 "${env_py}" "${exporter}" --pretrained-dir "${stage}" --out-dir "${out}"
 
+# Record the ONNX ODIA actually consumes. The sidecar written by finetune_rt.py
+# hashes rt.pth, which ODIA never opens, so on its own it could not tell you
+# whether the model in use is the model that was trained.
+onnx="${out}/peptdeep_rt_dynamic.onnx"
+if [[ -f "${out}/rt_provenance.json" ]]; then
+  "${env_py}" - "${out}/rt_provenance.json" "${onnx}" <<'PYEOF'
+import hashlib, json, sys
+path, onnx = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+d["onnx_model"] = onnx
+d["onnx_sha256"] = hashlib.sha256(open(onnx, "rb").read()).hexdigest()
+json.dump(d, open(path, "w"), indent=2)
+print(f"recorded onnx sha256 {d['onnx_sha256'][:16]}... in {path}")
+PYEOF
+fi
+
 echo "==> ODIA reads it, and refits the iRT line from the standards:"
 "${ODIA_BUILD:-${ODIA_SCRATCH}/build/odia}/odia_irt_calibration" \
   "${out}/peptdeep_rt_dynamic.onnx" "${here}/../data/irt_standards.tsv" | head -4

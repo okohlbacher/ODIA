@@ -29,8 +29,13 @@ env_py="${ODIA_FINETUNE_PYTHON:-/scratch/kohlbach/odia/rtfinetune/env/bin/python
   exit 1
 }
 
+# --evaluate is ON by default. The docstring claims every run reports whether
+# fine-tuning helped on its own data; without this flag the shipped path
+# reported nothing, and the one defensive feature that stops a user inheriting
+# our verdict from a different instrument was off for everybody.
 echo "==> fine-tuning on ${ids}"
-"${env_py}" "${here}/finetune_rt.py" "${ids}" "${out}" --max-peptides "${n}"
+"${env_py}" "${here}/finetune_rt.py" "${ids}" "${out}" --max-peptides "${n}" \
+  --method "${ODIA_RT_METHOD:-direct}" --evaluate
 
 echo "==> exporting to ONNX"
 "${here}/export_finetuned_rt.sh" "${out}/rt.pth" "${out}"
