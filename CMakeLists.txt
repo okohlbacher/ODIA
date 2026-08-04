@@ -98,6 +98,7 @@ set(ODIA_LIB_SOURCES
   src/io/MzPeakSource.cpp
   src/extract/ChromatogramExtractor.cpp
   src/score/PeakGroupScorer.cpp
+  src/calibrate/RtCalibration.cpp
   src/io/ZipArchive.cpp
   src/predict/PeptDeepEncoder.cpp
   src/predict/PeptDeepPredictor.cpp
@@ -145,7 +146,8 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 # against the independent Python reference.
 foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_predict_ms2 odia_predict_ccs odia_oswpq_dump odia_run_info odia_extract odia_irt_calibration
-               odia_chunked_column_test odia_ms2_sessions odia_scoring_smoke)
+               odia_chunked_column_test odia_ms2_sessions odia_scoring_smoke
+               odia_rt_calibration)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})

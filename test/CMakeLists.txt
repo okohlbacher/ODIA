@@ -428,3 +428,9 @@ endif()
 # odia-v0.3.0). Guards the failure mode that a well-formed-but-unfitted scorer
 # would otherwise pass silently -- see the tool's own comment.
 add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)
+
+# The adopted RT calibration (src/calibrate, from OpenDIAlyzer odia-v0.3.0).
+# Checks it recovers a non-linear warp from anchors that include gross
+# outliers, and that the result is monotone -- a map that reorders the
+# gradient is wrong however well it fits.
+add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
