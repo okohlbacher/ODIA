@@ -76,6 +76,23 @@ namespace ODIA
     /// Cap per precursor, taken in descending fragment m/z.
     std::size_t max_fragments = 12;
 
+    /// Reserve this many of the cap for doubly-charged fragments, if the
+    /// precursor has any worth keeping.
+    ///
+    /// Zero means pure intensity ranking, which is the default and is faithful
+    /// to the model. The reason to consider otherwise is measured: DIA-NN's
+    /// library carries 21.7% doubly-charged fragments for a 2+ precursor and
+    /// 35.7% for a 3+, where ours carries 17.5% and 25.8% -- and the precursors
+    /// we fail to identify are enriched in charge 3 at 37.0% against 24.5%.
+    ///
+    /// But the cause is a disagreement between the two INTENSITY models, not a
+    /// difference in the rule: for a 2+ precursor our model puts a doubly
+    /// charged fragment at median 0.098 where DIA-NN's puts it at 0.155, so
+    /// ranking by intensity demotes them exactly as it should given what we
+    /// believe. Setting this above zero therefore overrides the model rather
+    /// than correcting it, and is only justified if a search says so.
+    std::size_t reserved_doubly_charged = 0;
+
     DecoyMethod decoy_method = DecoyMethod::Mutate;
   };
 

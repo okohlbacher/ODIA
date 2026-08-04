@@ -479,6 +479,33 @@ namespace ODIA
                     { return a.second.ordinal < b.second.ordinal; }
                     return a.second.charge < b.second.charge;
                   });
+        // A quota for doubly-charged fragments, when asked for. Applied by
+        // promoting the best unselected z2 ions over the weakest selected z1
+        // ones, so the cap is unchanged and only its composition moves.
+        if (params.reserved_doubly_charged > 0 && ranked.size() > params.max_fragments)
+        {
+          const std::size_t cap = params.max_fragments;
+          const std::size_t want =
+            std::min(params.reserved_doubly_charged, cap);
+          std::size_t have = 0;
+          for (std::size_t r = 0; r < cap; ++r)
+          {
+            if (ranked[r].second.charge >= 2) { ++have; }
+          }
+          for (std::size_t r = cap; r < ranked.size() && have < want; ++r)
+          {
+            if (ranked[r].second.charge < 2) { continue; }
+            // The weakest singly-charged fragment inside the cap makes way.
+            std::size_t victim = cap;
+            for (std::size_t q = cap; q-- > 0;)
+            {
+              if (ranked[q].second.charge < 2) { victim = q; break; }
+            }
+            if (victim == cap) { break; }
+            std::swap(ranked[victim], ranked[r]);
+            ++have;
+          }
+        }
         if (ranked.size() > params.max_fragments) { ranked.resize(params.max_fragments); }
 
         for (const auto& [intensity, f] : ranked)

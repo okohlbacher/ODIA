@@ -540,7 +540,38 @@ AlphaPeptDeep's torch predictions.
 
 ---
 
-## Fragment charge rules and ranking — the live suspect
+## Fragment charge ranking — measured, and it is a MODEL difference (2026-08-04)
+
+The suspicion was that raising the enumeration cap put doubly-charged fragments
+into the candidate list without the ranking ever keeping them. Measured, per
+precursor charge, on ODIA v3 against DIA-NN's library:
+
+| precursor z | frag z | ODIA share | DIA-NN share | ODIA median intensity | DIA-NN median |
+|---|---|---:|---:|---:|---:|
+| 2 | 1 | 82.5% | 78.3% | 0.2547 | 0.2330 |
+| 2 | **2** | **17.5%** | **21.7%** | **0.0983** | **0.1546** |
+| 3 | 1 | 74.2% | 64.3% | 0.2617 | 0.2288 |
+| 3 | **2** | **25.8%** | **35.7%** | 0.2386 | 0.2527 |
+
+**Our selection is faithful to our own model.** For a 2+ precursor the PeptDeep
+model puts a doubly-charged fragment at median 0.098 where DIA-NN's model puts
+it at 0.155, so ranking by intensity demotes it exactly as it should given what
+we believe. Both tools cap fragment charge at 2, so the candidate pools match
+and the rule is not the difference -- the two intensity models are.
+
+That reframes the fix. Forcing more z2 into the library **overrides the model
+rather than correcting a defect**, which may still be worth doing if it finds
+more peptides, and is worth nothing if it does not. So it is an option
+(`-reserved_doubly_charged`, default 0) and an ablation rather than a change:
+same build, same FASTA, same RT model, same search, only the quota differing.
+Measured on a 200-protein library, a quota of 4 moves the z2 share from 21.6%
+to 36.2%, which brackets DIA-NN's mix.
+
+**Result pending.** Do not adopt a non-zero default before the search reports.
+
+---
+
+## Fragment charge rules — the original suspicion, kept for the record
 
 Raised by the RT research (2026-08-03), which ruled retention time out and left
 this as the leading explanation for the remaining identification gap.

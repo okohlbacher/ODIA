@@ -58,6 +58,12 @@ protected:
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
+    registerIntOption_("reserved_doubly_charged", "<n>", 0,
+                       "Reserve this many of the fragment cap for doubly-charged ions. "
+                       "0 ranks purely by predicted intensity, which is faithful to the "
+                       "model; above 0 overrides it, and is only justified by a search.",
+                       false);
+
     registerInputFile_("irt_standards", "<file>", "",
                        "Biognosys iRT standard peptides, for rescaling the RT model's "
                        "raw 0..1 output onto the iRT scale. Defaults to data/irt_standards.tsv "
@@ -169,6 +175,8 @@ protected:
         params.min_length = static_cast<std::size_t>(getIntOption_("min_peptide_length"));
         params.max_length = static_cast<std::size_t>(getIntOption_("max_peptide_length"));
         params.decoy_method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
+        params.reserved_doubly_charged =
+          static_cast<std::size_t>(getIntOption_("reserved_doubly_charged"));
 
         const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
 
