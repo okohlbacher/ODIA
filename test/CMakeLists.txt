@@ -423,3 +423,8 @@ if(EXISTS "${ODIA_MS2_MODEL_PATH}" AND EXISTS "${ODIA_FIXTURE_DIR}/diann_library
            COMMAND odia_ms2_sessions "${ODIA_MS2_MODEL_PATH}"
                    "${ODIA_FIXTURE_DIR}/diann_library_small.tsv" 400)
 endif()
+
+# The adopted scoring stack (include/odia/scoring, from OpenDIAlyzer
+# odia-v0.3.0). Guards the failure mode that a well-formed-but-unfitted scorer
+# would otherwise pass silently -- see the tool's own comment.
+add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)

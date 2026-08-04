@@ -27,6 +27,17 @@ find_package(MzPeak REQUIRED)
 # the per-spectrum metadata (retention time, isolation windows) means going
 # through mzpeak's low-level interface, which hands back Arrow objects.
 # Version 23 is the floor OpenMS 3.6 and mzpeak both impose.
+# The adopted scoring headers (include/odia/scoring) parallelise their tree and
+# network fits with OpenMP. Optional: without it they still compile and run,
+# single-threaded, because the pragmas are simply ignored -- so a missing
+# OpenMP is a slower build, not a broken one.
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+  message(STATUS "OpenMP: enabled for the scoring headers")
+else()
+  message(STATUS "OpenMP: not found; scoring will fit single-threaded")
+endif()
+
 # ONNX Runtime drives the PeptDeep models. OpenMS's own binding cannot be used:
 # it rejects modified peptides and its headers are never installed.
 find_path(ONNXRuntime_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
@@ -97,6 +108,9 @@ if(ODIA_LIB_SOURCES)
   target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak
                                          ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET}
                                          ${ONNXRuntime_LIBRARY} libzip::zip)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(odia_core PUBLIC OpenMP::OpenMP_CXX)
+  endif()
   target_include_directories(odia_core PUBLIC ${ONNXRuntime_INCLUDE_DIR})
   set_target_properties(odia_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -130,7 +144,7 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 # against the independent Python reference.
 foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_predict_ms2 odia_predict_ccs odia_oswpq_dump odia_run_info odia_extract odia_irt_calibration
-               odia_chunked_column_test odia_ms2_sessions)
+               odia_chunked_column_test odia_ms2_sessions odia_scoring_smoke)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
