@@ -48,8 +48,11 @@ external fix are marked **[you]**; the rest are mine to work through.
   against fixtures of each width, so only the writer is still blocked on this.
 
 - **[you] GPU access.** `spock` and `data` both refuse: `Permission denied
-  (publickey)`. The CUDA path in the predictor cannot be tested until then, and
-  the environment currently carries the CPU `onnxruntime` build.
+  (publickey)`. The CUDA path in the predictor cannot be tested until then.
+  The CUDA build of ONNX Runtime now exists (`opt/env-gpu`) and ODIA is linked
+  against it (`build-gpu`), so only the credential is missing -- see
+  "GPU inference: built and verified, unrun for want of a credential" below
+  for what was tried and what is staged.
 
 ---
 
