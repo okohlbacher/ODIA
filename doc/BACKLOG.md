@@ -199,6 +199,30 @@ Both measurements were taken while another user held ~114 of the 128 cores, so
 the ratios are back-to-back under equal contention and the absolute rates are
 floors.
 
+## Benchmark ODIA against other DIA tools via ProteoBench [user, 2026-08-04]
+
+Explore <https://proteobench.cubimed.rub.de/>, download the DIA benchmark, and
+design a workflow that compares ODIA to the other DIA tools on it.
+
+Why this is worth doing properly rather than quickly: every comparison made so
+far has been against DIA-NN on S08, with DIA-NN's own library as the reference
+and DIA-NN as the search engine. That measures agreement with one tool on one
+file, and it cannot distinguish "ODIA is good" from "ODIA resembles DIA-NN".
+ProteoBench supplies a defined ground truth and a published leaderboard, which
+is the first thing here that could falsify a claim rather than confirm it.
+
+Points to settle when this is picked up:
+
+* Which module — the DIA modules differ in organism mix and in whether the
+  quantitative ratios or the identification counts are the scored quantity.
+* ODIA does not yet do quantification, so the honest first submission may be
+  identifications only. Check what the leaderboard requires before building to it.
+* The entrapment measurement already on this list is a prerequisite, not a
+  parallel task: a leaderboard position computed on an uncalibrated FDR is
+  worse than no position.
+* Submission means publishing a result under our name. Do not submit anything
+  without asking first; running the benchmark locally needs no such permission.
+
 ## Implementation, unblocked
 
 *Still uncovered by any fixture, from the mutation-testing review: neutral loss
