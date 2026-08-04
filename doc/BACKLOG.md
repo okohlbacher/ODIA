@@ -820,3 +820,36 @@ library with a charge-aware cap and search it, rather than reasoning about it.
 - **mzpeak-convert**: `--layout chunked` silently produces a point-layout file
   while printing its own `BUG:` diagnostics about signal arrays spilling to
   `auxiliary_arrays`.
+
+## GPU inference: built and verified, unrun for want of a credential (2026-08-04)
+
+`opt/env-gpu` holds a CUDA 12.9 build of ONNX Runtime **1.26.0** -- the same
+version the CPU path uses, so it is ABI-compatible with what OpenMS links --
+plus the cudart/cublas/cufft/cudnn the provider dlopens, which the conda
+package does *not* pull in on its own (it declares only the `cuda-version`
+metapackage). It is a separate prefix: `opt/env` is what the read-only OpenMS
+install resolves against and must not be swapped under.
+
+`build-gpu/` is ODIA linked against it, on Ceph so the GPU nodes see it without
+a rebuild. Verified on ibminode05: `GetAvailableProviders()` returns
+`CUDAExecutionProvider, CPUExecutionProvider`, against `CPUExecutionProvider`
+alone for the old build. So `prefer_gpu` finally has something to find.
+
+`build-gpu/run_gpu_bench.sh` is staged and needs no arguments.
+
+**What blocks the run is authentication, not routing.** On ibminode05:
+
+- `ssh -v` reports every identity file as `type -1` -- none exist. `~/.ssh`
+  symlinks to `/afs/wsi/home/oliver/.ssh` and holds `authorized_keys`,
+  `config`, `known_hosts` and an unrelated GitHub deploy key.
+- The two keys in `authorized_keys` have no private half on this filesystem,
+  and the deploy key's public half does not match either of them.
+- No Kerberos ticket (`klist`: no credentials cache), so `gssapi-*` is out too.
+
+Every hop therefore refuses at the first one: `spock` and `data` directly,
+`-J hive`, and `-J sshgw` all fail on publickey. Jump hosts do not help,
+because the failure is not reachability.
+
+Unblocking needs a private key on ibminode05 whose public half is in
+`~/.ssh/authorized_keys` -- the setup step the `ibmi-hpc` skill documents.
+Once that exists the benchmark is one command.
