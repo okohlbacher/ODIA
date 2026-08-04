@@ -132,6 +132,13 @@ protected:
     }
 
     ODIA::Library library;
+
+    // -threads is a TOPPBase option, and until now it reached digestion and
+    // decoy construction only. Inference is ~93% of this stage, so leaving it
+    // to ONNX Runtime's own heuristic meant the flag governed almost nothing.
+    const auto inference_sessions =
+      static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+
     const auto t0 = std::chrono::steady_clock::now();
     try
     {
@@ -219,7 +226,8 @@ protected:
           {
             const auto t_rt = std::chrono::steady_clock::now();
             const auto unpredicted =
-              ODIA::LibraryGenerator::predictRetentionTimes(library, rt_model);
+              ODIA::LibraryGenerator::predictRetentionTimes(library, rt_model, true,
+                                                           inference_sessions);
             const auto rt_ms = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - t_rt).count();
             std::ostringstream rt;
@@ -265,7 +273,8 @@ protected:
             const auto t_ms2 = std::chrono::steady_clock::now();
             const auto unpredicted = ODIA::LibraryGenerator::predictFragmentIntensities(
               library, ms2_model, params,
-              static_cast<float>(getDoubleOption_("nce")), getStringOption_("instrument"));
+              static_cast<float>(getDoubleOption_("nce")), getStringOption_("instrument"),
+              true, inference_sessions);
             const auto ms2_ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t_ms2).count();
             std::ostringstream ms2;
@@ -354,7 +363,8 @@ protected:
           {
             const auto t_ccs = std::chrono::steady_clock::now();
             const auto unpredicted =
-              ODIA::LibraryGenerator::predictCollisionCrossSections(library, ccs_model);
+              ODIA::LibraryGenerator::predictCollisionCrossSections(library, ccs_model, true,
+                                                                   inference_sessions);
             const auto ccs_ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t_ccs).count();
             std::ostringstream ccs;

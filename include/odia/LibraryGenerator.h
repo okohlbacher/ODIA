@@ -128,7 +128,8 @@ namespace ODIA
     ///          theirs are left NaN rather than given a made-up value.
     static std::size_t predictRetentionTimes(Library& library,
                                              const std::string& rt_model_path,
-                                             bool prefer_gpu = true);
+                                             bool prefer_gpu = true,
+                                             unsigned sessions = 0);
 
     /// Replace placeholder intensities with predicted ones, and re-choose the
     /// fragments now that there is a basis for ranking.
@@ -154,7 +155,8 @@ namespace ODIA
                                                   const DigestParams& params,
                                                   float nce = 30.0f,
                                                   const std::string& instrument = "QE",
-                                                  bool prefer_gpu = true);
+                                                  bool prefer_gpu = true,
+                                                  unsigned sessions = 0);
 
     /// The line mapping the RT model's raw output onto the iRT scale.
     struct IrtCalibration
@@ -201,7 +203,8 @@ namespace ODIA
     /// @returns the number of precursors left without a value; theirs are NaN.
     static std::size_t predictCollisionCrossSections(Library& library,
                                                     const std::string& ccs_model_path,
-                                                    bool prefer_gpu = true);
+                                                    bool prefer_gpu = true,
+                                                    unsigned sessions = 0);
 
     /// Append a decoy for every target currently in @p library.
     ///

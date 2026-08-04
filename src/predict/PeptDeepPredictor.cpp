@@ -10,6 +10,10 @@
 #include <onnxruntime_cxx_api.h>
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <limits>
 #include <stdexcept>
 
@@ -21,6 +25,14 @@ namespace ODIA
     Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "odia"};
     Ort::SessionOptions options;
     std::unique_ptr<Ort::Session> session;
+    /// Sessions 1..n. Session 0 is `session` above, so a single-session
+    /// predictor allocates nothing extra and behaves exactly as before.
+    std::vector<std::unique_ptr<Ort::Session>> replicas;
+
+    Ort::Session& at(std::size_t i)
+    {
+      return i == 0 ? *session : *replicas[i - 1];
+    }
     Ort::MemoryInfo memory{Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)};
     Provider provider = Provider::CPU;
     std::vector<std::string> input_names;
@@ -28,7 +40,8 @@ namespace ODIA
   };
 
   PeptDeepPredictor::PeptDeepPredictor(const std::string& model_path,
-                                       bool prefer_gpu, int intra_op_threads)
+                                       bool prefer_gpu, int intra_op_threads,
+                                       int sessions)
     : impl_(std::make_unique<Impl>())
   {
     if (intra_op_threads > 0) { impl_->options.SetIntraOpNumThreads(intra_op_threads); }
@@ -125,6 +138,87 @@ namespace ODIA
         "model " + model_path + " is not a PeptDeep retention-time, CCS or MS2 model: "
         "found inputs (" + names + ")");
     }
+
+    // Replicas only after the model has been accepted, so a bad path or a
+    // wrong model reports once rather than N times.
+    //
+    // CUDA is deliberately excluded: replicas exist to work around CPU
+    // intra-op parallelism scaling badly, and on a GPU they would contend for
+    // one device and multiply the weight copies in its memory instead.
+    if (impl_->provider == Provider::CPU)
+    {
+      for (int i = 1; i < sessions; ++i)
+      {
+        impl_->replicas.push_back(std::make_unique<Ort::Session>(
+          impl_->env, model_path.c_str(), impl_->options));
+      }
+    }
+  }
+
+  std::size_t PeptDeepPredictor::sessionCount() const
+  {
+    return impl_->replicas.size() + 1;
+  }
+
+  void PeptDeepPredictor::forEachChunk_(
+    const std::vector<OpenMS::AASequence>& peptides,
+    const std::function<void(std::size_t, const std::vector<std::size_t>&)>& body)
+  {
+    // The chunk list is built up front and in the serial order, so which
+    // session runs a chunk cannot change how the input was split -- and the
+    // result depends on the batch size at the last bit (see MAX_BATCH_ROWS).
+    std::vector<std::vector<std::size_t>> chunks;
+    for (const auto& whole_group : PeptDeepEncoder::groupByLength(peptides))
+    {
+      for (std::size_t offset = 0; offset < whole_group.size(); offset += MAX_BATCH_ROWS)
+      {
+        chunks.emplace_back(
+          whole_group.begin() + static_cast<std::ptrdiff_t>(offset),
+          whole_group.begin() + static_cast<std::ptrdiff_t>(
+            std::min(offset + MAX_BATCH_ROWS, whole_group.size())));
+      }
+    }
+    if (chunks.empty()) { return; }
+
+    const std::size_t workers = std::min(sessionCount(), chunks.size());
+    if (workers <= 1)
+    {
+      for (const auto& chunk : chunks) { body(0, chunk); }
+      return;
+    }
+
+    std::atomic<std::size_t> next{0};
+    std::mutex first_error_mutex;
+    std::exception_ptr first_error;
+
+    const auto worker = [&](std::size_t session)
+    {
+      for (std::size_t i = next++; i < chunks.size(); i = next++)
+      {
+        // One thread's failure must stop the others rather than let them run
+        // on for the rest of a two-million-peptide proteome. The first
+        // exception is kept and rethrown on the calling thread.
+        if (first_error) { return; }
+        try
+        {
+          body(session, chunks[i]);
+        }
+        catch (...)
+        {
+          const std::lock_guard<std::mutex> lock(first_error_mutex);
+          if (!first_error) { first_error = std::current_exception(); }
+          return;
+        }
+      }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(workers - 1);
+    for (std::size_t s = 1; s < workers; ++s) { threads.emplace_back(worker, s); }
+    worker(0);
+    for (auto& t : threads) { t.join(); }
+
+    if (first_error) { std::rethrow_exception(first_error); }
   }
 
   PeptDeepPredictor::~PeptDeepPredictor() = default;
@@ -134,7 +228,8 @@ namespace ODIA
     return impl_->provider;
   }
 
-  void PeptDeepPredictor::runBatch_(const PeptDeepEncoder::Batch& batch,
+  void PeptDeepPredictor::runBatch_(std::size_t session,
+                                    const PeptDeepEncoder::Batch& batch,
                                     const std::vector<std::size_t>& group,
                                     std::vector<float>& out)
   {
@@ -157,7 +252,7 @@ namespace ODIA
                                       impl_->input_names[1].c_str()};
     std::vector<const char*> out_names{impl_->output_names[0].c_str()};
 
-    auto results = impl_->session->Run(Ort::RunOptions{nullptr}, in_names.data(),
+    auto results = impl_->at(session).Run(Ort::RunOptions{nullptr}, in_names.data(),
                                        inputs.data(), inputs.size(),
                                        out_names.data(), out_names.size());
 
@@ -213,16 +308,10 @@ namespace ODIA
     }
 
     std::vector<Spectrum> out(peptides.size());
+    std::mutex failure_mutex;
 
-    for (const auto& whole_group : PeptDeepEncoder::groupByLength(peptides))
+    forEachChunk_(peptides, [&](std::size_t session, const std::vector<std::size_t>& group)
     {
-     for (std::size_t offset = 0; offset < whole_group.size(); offset += MAX_BATCH_ROWS)
-     {
-      const std::vector<std::size_t> group(
-        whole_group.begin() + static_cast<std::ptrdiff_t>(offset),
-        whole_group.begin() + static_cast<std::ptrdiff_t>(
-          std::min(offset + MAX_BATCH_ROWS, whole_group.size())));
-
       std::vector<OpenMS::AASequence> subset;
       std::vector<int> subset_charges;
       for (const auto index : group)
@@ -251,23 +340,33 @@ namespace ODIA
             const auto single = PeptDeepEncoder::encode(
               std::vector<OpenMS::AASequence>{subset[i]},
               std::vector<int>{subset_charges[i]}, nce, instrument);
-            runMS2Batch_(single, {group[i]}, out);
+            runMS2Batch_(session, single, {group[i]}, out);
           }
           catch (const std::exception& inner)
           {
+            const std::lock_guard<std::mutex> lock(failure_mutex);
             failures->push_back({group[i], inner.what()});
           }
         }
-        continue;
+        return;
       }
 
-      runMS2Batch_(batch, group, out);
-     }
+      runMS2Batch_(session, batch, group, out);
+    });
+
+    // Sorted so the report does not depend on which session hit which chunk
+    // first. Callers print these, and an order that changes run to run makes
+    // two identical runs look different.
+    if (failures != nullptr)
+    {
+      std::sort(failures->begin(), failures->end(),
+                [](const Failure& a, const Failure& b) { return a.index < b.index; });
     }
     return out;
   }
 
-  void PeptDeepPredictor::runMS2Batch_(const PeptDeepEncoder::Batch& batch,
+  void PeptDeepPredictor::runMS2Batch_(std::size_t session,
+                                       const PeptDeepEncoder::Batch& batch,
                                        const std::vector<std::size_t>& group,
                                        std::vector<Spectrum>& out)
   {
@@ -305,7 +404,7 @@ namespace ODIA
       for (const auto& n : impl_->input_names) { in_names.push_back(n.c_str()); }
       std::vector<const char*> out_names{impl_->output_names[0].c_str()};
 
-      auto results = impl_->session->Run(Ort::RunOptions{nullptr}, in_names.data(),
+      auto results = impl_->at(session).Run(Ort::RunOptions{nullptr}, in_names.data(),
                                          inputs.data(), inputs.size(),
                                          out_names.data(), out_names.size());
 
@@ -361,16 +460,11 @@ namespace ODIA
     // rather than pass for a real retention time.
     std::vector<float> out(peptides.size(), std::numeric_limits<float>::quiet_NaN());
 
-    for (const auto& whole_group : PeptDeepEncoder::groupByLength(peptides))
-    {
-     // Submitted in capped chunks; see MAX_BATCH_ROWS.
-     for (std::size_t offset = 0; offset < whole_group.size(); offset += MAX_BATCH_ROWS)
-     {
-      const std::vector<std::size_t> group(
-        whole_group.begin() + static_cast<std::ptrdiff_t>(offset),
-        whole_group.begin() + static_cast<std::ptrdiff_t>(
-          std::min(offset + MAX_BATCH_ROWS, whole_group.size())));
+    std::mutex failure_mutex;
 
+    // Submitted in capped chunks; see MAX_BATCH_ROWS.
+    forEachChunk_(peptides, [&](std::size_t session, const std::vector<std::size_t>& group)
+    {
       std::vector<OpenMS::AASequence> subset;
       subset.reserve(group.size());
       for (const auto index : group) { subset.push_back(peptides[index]); }
@@ -394,18 +488,24 @@ namespace ODIA
           {
             const auto single = PeptDeepEncoder::encode(
               std::vector<OpenMS::AASequence>{subset[i]});
-            runBatch_(single, {group[i]}, out);
+            runBatch_(session, single, {group[i]}, out);
           }
           catch (const std::exception& inner)
           {
+            const std::lock_guard<std::mutex> lock(failure_mutex);
             failures->push_back({group[i], inner.what()});
           }
         }
-        continue;
+        return;
       }
 
-      runBatch_(batch, group, out);
-     }
+      runBatch_(session, batch, group, out);
+    });
+
+    if (failures != nullptr)
+    {
+      std::sort(failures->begin(), failures->end(),
+                [](const Failure& a, const Failure& b) { return a.index < b.index; });
     }
     return out;
   }
@@ -430,15 +530,10 @@ namespace ODIA
     // prediction" rather than pass for a collision cross-section of zero.
     std::vector<float> out(peptides.size(), std::numeric_limits<float>::quiet_NaN());
 
-    for (const auto& whole_group : PeptDeepEncoder::groupByLength(peptides))
-    {
-     for (std::size_t offset = 0; offset < whole_group.size(); offset += MAX_BATCH_ROWS)
-     {
-      const std::vector<std::size_t> group(
-        whole_group.begin() + static_cast<std::ptrdiff_t>(offset),
-        whole_group.begin() + static_cast<std::ptrdiff_t>(
-          std::min(offset + MAX_BATCH_ROWS, whole_group.size())));
+    std::mutex failure_mutex;
 
+    forEachChunk_(peptides, [&](std::size_t session, const std::vector<std::size_t>& group)
+    {
       std::vector<OpenMS::AASequence> subset;
       std::vector<int> subset_charges;
       subset.reserve(group.size());
@@ -469,23 +564,30 @@ namespace ODIA
             const auto single = PeptDeepEncoder::encode(
               std::vector<OpenMS::AASequence>{subset[i]},
               std::vector<int>{subset_charges[i]}, 30.0f, "QE");
-            runCCSBatch_(single, {group[i]}, out);
+            runCCSBatch_(session, single, {group[i]}, out);
           }
           catch (const std::exception& inner)
           {
+            const std::lock_guard<std::mutex> lock(failure_mutex);
             failures->push_back({group[i], inner.what()});
           }
         }
-        continue;
+        return;
       }
 
-      runCCSBatch_(batch, group, out);
-     }
+      runCCSBatch_(session, batch, group, out);
+    });
+
+    if (failures != nullptr)
+    {
+      std::sort(failures->begin(), failures->end(),
+                [](const Failure& a, const Failure& b) { return a.index < b.index; });
     }
     return out;
   }
 
-  void PeptDeepPredictor::runCCSBatch_(const PeptDeepEncoder::Batch& batch,
+  void PeptDeepPredictor::runCCSBatch_(std::size_t session,
+                                       const PeptDeepEncoder::Batch& batch,
                                        const std::vector<std::size_t>& group,
                                        std::vector<float>& out)
   {
@@ -512,7 +614,7 @@ namespace ODIA
     for (const auto& n : impl_->input_names) { in_names.push_back(n.c_str()); }
     std::vector<const char*> out_names{impl_->output_names[0].c_str()};
 
-    auto results = impl_->session->Run(Ort::RunOptions{nullptr}, in_names.data(),
+    auto results = impl_->at(session).Run(Ort::RunOptions{nullptr}, in_names.data(),
                                        inputs.data(), inputs.size(),
                                        out_names.data(), out_names.size());
 

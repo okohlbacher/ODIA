@@ -5,6 +5,7 @@
 
 #include <odia/PeptDeepEncoder.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -31,10 +32,26 @@ namespace ODIA
     /// @param model_path a PeptDeep .onnx file.
     /// @param prefer_gpu attempt CUDA first, falling back to CPU (D4).
     /// @param intra_op_threads 0 leaves it to ONNX Runtime.
+    /// @param sessions how many independent sessions to run batches across.
+    ///
+    /// @note **Prefer sessions over intra_op_threads on CPU.** These are
+    /// recurrent networks whose per-op tensors are too small to spread across
+    /// many threads. Measured on 16 pinned cores with the MS2 model, one
+    /// session: intra-op 1 gives 169 peptides/s, 8 gives 375 (the peak, only
+    /// 2.2x), 16 gives 318 and 32 gives 231 -- past 8 threads it goes
+    /// backwards. Sixteen single-threaded sessions on the same cores give
+    /// 1760/s, 4.7x the best intra-op configuration, and it keeps scaling to
+    /// 4585/s at 64. Each session costs a copy of the weights and an arena,
+    /// so the count is capped by the caller rather than defaulted to the core
+    /// count.
     explicit PeptDeepPredictor(const std::string& model_path,
                                bool prefer_gpu = true,
-                               int intra_op_threads = 0);
+                               int intra_op_threads = 0,
+                               int sessions = 1);
     ~PeptDeepPredictor();
+
+    /// How many sessions batches are actually spread across (at least 1).
+    std::size_t sessionCount() const;
 
     PeptDeepPredictor(const PeptDeepPredictor&) = delete;
     PeptDeepPredictor& operator=(const PeptDeepPredictor&) = delete;
@@ -122,12 +139,24 @@ namespace ODIA
                                   std::vector<Failure>* failures = nullptr);
 
   private:
-    void runBatch_(const PeptDeepEncoder::Batch& batch,
+    /// @param session which session to submit on. Sessions are independent, so
+    /// concurrent calls are safe as long as no two use the same index and no
+    /// two write overlapping @p group indices -- both of which hold because
+    /// the chunks partition the input.
+    void runBatch_(std::size_t session, const PeptDeepEncoder::Batch& batch,
                    const std::vector<std::size_t>& group, std::vector<float>& out);
-    void runMS2Batch_(const PeptDeepEncoder::Batch& batch,
+    void runMS2Batch_(std::size_t session, const PeptDeepEncoder::Batch& batch,
                       const std::vector<std::size_t>& group, std::vector<Spectrum>& out);
-    void runCCSBatch_(const PeptDeepEncoder::Batch& batch,
+    void runCCSBatch_(std::size_t session, const PeptDeepEncoder::Batch& batch,
                       const std::vector<std::size_t>& group, std::vector<float>& out);
+
+    /// Splits @p count peptides into length-homogeneous chunks of at most
+    /// MAX_BATCH_ROWS and runs @p body over them across sessionCount()
+    /// threads. The chunking is identical to the serial order, so results do
+    /// not depend on how many sessions ran them.
+    void forEachChunk_(const std::vector<OpenMS::AASequence>& peptides,
+                       const std::function<void(std::size_t session,
+                                                const std::vector<std::size_t>& group)>& body);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

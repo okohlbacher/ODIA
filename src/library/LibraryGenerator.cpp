@@ -12,6 +12,7 @@
 #include <OpenMS/FORMAT/FASTAFile.h>
 
 #include <algorithm>
+#include <thread>
 #include <fstream>
 #include <string_view>
 #include <cmath>
@@ -309,9 +310,26 @@ namespace ODIA
     return stats;
   }
 
+
+  namespace
+  {
+    /// Sessions to run inference across, from what the caller asked for.
+    ///
+    /// Capped rather than taken as given: each session holds its own copy of
+    /// the weights plus an ONNX arena, and the throughput curve is flat well
+    /// before the core count on a shared node. 32 is where the measured gain
+    /// per extra session stopped paying for the memory.
+    int inferenceSessions(unsigned requested)
+    {
+      const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+      const unsigned want = requested == 0 ? hardware : requested;
+      return static_cast<int>(std::min(want, 32u));
+    }
+  } // namespace
+
   std::size_t LibraryGenerator::predictRetentionTimes(Library& library,
                                                       const std::string& rt_model_path,
-                                                      bool prefer_gpu)
+                                                      bool prefer_gpu, unsigned sessions)
   {
     // One prediction per distinct sequence. The RT model has no charge input,
     // so predicting per precursor would repeat identical work for every charge
@@ -340,7 +358,7 @@ namespace ODIA
     }
     if (unique_peptides.empty()) { return library.precursorCount(); }
 
-    PeptDeepPredictor predictor(rt_model_path, prefer_gpu);
+    PeptDeepPredictor predictor(rt_model_path, prefer_gpu, 1, inferenceSessions(sessions));
     std::vector<PeptDeepPredictor::Failure> failures;
     const auto predicted = predictor.predictRT(unique_peptides, &failures);
 
@@ -367,14 +385,14 @@ namespace ODIA
 
   std::size_t LibraryGenerator::predictFragmentIntensities(
     Library& library, const std::string& ms2_model_path, const DigestParams& params,
-    float nce, const std::string& instrument, bool prefer_gpu)
+    float nce, const std::string& instrument, bool prefer_gpu, unsigned sessions)
   {
     auto& p = library.precursors();
     auto& t = library.transitions();
     const std::size_t n = library.precursorCount();
     if (n == 0) { return 0; }
 
-    PeptDeepPredictor predictor(ms2_model_path, prefer_gpu);
+    PeptDeepPredictor predictor(ms2_model_path, prefer_gpu, 1, inferenceSessions(sessions));
 
     // The new transition arrays are built alongside the old ones and swapped in
     // at the end. Editing in place is not possible: a precursor's fragment
@@ -621,14 +639,15 @@ namespace ODIA
   }
 
   std::size_t LibraryGenerator::predictCollisionCrossSections(
-    Library& library, const std::string& ccs_model_path, bool prefer_gpu)
+    Library& library, const std::string& ccs_model_path, bool prefer_gpu,
+    unsigned sessions)
   {
     auto& p = library.precursors();
     const std::size_t n = library.precursorCount();
     p.ccs.assign(n, std::numeric_limits<float>::quiet_NaN());
     if (n == 0) { return 0; }
 
-    PeptDeepPredictor predictor(ccs_model_path, prefer_gpu);
+    PeptDeepPredictor predictor(ccs_model_path, prefer_gpu, 1, inferenceSessions(sessions));
 
     // Blocked, as the MS2 pass is: the whole proteome at once would hold every
     // parsed AASequence live alongside the library.

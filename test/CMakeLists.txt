@@ -412,3 +412,14 @@ if(EXISTS "${ODIA_FT_PY}")
 else()
   message(STATUS "finetune parser test skipped; no python with peptdeep at ${ODIA_FT_PY}")
 endif()
+
+# Spreading MS2 batches across sessions must be bit-for-bit identical to
+# running them on one. The chunk list is built in serial order so that it is,
+# but that is a claim about the code, and the model's arithmetic is what
+# actually has to agree -- a 4.7x speedup that quietly perturbs intensities
+# would change which fragments rank into the top twelve.
+if(EXISTS "${ODIA_MS2_MODEL_PATH}" AND EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
+  add_test(NAME ms2_sessions_are_deterministic
+           COMMAND odia_ms2_sessions "${ODIA_MS2_MODEL_PATH}"
+                   "${ODIA_FIXTURE_DIR}/diann_library_small.tsv" 400)
+endif()
