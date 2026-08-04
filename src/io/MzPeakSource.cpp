@@ -3,6 +3,9 @@
 
 #include <odia/SpectrumSource.h>
 
+#include <limits>
+#include <utility>
+
 #include <mzpeak.h>
 
 #include <algorithm>
@@ -77,6 +80,30 @@ namespace ODIA
             {
               info.window.im_high = *ion.ion_mobility_upper_limit;
             }
+          }
+
+          // "lower" and "upper" are the writer's SCAN order, not an ordering of
+          // 1/K0 -- and on a timsTOF 1/K0 *decreases* with scan number, so the
+          // file's "lower limit" is the numerically larger value. S08_diaPASEF
+          // gives lower = 1.3712, upper = 0.8898. Taken verbatim, the band test
+          // `im < im_low || im > im_high` is true for every finite mobility, so
+          // every peak is dropped and every chromatogram comes out identically
+          // zero -- silently, because the precursor is still "placed" and still
+          // gets a full-length all-zero trace.
+          if (info.window.im_low > info.window.im_high)
+          {
+            std::swap(info.window.im_low, info.window.im_high);
+          }
+
+          // A degenerate band is not a filter that admits one value; it is a
+          // writer that recorded only the midpoint. mzPeak's own header
+          // documents the limits falling back to `ion_mobility_value`. Treated
+          // as a band it is the most aggressive filter possible -- exact float
+          // equality -- so treat it as "no band known" instead.
+          if (!(info.window.im_low < info.window.im_high))
+          {
+            info.window.im_low = -std::numeric_limits<double>::infinity();
+            info.window.im_high = std::numeric_limits<double>::infinity();
           }
           distinct.emplace(quantise(info.window.mz_low), info.window);
           break;   // one precursor per spectrum in every DIA scheme seen here
