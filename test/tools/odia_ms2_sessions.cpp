@@ -5,6 +5,7 @@
 #include <OpenMS/CHEMISTRY/AASequence.h>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -39,16 +40,30 @@ int main(int argc, char** argv)
     charges.push_back(std::atoi(line.substr(b + 1, c - b - 1).c_str()));
   }
 
+  // ODIA_MS2_GPU asks for CUDA. Off by default so the determinism test stays
+  // a CPU test wherever it runs; a GPU box would otherwise silently measure
+  // something else than the machine that reported the baseline.
+  const bool want_gpu = std::getenv("ODIA_MS2_GPU") != nullptr;
+
   auto run = [&](int sessions)
   {
-    ODIA::PeptDeepPredictor p(argv[1], false, 1, sessions);
+    ODIA::PeptDeepPredictor p(argv[1], want_gpu, 1, sessions);
+    const bool on_cuda = p.provider() == ODIA::PeptDeepPredictor::Provider::CUDA;
+    if (want_gpu && !on_cuda)
+    {
+      // Falling back is the failure this whole exercise exists to catch: it
+      // looks like a slow GPU rather than an absent one.
+      std::fprintf(stderr, "ODIA_MS2_GPU was set but the provider is CPU\n");
+      std::exit(3);
+    }
     std::vector<ODIA::PeptDeepPredictor::Failure> f;
     const auto t0 = std::chrono::steady_clock::now();
     auto out = p.predictMS2(peptides, charges, 30.0f, "timsTOF", &f);
     const double dt = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - t0).count();
-    std::printf("%2d session(s): %6.2f s  %7.1f peptides/s  (%zu sessions live)\n",
-                sessions, dt, peptides.size() / dt, p.sessionCount());
+    std::printf("%2d session(s) on %-4s: %6.2f s  %8.1f peptides/s  (%zu live)\n",
+                sessions, on_cuda ? "CUDA" : "CPU", dt, peptides.size() / dt,
+                p.sessionCount());
     return out;
   };
 
