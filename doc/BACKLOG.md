@@ -292,6 +292,44 @@ Still open from this:
 
 ---
 
+## RT and m/z calibration are independent -- measured 2026-08-03
+
+Asked whether the m/z tolerance has to be recalibrated whenever the retention
+times are. **No.** Across three libraries differing only in their RT column,
+DIA-NN's achieved mass accuracy is identical to six significant figures while
+RT accuracy varies 2.2-fold:
+
+| library | RTPredAcc | median MS1 | MS1 corrected | median MS2 | MS2 corrected |
+|---|---:|---:|---:|---:|---:|
+| v3 stock RT | 0.361 | 4.85479 | 1.16167 | 1.48522 | 1.06719 |
+| v5 fine-tuned | 0.211 | 4.85479 | 1.16167 | 1.48522 | 1.06719 |
+| v4 fine-tuned | 0.164 | 4.85479 | 1.16167 | 1.48522 | 1.06719 |
+
+Mass error is a property of the instrument and of the library's m/z values;
+recalibrating retention times changes neither. The only coupling observed is
+second-order: DIA-NN's *chosen search tolerance* moved between 7 and 10 ppm
+across the variants and not monotonically in RT accuracy, which is its coarse
+parameter grid reacting to a different identification set rather than a change
+in the underlying mass error.
+
+**The finding that matters for ODIA is that it calibrates neither.**
+
+- `ChromatogramExtractor::Options::fragment_ppm` is a fixed **20.0**. The
+  measured median MS2 mass error on this run is **1.49 ppm**, and DIA-NN
+  optimised its own search tolerance to 7-10 ppm. Ours is roughly 2-3x wider
+  than the data supports, and every extra ppm admits proportionally more
+  interfering peaks into every transition's chromatogram. It is a guess, and
+  nothing currently measures it.
+- `rt_low`/`rt_high` are caller-supplied, global, and the extractor never reads
+  a retention time from the library at all (see section 4a of
+  `doc/06-rt-refinement-plan.md`).
+
+Both should be derived from the run. Because they are independent, they can be
+derived independently -- a joint or iterative calibration is not needed, which
+is worth knowing before someone builds one.
+
+---
+
 ## Phase 2 first slice, measured 2026-08-03
 
 Extraction runs end to end: library -> window assignment -> one forward pass ->
