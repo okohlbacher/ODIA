@@ -316,14 +316,24 @@ namespace ODIA
     /// Sessions to run inference across, from what the caller asked for.
     ///
     /// Capped rather than taken as given: each session holds its own copy of
-    /// the weights plus an ONNX arena, and the throughput curve is flat well
-    /// before the core count on a shared node. 32 is where the measured gain
-    /// per extra session stopped paying for the memory.
+    /// the weights plus an ONNX arena sized for a MAX_BATCH_ROWS batch, so
+    /// memory grows about half a gigabyte per session while the throughput
+    /// curve flattens. Measured on the MS2 stage of a 60k-precursor build:
+    ///
+    ///     sessions    MS2      peak RSS
+    ///            1   409.7 s   0.86 GiB
+    ///            8    50.2 s   5.02 GiB   8.2x
+    ///           16    34.6 s   8.82 GiB  11.8x
+    ///           32    32.5 s  16.11 GiB  12.6x
+    ///
+    /// 16 is the knee. Going on to 32 buys 6% more speed for 83% more memory,
+    /// which on a shared node is how a library build starts failing in the
+    /// allocator instead of finishing slightly later.
     int inferenceSessions(unsigned requested)
     {
       const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
       const unsigned want = requested == 0 ? hardware : requested;
-      return static_cast<int>(std::min(want, 32u));
+      return static_cast<int>(std::min(want, 16u));
     }
   } // namespace
 
