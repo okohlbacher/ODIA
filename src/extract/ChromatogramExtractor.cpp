@@ -10,6 +10,9 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <thread>
 
 namespace ODIA
@@ -315,6 +318,70 @@ namespace ODIA
     const unsigned threads = options.threads ? options.threads
                                              : std::max(1u, std::thread::hardware_concurrency());
     std::vector<SpectrumPeaks> block;
+    // Workers are created ONCE and parked between blocks. Spawning them per
+    // block cost more than the matching did: at 64 workers and a 128-spectrum
+    // block each got two spectra, and parallel ran slower than serial.
+    // Raising the block size hid that; creating them once removes it.
+    struct Pool
+    {
+      std::vector<std::thread> workers;
+      std::mutex m;
+      std::condition_variable cv, done_cv;
+      std::function<void()> job;
+      std::size_t generation = 0, finished = 0;
+      bool stop = false;
+
+      void start(unsigned n)
+      {
+        for (unsigned i = 0; i < n; ++i)
+        {
+          workers.emplace_back([this] {
+            std::size_t seen = 0;
+            for (;;)
+            {
+              std::function<void()> mine;
+              {
+                std::unique_lock<std::mutex> lock(m);
+                cv.wait(lock, [&] { return stop || generation != seen; });
+                if (stop) { return; }
+                seen = generation;
+                mine = job;
+              }
+              mine();
+              {
+                std::lock_guard<std::mutex> lock(m);
+                ++finished;
+              }
+              done_cv.notify_one();
+            }
+          });
+        }
+      }
+
+      void run(std::function<void()> f, unsigned n)
+      {
+        {
+          std::lock_guard<std::mutex> lock(m);
+          job = std::move(f);
+          finished = 0;
+          ++generation;
+        }
+        cv.notify_all();
+        std::unique_lock<std::mutex> lock(m);
+        done_cv.wait(lock, [&] { return finished >= n; });
+      }
+
+      ~Pool()
+      {
+        {
+          std::lock_guard<std::mutex> lock(m);
+          stop = true;
+        }
+        cv.notify_all();
+        for (auto& w : workers) { if (w.joinable()) { w.join(); } }
+      }
+    } pool_impl;
+    if (threads > 1) { pool_impl.start(threads); }
     // Large enough that spawning workers is amortised. At 128 spectra and 64
     // threads each worker got two spectra and thread creation cost more than
     // the matching did -- measured 0.19 s against 0.14 s single-threaded.
@@ -345,7 +412,6 @@ namespace ODIA
 
       const auto t_match = std::chrono::steady_clock::now();
       std::atomic<std::size_t> next{begin};
-      std::vector<std::thread> pool;
       const auto work = [&]() {
         std::size_t local_nonzero = 0;
         for (;;)
@@ -406,17 +472,8 @@ namespace ODIA
         }
         nonzero.fetch_add(local_nonzero);
       };
-      // One worker per 16 spectra at least, so a small block does not pay for
-      // more threads than it can keep busy.
-      const unsigned use = std::min<unsigned>(
-        threads, std::max<unsigned>(1, static_cast<unsigned>((end - begin) / 16)));
-      if (use <= 1) { work(); }
-      else
-      {
-        pool.reserve(use);
-        for (unsigned i = 0; i < use; ++i) { pool.emplace_back(work); }
-        for (auto& th : pool) { th.join(); }
-      }
+      if (threads <= 1) { work(); }
+      else { pool_impl.run(work, threads); }
       st.match_seconds += std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t_match).count();
 
