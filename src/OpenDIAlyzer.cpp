@@ -9,6 +9,7 @@
 #include <fstream>
 #include <odia/SpectrumSource.h>
 #include <odia/ChromatogramExtractor.h>
+#include <odia/PeakGroupScorer.h>
 
 #include <chrono>
 #include <cmath>
@@ -107,7 +108,7 @@ protected:
 
     registerStringOption_("stop_after", "<stage>", "",
                           "End the run after this stage and write its output.", false);
-    setValidStrings_("stop_after", {"", "library", "extract"});
+    setValidStrings_("stop_after", {"", "library", "extract", "score"});
 
     // No setValidFormats_ here on purpose. OpenMS has no mzPeak entry in
     // FileTypes, so declaring one makes TOPPBase try to identify the file and
@@ -132,6 +133,18 @@ protected:
     registerDoubleOption_("irt_intercept", "<b>", 0.0, "See -irt_slope.", false, true);
     registerIntOption_("max_precursors", "<n>", 0,
                        "Extract only the first N precursors, 0 for all.", false, true);
+    registerOutputFile_("out", "<file>", "",
+                        "Write scored peak groups here (TSV).", false);
+    setValidFormats_("out", {"tsv"}, false);
+    registerStringOption_("classifier", "<name>", "gbt",
+                          "Discriminant for the semi-supervised scorer.", false, true);
+    setValidStrings_("classifier", {"lda", "gbt", "nn"});
+    registerIntOption_("max_candidates", "<n>", 3,
+                       "Candidate peak groups kept per precursor. More than one on "
+                       "purpose: keeping only the best hides the true peak whenever "
+                       "it ranks second, and leaves the decoys nothing to be wrong "
+                       "about, which deflates the FDR.", false, true);
+
     registerFlag_("no_ion_mobility",
                   "Ignore the ion-mobility dimension when matching windows.", true);
 
@@ -149,7 +162,8 @@ protected:
   /// is a placeholder for a calibration, not one, and it says so out loud
   /// rather than producing quietly meaningless chromatograms.
   ExitCodes runExtraction_(const ODIA::Library& library, const std::string& run,
-                           const std::string& out_chrom)
+                           const std::string& out_chrom,
+                           ODIA::Chromatograms* keep = nullptr)
   {
     std::unique_ptr<ODIA::SpectrumSource> source;
     try
@@ -228,7 +242,120 @@ protected:
       }
       writeLogInfo_("wrote chromatograms to " + out_chrom);
     }
+    if (keep != nullptr) { *keep = std::move(chromatograms); }
     return EXECUTION_OK;
+  }
+
+  /// Find peak groups, score them, and write them with their q-values.
+  ExitCodes runScoring_(const ODIA::Library& library,
+                        const ODIA::Chromatograms& chromatograms,
+                        const std::string& out)
+  {
+    ODIA::PeakGroupScorer::Options options;
+    options.classifier = getStringOption_("classifier");
+    options.max_candidates = static_cast<std::size_t>(
+      std::max(1, getIntOption_("max_candidates")));
+    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+
+    const auto t = std::chrono::steady_clock::now();
+    ODIA::PeakGroupScorer::Result scored;
+    try
+    {
+      scored = ODIA::PeakGroupScorer::score(library, chromatograms, options);
+    }
+    catch (const std::exception& e)
+    {
+      writeLogError_(std::string("Scoring failed: ") + e.what());
+      return INTERNAL_ERROR;
+    }
+    const auto ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t).count();
+
+    std::ostringstream msg;
+    msg << "scored " << scored.groups.size() << " peak groups with "
+        << options.classifier << " in " << ms << " ms\n"
+        << "  " << scored.target_groups << " target / " << scored.decoy_groups
+        << " decoy groups\n";
+    if (scored.fdr_valid)
+    {
+      msg << "  identified " << scored.identified_at_1pct << " precursors at 1% FDR\n";
+    }
+    else
+    {
+      msg << "  no FDR reported: see the warning below\n";
+    }
+    msg << "  semi-supervised iterations: " << scored.iterations_trained
+        << " trained, " << scored.iterations_skipped << " skipped";
+    if (scored.precursors_without_candidate)
+    {
+      msg << "\n  " << scored.precursors_without_candidate
+          << " precursors yielded no candidate peak group";
+    }
+    writeLogInfo_(msg.str());
+
+    // Said loudly because it is the failure that looks like success: with no
+    // iteration fitted, the d-scores are a single-feature initialisation and
+    // the q-values are calibrated against it rather than against a model.
+    if (!scored.fdr_valid && !scored.groups.empty())
+    {
+      if (scored.decoy_groups == 0)
+      {
+        writeLogWarn_("No decoy peak groups, so target/decoy FDR is undefined and "
+                      "no q-values were computed. This is what -max_precursors "
+                      "does on a target-only library: it slices the first N "
+                      "precursors, and decoys are appended after all the targets. "
+                      "Score the whole library, or one with decoys interleaved.");
+      }
+      else if (scored.target_groups == 0)
+      {
+        writeLogWarn_("No target peak groups; nothing to score against the decoys.");
+      }
+      else
+      {
+        writeLogWarn_("No semi-supervised iteration fitted a discriminant. The "
+                      "scores come from a single-feature initialisation, not a "
+                      "trained model -- do not read these q-values as an FDR.");
+      }
+    }
+
+    if (!out.empty())
+    {
+      try
+      {
+        writeScores_(out, library, scored);
+      }
+      catch (const std::exception& e)
+      {
+        writeLogError_(std::string("Failed to write scores: ") + e.what());
+        return CANNOT_WRITE_OUTPUT_FILE;
+      }
+      writeLogInfo_("wrote scored peak groups to " + out);
+    }
+    return EXECUTION_OK;
+  }
+
+  static void writeScores_(const std::string& path, const ODIA::Library& library,
+                           const ODIA::PeakGroupScorer::Result& scored)
+  {
+    std::ofstream out(path);
+    if (!out) { throw std::runtime_error("cannot open " + path); }
+    out << "Precursor.Id\tDecoy\tRT\tLeft.RT\tRight.RT\tApex.Intensity"
+           "\tDScore\tQValue\tPEP";
+    for (const auto& n : ODIA::PeakGroupScorer::subScoreNames()) { out << '\t' << n; }
+    out << '\n';
+
+    const auto& p = library.precursors();
+    for (const auto& g : scored.groups)
+    {
+      const auto seq = library.strings().get(p.modified_sequence[g.precursor]);
+      out << seq << static_cast<int>(p.charge[g.precursor]) << '\t'
+          << static_cast<int>(g.decoy) << '\t' << g.apex_rt << '\t' << g.left_rt
+          << '\t' << g.right_rt << '\t' << g.apex_intensity << '\t' << g.dscore
+          << '\t' << g.qvalue << '\t' << g.pep;
+      for (const auto v : g.sub_scores) { out << '\t' << v; }
+      out << '\n';
+    }
+    if (!out) { throw std::runtime_error("write failed for " + path); }
   }
 
   /// Long format, one row per point: transition, retention time, intensity.
@@ -289,19 +416,20 @@ protected:
 
     // Checked before any work is done. Doing it afterwards meant a run that
     // built and wrote a library still exited 6.
-    if (stop_after != "library" && stop_after != "extract")
+    if (stop_after != "library" && stop_after != "extract" && stop_after != "score")
     {
-      writeLogError_("Implemented stages are 'library' and 'extract'; "
-                     "use -stop_after library or -stop_after extract.");
+      writeLogError_("Implemented stages are 'library', 'extract' and 'score'.");
       return ILLEGAL_PARAMETERS;
     }
-    if (stop_after == "extract" && in_run.empty())
+    if ((stop_after == "extract" || stop_after == "score") && in_run.empty())
     {
-      writeLogError_("-stop_after extract needs a run to extract from: give -in <file>.");
+      writeLogError_("-stop_after " + stop_after +
+                     " needs a run to work on: give -in <file>.");
       return ILLEGAL_PARAMETERS;
     }
 
     ODIA::Library library;
+    ODIA::Chromatograms chromatograms;
 
     // -threads is a TOPPBase option, and until now it reached digestion and
     // decoy construction only. Inference is ~93% of this stage, so leaving it
@@ -571,9 +699,15 @@ protected:
 
     reportLibrary_(library, load_ms);
 
-    if (stop_after == "extract")
+    if (stop_after == "extract" || stop_after == "score")
     {
-      const auto rc = runExtraction_(library, in_run, out_chrom);
+      const auto rc = runExtraction_(library, in_run, out_chrom,
+                                     stop_after == "score" ? &chromatograms : nullptr);
+      if (rc != EXECUTION_OK) { return rc; }
+    }
+    if (stop_after == "score")
+    {
+      const auto rc = runScoring_(library, chromatograms, getStringOption_("out"));
       if (rc != EXECUTION_OK) { return rc; }
     }
 

@@ -97,6 +97,7 @@ set(ODIA_LIB_SOURCES
   src/io/MiniJson.cpp
   src/io/MzPeakSource.cpp
   src/extract/ChromatogramExtractor.cpp
+  src/score/PeakGroupScorer.cpp
   src/io/ZipArchive.cpp
   src/predict/PeptDeepEncoder.cpp
   src/predict/PeptDeepPredictor.cpp
