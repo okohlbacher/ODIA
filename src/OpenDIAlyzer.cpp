@@ -10,6 +10,7 @@
 #include <odia/SpectrumSource.h>
 #include <odia/ChromatogramExtractor.h>
 #include <odia/PeakGroupScorer.h>
+#include <odia/RtCalibration.h>
 
 #include <chrono>
 #include <cmath>
@@ -139,6 +140,24 @@ protected:
     registerStringOption_("classifier", "<name>", "gbt",
                           "Discriminant for the semi-supervised scorer.", false, true);
     setValidStrings_("classifier", {"lda", "gbt", "nn"});
+    registerIntOption_("passes", "<n>", 2,
+                       "1 extracts once with the given calibration. 2 extracts wide, "
+                       "scores, fits the retention-time map from the confident "
+                       "identifications, and re-extracts narrow.", false);
+    registerDoubleOption_("rt_window_pass1", "<seconds>", 0.0,
+                          "Half-width for the anchor-collecting pass. Deliberately "
+                          "wide: a predicted library's RT error is far larger than "
+                          "the window pass 2 uses, so a narrow first pass finds "
+                          "nothing to calibrate from. 0 means the whole run.",
+                          false, true);
+    registerDoubleOption_("anchor_q", "<q>", 0.05,
+                          "q-value below which a pass-1 identification is used as a "
+                          "calibration anchor. Lenient on purpose -- pass 1 is "
+                          "uncalibrated, so demanding 1% there yields no anchors and "
+                          "no second pass.", false, true);
+    registerIntOption_("min_anchors", "<n>", 20,
+                       "Below this many anchors the fit is not attempted and the run "
+                       "says so rather than calibrating from noise.", false, true);
     registerIntOption_("max_candidates", "<n>", 3,
                        "Candidate peak groups kept per precursor. More than one on "
                        "purpose: keeping only the best hides the true peak whenever "
@@ -163,7 +182,9 @@ protected:
   /// rather than producing quietly meaningless chromatograms.
   ExitCodes runExtraction_(const ODIA::Library& library, const std::string& run,
                            const std::string& out_chrom,
-                           ODIA::Chromatograms* keep = nullptr)
+                           ODIA::Chromatograms* keep = nullptr,
+                           double rt_window_override = 0.0,
+                           bool library_rt_is_run_seconds = false)
   {
     std::unique_ptr<ODIA::SpectrumSource> source;
     try
@@ -178,15 +199,16 @@ protected:
 
     ODIA::ChromatogramExtractor::Options options;
     options.fragment_ppm = getDoubleOption_("fragment_ppm");
-    options.rt_window_seconds = getDoubleOption_("rt_window");
+    options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
+                                                          : getDoubleOption_("rt_window");
     options.max_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_precursors")));
     options.use_ion_mobility = !getFlag_("no_ion_mobility");
-    options.irt_slope = getDoubleOption_("irt_slope");
-    options.irt_intercept = getDoubleOption_("irt_intercept");
+    options.irt_slope = library_rt_is_run_seconds ? 1.0 : getDoubleOption_("irt_slope");
+    options.irt_intercept = library_rt_is_run_seconds ? 0.0 : getDoubleOption_("irt_intercept");
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
 
-    if (options.irt_slope == 0.0)
+    if (options.irt_slope == 0.0 && !library_rt_is_run_seconds)
     {
       writeLogWarn_("No iRT calibration given (-irt_slope/-irt_intercept). The "
                     "library is being spread evenly over the run, which will "
@@ -244,6 +266,125 @@ protected:
     }
     if (keep != nullptr) { *keep = std::move(chromatograms); }
     return EXECUTION_OK;
+  }
+
+
+  /// Extract, score, calibrate from what was confidently identified, and do it
+  /// again on the corrected retention-time axis.
+  ///
+  /// Why two passes rather than one. A predicted library's retention times are
+  /// wrong by far more than the window a second pass can afford: the residual
+  /// is hundreds of seconds where the window is tens. Extracting narrow from an
+  /// uncalibrated library therefore samples the wrong part of the run and finds
+  /// nothing -- measured here as 0 identifications with the classifier fitting
+  /// correctly and the FDR correctly refusing to call noise. So pass 1 extracts
+  /// WIDE purely to find anchors, and pass 2 extracts narrow where they say.
+  ExitCodes runScoreWorkflow_(ODIA::Library& library, const std::string& run,
+                              const std::string& out_chrom, const std::string& out)
+  {
+    const int passes = std::max(1, getIntOption_("passes"));
+    ODIA::Chromatograms chromatograms;
+
+    if (passes == 1)
+    {
+      const auto rc = runExtraction_(library, run, out_chrom, &chromatograms);
+      if (rc != EXECUTION_OK) { return rc; }
+      return runScoring_(library, chromatograms, out);
+    }
+
+    // The library's own retention times, kept before anything is applied to
+    // them. The fit maps library RT -> run RT, so it must always be evaluated
+    // on the ORIGINAL values; applying it to already-transformed ones composes
+    // the passes and puts pass 2's windows nowhere.
+    const std::vector<float> original_irt = library.precursors().irt;
+
+    writeLogInfo_("pass 1 of 2: wide extraction to collect calibration anchors");
+    const double pass1_window = getDoubleOption_("rt_window_pass1");
+    {
+      // 0 means "the whole run", expressed as a window wider than any gradient
+      // rather than as a sentinel the extractor would have to know about. A
+      // negative value would simply extract nothing.
+      const auto rc = runExtraction_(library, run, "", &chromatograms,
+                                     pass1_window > 0.0 ? pass1_window : 1.0e9);
+      if (rc != EXECUTION_OK) { return rc; }
+    }
+
+    ODIA::PeakGroupScorer::Options options;
+    options.classifier = getStringOption_("classifier");
+    options.max_candidates = static_cast<std::size_t>(std::max(1, getIntOption_("max_candidates")));
+    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    const auto pass1 = ODIA::PeakGroupScorer::score(library, chromatograms, options);
+
+    std::ostringstream p1;
+    p1 << "pass 1: " << pass1.groups.size() << " peak groups, "
+       << pass1.target_groups << " target / " << pass1.decoy_groups << " decoy, "
+       << pass1.iterations_trained << " iterations trained";
+    writeLogInfo_(p1.str());
+
+    // Anchors: the best group of each confidently identified target, paired
+    // with the library RT it came from.
+    const double anchor_q = getDoubleOption_("anchor_q");
+    std::vector<std::pair<double, double>> anchors;
+    if (pass1.fdr_valid)
+    {
+      std::vector<const ODIA::PeakGroupScorer::PeakGroup*> best(
+        library.precursorCount(), nullptr);
+      for (const auto& g : pass1.groups)
+      {
+        if (g.decoy || g.qvalue > anchor_q) { continue; }
+        auto*& b = best[g.precursor];
+        if (b == nullptr || g.qvalue < b->qvalue) { b = &g; }
+      }
+      for (std::size_t i = 0; i < best.size(); ++i)
+      {
+        if (best[i] != nullptr && std::isfinite(original_irt[i]))
+        {
+          anchors.emplace_back(static_cast<double>(original_irt[i]),
+                               static_cast<double>(best[i]->apex_rt));
+        }
+      }
+    }
+
+    const int min_anchors = std::max(1, getIntOption_("min_anchors"));
+    if (static_cast<int>(anchors.size()) < min_anchors)
+    {
+      std::ostringstream why;
+      why << "pass 1 yielded " << anchors.size() << " calibration anchors, fewer than "
+          << min_anchors << ". Not fitting a retention-time map from that -- a "
+          << "calibration from a handful of uncertain anchors is worse than none, "
+          << "because pass 2 would extract narrow around it and find nothing. ";
+      why << (pass1.fdr_valid
+                ? "Widen -rt_window_pass1, or relax -anchor_q."
+                : "Pass 1 produced no usable FDR at all; see the warning above.");
+      writeLogWarn_(why.str());
+      return runScoring_(library, chromatograms, out);
+    }
+
+    double p95 = 0.0;
+    const auto trafo = ODIA::Calibration::fit(anchors, &p95, 0.0);
+    std::ostringstream fit;
+    fit << "fitted the retention-time map from " << anchors.size()
+        << " anchors; p95 residual " << p95 << " s";
+    writeLogInfo_(fit.str());
+
+    // Applied to the ORIGINAL values, for the reason above.
+    auto& irt = library.precursors().irt;
+    for (std::size_t i = 0; i < irt.size(); ++i)
+    {
+      if (std::isfinite(original_irt[i]))
+      {
+        irt[i] = static_cast<float>(trafo.apply(static_cast<double>(original_irt[i])));
+      }
+    }
+
+    writeLogInfo_("pass 2 of 2: narrow extraction on the calibrated axis");
+    chromatograms = ODIA::Chromatograms{};
+    {
+      // The library now carries run seconds, so the affine map is the identity.
+      const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, 0.0, true);
+      if (rc != EXECUTION_OK) { return rc; }
+    }
+    return runScoring_(library, chromatograms, out);
   }
 
   /// Find peak groups, score them, and write them with their q-values.
@@ -699,15 +840,15 @@ protected:
 
     reportLibrary_(library, load_ms);
 
-    if (stop_after == "extract" || stop_after == "score")
+    if (stop_after == "extract")
     {
-      const auto rc = runExtraction_(library, in_run, out_chrom,
-                                     stop_after == "score" ? &chromatograms : nullptr);
+      const auto rc = runExtraction_(library, in_run, out_chrom, nullptr);
       if (rc != EXECUTION_OK) { return rc; }
     }
     if (stop_after == "score")
     {
-      const auto rc = runScoring_(library, chromatograms, getStringOption_("out"));
+      const auto rc = runScoreWorkflow_(library, in_run, out_chrom,
+                                        getStringOption_("out"));
       if (rc != EXECUTION_OK) { return rc; }
     }
 
