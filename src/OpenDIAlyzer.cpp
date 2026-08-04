@@ -6,6 +6,9 @@
 #include <odia/DIANNLibraryFile.h>
 #include <odia/LibraryGenerator.h>
 #include <odia/Library.h>
+#include <fstream>
+#include <odia/SpectrumSource.h>
+#include <odia/ChromatogramExtractor.h>
 
 #include <chrono>
 #include <cmath>
@@ -104,9 +107,167 @@ protected:
 
     registerStringOption_("stop_after", "<stage>", "",
                           "End the run after this stage and write its output.", false);
-    setValidStrings_("stop_after", {"", "library"});
+    setValidStrings_("stop_after", {"", "library", "extract"});
+
+    // No setValidFormats_ here on purpose. OpenMS has no mzPeak entry in
+    // FileTypes, so declaring one makes TOPPBase try to identify the file and
+    // fail with "ZIP archive contains 11 file entries; expected exactly 1" --
+    // a message about the mzPeak container that names neither mzPeak nor the
+    // tool's own option. The format is dispatched by openRun instead.
+    registerInputFile_("in", "<file>", "",
+                       "Run to extract from (mzPeak).", false);
+    registerOutputFile_("out_chrom", "<file>", "",
+                        "Write extracted chromatograms here (TSV).", false);
+    setValidFormats_("out_chrom", {"tsv"}, false);
+
+    registerDoubleOption_("fragment_ppm", "<ppm>", 20.0,
+                          "Fragment mass tolerance for extraction.", false, true);
+    registerDoubleOption_("rt_window", "<seconds>", 60.0,
+                          "Half-width of the retention-time window around the "
+                          "predicted elution.", false, true);
+    registerDoubleOption_("irt_slope", "<a>", 0.0,
+                          "Maps library iRT onto this run: rt = a * iRT + b. "
+                          "0 spreads the library evenly over the run, which is a "
+                          "placeholder, not a calibration.", false, true);
+    registerDoubleOption_("irt_intercept", "<b>", 0.0, "See -irt_slope.", false, true);
+    registerIntOption_("max_precursors", "<n>", 0,
+                       "Extract only the first N precursors, 0 for all.", false, true);
+    registerFlag_("no_ion_mobility",
+                  "Ignore the ion-mobility dimension when matching windows.", true);
 
     registerFlag_("sort_library", "Sort precursors by m/z on load.", true);
+  }
+
+
+  /// Extract every transition of @p library from @p run, and write the
+  /// chromatograms if asked.
+  ///
+  /// The iRT calibration is the part to be careful with. A library carries iRT,
+  /// a run carries seconds, and nothing in either says how they map. Given a
+  /// slope the caller trusts, that is used; given none, the library is spread
+  /// evenly across the run's time range so that something extracts -- but that
+  /// is a placeholder for a calibration, not one, and it says so out loud
+  /// rather than producing quietly meaningless chromatograms.
+  ExitCodes runExtraction_(const ODIA::Library& library, const std::string& run,
+                           const std::string& out_chrom)
+  {
+    std::unique_ptr<ODIA::SpectrumSource> source;
+    try
+    {
+      source = ODIA::openRun(run);
+    }
+    catch (const std::exception& e)
+    {
+      writeLogError_(std::string("Cannot open run ") + run + ": " + e.what());
+      return INPUT_FILE_NOT_FOUND;
+    }
+
+    ODIA::ChromatogramExtractor::Options options;
+    options.fragment_ppm = getDoubleOption_("fragment_ppm");
+    options.rt_window_seconds = getDoubleOption_("rt_window");
+    options.max_precursors = static_cast<std::size_t>(
+      std::max(0, getIntOption_("max_precursors")));
+    options.use_ion_mobility = !getFlag_("no_ion_mobility");
+    options.irt_slope = getDoubleOption_("irt_slope");
+    options.irt_intercept = getDoubleOption_("irt_intercept");
+    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+
+    if (options.irt_slope == 0.0)
+    {
+      writeLogWarn_("No iRT calibration given (-irt_slope/-irt_intercept). The "
+                    "library is being spread evenly over the run, which will "
+                    "extract from approximately the wrong retention times. "
+                    "Treat the output as a smoke test, not a result.");
+    }
+
+    ODIA::ChromatogramExtractor::Stats stats;
+    ODIA::Chromatograms chromatograms;
+    const auto t = std::chrono::steady_clock::now();
+    try
+    {
+      chromatograms = ODIA::ChromatogramExtractor::extract(library, *source, options, &stats);
+    }
+    catch (const std::exception& e)
+    {
+      writeLogError_(std::string("Extraction failed: ") + e.what());
+      return INPUT_FILE_CORRUPT;
+    }
+    const auto ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t).count();
+
+    std::ostringstream msg;
+    msg << "extracted " << stats.transitions << " transitions of "
+        << stats.precursors << " precursors from " << stats.spectra_read
+        << " spectra in " << ms << " ms\n"
+        << "  decode " << stats.decode_seconds << " s, index "
+        << stats.index_seconds << " s, match " << stats.match_seconds << " s\n"
+        << "  points " << stats.points << " (" << stats.nonzero_points
+        << " nonzero), " << chromatograms.footprintBytes() / 1048576.0 << " MiB";
+    if (stats.outside_rt_range)
+    {
+      msg << "\n  " << stats.outside_rt_range
+          << " precursors predicted to elute outside the run";
+    }
+    if (chromatograms.precursors_without_window)
+    {
+      msg << "\n  " << chromatograms.precursors_without_window
+          << " precursors covered by no isolation window";
+    }
+    writeLogInfo_(msg.str());
+
+    if (!out_chrom.empty())
+    {
+      try
+      {
+        writeChromatograms_(out_chrom, library, chromatograms);
+      }
+      catch (const std::exception& e)
+      {
+        writeLogError_(std::string("Failed to write chromatograms: ") + e.what());
+        return CANNOT_WRITE_OUTPUT_FILE;
+      }
+      writeLogInfo_("wrote chromatograms to " + out_chrom);
+    }
+    return EXECUTION_OK;
+  }
+
+  /// Long format, one row per point: transition, retention time, intensity.
+  ///
+  /// Deliberately not one row per transition with packed arrays. This file is
+  /// what the scoring stage and any external check will read, and a long table
+  /// is what every tool that might read it -- pandas, R, DuckDB -- takes
+  /// without a parser of its own.
+  static void writeChromatograms_(const std::string& path, const ODIA::Library& library,
+                                  const ODIA::Chromatograms& chromatograms)
+  {
+    std::ofstream out(path);
+    if (!out) { throw std::runtime_error("cannot open " + path); }
+    out << "Precursor.Id\tTransition.Index\tProduct.Mz\tRT\tIntensity\n";
+
+    const auto& p = library.precursors();
+    const auto& t = library.transitions();
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      // The library does not store Precursor.Id; DIA-NN's convention is
+      // sequence + charge, and the writer reconstructs it the same way the
+      // library writer does so the two files join on it.
+      const auto seq = library.strings().get(p.modified_sequence[i]);
+      const std::string id = std::string(seq) + std::to_string(static_cast<int>(p.charge[i]));
+      for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
+      {
+        const std::uint32_t tr = p.transition_begin[i] + k;
+        if (tr >= chromatograms.begin.size()) { continue; }
+        const std::uint32_t b = chromatograms.begin[tr];
+        const std::uint32_t n = chromatograms.count[tr];
+        for (std::uint32_t j = 0; j < n; ++j)
+        {
+          out << id << '\t' << tr << '\t' << ODIA::fromFixed(t.product_mz[tr]) << '\t'
+              << chromatograms.retention_time[b + j] << '\t'
+              << chromatograms.intensity[b + j] << '\n';
+        }
+      }
+    }
+    if (!out) { throw std::runtime_error("write failed for " + path); }
   }
 
   ExitCodes main_(int, const char**) override
@@ -123,11 +284,20 @@ protected:
       return ILLEGAL_PARAMETERS;
     }
 
+    const std::string in_run = getStringOption_("in");
+    const std::string out_chrom = getStringOption_("out_chrom");
+
     // Checked before any work is done. Doing it afterwards meant a run that
     // built and wrote a library still exited 6.
-    if (stop_after != "library")
+    if (stop_after != "library" && stop_after != "extract")
     {
-      writeLogError_("Only the library stage is implemented; use -stop_after library.");
+      writeLogError_("Implemented stages are 'library' and 'extract'; "
+                     "use -stop_after library or -stop_after extract.");
+      return ILLEGAL_PARAMETERS;
+    }
+    if (stop_after == "extract" && in_run.empty())
+    {
+      writeLogError_("-stop_after extract needs a run to extract from: give -in <file>.");
       return ILLEGAL_PARAMETERS;
     }
 
@@ -400,6 +570,12 @@ protected:
     library.shrinkToFit();
 
     reportLibrary_(library, load_ms);
+
+    if (stop_after == "extract")
+    {
+      const auto rc = runExtraction_(library, in_run, out_chrom);
+      if (rc != EXECUTION_OK) { return rc; }
+    }
 
     if (!out_lib.empty())
     {
