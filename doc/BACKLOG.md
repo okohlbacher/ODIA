@@ -223,6 +223,21 @@ Points to settle when this is picked up:
 * Submission means publishing a result under our name. Do not submit anything
   without asking first; running the benchmark locally needs no such permission.
 
+## [you] The pyProphet/XGBoost scoring code is not reachable (2026-08-04)
+
+The decision is to use the pyProphet-like XGBoost scoring already written at
+`/Users/kohlbach/Claude/mzPeak/OpenDIAlyzer`. That is a **macOS path**; the
+nodes this project builds on are Linux and have no `/Users` at all, so the code
+cannot be read, let alone called. Copy it to `/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/`
+(or anywhere on Ceph) and Phase 3's classifier is unblocked.
+
+Upstream pyProphet 3.0.15 with XGBoost 3.2.0 *is* installed at
+`/ceph/ibmi/abi/oliver/envs/pyprophet` -- a useful cross-check, but not the
+code the decision named, so it is not a substitute without saying so.
+
+Peak-group detection and the sub-scores do not depend on this and proceed
+meanwhile; see `doc/07-scoring-plan.md`.
+
 ## Implementation, unblocked
 
 *Still uncovered by any fixture, from the mutation-testing review: neutral loss
