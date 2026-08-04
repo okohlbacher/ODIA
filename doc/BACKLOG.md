@@ -47,12 +47,18 @@ external fix are marked **[you]**; the rest are mine to work through.
   `float32` behind an option. **The reader now does accept both**, verified
   against fixtures of each width, so only the writer is still blocked on this.
 
-- **[you] GPU access.** `spock` and `data` both refuse: `Permission denied
-  (publickey)`. The CUDA path in the predictor cannot be tested until then.
-  The CUDA build of ONNX Runtime now exists (`opt/env-gpu`) and ODIA is linked
-  against it (`build-gpu`), so only the credential is missing -- see
-  "GPU inference: built and verified, unrun for want of a credential" below
-  for what was tried and what is staged.
+- **[resolved 2026-08-04] GPU access.** These nodes authenticate with
+  **Kerberos**, not keys -- `ssh spock` works from an interactive login because
+  PAM puts a TGT in the session keyring, which an agent session cannot reach.
+  A file-based ticket (`KRB5CCNAME=FILE:<path> kinit`) hands one over without
+  creating a standing credential, and it expires on its own. The CUDA path is
+  now measured; see "GPU inference measured on an H100" below.
+
+- **[you] GPU 0 is unusable on spock and data.** `cudaSetDevice(0)` returns
+  error 46 with both devices idle, in Default compute mode, and `/dev/nvidia*`
+  world-writable. On `data` device 1 works, so `CUDA_VISIBLE_DEVICES=1` is a
+  workaround; on `spock` **both** devices fail, leaving it with no usable GPU.
+  This is an infrastructure fault, not an ODIA one -- worth a ticket.
 
 ---
 
