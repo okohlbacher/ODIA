@@ -54,6 +54,7 @@ namespace ODIA
         if (s.ms_level() != 2) { continue; }
 
         SpectrumInfo info;
+        std::size_t precursors_seen = 0;
         info.index = i;
         info.ms_level = s.ms_level();
         // Seconds. The file stores minutes and the reader converts; passing
@@ -106,9 +107,27 @@ namespace ODIA
             info.window.im_high = std::numeric_limits<double>::infinity();
           }
           distinct.emplace(quantise(info.window.mz_low), info.window);
-          break;   // one precursor per spectrum in every DIA scheme seen here
+
+          // One entry PER PRECURSOR, not per spectrum.
+          //
+          // This used to `break` after the first, on the belief that every DIA
+          // scheme carries one precursor per spectrum. S08_diaPASEF does not:
+          // the mzPeak conversion merged each pair of MS2 spectra into one
+          // spectrum carrying two isolation windows -- 32,210 precursor entries
+          // across 16,105 spectra, exactly 2.0 per spectrum. The break threw
+          // away the second window of every spectrum, which made the entire
+          // low-m/z half of the scheme unreachable: probing all 24 windows,
+          // windows 0-11 (m/z 327-708) returned no assignment and zero points
+          // while windows 12-23 (m/z 707-1401) worked. Half the precursors were
+          // silently unextractable.
+          //
+          // Both entries share the file spectrum index, so `peaks()` fetches
+          // the same peaks for each and searches them against that window's own
+          // transitions, which is what a shared-spectrum scheme means.
+          info_.push_back(info);
+          ++precursors_seen;
         }
-        info_.push_back(info);
+        if (precursors_seen == 0) { info_.push_back(info); }
       }
 
       // Ascending in retention time, which the extractor relies on. Stated as
