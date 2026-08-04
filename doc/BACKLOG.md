@@ -141,6 +141,55 @@ the exit-code-6-on-success. These remain:
 
 ---
 
+## Library generation is ~5x slower than it needs to be (measured 2026-08-04)
+
+Library generation is 53 min for the human proteome and dominates end-to-end
+cost by ~40x. Two causes, both in how ONNX Runtime is driven, neither in the
+models themselves:
+
+**1. `-threads` never reaches inference.** `LibraryGenerator` constructs all
+four predictors as `PeptDeepPredictor(model_path, prefer_gpu)` — two arguments,
+so `intra_op_threads` takes its default of 0 and `SetIntraOpNumThreads` is
+never called. ONNX Runtime then sizes its pool to the whole machine (128 cores
+here) regardless of what the user asked for. The tool's `-threads` flag governs
+digestion and decoy construction and nothing else, which is ~7% of the phase.
+Sites: `LibraryGenerator.cpp:343` (RT), `:377` (MS2), `:561` (iRT), `:631` (CCS).
+
+**2. Intra-op parallelism is the wrong axis for these models.** PeptDeep's MS2
+network is recurrent; its per-op tensors are too small to spread across many
+threads. Measured on 16 pinned cores, one session, MS2 throughput against
+intra-op thread count:
+
+| intra-op | peptides/s |     | processes x threads | peptides/s |
+|---------:|-----------:|-----|--------------------:|-----------:|
+|        1 |      168.7 |     |          16 x 1     |   **1760** |
+|        4 |      338.7 |     |           8 x 2     |     1253   |
+|        8 |  375.6 (peak) |  |           4 x 4     |      815   |
+|       16 |      317.9 |     |           2 x 8     |      505   |
+|       32 |      231.2 |     |                     |            |
+
+Intra-op saturates at 8 threads for 2.2x and then *degrades*. Data parallelism
+— N independent sessions, one thread each — is monotonically better and beats
+the best intra-op configuration by **4.7x on identical cores**. It keeps
+scaling: 8 cores 1063/s, 16 cores 1480/s, 32 cores 2716/s, 64 cores 4585/s
+(per-core falls 133 -> 72 as memory bandwidth saturates, but aggregate climbs).
+
+Against the 897 peptides/s the v5 run actually achieved, 64 data-parallel
+sessions measure **5.1x**. Projected: MS2 2372 s -> ~465 s, and library
+generation 53 min -> **~14 min** if RT and CCS gain proportionally (they share
+the same defect; not separately measured).
+
+**The fix**: give each worker thread its own `Ort::Session` with
+`intra_op_threads = 1` and slice the block across them, replacing the single
+shared session. Cost is memory — 129 MB RSS per standalone process, though
+in-process the marginal cost is the arena plus a 16 MB weight copy, so a 64-way
+split should land near 3-5 GiB against today's 2.1 GiB peak. Worth capping the
+session count independently of `-threads` for that reason.
+
+Both measurements were taken while another user held ~114 of the 128 cores, so
+the ratios are back-to-back under equal contention and the absolute rates are
+floors.
+
 ## Implementation, unblocked
 
 *Still uncovered by any fixture, from the mutation-testing review: neutral loss
