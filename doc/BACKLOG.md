@@ -625,7 +625,23 @@ same build, same FASTA, same RT model, same search, only the quota differing.
 Measured on a 200-protein library, a quota of 4 moves the z2 share from 21.6%
 to 36.2%, which brackets DIA-NN's mix.
 
-**Result pending.** Do not adopt a non-zero default before the search reports.
+**Result: the quota costs identifications, so the default stays 0.** Full human
+proteome, same build, same FASTA, same RT model, same search, only the quota
+differing:
+
+| reserved_doubly_charged | precursors | proteins |
+|---|---:|---:|
+| **0** (default) | **35,348** | **5,141** |
+| 4 | 35,050 | 5,051 |
+
+Forcing DIA-NN's charge mix loses 298 precursors (-0.84%) and 90 proteins
+(-1.75%). So the model difference is real but overriding it is not an
+improvement: our ranking is not merely faithful to our model, it is *better for
+the search* than the mix it was being compared against. The option stays --
+it is how this was measured and how it would be re-measured on other data --
+but nothing should set it without repeating the ablation.
+
+This closes the fragment-charge question.
 
 ---
 
