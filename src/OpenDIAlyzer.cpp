@@ -15,6 +15,9 @@
 #include <odia/PeakGroupScorer.h>
 #include <odia/RtCalibration.h>
 
+#include <fstream>
+#include <unordered_map>
+
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -167,12 +170,30 @@ protected:
                           "distribution's shoulders have to be visible. 0 disables inference.",
                           false, true);
     registerStringOption_("ion_mobility_calibration", "<mode>", "auto",
-                          "auto: measure the run's own 1/K0 prediction error before extracting "
-                          "and recentre the mobility window on it, provided the measurement "
-                          "clears its gate. off: extract on the library's 1/K0 as supplied. A "
-                          "run with no ion mobility is untouched either way and says so.",
+                          "How the run's own 1/K0 prediction error is measured before the "
+                          "mobility window is recentred on it. anchors: from the peak groups "
+                          "this run has already SCORED, which needs a second pass or "
+                          "-im_calib_anchors. prepass: from a blind probe of the run before "
+                          "any pass, which is cheaper and measurably finds peak DENSITY rather "
+                          "than precursors. auto: anchors when a scored pass will supply them, "
+                          "prepass otherwise. off: extract on the library's 1/K0 as supplied. A "
+                          "run with no ion mobility is untouched in every mode and says so.",
                           false);
-    setValidStrings_("ion_mobility_calibration", {"auto", "off"});
+    setValidStrings_("ion_mobility_calibration", {"auto", "off", "anchors", "prepass"});
+    registerInputFile_("im_calib_anchors", "<file>", "",
+                       "Take the 1/K0 anchors from this TSV instead of from a pass of this "
+                       "run: columns Precursor.Id, Decoy, Apex.RT. That is what an EXTERNAL "
+                       "scorer's confident identifications look like, and it is how the "
+                       "stage is measured against a frozen discriminant without also moving "
+                       "the retention-time axis.", false, true);
+    setValidFormats_("im_calib_anchors", {"tsv"}, false);
+    registerDoubleOption_("im_anchor_q", "<q>", 0.01,
+                          "q-value below which a pass-1 identification becomes a 1/K0 anchor. "
+                          "Tighter than -anchor_q on purpose: a retention-time map is fitted "
+                          "from hundreds of anchors and a wrong one is an outlier the fit "
+                          "steps over, whereas a wrong 1/K0 anchor contributes the mobility of "
+                          "whatever the frame is dense at, which is a SYSTEMATIC and does not "
+                          "average away.", false, true);
     registerIntOption_("im_calib_precursors", "<n>", 0,
                        "Precursors probed when measuring the 1/K0 error. 0 is the whole "
                        "library, which is the default because one precursor yields one "
@@ -423,6 +444,9 @@ protected:
                               const std::string& out_chrom, const std::string& out)
   {
     const int passes = std::max(1, getIntOption_("passes"));
+    // Pass 2 has scored peak groups to measure the 1/K0 axis at, so `auto`
+    // waits for them instead of guessing from a blind probe in pass 1.
+    mobility_anchors_expected_ = passes > 1;
     ODIA::Chromatograms chromatograms;
 
     if (passes == 1)
@@ -495,6 +519,19 @@ protected:
         }
       }
     }
+
+    // The 1/K0 anchors, harvested from the same pass and the same peak groups
+    // as the retention-time ones, and kept for pass 2 to measure at.
+    //
+    // Two arms. The TARGETS are the confidently identified precursors, at the
+    // apex of the group that identified them. The NULL is the best-scoring
+    // DECOYS, as many of them as there are targets -- the same procedure
+    // applied to precursors that are not in the sample, staking their claim on
+    // whatever the interference offered. That is what the gate has to be able
+    // to tell the targets apart from, and it is a harder null than an
+    // m/z-shifted control: a decoy's fragments are real fragment masses of a
+    // real (shuffled) sequence, and its apex sits on real signal.
+    harvestMobilityAnchors_(pass1, library.precursorCount());
 
     const int min_anchors = std::max(1, getIntOption_("min_anchors"));
     if (static_cast<int>(anchors.size()) < min_anchors)
@@ -1075,6 +1112,154 @@ private:
   ODIA::MobilityCalibration::Model mobility_model_;
   bool mobility_model_known_ = false;
 
+  /// Where the 1/K0 measurement is allowed to look, and whether any such place
+  /// is coming. Empty with `mobility_anchors_expected_` set means "a scored
+  /// pass will fill this, do not measure yet"; empty without it means the
+  /// blind probe is the only source there is.
+  std::vector<ODIA::MobilityAnchor> mobility_anchors_;
+  bool mobility_anchors_expected_ = false;
+  bool mobility_anchors_loaded_ = false;
+
+  /// Turn pass 1's peak groups into 1/K0 anchors: the confident targets, and a
+  /// rank-matched null of the best-scoring decoys.
+  void harvestMobilityAnchors_(const ODIA::PeakGroupScorer::Result& pass1,
+                               std::size_t precursors)
+  {
+    mobility_anchors_.clear();
+    if (getStringOption_("ion_mobility_calibration") == "off" || !pass1.fdr_valid) { return; }
+    const double q = getDoubleOption_("im_anchor_q");
+
+    std::vector<const ODIA::PeakGroupScorer::PeakGroup*> best(precursors, nullptr);
+    std::vector<const ODIA::PeakGroupScorer::PeakGroup*> best_decoy(precursors, nullptr);
+    for (const auto& g : pass1.groups)
+    {
+      if (g.precursor >= precursors) { continue; }
+      if (g.decoy)
+      {
+        auto*& b = best_decoy[g.precursor];
+        if (b == nullptr || g.dscore > b->dscore) { b = &g; }
+        continue;
+      }
+      if (g.qvalue > q) { continue; }
+      auto*& b = best[g.precursor];
+      if (b == nullptr || g.dscore > b->dscore) { b = &g; }
+    }
+
+    for (std::size_t i = 0; i < precursors; ++i)
+    {
+      if (best[i] != nullptr && std::isfinite(best[i]->apex_rt))
+      {
+        mobility_anchors_.push_back({static_cast<std::uint32_t>(i), best[i]->apex_rt, false});
+      }
+    }
+    const std::size_t targets = mobility_anchors_.size();
+
+    // As many decoys as there are targets, best first. Equal size on purpose:
+    // the gate compares two peakedness statistics, and a null with a tenth of
+    // the sample would be compared on its noise.
+    std::vector<std::pair<double, std::uint32_t>> decoys;
+    for (std::size_t i = 0; i < precursors; ++i)
+    {
+      if (best_decoy[i] != nullptr && std::isfinite(best_decoy[i]->apex_rt))
+      {
+        decoys.emplace_back(best_decoy[i]->dscore, static_cast<std::uint32_t>(i));
+      }
+    }
+    std::sort(decoys.begin(), decoys.end(), std::greater<>());
+    if (decoys.size() > targets) { decoys.resize(targets); }
+    for (const auto& d : decoys)
+    {
+      mobility_anchors_.push_back({d.second, best_decoy[d.second]->apex_rt, true});
+    }
+
+    std::ostringstream os;
+    os << "pass 1 offers " << targets << " 1/K0 anchors at q <= " << q << ", against a null of "
+       << decoys.size() << " best-scoring decoys";
+    writeLogInfo_(os.str());
+  }
+
+  /// Read anchors from -im_calib_anchors, once.
+  ///
+  /// The file names precursors the way every other TSV here does -- modified
+  /// sequence followed by charge -- and a target and its decoy share that name,
+  /// so the Decoy column is not optional.
+  void loadMobilityAnchors_(const ODIA::Library& library)
+  {
+    if (mobility_anchors_loaded_) { return; }
+    mobility_anchors_loaded_ = true;
+    const std::string path = getStringOption_("im_calib_anchors");
+    if (path.empty()) { return; }
+    mobility_anchors_expected_ = true;
+
+    std::unordered_map<std::string, std::uint32_t> index;
+    const auto& p = library.precursors();
+    index.reserve(library.precursorCount() * 2);
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      std::string key(library.strings().get(p.modified_sequence[i]));
+      key += std::to_string(static_cast<int>(p.charge[i]));
+      key += p.decoy[i] ? '-' : '+';
+      index.emplace(std::move(key), static_cast<std::uint32_t>(i));
+    }
+
+    std::ifstream in(path);
+    if (!in)
+    {
+      writeLogWarn_("Cannot read -im_calib_anchors " + path +
+                    "; the 1/K0 axis is left as the library supplies it.");
+      return;
+    }
+    std::string line;
+    if (!std::getline(in, line))
+    {
+      writeLogWarn_("-im_calib_anchors " + path + " is empty.");
+      return;
+    }
+    const auto split = [](const std::string& row) {
+      std::vector<std::string> out;
+      std::size_t b = 0;
+      for (std::size_t i = 0; i <= row.size(); ++i)
+      {
+        if (i == row.size() || row[i] == '\t') { out.push_back(row.substr(b, i - b)); b = i + 1; }
+      }
+      return out;
+    };
+    const auto header = split(line);
+    const auto column = [&](const char* name) {
+      for (std::size_t i = 0; i < header.size(); ++i)
+      {
+        if (header[i] == name) { return static_cast<int>(i); }
+      }
+      return -1;
+    };
+    const int c_id = column("Precursor.Id"), c_d = column("Decoy"), c_rt = column("Apex.RT");
+    if (c_id < 0 || c_d < 0 || c_rt < 0)
+    {
+      writeLogWarn_("-im_calib_anchors " + path + " needs columns Precursor.Id, Decoy and "
+                    "Apex.RT; the 1/K0 axis is left as the library supplies it.");
+      return;
+    }
+    std::size_t unmatched = 0, targets = 0;
+    while (std::getline(in, line))
+    {
+      if (line.empty()) { continue; }
+      const auto f = split(line);
+      if (static_cast<int>(f.size()) <= std::max(c_id, std::max(c_d, c_rt))) { continue; }
+      const bool decoy = f[c_d] != "0" && !f[c_d].empty();
+      const auto it = index.find(f[c_id] + (decoy ? '-' : '+'));
+      if (it == index.end()) { ++unmatched; continue; }
+      mobility_anchors_.push_back({it->second,
+                                   static_cast<float>(std::strtod(f[c_rt].c_str(), nullptr)),
+                                   decoy});
+      if (!decoy) { ++targets; }
+    }
+    std::ostringstream os;
+    os << "read " << mobility_anchors_.size() << " 1/K0 anchors from " << path << " ("
+       << targets << " target, " << mobility_anchors_.size() - targets << " null)";
+    if (unmatched) { os << "; " << unmatched << " named no precursor in this library"; }
+    writeLogInfo_(os.str());
+  }
+
   /// Measure the run's 1/K0 prediction error and, if the gate passes, hand the
   /// model to the extractor.
   ///
@@ -1087,10 +1272,26 @@ private:
                                  ODIA::ChromatogramExtractor::Options& options)
   {
     options.mobility_model = nullptr;
-    if (getStringOption_("ion_mobility_calibration") == "off")
+    const std::string mode = getStringOption_("ion_mobility_calibration");
+    if (mode == "off")
     {
       writeLogInfo_("ion-mobility calibration: not measured (-ion_mobility_calibration off); "
                     "extracting on the library's 1/K0 as supplied");
+      return;
+    }
+    loadMobilityAnchors_(library);
+    // auto resolves to the anchored probe exactly when a scored pass will
+    // supply anchors. It is not the default because it is better in principle
+    // -- it is the default because the blind probe was measured on S08 and
+    // found peak density rather than precursors; see MobilityCalibration.h.
+    const bool anchored = mode == "anchors" ||
+                          (mode == "auto" && (mobility_anchors_expected_ ||
+                                              !mobility_anchors_.empty()));
+    if (anchored && mobility_anchors_.empty() && !mobility_model_known_)
+    {
+      writeLogInfo_("ion-mobility calibration: DEFERRED -- it is measured at the peak groups "
+                    "this run scores, and none have been scored yet. This pass extracts on the "
+                    "library's 1/K0; the next one is where the correction can be earned.");
       return;
     }
     if (options.precursor_im_window <= 0.0)
@@ -1126,8 +1327,10 @@ private:
       imc.rt_window_seconds = getDoubleOption_("im_calib_rt_window");
       try
       {
-        mobility_model_ = ODIA::MobilityCalibration::calibrate(library, source, imc,
-                                                              &diagnostics);
+        mobility_model_ = anchored
+          ? ODIA::MobilityCalibration::calibrateFrom(library, source, mobility_anchors_, imc,
+                                                     &diagnostics)
+          : ODIA::MobilityCalibration::calibrate(library, source, imc, &diagnostics);
       }
       catch (const std::exception& e)
       {
