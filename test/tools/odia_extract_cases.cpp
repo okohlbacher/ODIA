@@ -333,6 +333,55 @@ namespace
     checkNear(sumTrace(without, known), 3 * 10.0,
               "a run without mobility is not filtered by mobility");
   }
+
+  /// `use_ion_mobility` gates the frame's band and NOTHING else.
+  ///
+  /// The two tests are distinct -- the header says so, and they answer
+  /// different questions: the band separates co-packed windows, the
+  /// per-precursor window separates a peptide from its same-window
+  /// neighbours. Switching the band off (-no_ion_mobility) also switched the
+  /// per-precursor window off, because the peak's mobility was only READ
+  /// inside the band's branch and stayed NaN otherwise -- and a NaN mobility
+  /// skips the per-precursor test by the "absent information is not evidence"
+  /// rule that is meant for a run that carries no mobility at all.
+  ///
+  /// That is not a small thing: -no_ion_mobility is the control arm used to
+  /// measure what mobility filtering buys, and it was silently measuring both
+  /// filters against neither.
+  void caseImGating()
+  {
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0, 0.80, 1.20);
+    for (int c = 0; c < 3; ++c)
+    {
+      const auto s = run.addSpectrum(w, 100.0 + 10.0 * c);
+      run.addPeak(s, 400.0, 3.0f, 1.30f);    // outside the frame's band
+      run.addPeak(s, 400.0, 7.0f, 1.10f);    // inside the band, wrong precursor
+      run.addPeak(s, 400.0, 10.0f, 0.91f);   // this precursor
+    }
+
+    ScriptedLibrary lib;
+    lib.addPrecursor(505.0, 0.90f);
+    const auto tr = lib.addTransition(400.0);
+
+    auto opt = plainOptions();
+    opt.use_ion_mobility = false;            // band off
+    opt.precursor_im_window = 0.025;         // per-precursor window still on
+    const auto x = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkRepresentation(x);
+    // Only the peak at 0.91 survives: 1.10 and 1.30 are 0.2 and 0.4 from the
+    // precursor's 0.90, so the per-precursor window rejects both whether or
+    // not the frame's band would have. Before the fix this returned 20 per
+    // cycle -- everything at that m/z, at every mobility in the frame.
+    checkNear(sumTrace(x, tr), 3 * 10.0,
+              "the band is off, the per-precursor window is not");
+
+    // And with both off, everything at that m/z arrives: 20 per cycle. This is
+    // what the case above must NOT return.
+    opt.precursor_im_window = 0.0;
+    const auto none = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkNear(sumTrace(none, tr), 3 * 20.0, "with both off, nothing is filtered");
+  }
 }
 
 int main(int argc, char** argv)
@@ -343,9 +392,11 @@ int main(int argc, char** argv)
   if (which == "invalid_mz") { caseInvalidMz(); }
   else if (which == "aggregate") { caseAggregate(); }
   else if (which == "mobility") { caseMobility(); }
+  else if (which == "im_gating") { caseImGating(); }
   else
   {
-    std::fprintf(stderr, "usage: odia_extract_cases <invalid_mz|aggregate|mobility>\n");
+    std::fprintf(stderr,
+                 "usage: odia_extract_cases <invalid_mz|aggregate|mobility|im_gating>\n");
     return 2;
   }
 

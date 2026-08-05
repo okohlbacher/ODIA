@@ -268,9 +268,17 @@ namespace ODIA
       double rt_low = 0.0;
       double rt_high = 0.0;
 
-      /// Match a peak's ion mobility against the window's limits when the run
+      /// Match a peak's ion mobility against the WINDOW's limits when the run
       /// carries it. A diaPASEF frame holds several windows over disjoint
       /// mobility ranges, so ignoring this mixes them.
+      ///
+      /// This gates the frame band and nothing else. `precursor_im_window` is
+      /// a separate test with a separate switch, and turning this off must not
+      /// turn that off -- it used to, because the peak's mobility was only read
+      /// inside this branch and a NaN mobility skips the per-precursor test.
+      /// Switching off both filters while claiming to switch off one is worse
+      /// than either: this flag exists to be the control arm that says what
+      /// mobility filtering is worth.
       bool use_ion_mobility = true;
 
       /// Report progress every this many spectra, 0 to stay quiet.

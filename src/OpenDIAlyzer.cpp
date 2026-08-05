@@ -218,7 +218,9 @@ protected:
                        "about, which deflates the FDR.", false, true);
 
     registerFlag_("no_ion_mobility",
-                  "Ignore the ion-mobility dimension when matching windows.", true);
+                  "Ignore the ISOLATION WINDOW's mobility band when matching. Leaves "
+                  "-precursor_im_window alone: the two are separate filters and this "
+                  "flag is the control arm for measuring what the band is worth.", true);
 
     registerFlag_("sort_library", "Sort precursors by m/z on load.", true);
   }

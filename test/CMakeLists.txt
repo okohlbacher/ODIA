@@ -446,6 +446,7 @@ add_test(NAME extract_rt_axis COMMAND odia_extract_axis)
 add_test(NAME extract_invalid_product_mz COMMAND odia_extract_cases invalid_mz)
 add_test(NAME extract_aggregate COMMAND odia_extract_cases aggregate)
 add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
+add_test(NAME extract_im_gating_is_independent COMMAND odia_extract_cases im_gating)
 
 # The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
 # Runs on synthesised residuals only, so it needs no data: it checks that a

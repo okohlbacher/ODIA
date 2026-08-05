@@ -936,7 +936,15 @@ namespace ODIA
         best_int.assign(x.query.size(), -1.0f);
         best_mz.assign(x.query.size(), 0.0);
 
-        const bool use_im = opt.use_ion_mobility && peaks.hasIonMobility();
+        // The frame's band and the per-precursor window are separate tests, and
+        // `use_ion_mobility` names only the first. Reading the peak's mobility
+        // inside the band's branch made it name both: see the same fix in
+        // ChromatogramExtractor. Here it matters twice over, because the offset
+        // this class fits is applied through the extractor's mobility band --
+        // fitting it through a different filter than it is applied through is
+        // how a calibration ends up centred on the wrong population.
+        const bool has_im = peaks.hasIonMobility();
+        const bool use_band = opt.use_ion_mobility && has_im;
         const double im_low = info[si].window.im_low, im_high = info[si].window.im_high;
         const double ppm = opt.search_ppm * 1e-6;
         const double front = x.query.front().mz, back = x.query.back().mz;
@@ -946,12 +954,9 @@ namespace ODIA
           const double m = peaks.mz[k];
           const double slack = m * ppm * 1.01 + 1e-6;
           if (m + slack < front || m - slack > back) { continue; }
-          double peak_im = std::numeric_limits<double>::quiet_NaN();
-          if (use_im)
-          {
-            peak_im = peaks.ion_mobility[k];
-            if (peak_im < im_low || peak_im > im_high) { continue; }
-          }
+          const double peak_im = has_im ? double(peaks.ion_mobility[k])
+                                        : std::numeric_limits<double>::quiet_NaN();
+          if (use_band && (peak_im < im_low || peak_im > im_high)) { continue; }
           const float intensity = peaks.intensity[k];
           std::size_t i = x.bucket[x.bucketOf(std::max(m - slack, front))];
           for (; i < x.query.size() && x.query[i].mz <= m + slack; ++i)

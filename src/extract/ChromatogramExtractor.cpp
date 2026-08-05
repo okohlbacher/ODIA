@@ -515,7 +515,16 @@ namespace ODIA
           if (x.mz.empty()) { continue; }
           const auto& peaks = block[si - begin];
           const std::uint32_t c = cycle_of[si];
-          const bool use_im = options.use_ion_mobility && peaks.hasIonMobility();
+          // The run's mobility and the FRAME BAND test are separate questions.
+          // Reading the peak's mobility only inside the band's branch made
+          // `use_ion_mobility` switch off the per-precursor test as well: the
+          // mobility stayed NaN, and a NaN mobility skips that test under the
+          // "absent information is not evidence of mismatch" rule meant for a
+          // run that carries no mobility at all. -no_ion_mobility is the
+          // control arm for measuring what mobility filtering buys, so it has
+          // to turn off exactly the one filter it names.
+          const bool has_im = peaks.hasIonMobility();
+          const bool use_band = options.use_ion_mobility && has_im;
           const double im_low = info[si].window.im_low, im_high = info[si].window.im_high;
 
           for (std::size_t k = 0; k < peaks.size(); ++k)
@@ -532,12 +541,9 @@ namespace ODIA
             // The frame's band separates the co-packed windows. It cannot
             // separate a precursor from its same-window neighbours, which is
             // what the per-transition test below does.
-            double peak_im = std::numeric_limits<double>::quiet_NaN();
-            if (use_im)
-            {
-              peak_im = peaks.ion_mobility[k];
-              if (peak_im < im_low || peak_im > im_high) { continue; }
-            }
+            const double peak_im = has_im ? double(peaks.ion_mobility[k])
+                                          : std::numeric_limits<double>::quiet_NaN();
+            if (use_band && (peak_im < im_low || peak_im > im_high)) { continue; }
             // The tolerance belongs to the TRANSITION, not to the peak:
             // a match means |peak - transition| <= transition * ppm. Searching
             // by peak makes it tempting to size the window on the peak
