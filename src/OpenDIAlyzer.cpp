@@ -11,6 +11,7 @@
 #include <odia/ChromatogramExtractor.h>
 #include <odia/ChromatogramTsv.h>
 #include <odia/MassCalibration.h>
+#include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/RtCalibration.h>
 
@@ -165,6 +166,22 @@ protected:
                           "is inferred. Deliberately far wider than anything extracted with: the "
                           "distribution's shoulders have to be visible. 0 disables inference.",
                           false, true);
+    registerStringOption_("ion_mobility_calibration", "<mode>", "auto",
+                          "auto: measure the run's own 1/K0 prediction error before extracting "
+                          "and recentre the mobility window on it, provided the measurement "
+                          "clears its gate. off: extract on the library's 1/K0 as supplied. A "
+                          "run with no ion mobility is untouched either way and says so.",
+                          false);
+    setValidStrings_("ion_mobility_calibration", {"auto", "off"});
+    registerIntOption_("im_calib_precursors", "<n>", 0,
+                       "Precursors probed when measuring the 1/K0 error. 0 is the whole "
+                       "library, which is the default because one precursor yields one "
+                       "residual on this axis and the cost is the spectra decoded, not the "
+                       "queries.", false, true);
+    registerIntOption_("im_calib_cycles", "<n>", 200,
+                       "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
+                       "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
+                       "in consecutive cycles to count.", false, true);
     registerDoubleOption_("precursor_im_window", "<1/K0>", 0.025,
                           "Half-width of the ion-mobility window around the PRECURSOR's own "
                           "library 1/K0. 0 disables it, leaving only the isolation window's "
@@ -261,6 +278,11 @@ protected:
 
     ODIA::ChromatogramExtractor::Options options;
     applyMassCalibration_(library, *source, options);
+    // After the mass calibration, not before: the mobility probe matches
+    // fragments through the mass window, and matching through a mis-centred one
+    // fills its sample with the interference the mass calibration exists to
+    // exclude.
+    applyMobilityCalibration_(library, *source, options);
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
     options.max_precursors = static_cast<std::size_t>(
@@ -1039,6 +1061,82 @@ private:
   /// narrowed would be a feedback loop that can only shrink.
   ODIA::MassCalibration::Model mass_model_;
   bool mass_model_known_ = false;
+
+  /// The run's fitted 1/K0 model, cached for the same reason the mass model is:
+  /// it is a property of the RUN, and a second measurement taken through a
+  /// window the first pass narrowed is a feedback loop that can only shrink.
+  ODIA::MobilityCalibration::Model mobility_model_;
+  bool mobility_model_known_ = false;
+
+  /// Measure the run's 1/K0 prediction error and, if the gate passes, hand the
+  /// model to the extractor.
+  ///
+  /// Structured exactly like applyMassCalibration_, with one state it does not
+  /// have: a run with no ion mobility, or a library with no 1/K0, is a NO-OP
+  /// that is reported as such. That is not a failed calibration and logging it
+  /// as one would train the reader to ignore a warning that on another run
+  /// means something.
+  void applyMobilityCalibration_(const ODIA::Library& library, ODIA::SpectrumSource& source,
+                                 ODIA::ChromatogramExtractor::Options& options)
+  {
+    options.mobility_model = nullptr;
+    if (getStringOption_("ion_mobility_calibration") == "off")
+    {
+      writeLogInfo_("ion-mobility calibration: not measured (-ion_mobility_calibration off); "
+                    "extracting on the library's 1/K0 as supplied");
+      return;
+    }
+    if (options.precursor_im_window <= 0.0)
+    {
+      writeLogInfo_("ion-mobility calibration: not measured (-precursor_im_window 0, so the "
+                    "per-precursor mobility window is switched off and there is nothing for a "
+                    "recentring to move)");
+      return;
+    }
+
+    ODIA::MobilityCalibration::Diagnostics diagnostics;
+    if (!mobility_model_known_)
+    {
+      ODIA::MobilityCalibration::Options imc;
+      imc.max_precursors = static_cast<std::size_t>(
+        std::max(0, getIntOption_("im_calib_precursors")));
+      imc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("im_calib_cycles")));
+      // Probe through the mass window that is about to be extracted with, so
+      // the two calibrations cannot disagree about what a fragment match is.
+      imc.fragment_ppm = options.fragment_ppm;
+      imc.fragment_ppm_offset = options.fragment_ppm_offset;
+      imc.fragment_ppm_log_slope = options.fragment_ppm_log_slope;
+      imc.fragment_ppm_slope_per_1000 = options.fragment_ppm_slope_per_1000;
+      imc.fragment_ppm_ref_mz = options.fragment_ppm_ref_mz;
+      try
+      {
+        mobility_model_ = ODIA::MobilityCalibration::calibrate(library, source, imc,
+                                                              &diagnostics);
+      }
+      catch (const std::exception& e)
+      {
+        writeLogWarn_(std::string("Ion-mobility calibration failed (") + e.what() +
+                      "); extracting on the library's 1/K0.");
+        mobility_model_ = ODIA::MobilityCalibration::Model{};
+      }
+      mobility_model_known_ = true;
+    }
+    writeLogInfo_(ODIA::MobilityCalibration::report(mobility_model_, &diagnostics));
+
+    if (!mobility_model_.fitted)
+    {
+      // Deliberately not a warning when there is no axis: nothing is wrong.
+      if (mobility_model_.run_has_mobility && mobility_model_.library_has_mobility)
+      {
+        writeLogWarn_("The ion-mobility calibration gate FAILED, so the library's 1/K0 is used "
+                      "uncorrected. That is the safe direction: an uncentred window keeps the "
+                      "library's own error, where a window recentred on a badly measured "
+                      "offset moves off the precursor entirely.");
+      }
+      return;
+    }
+    options.mobility_model = &mobility_model_;
+  }
 
   /// Decide the fragment window's CENTRE and its WIDTH, in that order.
   ///

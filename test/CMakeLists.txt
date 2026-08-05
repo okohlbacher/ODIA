@@ -559,6 +559,18 @@ add_test(NAME mobility_band_derivation COMMAND odia_mobility_bands)
 # which is flat in m/z yields the constant model instead of a spurious slope.
 add_test(NAME mass_calibration_recovers_offset COMMAND odia_mass_calibration)
 
+# The per-run ion-mobility calibration (src/calibrate/MobilityCalibration.cpp).
+# Runs on a SCRIPTED run written out inside the test -- every spectrum, peak and
+# mobility -- so it needs no data and exercises collect() as well as fit(): the
+# half that can be silently wrong is the half that decides what an observation
+# of 1/K0 is. It checks that a per-charge offset is recovered and not pooled,
+# that an m/z-dependent one comes back as a shape, that fragments agreeing at a
+# MEANINGLESS mobility are refused rather than fitted, that a control as peaked
+# as the data is refused, that a run with no 1/K0 at all (the SCIEX SWATH case)
+# is a named no-op rather than a failed fit, and that each fold's anchors are
+# corrected by a fit that never saw them.
+add_test(NAME mobility_calibration_recovers_offset COMMAND odia_mobility_calibration)
+
 # The two TSV writers, byte for byte against the std::ofstream form they
 # replace.
 #

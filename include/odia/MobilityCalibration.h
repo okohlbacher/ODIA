@@ -1,0 +1,567 @@
+// Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Per-run ion-mobility recalibration: the 1/K0 axis, calibrated from the run
+// alone, the way MassCalibration already calibrates the fragment mass axis.
+//
+// ---------------------------------------------------------------------------
+// WHY THE 1/K0 AXIS NEEDS THIS AT ALL
+// ---------------------------------------------------------------------------
+//
+// ODIA recalibrates two of its three extraction axes per run -- fragment mass
+// (MassCalibration) and retention time (RtCalibration) -- and left the third
+// alone. The library's 1/K0 is not measured at all: it is a predicted CCS
+// pushed through Mason-Schamp with ONE coefficient for every run, every charge
+// and every m/z (1037.1902 on this project's timsTOF libraries). Nothing in
+// that chain adapts it to the instrument that acquired the run, and the
+// extractor then cuts a +/-0.025 window around it.
+//
+// Measured on S08_diaPASEF, iteration 3: of the precursors DIA-NN identifies
+// and ODIA misses, 388 are missed because the signal lies OUTSIDE the
+// extraction cell, and that bucket is a 1/K0 PREDICTION problem rather than a
+// width problem. Two measurements say which:
+//
+//   * an oracle that replaces the library 1/K0 with DIA-NN's OBSERVED 1/K0,
+//     keeping the window at +/-0.025, recovers 194 of those 388 against 61 at
+//     baseline -- at ZERO cost in false positives, +7.99 recovery points;
+//   * widening the window to +/-0.030 instead is worth only +0.56 points,
+//     because a wider window admits interference about as fast as it admits
+//     signal.
+//
+// So the centre is wrong, not the width -- the same shape of problem, and the
+// same answer, as the mass axis. A prototype fitted per-charge, m/z-smooth
+// offsets on the precursors ODIA already recovers on its OWN score and applied
+// them to the ones it misses: 26% of the mean squared 1/K0 error removed,
+// in-cell membership for the missed precursors 74.5% -> 81.0%, +2.21 recovery
+// points end to end. This class is that, built the way the mass calibration is
+// built.
+//
+// ---------------------------------------------------------------------------
+// WHAT IS DIFFERENT FROM THE MASS AXIS, AND WHY THE CODE LOOKS DIFFERENT
+// ---------------------------------------------------------------------------
+//
+// (1) THE RESIDUAL IS PER PRECURSOR, NOT PER FRAGMENT. Mass error is a property
+//     of each fragment's own m/z, so MassCalibration collects one residual per
+//     matched peak and gets thousands from a few hundred precursors. 1/K0 is a
+//     property of the PRECURSOR -- all of its fragments travel through the TIMS
+//     tunnel as the same ion -- so a precursor yields exactly one residual no
+//     matter how many fragments confirm it. The sample is therefore an order of
+//     magnitude smaller for the same probe, which is why `max_precursors`
+//     defaults far higher here and why the model is deliberately coarse.
+//
+// (2) THE FRAGMENTS' AGREEMENT IS THE PURITY FILTER. MassCalibration buys purity
+//     with, among other things, the precursor's library 1/K0 (`im_window`
+//     0.010). This class cannot: that window is centred on the very number
+//     being measured, and testing a peak against it would guarantee the answer
+//     zero. What replaces it is that the fragments must agree with EACH OTHER:
+//     a cell counts only when `min_fragments_matched` of one precursor's
+//     fragments are found inside one `cluster_im`-wide slice of the mobility
+//     axis in the same spectrum. That is a strong test -- a diaPASEF frame's
+//     band is ~0.4 wide and the slice is 0.02 -- and it uses no prior about
+//     where the precursor should be.
+//
+// (3) THE SEARCH IS SYMMETRIC ABOUT THE LIBRARY VALUE, AND MUST FIT INSIDE THE
+//     BAND. The residual is (observed - predicted), so anything that truncates
+//     it asymmetrically biases the location. The frame's mobility band is a
+//     fixed interval that does NOT move with the precursor, so a precursor
+//     sitting near a band edge can only produce residuals on one side. Those
+//     precursors are excluded rather than corrected: `search_im` is a symmetric
+//     half-width about the library 1/K0 and the whole of it has to lie inside
+//     the band. Symmetric truncation costs residuals; asymmetric truncation
+//     costs the answer.
+//
+// (4) THE MODEL IS PER CHARGE. Mobility depends on charge through Mason-Schamp
+//     directly, and a single global coefficient absorbs that only if the
+//     coefficient is right. Fitting one offset across charges would average two
+//     populations that have no reason to share an error. A charge with too few
+//     anchors gets NO correction rather than another charge's -- see
+//     `min_anchors_per_charge`.
+//
+// (5) IT IS FITTED OUT OF SAMPLE. MassCalibration fits two parameters to
+//     thousands of residuals and applies them to everything, and the
+//     self-influence of one residual is negligible. Here the anchors ARE
+//     precursors, the thing being corrected IS a precursor, and the selection
+//     that makes something an anchor is "we found a bright coherent cluster for
+//     it" -- so a precursor that entered its own correction has partly
+//     memorised its own noise. Anchors are therefore split into `folds` by a
+//     deterministic hash of their library index, a model is fitted for each fold
+//     from the OTHER folds, and a precursor is corrected by the model that never
+//     saw it. Precursors that were never anchors -- which is every precursor the
+//     run misses, i.e. all of the ones this exists for -- are corrected by the
+//     model fitted on all anchors, and were out of sample already.
+//
+// ---------------------------------------------------------------------------
+// WHAT THE GATE DOES, AND ON WHAT
+// ---------------------------------------------------------------------------
+//
+// The same three-part refusal as MassCalibration, plus one this axis needs:
+//
+//   NO MOBILITY AT ALL. A run whose spectra carry no 1/K0 -- 12_80 is SCIEX
+//   SWATH and has none -- has no axis to calibrate. It is reported as exactly
+//   that and the extraction is left untouched; it is NOT reported as a failed
+//   fit, because "there is nothing here to measure" and "we measured and it was
+//   noise" are different facts and only one of them is a warning. The same
+//   holds for a library that carries no 1/K0.
+//
+//   TOO FEW RESIDUALS. Below `min_residuals` nothing is fitted.
+//
+//   FLAT RESIDUALS. The peakedness statistic ported from the reference, read on
+//   the delta distribution over `gate_im`. Uniform (all-noise) deltas give ~1.
+//
+//   A CONTROL AS PEAKED AS THE DATA. Every precursor is probed again with all
+//   of its fragments shifted in m/z (`decoy_shifts`). Those cells pass the
+//   identical cluster, co-occurrence and apex tests and differ only in that
+//   they cannot hold the real ions, so their delta distribution IS the null.
+//
+// And, per charge and per fold, the shape has to earn itself against a constant
+// the same way the mass axis's does -- see `min_shape_chi2` and
+// `min_shape_swing_im`.
+//
+// ---------------------------------------------------------------------------
+// WHAT IT DOES NOT DO
+// ---------------------------------------------------------------------------
+//
+//   * It does not resize the extraction window. `window_im` is fitted and
+//     reported so the run says what width its corrected residual would support,
+//     and it is NOT applied. The reason is measured, not stylistic: on S08 the
+//     width lever is worth +0.56 points and the centring lever +2.21, and the
+//     two are separate decisions. Applying an untested width change alongside a
+//     tested centring change would make the measurement unattributable.
+//
+//   * It does not touch retention time or mass. Those have their own classes.
+//
+#pragma once
+
+#include <odia/Library.h>
+#include <odia/SpectrumSource.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace ODIA
+{
+
+  /// One precursor's measured 1/K0 error: what the library predicted, what the
+  /// run showed, and everything the fit needs to place it.
+  ///
+  /// Deliberately not pre-aggregated, for the same reason MassResidual is not:
+  /// the question is whether the error depends on charge and on m/z, and a
+  /// histogram collapsed over either cannot answer it.
+  struct MobilityResidual
+  {
+    std::uint32_t precursor = 0;   ///< library index, which is also the fold key
+    float mz = 0.0f;               ///< precursor m/z, Th
+    std::uint8_t charge = 0;
+    float im_library = 0.0f;       ///< the library's predicted 1/K0
+    float im_observed = 0.0f;      ///< intensity-weighted 1/K0 of the winning cluster
+    float delta = 0.0f;            ///< observed - library
+    float intensity = 0.0f;        ///< summed intensity of the cluster
+    float rt = 0.0f;               ///< retention time of the winning spectrum, s
+    std::uint8_t fragments = 0;    ///< how many agreed
+    std::uint8_t cycles = 0;       ///< consecutive cycles it was seen in
+    bool decoy = false;            ///< from an m/z-shifted control cell
+  };
+
+  /// Fits the run's 1/K0 prediction error, per charge and as a function of m/z.
+  class MobilityCalibration
+  {
+  public:
+    /// Highest charge given its own curve. Above this a precursor is corrected
+    /// by the top slot, which on a tryptic library holds nothing anyway.
+    static constexpr std::size_t MAX_CHARGE = 8;
+
+    struct Options
+    {
+      /// Half-width of the 1/K0 search about the library value, and the margin a
+      /// precursor's library 1/K0 must keep from BOTH edges of the frame's
+      /// mobility band before it is used at all.
+      ///
+      /// Symmetric on purpose -- see (3) in the header. 0.06 is ~6x the observed
+      /// scatter and ~1.5x the p99 of the prediction error, so it is wide enough
+      /// that the distribution's shoulders are visible, while still leaving room
+      /// inside a ~0.4-wide diaPASEF band for most of the library.
+      double search_im = 0.06;
+
+      /// Half-width the LOCATION and the GATE are evaluated over.
+      ///
+      /// Distinct from `search_im` for the reason MassCalibration's `gate_ppm`
+      /// is distinct from its `search_ppm`: the search must be wide or the
+      /// distribution is truncated and its scale censored, while the gate must
+      /// be narrow, because a flat background contributes to its edge band in
+      /// proportion to the width searched and so dilutes the very contrast the
+      /// gate exists to measure.
+      double gate_im = 0.05;
+
+      /// Half-width of the mobility slice a precursor's fragments must share
+      /// before they count as one detection, and over which its 1/K0 is
+      /// centroided.
+      ///
+      /// This is the purity filter that replaces the prior this class is not
+      /// allowed to use (see (2)). It is a property of the TIMS peak, not of the
+      /// prediction error: one ion's fragments arrive together to within the
+      /// mobility peak width, which on this instrument class is ~0.01-0.02 in
+      /// 1/K0. Deliberately NOT the extractor's 0.025, which is sized to survive
+      /// a prediction error rather than to describe a peak.
+      double cluster_im = 0.010;
+
+      /// Keep only cells whose summed matched intensity is at or above this
+      /// quantile of all target cells. 0 keeps everything.
+      ///
+      /// The same argument as MassCalibration's `min_intensity_quantile`: the
+      /// interferent population is numerous but individually weak, so brightness
+      /// is evidence. Applied to the control on the same threshold, so the null
+      /// keeps measuring the same procedure.
+      double min_intensity_quantile = 0.25;
+
+      /// Precursors sampled from the library, spread evenly through it.
+      ///
+      /// 0 means the whole library, which is the default, because one precursor
+      /// yields ONE residual here where it yields a dozen on the mass axis --
+      /// see (1) -- and because the probe's cost is the spectra it decodes,
+      /// which `cycles` sets, not the queries it evaluates against them.
+      std::size_t max_precursors = 0;
+
+      /// Acquisition cycles probed. This is what the measurement costs: one
+      /// cycle is one decoded spectrum per isolation window.
+      std::size_t cycles = 200;
+
+      /// ...drawn as `cycles / cycle_block` CONTIGUOUS BLOCKS of this many
+      /// cycles, and a cell counts only when the same precursor is found at the
+      /// same mobility in `min_cycles_matched` of one block's cycles.
+      ///
+      /// THIS IS WHAT MAKES THE PROBE WORK AT ALL, and it is the one place the
+      /// design departs from MassCalibration rather than following it. That
+      /// class draws single scattered cycles and keeps each precursor's
+      /// BRIGHTEST cell, which for an absent precursor is the luckiest noise --
+      /// harmless there, because a wrong cell's MASS residual is uniform and the
+      /// mode steps over it. It is not harmless here, because a wrong cell's
+      /// MOBILITY residual is not uniform: it sits wherever the frame's peaks
+      /// are dense, which is a systematic, and the mode walks straight into it.
+      ///
+      /// Measured on S08 with scattered cycles and no reproducibility rule, and
+      /// measured against the entrapment library rather than against an
+      /// m/z-shifted control -- Arabidopsis precursors that are absent from a
+      /// human sample by construction:
+      ///
+      ///     human targets   charge 2 median +0.0067, charge 3 +0.0254
+      ///     ENTRAPMENTS     charge 2 median +0.0035, charge 3 +0.0358
+      ///
+      /// Precursors that cannot be there gave the same answer as precursors
+      /// that are, including the same large charge-3 offset. The sample was
+      /// noise, and an m/z-shifted control had said it was 99.7% pure -- because
+      /// shifting a fragment by 7.33 Th moves it off the peptide mass-defect
+      /// line, where no peaks live at all, so that control is not a null for
+      /// this axis. Both facts are why the rule below exists and why the header
+      /// says what the control is worth.
+      ///
+      /// Consecutive cycles are ~1.4 s apart on this run and a chromatographic
+      /// peak is tens of seconds wide, so a real precursor is in every cycle of
+      /// a block that overlaps its elution and a coincidence is in one.
+      std::size_t cycle_block = 5;
+      std::size_t min_cycles_matched = 4;
+
+      /// Seed for that draw. Fixed, not clock-derived.
+      std::uint64_t sample_seed = 0x0D1A1130u;
+
+      /// Fragments used per precursor, most intense first in library order.
+      std::size_t max_fragments = 12;
+
+      /// Fragments of one precursor that must land in the SAME mobility slice of
+      /// the SAME spectrum before the cell counts.
+      ///
+      /// Higher than MassCalibration's 3 because here it is doing the whole job
+      /// of the purity filter rather than being the cheapest of four.
+      std::size_t min_fragments_matched = 4;
+
+      /// The fragment mass window the probe matches through, ppm, and the
+      /// systematic correction to apply to it. Normally handed the values
+      /// MassCalibration just fitted: this probe runs after it, and matching
+      /// through a mis-centred mass window would fill the sample with the
+      /// interference the mass calibration exists to exclude.
+      double fragment_ppm = 15.0;
+      double fragment_ppm_offset = 0.0;
+      double fragment_ppm_log_slope = 0.0;
+      double fragment_ppm_slope_per_1000 = 0.0;
+      double fragment_ppm_ref_mz = 700.0;
+
+      /// How the null is built.
+      ///
+      /// LIBRARY_DECOYS is the default, and the m/z-shifted control that
+      /// MassCalibration uses is kept only as a fallback for a library that has
+      /// none, because on this axis it was MEASURED to be invalid.
+      ///
+      /// The measurement: with an m/z-shifted control the S08 probe reported
+      /// 99.7% purity, and the entrapment library -- 7,995 Arabidopsis
+      /// precursors that cannot be in a human sample -- reported the same
+      /// residual distribution as the real human targets, including the same
+      /// charge-3 offset. Both cannot be true. The reason the shift lies is that
+      /// a peptide fragment's m/z is not a free number: b and y ions lie on the
+      /// amino-acid mass lattice, so shifting one by 7.33 Th moves it into a
+      /// region of the spectrum where peaks essentially never are, and the
+      /// control then measures the absence of peaks rather than the absence of
+      /// THIS peptide.
+      ///
+      /// The library's own decoys do not have that defect. They are shuffled or
+      /// mutated peptides, so their fragment masses sit on the same lattice as
+      /// any real peptide's and are transmitted in the same windows, and they
+      /// carry a predicted 1/K0 produced by the same predictor -- they differ
+      /// from a target in exactly one way, which is that the peptide is not in
+      /// the sample. That is what a null has to be.
+      enum class Control { LibraryDecoys, MzShift, None };
+      Control control = Control::LibraryDecoys;
+
+      /// Used only when `control` is MzShift, or when it is LibraryDecoys and
+      /// the library has none. Each shifts ALL of a precursor's fragments
+      /// together, so the cell passes the same cluster and co-occurrence tests.
+      std::vector<double> decoy_shifts{7.33, -7.19};
+
+      /// Below this many target residuals nothing is fitted.
+      int min_residuals = 200;
+
+      /// Reject the fit unless the density of deltas near the mode exceeds the
+      /// density at the edge of `gate_im` by this factor. Uniform deltas give
+      /// ~1. Threshold ported unchanged from MassCalibration.
+      double min_peakedness = 3.0;
+
+      /// And reject it unless the data is this many times more peaked than the
+      /// NULL. MassCalibration only asks that the control be less peaked at all;
+      /// that is too weak here, and S08 is why.
+      ///
+      /// With the library's own decoys as the control, the S08 probe measures a
+      /// peakedness of 3.02 against a control at 3.00. Both clear the absolute
+      /// threshold, and the bare "control must be lower" rule passes the run by
+      /// 0.02 -- on a sample where an independent null (7,995 Arabidopsis
+      /// entrapment precursors, which cannot be in a human sample) gives the
+      /// same residual distribution as the real targets, and where the fitted
+      /// correction makes the out-of-fold scatter WORSE, 0.0099 -> 0.0141.
+      /// A ratio of 1.25 refuses that and would still have accepted the mass
+      /// axis's own passing case, which measures 4.34 against 2.98.
+      double min_control_margin = 1.25;
+
+      /// A charge gets its own curve only with at least this many anchors. Below
+      /// it the charge is left UNCORRECTED -- not given the pooled offset, which
+      /// would be another charge's answer applied to a population that has no
+      /// reason to share it.
+      std::size_t min_anchors_per_charge = 120;
+
+      /// Equal-COUNT m/z bins per charge, and the floor on each one's
+      /// occupancy. Equal count rather than equal width because a library's m/z
+      /// distribution is very far from uniform.
+      std::size_t max_mz_bins = 8;
+      std::size_t min_per_bin = 40;
+
+      /// Out-of-sample folds. A precursor that was an anchor is corrected by the
+      /// model fitted from the other folds; one that was not is corrected by the
+      /// model fitted from all of them.
+      std::size_t folds = 4;
+
+      /// The m/z shape has to earn itself against a per-charge constant, and
+      /// these are the two conditions -- one relative, one absolute, exactly as
+      /// MassCalibration pairs `max_systematic_ratio` with
+      /// `min_systematic_gain_ppm`.
+      ///
+      /// `min_shape_chi2`: chi-square per degree of freedom of the bin locations
+      /// about their own weighted mean. At 1 the bins are consistent with noise
+      /// and there is no shape to model; the threshold is the assertion that the
+      /// bins disagree by several times their own uncertainty.
+      ///
+      /// `min_shape_swing_im`: and they must disagree by an amount that MATTERS
+      /// against the window the correction is applied through. Without an
+      /// absolute floor, a large enough anchor set makes every bin's standard
+      /// error small enough for chi-square alone to wave a shape through.
+      double min_shape_chi2 = 3.0;
+      double min_shape_swing_im = 0.004;
+
+      /// No correction larger than this is ever applied, whatever the fit says.
+      ///
+      /// This is the mobility axis's version of "calibration may only narrow".
+      /// A correction bigger than the window it is applied through does not
+      /// refine where the extractor looks, it moves it somewhere else entirely
+      /// on the strength of a fit -- and a fit that says that is far more likely
+      /// to have found the interference than the instrument.
+      double max_correction_im = 0.030;
+
+      /// Window half-width the corrected residual would support: k x robust
+      /// sigma, floored. FITTED AND REPORTED, NEVER APPLIED -- see the header.
+      double sigma_multiple = 3.0;
+      double floor_im = 0.005;
+
+      bool verbose = false;
+    };
+
+    /// One charge's correction for one fold: either a constant or a piecewise
+    /// linear function of m/z through the bin locations.
+    ///
+    /// Piecewise linear through measured bins rather than a fitted basis, which
+    /// is the one place this deliberately diverges from MassCalibration. There
+    /// the error is a smooth instrument property with a physical shape (a TOF's
+    /// flight-time-to-mass relation), so a two-parameter basis both fits and
+    /// says something. Here the residual is the error of a PREDICTOR --
+    /// PeptDeep's CCS, pushed through one Mason-Schamp coefficient -- and a
+    /// predictor's bias has no reason to be log-linear in m/z. So the shape is
+    /// read off the data and interpolated, and is held flat outside the range
+    /// where anchors were found so that it can never extrapolate.
+    struct Curve
+    {
+      bool supported = false;      ///< false means "apply nothing to this charge"
+      bool shaped = false;         ///< false means the constant won
+      double constant = 0.0;
+      std::vector<double> knot_mz;      ///< ascending
+      std::vector<double> knot_offset;
+      std::size_t anchors = 0;
+
+      double at(double mz) const
+      {
+        if (!supported) { return 0.0; }
+        if (!shaped || knot_mz.size() < 2) { return constant; }
+        if (!(mz > knot_mz.front())) { return knot_offset.front(); }
+        if (!(mz < knot_mz.back())) { return knot_offset.back(); }
+        const auto it = std::upper_bound(knot_mz.begin(), knot_mz.end(), mz);
+        const std::size_t hi = static_cast<std::size_t>(it - knot_mz.begin());
+        const std::size_t lo = hi - 1;
+        const double span = knot_mz[hi] - knot_mz[lo];
+        if (!(span > 0.0)) { return knot_offset[lo]; }
+        const double t = (mz - knot_mz[lo]) / span;
+        return knot_offset[lo] + t * (knot_offset[hi] - knot_offset[lo]);
+      }
+    };
+
+    /// Per-bin summary, so the shape is reported as numbers rather than as a
+    /// curve the caller has to take on trust.
+    struct Bin
+    {
+      double centre = 0.0;      ///< mean m/z of the bin
+      double location = 0.0;    ///< median delta, 1/K0
+      double stderr_im = 0.0;
+      std::size_t n = 0;
+    };
+
+    /// The fitted correction, plus everything needed to judge it.
+    struct Model
+    {
+      bool fitted = false;
+      /// True unless the RUN carries no 1/K0 at all, or the LIBRARY does. Those
+      /// are reported separately from a failed fit because they are not failures:
+      /// there is nothing on this axis to measure.
+      bool run_has_mobility = true;
+      bool library_has_mobility = true;
+
+      /// "none" | "constant" | "mz_shaped"
+      std::string form = "none";
+      std::string reason;               ///< why, in words, for the log
+
+      std::size_t residuals = 0;        ///< target cells that produced a delta
+      std::size_t decoy_residuals = 0;
+      double peakedness = 0.0;
+      double decoy_peakedness = 0.0;
+      double gate_peakedness = 0.0;     ///< the threshold it was judged against
+      double gate_im = 0.0;
+      double search_im = 0.0;
+
+      double location = 0.0;            ///< robust centre of all target deltas
+      double sigma_before = 0.0;        ///< robust scale of the raw deltas
+      double sigma_after = 0.0;         ///< ... after the per-charge correction
+      /// Fraction of the mean squared delta the correction removes, measured on
+      /// the anchors OUT OF FOLD. The prototype's headline number.
+      double squared_error_removed = 0.0;
+      /// Window half-width the corrected residual supports. REPORTED, NEVER
+      /// APPLIED -- see the header.
+      double window_im = -1.0;
+
+      /// Per charge, in charge order, for the report.
+      struct ChargeReport
+      {
+        std::uint8_t charge = 0;
+        std::size_t anchors = 0;
+        bool supported = false;
+        bool shaped = false;
+        double constant = 0.0;
+        double low = 0.0, high = 0.0;   ///< the correction at the m/z extremes
+        double mz_low = 0.0, mz_high = 0.0;
+        double chi2_per_dof = 0.0;
+        double swing = 0.0;
+        std::string reason;
+        std::vector<Bin> bins;
+      };
+      std::vector<ChargeReport> by_charge;
+
+      std::size_t folds = 1;
+      /// The library indices that were anchors, ascending. Small -- bounded by
+      /// `max_precursors` -- and carried so that `offsetFor` can tell an anchor
+      /// (corrected out of fold) from everything else.
+      std::vector<std::uint32_t> anchors;
+      /// (MAX_CHARGE + 1) x (folds + 1) curves, charge-major. The last fold slot
+      /// is the model fitted on ALL anchors, which is what a non-anchor gets.
+      std::vector<Curve> curves;
+
+      /// Which fold model corrects @p precursor: its own fold if it was an
+      /// anchor, `folds` (the all-anchor model) if it was not.
+      std::size_t foldOf(std::uint32_t precursor) const
+      {
+        if (folds == 0) { return 0; }
+        if (!std::binary_search(anchors.begin(), anchors.end(), precursor)) { return folds; }
+        return foldIndex(precursor, folds);
+      }
+
+      /// The 1/K0 to ADD to this precursor's library value. 0 when nothing was
+      /// fitted, when this charge is unsupported, or when the precursor's
+      /// mobility is unknown -- in every case, the uncorrected library value.
+      double offsetFor(std::uint32_t precursor, double mz, int charge) const
+      {
+        if (!fitted || curves.empty()) { return 0.0; }
+        const std::size_t c = static_cast<std::size_t>(
+          std::clamp<int>(charge, 0, static_cast<int>(MAX_CHARGE)));
+        const std::size_t f = std::min(foldOf(precursor), folds);
+        return curves[c * (folds + 1) + f].at(mz);
+      }
+    };
+
+    /// Deterministic fold of a library index. Static and public because the
+    /// out-of-sample test has to be able to ask which fold a precursor is in
+    /// before it plants anything in it -- otherwise "the fit excluded it" is an
+    /// assertion rather than a measurement.
+    static std::size_t foldIndex(std::uint32_t precursor, std::size_t folds);
+
+    struct Diagnostics
+    {
+      std::size_t blocks = 0;           ///< contiguous cycle blocks probed
+      std::size_t precursors_sampled = 0;
+      std::size_t precursors_with_library_im = 0;
+      /// Excluded because `search_im` about their library 1/K0 did not fit
+      /// inside their frame's mobility band -- see (3).
+      std::size_t precursors_outside_band = 0;
+      std::size_t cells_probed = 0;
+      std::size_t target_cells = 0;
+      std::size_t decoy_cells = 0;
+      std::size_t control_precursors = 0;   ///< library decoys probed as the null
+      std::string control_kind = "none";
+      std::size_t spectra_decoded = 0;
+      std::size_t spectra_with_mobility = 0;
+      double band_width = 0.0;          ///< median frame band width seen
+      double collect_seconds = 0.0;
+      bool run_has_mobility = true;
+      bool library_has_mobility = true;
+    };
+
+    /// Probe the run and return the raw residuals, targets and controls.
+    static std::vector<MobilityResidual> collect(const Library& library, SpectrumSource& source,
+                                                 const Options& options,
+                                                 Diagnostics* diagnostics = nullptr);
+
+    /// Fit a model to residuals from anywhere -- a run, or a synthetic sample.
+    static Model fit(const std::vector<MobilityResidual>& residuals, const Options& options,
+                     Diagnostics* diagnostics = nullptr);
+
+    /// collect() then fit().
+    static Model calibrate(const Library& library, SpectrumSource& source,
+                           const Options& options, Diagnostics* diagnostics = nullptr);
+
+    /// Multi-line human-readable report. This is what the tool writes to the log.
+    static std::string report(const Model& model, const Diagnostics* diagnostics = nullptr);
+  };
+
+} // namespace ODIA

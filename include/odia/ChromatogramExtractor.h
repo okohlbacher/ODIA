@@ -4,6 +4,7 @@
 #pragma once
 
 #include <odia/Library.h>
+#include <odia/MobilityCalibration.h>
 #include <odia/SpectrumSource.h>
 
 #include <cmath>
@@ -388,6 +389,22 @@ namespace ODIA
       /// not have, and at 0.025 the calibration's gate fails outright on S08
       /// (peakedness 4.41 against a control at 4.60). See that field.
       double precursor_im_window = 0.025;
+
+      /// Per-run recalibration of the library's 1/K0, or null for none.
+      ///
+      /// A POINTER, where the mass calibration's correction is three scalars
+      /// copied into this struct. The difference is the shape of the two
+      /// models: the mass correction is two coefficients and a reference m/z,
+      /// which flatten into options; the mobility correction is a per-charge,
+      /// per-fold table plus the anchor list that decides which fold a
+      /// precursor is corrected by, and copying that into every Options would be
+      /// copying a table per pass to save a lifetime rule.
+      ///
+      /// The rule is that it must outlive the extraction, which it does by
+      /// construction: it is measured once per RUN and cached by the caller
+      /// across passes, exactly like the mass model, because re-measuring it in
+      /// pass 2 through a window pass 1 moved is a feedback loop.
+      const MobilityCalibration::Model* mobility_model = nullptr;
 
       /// How several peaks inside one transition's box become one number.
       ///

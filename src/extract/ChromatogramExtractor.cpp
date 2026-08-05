@@ -846,7 +846,20 @@ namespace ODIA
           // the match loop can test a peak against the peptide it claims to be
           // from rather than against the whole frame. NaN when the library has
           // none, which disables the test for that transition.
-          x.precursor_im.push_back(p.im[a.precursor]);
+          //
+          // The run's mobility recalibration is applied HERE, once per
+          // transition, for the same reason the mass offset is: it is a property
+          // of the precursor, so it is known at index-build time and never has
+          // to be evaluated per peak. offsetFor() returns 0 unless a model was
+          // fitted AND this charge was supported AND -- for a precursor that was
+          // one of the fit's own anchors -- from the fold that excluded it.
+          const float lib_im = p.im[a.precursor];
+          const double im_offset =
+            options.mobility_model
+              ? options.mobility_model->offsetFor(a.precursor, fromFixed(p.mz[a.precursor]),
+                                                  p.charge[a.precursor])
+              : 0.0;
+          x.precursor_im.push_back(static_cast<float>(lib_im + im_offset));
           ++row;
         }
       }

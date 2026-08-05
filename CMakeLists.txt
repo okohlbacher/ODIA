@@ -101,6 +101,7 @@ set(ODIA_LIB_SOURCES
   src/score/PeakGroupScorer.cpp
   src/calibrate/RtCalibration.cpp
   src/calibrate/MassCalibration.cpp
+  src/calibrate/MobilityCalibration.cpp
   src/io/ChromatogramTsv.cpp
   src/io/ZipArchive.cpp
   src/predict/PeptDeepEncoder.cpp
@@ -150,7 +151,8 @@ install(TARGETS ${ODIA_TOOLS} RUNTIME DESTINATION bin)
 foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_predict_ms2 odia_predict_ccs odia_oswpq_dump odia_run_info odia_extract odia_irt_calibration
                odia_chunked_column_test odia_ms2_sessions odia_scoring_smoke
-               odia_rt_calibration odia_mass_calibration odia_extract_axis
+               odia_rt_calibration odia_mass_calibration odia_mobility_calibration
+               odia_extract_axis
                odia_extract_cases odia_mobility_bands odia_tsv_writers)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core

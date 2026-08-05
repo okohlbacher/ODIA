@@ -115,6 +115,45 @@ namespace ODIA::RunProbe
     return chosen;
   }
 
+  /// STRATIFIED RANDOM draw of @p blocks CONTIGUOUS runs of @p length cycles.
+  ///
+  /// The same stratification as above, drawing a short BLOCK rather than a
+  /// single cycle. What a block buys is time: consecutive cycles are ~1.4 s
+  /// apart on a diaPASEF run and a chromatographic peak is tens of seconds
+  /// wide, so a precursor that is really there is present in every cycle of a
+  /// block that overlaps its elution, while a chance coincidence is not. That
+  /// is the only pre-identification handle on "is this signal real" that does
+  /// not need a retention-time map, and MobilityCalibration cannot work without
+  /// one -- measured, see its header.
+  ///
+  /// Returns the START cycle of each block; blocks never overlap and are
+  /// returned ascending.
+  inline std::vector<std::size_t> stratifiedBlocks(std::size_t available, std::size_t blocks,
+                                                   std::size_t length, std::uint64_t seed)
+  {
+    std::vector<std::size_t> out;
+    if (available == 0 || blocks == 0 || length == 0) { return out; }
+    length = std::min(length, available);
+    blocks = std::min(blocks, available / length);
+    if (blocks == 0) { return out; }
+    std::mt19937_64 rng(seed);
+    for (std::size_t b = 0; b < blocks; ++b)
+    {
+      const std::size_t lo = b * available / blocks;
+      const std::size_t hi = std::max(lo + 1, (b + 1) * available / blocks);
+      // Keep the block inside its own stratum where it fits, so two blocks can
+      // never overlap and re-measure the same cycles.
+      const std::size_t last = hi > lo + length ? hi - length : lo;
+      std::uniform_int_distribution<std::size_t> pick(lo, last);
+      std::size_t start = pick(rng);
+      if (start + length > available) { start = available - length; }
+      out.push_back(start);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+  }
+
   /// The most CENTRAL isolation window containing @p mz, or NO_WINDOW.
   ///
   /// An edge precursor is transmitted with reduced efficiency, so when several
@@ -142,16 +181,19 @@ namespace ODIA::RunProbe
   /// @param require_im keep only precursors whose library 1/K0 is finite. A
   ///        precondition for calibrating the mobility axis; irrelevant to the
   ///        mass axis, which is why it is a parameter and not a rule.
+  /// @param decoys take the library's DECOY precursors instead of its targets,
+  ///        which is how MobilityCalibration builds a null that is made of real
+  ///        peptide-shaped fragment masses rather than of an m/z shift.
   inline std::vector<std::uint32_t> samplePrecursors(const Library& library, std::size_t want,
                                                      std::size_t min_transitions,
-                                                     bool require_im)
+                                                     bool require_im, bool decoys = false)
   {
     const auto& p = library.precursors();
     std::vector<std::uint32_t> eligible;
     eligible.reserve(library.precursorCount());
     for (std::size_t i = 0; i < library.precursorCount(); ++i)
     {
-      if (p.decoy[i]) { continue; }
+      if (static_cast<bool>(p.decoy[i]) != decoys) { continue; }
       if (p.mz[i] == MZ_INVALID) { continue; }
       if (p.transition_count[i] < min_transitions) { continue; }
       if (require_im && !std::isfinite(p.im[i])) { continue; }
@@ -159,7 +201,9 @@ namespace ODIA::RunProbe
     }
     std::vector<std::uint32_t> out;
     if (eligible.empty()) { return out; }
-    want = std::min(want, eligible.size());
+    // 0 means "all of them". A probe whose cost is the spectra it decodes, not
+    // the queries it evaluates, has no reason to subsample the library.
+    want = want == 0 ? eligible.size() : std::min(want, eligible.size());
     out.reserve(want);
     for (std::size_t k = 0; k < want; ++k)
     {
