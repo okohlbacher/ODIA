@@ -130,6 +130,23 @@
 //
 //   * It does not touch retention time or mass. Those have their own classes.
 //
+// ---------------------------------------------------------------------------
+// WHAT IT COSTS, AND WHAT IT HAS SO FAR BOUGHT
+// ---------------------------------------------------------------------------
+//
+// S08_diaPASEF, whole library, 200 cycles as 40 blocks of 5: 4,800 of 32,210
+// spectra decoded, 128 s against a 12.7 min extraction. 12_80, which has no
+// mobility, stops after the first block: 84.1 s against 83.3 s with the stage
+// switched off, i.e. it costs 0.8 s to establish that there is nothing here.
+//
+// On S08 it has so far bought a refusal. The gate reads a peakedness of 3.99
+// against a control at 3.65, a margin of 1.09x where 1.25x is required, and no
+// offset is applied -- the extracted chromatograms are byte-identical to the
+// uncalibrated ones. That is the correct answer for this probe on this run and
+// the reasons are in doc/BACKLOG.md; the lever is real (an oracle 1/K0 is worth
+// +7.99 recovery points) but reaching it needs anchors the run has SCORED, not
+// anchors a blind probe has guessed.
+//
 #pragma once
 
 #include <odia/Library.h>
