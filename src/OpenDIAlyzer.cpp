@@ -188,6 +188,13 @@ protected:
     registerDoubleOption_("irt_intercept", "<b>", 0.0, "See -irt_slope.", false, true);
     registerIntOption_("max_precursors", "<n>", 0,
                        "Extract only the first N precursors, 0 for all.", false, true);
+    registerIntOption_("max_live_precursors", "<n>", 0,
+                       "Cap how many precursors may have chromatograms in memory at "
+                       "once. 0 lets the retention-time overlap decide, which is the "
+                       "cheap bound; above the cap the library is split into chunks "
+                       "and each is a separate pass over the run, which costs a "
+                       "decode. The run reports which of the two bound it.",
+                       false, true);
     registerOutputFile_("out", "<file>", "",
                         "Write scored peak groups here (TSV).", false);
     setValidFormats_("out", {"tsv"}, false);
@@ -236,11 +243,10 @@ protected:
   /// evenly across the run's time range so that something extracts -- but that
   /// is a placeholder for a calibration, not one, and it says so out loud
   /// rather than producing quietly meaningless chromatograms.
-  ExitCodes runExtraction_(const ODIA::Library& library, const std::string& run,
-                           const std::string& out_chrom,
-                           ODIA::Chromatograms* keep = nullptr,
-                           double rt_window_override = 0.0,
-                           bool library_rt_is_run_seconds = false)
+  ExitCodes extractInto_(const ODIA::Library& library, const std::string& run,
+                         ODIA::ChromatogramSink& sink,
+                         double rt_window_override = 0.0,
+                         bool library_rt_is_run_seconds = false)
   {
     std::unique_ptr<ODIA::SpectrumSource> source;
     try
@@ -267,6 +273,8 @@ protected:
     options.irt_slope = library_rt_is_run_seconds ? 1.0 : getDoubleOption_("irt_slope");
     options.irt_intercept = library_rt_is_run_seconds ? 0.0 : getDoubleOption_("irt_intercept");
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    options.max_live_precursors = static_cast<std::size_t>(
+      std::max(0, getIntOption_("max_live_precursors")));
 
     if (options.irt_slope == 0.0 && !library_rt_is_run_seconds)
     {
@@ -277,11 +285,10 @@ protected:
     }
 
     ODIA::ChromatogramExtractor::Stats stats;
-    ODIA::Chromatograms chromatograms;
     const auto t = std::chrono::steady_clock::now();
     try
     {
-      chromatograms = ODIA::ChromatogramExtractor::extract(library, *source, options, &stats);
+      ODIA::ChromatogramExtractor::extract(library, *source, options, sink, &stats);
     }
     catch (const std::exception& e)
     {
@@ -296,20 +303,55 @@ protected:
         << stats.precursors << " precursors from " << stats.spectra_read
         << " spectra in " << ms << " ms\n"
         << "  decode " << stats.decode_seconds << " s, index "
-        << stats.index_seconds << " s, match " << stats.match_seconds << " s\n"
+        << stats.index_seconds << " s, match " << stats.match_seconds
+        << " s, assemble " << stats.assemble_seconds << " s, sink "
+        << stats.sink_seconds << " s\n"
         << "  points " << stats.points << " (" << stats.nonzero_points
-        << " nonzero), " << chromatograms.footprintBytes() / 1048576.0 << " MiB";
+        << " nonzero), all at once would be "
+        << double(stats.points) * sizeof(float) / 1073741824.0 << " GiB\n"
+        // The measurement the sliding window exists to move. `points` is what
+        // the old flat array allocated; this is what was ever resident.
+        << "  peak live " << stats.peak_live_precursors << " precursors, "
+        << stats.peak_live_points << " points ("
+        << double(stats.peak_live_points) * sizeof(float) / 1073741824.0
+        << " GiB), bound by " << stats.memory_bound_by;
+    if (stats.chunks > 1)
+    {
+      msg << "\n  " << stats.chunks << " chunks, " << stats.spectra_decoded
+          << " spectra decoded against " << stats.spectra_read << " in the run";
+    }
     if (stats.outside_rt_range)
     {
       msg << "\n  " << stats.outside_rt_range
           << " precursors predicted to elute outside the run";
     }
-    if (chromatograms.precursors_without_window)
+    if (stats.precursors_without_window)
     {
-      msg << "\n  " << chromatograms.precursors_without_window
+      msg << "\n  " << stats.precursors_without_window
           << " precursors covered by no isolation window";
     }
     writeLogInfo_(msg.str());
+    return EXECUTION_OK;
+  }
+
+  /// Extract into one flat `Chromatograms`, write it if asked, and hand it on.
+  ///
+  /// This is the memory-bounded path: it keeps every point, so it is for a
+  /// precursor count that fits. `-out_chrom` and every diagnostic built on it
+  /// need it; scoring does not, and takes `extractInto_` with a scoring sink.
+  ExitCodes runExtraction_(const ODIA::Library& library, const std::string& run,
+                           const std::string& out_chrom,
+                           ODIA::Chromatograms* keep = nullptr,
+                           double rt_window_override = 0.0,
+                           bool library_rt_is_run_seconds = false)
+  {
+    ODIA::ChromatogramCollector collector;
+    const auto rc = extractInto_(library, run, collector, rt_window_override,
+                                 library_rt_is_run_seconds);
+    if (rc != EXECUTION_OK) { return rc; }
+    ODIA::Chromatograms chromatograms = collector.take();
+    writeLogInfo_("held all of them: " +
+                  std::to_string(chromatograms.footprintBytes() / 1048576) + " MiB");
 
     if (!out_chrom.empty())
     {
@@ -356,6 +398,16 @@ protected:
 
     if (passes == 1)
     {
+      // Nobody asked for the chromatograms, so nobody has to hold them. This is
+      // the difference between a memory bill proportional to the library and
+      // one proportional to what elutes at once.
+      if (out_chrom.empty())
+      {
+        ODIA::PeakGroupScorer::Result scored;
+        const auto rc = extractAndScore_(library, run, 0.0, false, scored);
+        if (rc != EXECUTION_OK) { return rc; }
+        return writeScoreResult_(scored, out, library);
+      }
       const auto rc = runExtraction_(library, run, out_chrom, &chromatograms);
       if (rc != EXECUTION_OK) { return rc; }
       return runScoring_(library, chromatograms, out);
@@ -369,20 +421,21 @@ protected:
 
     writeLogInfo_("pass 1 of 2: wide extraction to collect calibration anchors");
     const double pass1_window = getDoubleOption_("rt_window_pass1");
+    ODIA::PeakGroupScorer::Result pass1;
     {
       // 0 means "the whole run", expressed as a window wider than any gradient
       // rather than as a sentinel the extractor would have to know about. A
       // negative value would simply extract nothing.
-      const auto rc = runExtraction_(library, run, "", &chromatograms,
-                                     pass1_window > 0.0 ? pass1_window : 1.0e9);
+      //
+      // Pass 1 exists to produce anchors, and nothing else ever reads its
+      // chromatograms -- so it scores them as they finish and keeps none. That
+      // matters most here: this is the WIDE pass, where every precursor is live
+      // over most of the gradient and holding them all is at its worst.
+      const auto rc = extractAndScore_(library, run,
+                                       pass1_window > 0.0 ? pass1_window : 1.0e9,
+                                       false, pass1);
       if (rc != EXECUTION_OK) { return rc; }
     }
-
-    ODIA::PeakGroupScorer::Options options;
-    options.classifier = getStringOption_("classifier");
-    options.max_candidates = static_cast<std::size_t>(std::max(1, getIntOption_("max_candidates")));
-    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
-    const auto pass1 = ODIA::PeakGroupScorer::score(library, chromatograms, options);
 
     std::ostringstream p1;
     p1 << "pass 1: " << pass1.groups.size() << " peak groups, "
@@ -426,7 +479,9 @@ protected:
                 ? "Widen -rt_window_pass1, or relax -anchor_q."
                 : "Pass 1 produced no usable FDR at all; see the warning above.");
       writeLogWarn_(why.str());
-      return runScoring_(library, chromatograms, out);
+      // Pass 1's own scores, not a re-score of chromatograms that no longer
+      // exist. Same options, same traces, so the same answer.
+      return writeScoreResult_(pass1, out, library);
     }
 
     double p95 = 0.0;
@@ -448,12 +503,58 @@ protected:
 
     writeLogInfo_("pass 2 of 2: narrow extraction on the calibrated axis");
     chromatograms = ODIA::Chromatograms{};
+    // The library now carries run seconds, so the affine map is the identity.
+    if (out_chrom.empty())
     {
-      // The library now carries run seconds, so the affine map is the identity.
-      const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, 0.0, true);
+      ODIA::PeakGroupScorer::Result scored;
+      const auto rc = extractAndScore_(library, run, 0.0, true, scored);
       if (rc != EXECUTION_OK) { return rc; }
+      return writeScoreResult_(scored, out, library);
     }
+    const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, 0.0, true);
+    if (rc != EXECUTION_OK) { return rc; }
     return runScoring_(library, chromatograms, out);
+  }
+
+  ODIA::PeakGroupScorer::Options scoringOptions_()
+  {
+    ODIA::PeakGroupScorer::Options options;
+    options.classifier = getStringOption_("classifier");
+    options.max_candidates = static_cast<std::size_t>(
+      std::max(1, getIntOption_("max_candidates")));
+    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    return options;
+  }
+
+  /// Extract and score in one forward pass, holding only what is live.
+  ///
+  /// The chromatograms are never all in memory at once: each precursor is
+  /// scored as the pass leaves its retention-time window and then freed. What
+  /// survives is the peak-group table, which is ~120 bytes a group against tens
+  /// of kilobytes a chromatogram.
+  ExitCodes extractAndScore_(const ODIA::Library& library, const std::string& run,
+                             double rt_window_override, bool library_rt_is_run_seconds,
+                             ODIA::PeakGroupScorer::Result& scored)
+  {
+    const auto options = scoringOptions_();
+    ODIA::PeakGroupScorer::Sink sink(library, options);
+    const auto t = std::chrono::steady_clock::now();
+    const auto rc = extractInto_(library, run, sink, rt_window_override,
+                                 library_rt_is_run_seconds);
+    if (rc != EXECUTION_OK) { return rc; }
+    try
+    {
+      scored = sink.finish();
+    }
+    catch (const std::exception& e)
+    {
+      writeLogError_(std::string("Scoring failed: ") + e.what());
+      return INTERNAL_ERROR;
+    }
+    const auto ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t).count();
+    reportScoring_(scored, options.classifier, ms, "scored on the fly");
+    return EXECUTION_OK;
   }
 
   /// Find peak groups, score them, and write them with their q-values.
@@ -461,11 +562,7 @@ protected:
                         const ODIA::Chromatograms& chromatograms,
                         const std::string& out)
   {
-    ODIA::PeakGroupScorer::Options options;
-    options.classifier = getStringOption_("classifier");
-    options.max_candidates = static_cast<std::size_t>(
-      std::max(1, getIntOption_("max_candidates")));
-    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    const auto options = scoringOptions_();
 
     const auto t = std::chrono::steady_clock::now();
     ODIA::PeakGroupScorer::Result scored;
@@ -480,10 +577,18 @@ protected:
     }
     const auto ms = std::chrono::duration<double, std::milli>(
                       std::chrono::steady_clock::now() - t).count();
+    reportScoring_(scored, options.classifier, ms, "scored");
+    return writeScoreResult_(scored, out, library);
+  }
 
+  /// Everything the scoring stage has to say, whichever path produced it.
+  void reportScoring_(const ODIA::PeakGroupScorer::Result& scored,
+                      const std::string& classifier, double ms,
+                      const std::string& how)
+  {
     std::ostringstream msg;
-    msg << "scored " << scored.groups.size() << " peak groups with "
-        << options.classifier << " in " << ms << " ms\n"
+    msg << how << " " << scored.groups.size() << " peak groups with "
+        << classifier << " in " << ms << " ms\n"
         << "  " << scored.target_groups << " target / " << scored.decoy_groups
         << " decoy groups\n";
     if (scored.fdr_valid)
@@ -527,7 +632,11 @@ protected:
                       "trained model -- do not read these q-values as an FDR.");
       }
     }
+  }
 
+  ExitCodes writeScoreResult_(const ODIA::PeakGroupScorer::Result& scored,
+                              const std::string& out, const ODIA::Library& library)
+  {
     if (!out.empty())
     {
       try
@@ -872,8 +981,21 @@ protected:
 
     if (stop_after == "extract")
     {
-      const auto rc = runExtraction_(library, in_run, out_chrom, nullptr);
-      if (rc != EXECUTION_OK) { return rc; }
+      // With no -out_chrom nothing wants the points, so nothing holds them:
+      // this is then a decode-and-match benchmark that runs at any library
+      // size. With -out_chrom it is the old path, and it is bounded by the
+      // library exactly as it always was.
+      if (out_chrom.empty())
+      {
+        ODIA::NullChromatogramSink sink;
+        const auto rc = extractInto_(library, in_run, sink);
+        if (rc != EXECUTION_OK) { return rc; }
+      }
+      else
+      {
+        const auto rc = runExtraction_(library, in_run, out_chrom, nullptr);
+        if (rc != EXECUTION_OK) { return rc; }
+      }
     }
     if (stop_after == "score")
     {
