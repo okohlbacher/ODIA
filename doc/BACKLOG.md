@@ -5,6 +5,55 @@ external fix are marked **[you]**; the rest are mine to work through.
 
 ---
 
+## The 1/K0 calibration wants pass-2 anchors, not a pre-pass probe (2026-08-05)
+
+`MobilityCalibration` is built and wired (`-ion_mobility_calibration auto`,
+default), gated, and tested. On S08 the gate REFUSES, and the reason is the
+open item.
+
+The class probes the run before the first pass, the way `MassCalibration`
+does: sample cycles, find each precursor's fragments, keep the best cell. On
+the mass axis a wrong cell is harmless -- its residual is uniform and the mode
+steps over it. On the mobility axis it is not: a wrong cell's 1/K0 sits
+wherever the frame's peaks are dense, which is a systematic, and three
+measurements say the probe is finding those and not the precursors:
+
+  * 7,995 Arabidopsis ENTRAPMENT precursors, which cannot be in a human
+    sample, give the same residual distribution as the 2,665 real targets;
+  * the library's own decoy precursors give peakedness 3.02 against the
+    targets' 3.06;
+  * the correction fitted to that sample makes the out-of-fold scatter worse,
+    0.0099 -> 0.0141, and puts charge 3 at +0.030 where DIA-NN's observed 1/K0
+    says +0.005.
+
+Restricting the probe to the precursor's predicted retention time helps and is
+now the default (`-im_calib_rt_window 150`): the charge-2 centre goes from
++0.0060 to +0.0016 against a truth of +0.0017, and the margin from 1.01x to
+1.08x. Still under the 1.25x the gate wants, and charge 3 stays wrong for a
+structural reason -- a 3+ precursor sits low in a diaPASEF band whose peak
+density is set by 2+ species, so the brightest cluster within +/-0.06 is pulled
+upward.
+
+**What would fix it.** The prototype that measured +2.21 recovery points chose
+its anchors as "the precursors ODIA already recovers confidently ON ITS OWN
+SCORE" -- pass-2 information. ODIA already has that slot: `-passes 2` scores
+pass 1 and fits the retention-time map from the confident identifications, and
+the mobility offset belongs beside it. What it needs that does not exist yet is
+an observed 1/K0 per scored peak group, which means the extractor accumulating
+an intensity-weighted mobility alongside each chromatogram point (about double
+the chromatogram store, 1.65 GiB -> 3.3 GiB on the S08 combined library) or a
+second targeted probe that visits only the confident apexes. The second is
+cheaper and is the one to try first: one sequential pass, anchors sorted by
+apex retention time, no chromatogram-store change at all.
+
+Note also that this makes the entrapment library the right null for anything
+on this axis. The m/z-shifted control `MassCalibration` uses reported 99.7%
+purity on a sample that was almost entirely noise, because shifting a fragment
+by 7.33 Th moves it off the amino-acid mass lattice into a part of the spectrum
+where peaks never are.
+
+---
+
 ## Blocking someone else
 
 - **[you] `kimi` and `codex` CLIs are unavailable, so the adversarial reviews
