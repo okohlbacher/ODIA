@@ -449,6 +449,19 @@ add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
 add_test(NAME extract_im_gating_is_independent COMMAND odia_extract_cases im_gating)
 add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 
+# The sliding window, which is what stops memory scaling with the library: a
+# precursor's chromatogram is allocated when the pass reaches the start of its
+# retention-time window and freed when the pass leaves it. Twenty precursors
+# tiled across the gradient with narrow windows, so "only the overlapping ones
+# are resident" is a claim the geometry can actually falsify -- at the 600 s
+# window a real run uses, 65% of a library is live at once and a test built at
+# that ratio would pass with the whole mechanism removed.
+#
+# Also covers the two things that must NOT change with it: a streaming consumer
+# is handed exactly what the flat array holds, and capping the live set into
+# chunks changes the number of passes and not the answer.
+add_test(NAME extract_sliding_window COMMAND odia_extract_cases sliding)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing

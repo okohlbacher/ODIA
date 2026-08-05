@@ -489,6 +489,195 @@ namespace
     checkNear(sumTrace(x, last), double(CYCLES) * 7.0,
               "every point above the ceiling holds the intensity written to it");
   }
+
+  /// A sink that keeps a private copy of everything it is handed.
+  ///
+  /// The storage behind a `PrecursorChromatogram` is valid only for the
+  /// duration of `accept`, so copying is the only way to check afterwards what
+  /// was handed over -- and a sink that reads it later would be exactly the
+  /// defect this checks against.
+  class RecordingSink final : public ODIA::ChromatogramSink
+  {
+  public:
+    struct Trace
+    {
+      std::uint32_t precursor = 0, transition_begin = 0;
+      std::uint32_t axis = 0, axis_begin = 0, cycles = 0;
+      std::vector<float> rt;
+      std::vector<std::vector<float>> points;   ///< one per transition
+    };
+
+    void accept(const ODIA::PrecursorChromatogram& c) override
+    {
+      Trace t;
+      t.precursor = c.precursor;
+      t.transition_begin = c.transition_begin;
+      t.axis = c.axis;
+      t.axis_begin = c.axis_begin;
+      t.cycles = c.cycles;
+      t.rt.assign(c.rt, c.rt + c.cycles);
+      for (std::uint32_t k = 0; k < c.transition_count; ++k)
+      {
+        const std::uint32_t n = c.pointCount(k);
+        t.points.emplace_back(n ? c.trace(k) : nullptr, n ? c.trace(k) + n : nullptr);
+      }
+      traces.push_back(std::move(t));
+    }
+
+    std::vector<Trace> traces;
+  };
+
+  /// The sliding window: a precursor is allocated when the pass reaches the
+  /// start of its retention-time window and freed when the pass leaves it.
+  ///
+  /// Three claims, each of which the old extractor could not have satisfied
+  /// because it allocated the whole library before reading a peak:
+  ///
+  ///   * only the precursors whose windows OVERLAP are ever resident at once;
+  ///   * what a streaming consumer is handed is exactly what the flat array
+  ///     holds -- same points, same axis, same cycle range;
+  ///   * capping the live set and chunking the library changes nothing about
+  ///     the answer, only about how many passes it takes.
+  ///
+  /// The geometry is deliberately extreme -- twenty precursors tiled across the
+  /// gradient with windows a fifteenth of it -- because at a 600 s window on a
+  /// 1,859 s run about 65% of a library is live at once and a test built at
+  /// that ratio would pass with the sliding window removed.
+  void caseSlidingWindow()
+  {
+    // Long enough to span many match batches. The sliding window can only move
+    // between them, so a run shorter than one batch has everything live at once
+    // whatever the windows say -- which is a real property of the design and
+    // the reason this is not a four-spectrum test like the others.
+    constexpr std::uint32_t CYCLES = 2048;
+    constexpr std::uint32_t PRECURSORS = 32;
+    constexpr double STEP = 1.0;               // seconds per cycle
+
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0);
+
+    ScriptedLibrary lib;
+    std::vector<double> product;
+    for (std::uint32_t i = 0; i < PRECURSORS; ++i)
+    {
+      const std::size_t at = lib.addPrecursor(505.0);
+      lib.library().precursors().irt[at] =
+        static_cast<float>(STEP * double(CYCLES) * double(i) / double(PRECURSORS));
+      product.push_back(200.0 + double(i) * 0.5);
+      product.push_back(600.0 + double(i) * 0.5);
+      lib.addTransition(product[2 * i]);
+      lib.addTransition(product[2 * i + 1]);
+    }
+
+    // Every transition is present in every spectrum, with an intensity that
+    // identifies the cycle. A precursor's trace is then a slice of the cycle
+    // index, so a chromatogram assembled at the wrong offset is visible rather
+    // than merely smaller.
+    for (std::uint32_t c = 0; c < CYCLES; ++c)
+    {
+      const auto s = run.addSpectrum(w, STEP * double(c));
+      for (const double mz : product) { run.addPeak(s, mz, float(c) + 1.0f); }
+    }
+
+    auto opt = plainOptions();
+    opt.irt_slope = 1.0;                       // the library's iRT is run seconds
+    opt.irt_intercept = 0.0;
+    opt.rt_window_seconds = 100.0;             // +/- 100 cycles, so windows overlap
+
+    ODIA::ChromatogramExtractor::Stats flat_stats;
+    const auto x = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt,
+                                                        &flat_stats);
+    checkRepresentation(x);
+
+    // Every precursor is extracted, and over a window far shorter than the run.
+    check(flat_stats.precursors_extracted == PRECURSORS,
+          "every precursor was extracted");
+    check(x.count[0] > 0 && x.count[0] < CYCLES,
+          "a precursor's window is a slice of the run, not the whole of it");
+
+    // The claim the design rests on. Windows are 5-6 cycles wide and start 2
+    // cycles apart, so a handful overlap -- never all twenty.
+    check(flat_stats.peak_live_precursors < PRECURSORS,
+          "not every precursor was resident at once");
+    check(flat_stats.peak_live_points < std::uint64_t(flat_stats.points),
+          "peak resident points are below what the whole library would need");
+    std::printf("       peak live %zu of %u precursors, %llu of %zu points\n",
+                flat_stats.peak_live_precursors, PRECURSORS,
+                static_cast<unsigned long long>(flat_stats.peak_live_points),
+                flat_stats.points);
+
+    // The value, not just the shape: the first live cycle of precursor 5 is
+    // where its window starts, and its intensity is that cycle's own number.
+    {
+      const std::uint32_t tr = lib.library().precursors().transition_begin[5];
+      const std::uint32_t first = x.axis_begin[tr];
+      checkNear(x.intensity[x.begin[tr]], double(first) + 1.0,
+                "a precursor's first point is the cycle its window starts at");
+      checkNear(x.retentionTime(tr, 0), STEP * double(first),
+                "and it carries that cycle's retention time");
+    }
+
+    // What a streaming consumer sees is what the flat array holds.
+    RecordingSink recorded;
+    ODIA::ChromatogramExtractor::Stats stream_stats;
+    ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, recorded, &stream_stats);
+
+    std::vector<int> seen(PRECURSORS, 0);
+    bool same = true, ordered = true;
+    float previous_rt = -1.0f;
+    for (const auto& t : recorded.traces)
+    {
+      if (t.precursor < PRECURSORS) { ++seen[t.precursor]; }
+      if (t.cycles == 0) { continue; }
+      // Handed over in the order the pass finishes them, which is the order
+      // their windows end.
+      if (!t.rt.empty())
+      {
+        if (t.rt.back() < previous_rt) { ordered = false; }
+        previous_rt = t.rt.back();
+      }
+      for (std::size_t k = 0; k < t.points.size(); ++k)
+      {
+        const std::uint32_t tr = t.transition_begin + static_cast<std::uint32_t>(k);
+        if (x.count[tr] != t.points[k].size()) { same = false; continue; }
+        if (x.axis_of[tr] != t.axis || x.axis_begin[tr] != t.axis_begin) { same = false; }
+        for (std::size_t j = 0; j < t.points[k].size(); ++j)
+        {
+          if (x.intensity[x.begin[tr] + j] != t.points[k][j]) { same = false; }
+        }
+      }
+    }
+    check(same, "the streaming sink is handed exactly what the flat array holds");
+    check(ordered, "precursors are handed over in the order the pass leaves them");
+    check(std::count(seen.begin(), seen.end(), 1) == int(PRECURSORS),
+          "every precursor is handed over exactly once");
+
+    // Capping the live set splits the library into chunks. The answer must not
+    // move; only the number of passes does.
+    auto capped = opt;
+    // Below what the windows overlap by on their own, or the cap is not a cap
+    // and the test asserts nothing -- exactly the way a threshold set above the
+    // data silently disables the branch it guards.
+    capped.max_live_precursors = 2;
+    ODIA::ChromatogramExtractor::Stats chunk_stats;
+    const auto y = ODIA::ChromatogramExtractor::extract(lib.library(), run, capped,
+                                                        &chunk_stats);
+    checkRepresentation(y);
+    check(chunk_stats.chunks > 1, "the cap split the library into chunks");
+    // Not "<= the cap": the cap partitions by retention-time overlap, and a
+    // batch's worth of early activation can still put one or two more live than
+    // the partition says. The claim that holds is that it is strictly tighter
+    // than the uncapped run, which is what the mechanism is for.
+    check(chunk_stats.peak_live_precursors < flat_stats.peak_live_precursors,
+          "and the live set is tighter than without it");
+    check(chunk_stats.spectra_decoded >= flat_stats.spectra_decoded,
+          "which is paid for in spectra decoded more than once");
+    check(y.count == x.count && y.axis_of == x.axis_of &&
+          y.axis_begin == x.axis_begin && y.intensity == x.intensity,
+          "chunking changes how many passes it takes, not the answer");
+    std::printf("       %zu chunks, %zu spectra decoded against %zu in the run\n",
+                chunk_stats.chunks, chunk_stats.spectra_decoded, chunk_stats.spectra_read);
+  }
 }
 
 int main(int argc, char** argv)
@@ -502,11 +691,12 @@ int main(int argc, char** argv)
   else if (which == "im_gating") { caseImGating(); }
   else if (which == "band_edge") { caseBandEdge(); }
   else if (which == "wide_csr") { caseWideCsr(); }
+  else if (which == "sliding") { caseSlidingWindow(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
-                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr>\n");
+                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding>\n");
     return 2;
   }
 
