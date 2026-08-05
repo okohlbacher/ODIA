@@ -252,6 +252,15 @@ namespace ODIA
       for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
       {
         const std::size_t j = p.transition_begin[i] + k;
+        // A transition whose product m/z could not be represented has no mass
+        // to match against, so the index build below skips it and it can never
+        // receive a point. Counting it here anyway gave it a full-length point
+        // run that nothing ever filled, the default axis_of = 0, and therefore
+        // a read off the end of window 0's axis whenever window 0 was the
+        // shorter one. Library::invalidMzTransitionCount() exists because this
+        // input is expected -- a neutral loss can drive a small fragment to or
+        // below zero -- so it is skipped, not rejected.
+        if (t.product_mz[j] == MZ_INVALID) { continue; }
         out.count[j] += static_cast<std::uint32_t>(hi - lo);
         total_points += hi - lo;
         live_sum += hi - lo;
@@ -288,8 +297,11 @@ namespace ODIA
       for (std::uint32_t k = 0; k < p.transition_count[a.precursor]; ++k)
       {
         const std::size_t j = p.transition_begin[a.precursor] + k;
+        // Skipped on the same test as the counting loop above, and it has to
+        // BE the same test: a transition counted there and skipped here is a
+        // point run with no axis behind it.
+        if (t.product_mz[j] == MZ_INVALID) { continue; }
         const double theoretical = fromFixed(t.product_mz[j]);
-        if (!(theoretical > 0.0)) { continue; }
         // The offset is applied to the TRANSITION, once, here -- not to every
         // peak in the match loop. Shifting the target is equivalent and costs
         // nothing per peak. The m/z-dependent term rides along for free for the

@@ -440,6 +440,11 @@ add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
 # test. Nothing in the suite constructed a Chromatograms before this.
 add_test(NAME extract_rt_axis COMMAND odia_extract_axis)
 
+# Extraction against a scripted run: every spectrum, peak, mobility and window
+# written out in the test, so a case is exactly the hazard it names. Each is a
+# defect that reached main because nothing here called extract() at all.
+add_test(NAME extract_invalid_product_mz COMMAND odia_extract_cases invalid_mz)
+
 # The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
 # Runs on synthesised residuals only, so it needs no data: it checks that a
 # known offset is recovered from a narrow peak on a uniform background, that a
