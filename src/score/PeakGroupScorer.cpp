@@ -21,20 +21,20 @@ namespace ODIA
     /// Summing rather than taking any single transition: a peak group is a
     /// coelution of all of them, and picking on one transition would find that
     /// transition's noise as readily as the precursor's peak.
-    std::vector<double> summedTrace(const Chromatograms& c,
-                                    std::uint32_t begin, std::uint32_t count,
+    std::vector<double> summedTrace(const PrecursorChromatogram& c,
                                     std::size_t points,
                                     const std::vector<double>* weights = nullptr)
     {
       std::vector<double> total(points, 0.0);
-      for (std::uint32_t t = 0; t < count; ++t)
+      for (std::uint32_t t = 0; t < c.transition_count; ++t)
       {
-        const std::uint64_t b = c.begin[begin + t];
-        const std::uint32_t n = c.count[begin + t];
+        const std::uint32_t n = c.pointCount(t);
+        if (n == 0) { continue; }
+        const float* at = c.trace(t);
         const double w = weights ? (*weights)[t] : 1.0;
         for (std::uint32_t i = 0; i < n && i < points; ++i)
         {
-          total[i] += w * c.intensity[b + i];
+          total[i] += w * at[i];
         }
       }
       return total;
@@ -46,19 +46,17 @@ namespace ODIA
     /// peak has that peak in its own noise estimate, and the SD would be
     /// inflated by exactly the feature being looked for. MAD is unmoved by a
     /// few large points, so a strong fragment does not suppress itself.
-    std::vector<double> noiseNormalisedTrace(const Chromatograms& c,
-                                             std::uint32_t begin, std::uint32_t count,
+    std::vector<double> noiseNormalisedTrace(const PrecursorChromatogram& c,
                                              std::size_t points)
     {
       std::vector<double> total(points, 0.0);
       std::vector<double> scratch;
-      for (std::uint32_t t = 0; t < count; ++t)
+      for (std::uint32_t t = 0; t < c.transition_count; ++t)
       {
-        const std::uint64_t b = c.begin[begin + t];
-        const std::uint32_t n = c.count[begin + t];
+        const std::uint32_t n = c.pointCount(t);
         if (n == 0) { continue; }
 
-        const auto at = c.intensity.begin() + static_cast<std::ptrdiff_t>(b);
+        const float* at = c.trace(t);
         scratch.assign(at, at + n);
         std::sort(scratch.begin(), scratch.end());
         const double median = scratch[scratch.size() / 2];
@@ -72,7 +70,7 @@ namespace ODIA
         const double scale = 1.0 / (1.4826 * mad);   // MAD -> sigma for normal noise
         for (std::uint32_t i = 0; i < n && i < points; ++i)
         {
-          total[i] += (c.intensity[b + i] - median) * scale;
+          total[i] += (at[i] - median) * scale;
         }
       }
       return total;
@@ -244,203 +242,222 @@ namespace ODIA
     return names;
   }
 
-  PeakGroupScorer::Result PeakGroupScorer::score(const Library& library,
-                                                 const Chromatograms& chromatograms,
-                                                 const Options& options)
+  PeakGroupScorer::Session::Session(const Library& library, const Options& options)
+    : library_(&library), options_(options)
   {
-    Result result;
+  }
+
+  void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram)
+  {
+    Result& result = result_;
+    const Options& options = options_;
+    const Library& library = *library_;
     const auto& p = library.precursors();
     const auto& t = library.transitions();
-    const std::size_t n_precursors = library.precursorCount();
 
-    for (std::size_t i = 0; i < n_precursors; ++i)
+    const std::size_t i = chromatogram.precursor;
+    const std::uint32_t tb = chromatogram.transition_begin;
+    const std::uint32_t tc = chromatogram.transition_count;
+    if (tc == 0) { return; }
+
+    const std::size_t points = chromatogram.pointCount(0);
+    if (points < 3) { ++result.precursors_without_candidate; return; }
+
+    // D8: each transition standardised against its own local noise before
+    // summing, so no transition dominates by being loud and none is boosted
+    // by what the library expects. See the option's comment for why library
+    // weighting was rejected.
+    const auto total = options.noise_normalised_picking
+      ? noiseNormalisedTrace(chromatogram, points)
+      : summedTrace(chromatogram, points);
+    const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
+    if (window_total <= 0.0) { ++result.precursors_without_candidate; return; }
+
+    const auto candidates =
+      findCandidates(smooth(total, options.smooth_half_width),
+                     options.max_candidates, options.boundary_fraction);
+    if (candidates.empty()) { ++result.precursors_without_candidate; return; }
+
+    // Library intensities, in the transition order the chromatograms use.
+    std::vector<double> library_intensity(tc, 0.0);
+    for (std::uint32_t k = 0; k < tc; ++k)
     {
-      const std::uint32_t tb = p.transition_begin[i];
-      const std::uint32_t tc = p.transition_count[i];
-      if (tc == 0 || tb >= chromatograms.begin.size()) { continue; }
+      library_intensity[k] = t.library_intensity[tb + k];
+    }
 
-      const std::size_t points = chromatograms.count[tb];
-      if (points < 3) { ++result.precursors_without_candidate; continue; }
+    for (const auto& cand : candidates)
+    {
+      const std::size_t lo = cand.left, hi = cand.right;
+      const std::size_t width = hi - lo + 1;
 
-      // D8: each transition standardised against its own local noise before
-      // summing, so no transition dominates by being loud and none is boosted
-      // by what the library expects. See the option's comment for why library
-      // weighting was rejected.
-      const auto total = options.noise_normalised_picking
-        ? noiseNormalisedTrace(chromatograms, tb, tc, points)
-        : summedTrace(chromatograms, tb, tc, points);
-      const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
-      if (window_total <= 0.0) { ++result.precursors_without_candidate; continue; }
-
-      const auto candidates =
-        findCandidates(smooth(total, options.smooth_half_width),
-                       options.max_candidates, options.boundary_fraction);
-      if (candidates.empty()) { ++result.precursors_without_candidate; continue; }
-
-      // Library intensities, in the transition order the chromatograms use.
-      std::vector<double> library_intensity(tc, 0.0);
+      // Per-transition traces over the candidate's own boundaries, and the
+      // observed intensity of each transition as its area there.
+      std::vector<std::vector<double>> traces;
+      std::vector<double> observed(tc, 0.0);
+      traces.reserve(tc);
       for (std::uint32_t k = 0; k < tc; ++k)
       {
-        library_intensity[k] = t.library_intensity[tb + k];
+        const std::uint32_t n = chromatogram.pointCount(k);
+        const float* points_k = n ? chromatogram.trace(k) : nullptr;
+        std::vector<double> tr(width, 0.0);
+        for (std::size_t j = 0; j < width; ++j)
+        {
+          const std::size_t at = lo + j;
+          if (at < n) { tr[j] = points_k[at]; }
+          observed[k] += tr[j];
+        }
+        traces.push_back(std::move(tr));
       }
 
-      for (const auto& cand : candidates)
+      // D4: a per-transition local background, subtracted before anything
+      // compares observed intensities to the library. Without it `observed`
+      // is a raw area over a 60 s window and is dominated by baseline and
+      // interference, which is why it correlated with nothing. Clamped at 0
+      // rather than allowed negative: a weak real fragment sitting below its
+      // own local median is absent evidence, not negative evidence.
+      std::vector<double> corrected(tc, 0.0);
+      std::size_t at_apex = 0;
+      for (std::uint32_t k = 0; k < tc; ++k)
       {
-        const std::size_t lo = cand.left, hi = cand.right;
-        const std::size_t width = hi - lo + 1;
+        const std::uint32_t n = chromatogram.pointCount(k);
+        const float* points_k = n ? chromatogram.trace(k) : nullptr;
+        std::vector<double> whole(n, 0.0);
+        for (std::uint32_t j = 0; j < n; ++j) { whole[j] = points_k[j]; }
+        const double bg = localBackground(whole, lo, hi);
+        corrected[k] = std::max(0.0, observed[k] - bg * static_cast<double>(width));
+        if (cand.apex < n && points_k[cand.apex] > bg) { ++at_apex; }
+      }
 
-        // Per-transition traces over the candidate's own boundaries, and the
-        // observed intensity of each transition as its area there.
-        std::vector<std::vector<double>> traces;
-        std::vector<double> observed(tc, 0.0);
-        traces.reserve(tc);
-        for (std::uint32_t k = 0; k < tc; ++k)
+      // D6/D8 gate: a peak group is a co-elution. One transition above its
+      // own background is a spike, and emitting it as a candidate is what
+      // let single-fragment interference into the score matrix.
+      if (at_apex < options.min_fragments_at_apex) { continue; }
+
+      // D1/D2/D3: self-pairs excluded, shape selected on the signed maximum,
+      // lag capped to the trace, degenerate traces dropped. See score.h.
+      Scoring::PairOptions popt;
+      std::size_t usable = 0;
+      const auto pairs = Scoring::allpairs_xcorr_ex(traces, options.max_delay, popt, &usable);
+      double shape = 0.0, coelution = 0.0;
+      for (const auto& pr : pairs)
+      {
+        shape += pr.value;
+        coelution += std::abs(static_cast<double>(pr.delay));
+      }
+      if (!pairs.empty())
+      {
+        shape /= static_cast<double>(pairs.size());
+        coelution /= static_cast<double>(pairs.size());
+      }
+
+      const double group_total = std::accumulate(observed.begin(), observed.end(), 0.0);
+
+      // Background from outside the candidate, so a trace that is peak
+      // everywhere does not report an impressive signal-to-noise.
+      double background = 0.0;
+      std::size_t background_n = 0;
+      for (std::size_t j = 0; j < total.size(); ++j)
+      {
+        if (j < lo || j > hi) { background += total[j]; ++background_n; }
+      }
+      background = background_n ? background / static_cast<double>(background_n) : 0.0;
+
+      PeakGroup g;
+      g.precursor = static_cast<std::uint32_t>(i);
+      g.decoy = p.decoy[i] != 0;
+      g.apex_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(cand.apex));
+      g.left_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(lo));
+      g.right_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(hi));
+      g.apex_intensity = static_cast<float>(cand.apex_value);
+
+      g.sub_scores.assign(N_SUB_SCORES, 0.0);
+      g.sub_scores[XCORR_SHAPE] = shape;
+      // Negated so that, like every other column, larger is better. A
+      // classifier would learn the sign either way, but a human reading a
+      // weight vector should not have to remember which column is inverted.
+      g.sub_scores[XCORR_COELUTION] = -coelution;
+      g.sub_scores[LIBRARY_CORR] = pearson(corrected, library_intensity);
+      g.sub_scores[LIBRARY_DOTPROD] = dotProduct(corrected, library_intensity);
+
+      // D6: the old group/window area ratio carried no library or
+      // co-elution information, and a narrow decoy spike in an empty window
+      // approached 1.0. This is the share of the group's background-corrected
+      // area sitting in the fragments the library says are brightest -- which
+      // a single-transition spike cannot satisfy however tall it is.
+      {
+        std::vector<std::size_t> order(tc);
+        for (std::size_t k = 0; k < tc; ++k) { order[k] = k; }
+        std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b_) {
+          return library_intensity[a] > library_intensity[b_]; });
+        const std::size_t top = std::max<std::size_t>(1, tc / 3);
+        double top_area = 0.0, all_area = 0.0;
+        for (std::size_t r = 0; r < tc; ++r)
         {
-          const std::uint64_t b = chromatograms.begin[tb + k];
-          const std::uint32_t n = chromatograms.count[tb + k];
-          std::vector<double> tr(width, 0.0);
-          for (std::size_t j = 0; j < width; ++j)
-          {
-            const std::size_t at = lo + j;
-            if (at < n) { tr[j] = chromatograms.intensity[b + at]; }
-            observed[k] += tr[j];
-          }
-          traces.push_back(std::move(tr));
+          all_area += corrected[order[r]];
+          if (r < top) { top_area += corrected[order[r]]; }
         }
+        g.sub_scores[INTENSITY_SCORE] = all_area > 0.0 ? top_area / all_area : 0.0;
+      }
 
-        // D4: a per-transition local background, subtracted before anything
-        // compares observed intensities to the library. Without it `observed`
-        // is a raw area over a 60 s window and is dominated by baseline and
-        // interference, which is why it correlated with nothing. Clamped at 0
-        // rather than allowed negative: a weak real fragment sitting below its
-        // own local median is absent evidence, not negative evidence.
-        std::vector<double> corrected(tc, 0.0);
-        std::size_t at_apex = 0;
-        for (std::uint32_t k = 0; k < tc; ++k)
+      // D5: the background floor is derived from the data, not from 1e-6.
+      // With the constant, a decoy in an empty window got
+      // log(apex / 1e-6) ~ 16-25 and outranked a real target on a real
+      // baseline -- the floor did not guard the ratio, it inverted it.
+      const double floor_bg = std::max(background, 0.01 * cand.apex_value);
+      g.sub_scores[LOG_SN] = floor_bg > 0.0
+        ? std::min(10.0, std::log(std::max(1e-12, cand.apex_value) / floor_bg))
+        : 0.0;
+      g.sub_scores[USABLE_FRAGMENTS] = static_cast<double>(usable);
+
+      // Both vectors normalised to unit sum first: RMSD on raw areas would
+      // measure how intense the precursor is, not how well it matches.
+      {
+        double so = 0.0, sl = 0.0;
+        for (std::uint32_t k = 0; k < tc; ++k) { so += corrected[k]; sl += library_intensity[k]; }
+        double rmsd = 0.0;
+        if (so > 0.0 && sl > 0.0)
         {
-          const std::uint64_t b = chromatograms.begin[tb + k];
-          const std::uint32_t n = chromatograms.count[tb + k];
-          std::vector<double> whole(n, 0.0);
-          for (std::uint32_t j = 0; j < n; ++j) { whole[j] = chromatograms.intensity[b + j]; }
-          const double bg = localBackground(whole, lo, hi);
-          corrected[k] = std::max(0.0, observed[k] - bg * static_cast<double>(width));
-          if (cand.apex < n && chromatograms.intensity[b + cand.apex] > bg) { ++at_apex; }
-        }
-
-        // D6/D8 gate: a peak group is a co-elution. One transition above its
-        // own background is a spike, and emitting it as a candidate is what
-        // let single-fragment interference into the score matrix.
-        if (at_apex < options.min_fragments_at_apex) { continue; }
-
-        // D1/D2/D3: self-pairs excluded, shape selected on the signed maximum,
-        // lag capped to the trace, degenerate traces dropped. See score.h.
-        Scoring::PairOptions popt;
-        std::size_t usable = 0;
-        const auto pairs = Scoring::allpairs_xcorr_ex(traces, options.max_delay, popt, &usable);
-        double shape = 0.0, coelution = 0.0;
-        for (const auto& pr : pairs)
-        {
-          shape += pr.value;
-          coelution += std::abs(static_cast<double>(pr.delay));
-        }
-        if (!pairs.empty())
-        {
-          shape /= static_cast<double>(pairs.size());
-          coelution /= static_cast<double>(pairs.size());
-        }
-
-        const double group_total = std::accumulate(observed.begin(), observed.end(), 0.0);
-
-        // Background from outside the candidate, so a trace that is peak
-        // everywhere does not report an impressive signal-to-noise.
-        double background = 0.0;
-        std::size_t background_n = 0;
-        for (std::size_t j = 0; j < total.size(); ++j)
-        {
-          if (j < lo || j > hi) { background += total[j]; ++background_n; }
-        }
-        background = background_n ? background / static_cast<double>(background_n) : 0.0;
-
-        PeakGroup g;
-        g.precursor = static_cast<std::uint32_t>(i);
-        g.decoy = p.decoy[i] != 0;
-        g.apex_rt = chromatograms.retentionTime(tb, cand.apex);
-        g.left_rt = chromatograms.retentionTime(tb, lo);
-        g.right_rt = chromatograms.retentionTime(tb, hi);
-        g.apex_intensity = static_cast<float>(cand.apex_value);
-
-        g.sub_scores.assign(N_SUB_SCORES, 0.0);
-        g.sub_scores[XCORR_SHAPE] = shape;
-        // Negated so that, like every other column, larger is better. A
-        // classifier would learn the sign either way, but a human reading a
-        // weight vector should not have to remember which column is inverted.
-        g.sub_scores[XCORR_COELUTION] = -coelution;
-        g.sub_scores[LIBRARY_CORR] = pearson(corrected, library_intensity);
-        g.sub_scores[LIBRARY_DOTPROD] = dotProduct(corrected, library_intensity);
-
-        // D6: the old group/window area ratio carried no library or
-        // co-elution information, and a narrow decoy spike in an empty window
-        // approached 1.0. This is the share of the group's background-corrected
-        // area sitting in the fragments the library says are brightest -- which
-        // a single-transition spike cannot satisfy however tall it is.
-        {
-          std::vector<std::size_t> order(tc);
-          for (std::size_t k = 0; k < tc; ++k) { order[k] = k; }
-          std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b_) {
-            return library_intensity[a] > library_intensity[b_]; });
-          const std::size_t top = std::max<std::size_t>(1, tc / 3);
-          double top_area = 0.0, all_area = 0.0;
-          for (std::size_t r = 0; r < tc; ++r)
-          {
-            all_area += corrected[order[r]];
-            if (r < top) { top_area += corrected[order[r]]; }
-          }
-          g.sub_scores[INTENSITY_SCORE] = all_area > 0.0 ? top_area / all_area : 0.0;
-        }
-
-        // D5: the background floor is derived from the data, not from 1e-6.
-        // With the constant, a decoy in an empty window got
-        // log(apex / 1e-6) ~ 16-25 and outranked a real target on a real
-        // baseline -- the floor did not guard the ratio, it inverted it.
-        const double floor_bg = std::max(background, 0.01 * cand.apex_value);
-        g.sub_scores[LOG_SN] = floor_bg > 0.0
-          ? std::min(10.0, std::log(std::max(1e-12, cand.apex_value) / floor_bg))
-          : 0.0;
-        g.sub_scores[USABLE_FRAGMENTS] = static_cast<double>(usable);
-
-        // Both vectors normalised to unit sum first: RMSD on raw areas would
-        // measure how intense the precursor is, not how well it matches.
-        {
-          double so = 0.0, sl = 0.0;
-          for (std::uint32_t k = 0; k < tc; ++k) { so += corrected[k]; sl += library_intensity[k]; }
-          double rmsd = 0.0;
-          if (so > 0.0 && sl > 0.0)
-          {
-            for (std::uint32_t k = 0; k < tc; ++k)
-            {
-              const double d = corrected[k] / so - library_intensity[k] / sl;
-              rmsd += d * d;
-            }
-            rmsd = std::sqrt(rmsd / static_cast<double>(tc));
-          }
-          // Negated so larger is better, as every other column is.
-          g.sub_scores[LIBRARY_RMSD] = -rmsd;
-        }
-
-        {
-          double y_area = 0.0, all_area = 0.0;
           for (std::uint32_t k = 0; k < tc; ++k)
           {
-            all_area += corrected[k];
-            if (t.type[tb + k] == FragmentType::Y) { y_area += corrected[k]; }
+            const double d = corrected[k] / so - library_intensity[k] / sl;
+            rmsd += d * d;
           }
-          g.sub_scores[YSERIES_SCORE] = all_area > 0.0 ? y_area / all_area : 0.0;
-          g.sub_scores[FRAGMENT_COVERAGE] =
-            tc > 0 ? static_cast<double>(at_apex) / static_cast<double>(tc) : 0.0;
+          rmsd = std::sqrt(rmsd / static_cast<double>(tc));
         }
-        result.groups.push_back(std::move(g));
+        // Negated so larger is better, as every other column is.
+        g.sub_scores[LIBRARY_RMSD] = -rmsd;
       }
+
+      {
+        double y_area = 0.0, all_area = 0.0;
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          all_area += corrected[k];
+          if (t.type[tb + k] == FragmentType::Y) { y_area += corrected[k]; }
+        }
+        g.sub_scores[YSERIES_SCORE] = all_area > 0.0 ? y_area / all_area : 0.0;
+        g.sub_scores[FRAGMENT_COVERAGE] =
+          tc > 0 ? static_cast<double>(at_apex) / static_cast<double>(tc) : 0.0;
+      }
+      result.groups.push_back(std::move(g));
     }
+  }
+
+  PeakGroupScorer::Result PeakGroupScorer::Session::finish()
+  {
+    Result& result = result_;
+    const Options& options = options_;
+    const std::size_t n_precursors = library_->precursorCount();
+
+    // Peak groups arrive in whatever order the extractor finished their
+    // precursors, which is retention-time order rather than library order. Put
+    // them back in library order before anything downstream sees them: the rows
+    // of the feature matrix are these groups, and a classifier fitted on rows
+    // ordered by elution time is a classifier that can depend on it. Stable, so
+    // a precursor's candidates keep the order the search produced.
+    std::stable_sort(result.groups.begin(), result.groups.end(),
+                     [](const PeakGroup& a, const PeakGroup& b) {
+                       return a.precursor < b.precursor; });
 
     for (const auto& g : result.groups)
     {
@@ -516,6 +533,39 @@ namespace ODIA
       }
     }
     return result;
+  }
+
+  PeakGroupScorer::Result PeakGroupScorer::score(const Library& library,
+                                                 const Chromatograms& chromatograms,
+                                                 const Options& options)
+  {
+    Session session(library, options);
+    const auto& p = library.precursors();
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      const std::uint32_t tb = p.transition_begin[i];
+      const std::uint32_t tc = p.transition_count[i];
+      if (tc == 0 || tb >= chromatograms.begin.size()) { continue; }
+
+      // A window onto the flat array in the same shape the extractor hands a
+      // streaming sink, so both paths run the same code on the same data.
+      PrecursorChromatogram trace;
+      trace.precursor = static_cast<std::uint32_t>(i);
+      trace.transition_begin = tb;
+      trace.transition_count = tc;
+      trace.axis = chromatograms.axis_of[tb];
+      trace.axis_begin = chromatograms.axis_begin[tb];
+      trace.cycles = chromatograms.count[tb];
+      if (trace.axis < chromatograms.axes.size())
+      {
+        trace.rt = chromatograms.axes[trace.axis].data() + trace.axis_begin;
+      }
+      trace.points = chromatograms.intensity.data();
+      trace.offset = chromatograms.begin.data() + tb;
+      trace.count = chromatograms.count.data() + tb;
+      session.add(trace);
+    }
+    return session.finish();
   }
 
 } // namespace ODIA

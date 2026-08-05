@@ -184,6 +184,56 @@ namespace ODIA
       std::size_t identified_at_1pct = 0;
     };
 
+    /// Scoring one precursor at a time.
+    ///
+    /// The candidate search and every sub-score are per precursor already --
+    /// nothing in them looks at another precursor's trace. Only the last step,
+    /// fitting the discriminant and calibrating the FDR, is global, and it
+    /// needs the score MATRIX rather than the chromatograms. So a precursor can
+    /// be scored the moment its chromatogram is complete and the points thrown
+    /// away, which is what lets extraction hold only what is live.
+    ///
+    /// The whole-`Chromatograms` entry point below is this class driven over a
+    /// flat array, so the two cannot drift apart.
+    class Session
+    {
+    public:
+      Session(const Library& library, const Options& options);
+
+      /// Score one precursor. Nothing about @p trace is retained after this
+      /// returns, which is the contract that lets the caller free it.
+      void add(const PrecursorChromatogram& trace);
+
+      /// Fit the discriminant over everything added, and calibrate.
+      ///
+      /// Peak groups come out ordered by precursor whatever order they were
+      /// added in. Extraction hands them over in retention-time order, and a
+      /// feature matrix whose row order depended on when a peptide eluted would
+      /// make the fit depend on it too.
+      Result finish();
+
+    private:
+      const Library* library_;
+      Options options_;
+      Result result_;
+    };
+
+    /// A `ChromatogramSink` that scores each precursor and drops it.
+    ///
+    /// This is the default path at scale: it has no term proportional to the
+    /// library except the peak groups it produces, which are ~120 bytes each
+    /// against a chromatogram's tens of kilobytes.
+    class Sink final : public ChromatogramSink
+    {
+    public:
+      Sink(const Library& library, const Options& options) : session_(library, options) {}
+      void accept(const PrecursorChromatogram& trace) override { session_.add(trace); }
+      Result finish() { return session_.finish(); }
+
+    private:
+      Session session_;
+    };
+
     static Result score(const Library& library, const Chromatograms& chromatograms,
                         const Options& options);
   };
