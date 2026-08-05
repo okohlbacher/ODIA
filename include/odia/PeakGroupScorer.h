@@ -51,6 +51,28 @@ namespace ODIA
       /// twelve, and without this the two are indistinguishable to the
       /// classifier.
       USABLE_FRAGMENTS,
+
+      // Added toward the 10-14 orthogonal scores every working implementation
+      // in this family uses. Rosenberger 2017 used 14, DIA-NN uses 73; seven
+      // extracting a 58/42 edge from data holding an 8x separation is a scorer
+      // roughly half the width it needs, not one missing dominant feature.
+      // Names follow pyProphet's, so the columns are comparable to a published
+      // weight vector rather than privately invented.
+
+      /// Root-mean-square deviation of normalised observed against normalised
+      /// library intensities. Carries what correlation discards: dot product
+      /// and Pearson are both scale-free, so a spectrum with the right SHAPE
+      /// but the wrong contrast scores identically to a correct one.
+      LIBRARY_RMSD,
+      /// Share of the group's corrected area in y-ions. Tryptic y-ions carry
+      /// the basic C-terminal residue and dominate a real spectrum; a decoy's
+      /// mutated sequence has no reason to preserve the ratio.
+      YSERIES_SCORE,
+      /// Fraction of the fragments the library lists that were seen at all.
+      /// Distinct from USABLE_FRAGMENTS, which counts traces carrying any
+      /// signal: this counts those carrying signal ABOVE their own background
+      /// inside the candidate, which is the co-elution the group claims.
+      FRAGMENT_COVERAGE,
       N_SUB_SCORES
     };
 
