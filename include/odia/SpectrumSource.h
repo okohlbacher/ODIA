@@ -44,15 +44,38 @@ namespace ODIA
   /// The peaks of one spectrum, as parallel arrays.
   ///
   /// Struct-of-arrays for the same reason the library is (D3): extraction
-  /// binary-searches m/z and then reads one intensity, and an array of pairs
-  /// would pull an intensity into cache for every m/z compared.
+  /// walks m/z and reads an intensity only for the peaks that fall inside the
+  /// transition range, and an array of pairs would pull an intensity into
+  /// cache for every m/z it merely compared.
   struct SpectrumPeaks
   {
-    std::vector<double> mz;         ///< ascending
+    /// Acquisition order -- NOT globally ascending. This is a contract, not
+    /// an accident of the reader: a merged ion-mobility frame is the
+    /// concatenation of its TIMS mobility scans, so the array is ordered by
+    /// (descending ion mobility, ascending m/z) and m/z restarts at every
+    /// mobility step. Measured on data/S08_diaPASEF.mzpeak: frame 1 holds
+    /// 32,570 peaks with 739 m/z descents, ~600-810 scans per frame.
+    ///
+    /// A consumer that binary-searches this array does not fail loudly -- it
+    /// returns near-zero matches and a chromatogram of zeros, which looks
+    /// exactly like an ion that is simply not there. Iterate the peaks and
+    /// search the *other* side (the sorted transition index) instead, which
+    /// is what ChromatogramExtractor does. If a caller genuinely needs m/z
+    /// order it must sort a copy, per mobility band or across the frame.
+    ///
+    /// A run without mobility has one scan per spectrum, so there the order
+    /// happens to be ascending m/z -- do not rely on it.
+    std::vector<double> mz;
     std::vector<float> intensity;
 
     /// Ion mobility per peak, empty when the run has none. Not per-peak
     /// optional: either the run separates by mobility or it does not.
+    ///
+    /// When non-empty this is monotonically non-increasing (1/K0 descending;
+    /// 1.4007 down to 0.6000 in ~910 steps of ~0.00088 in the file above), so
+    /// a mobility band is a contiguous slice and can be bracketed by two
+    /// binary searches on *this* array. That is worth relying on deliberately
+    /// rather than rediscovering it.
     std::vector<float> ion_mobility;
 
     std::size_t size() const { return mz.size(); }

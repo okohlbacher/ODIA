@@ -54,80 +54,135 @@ namespace ODIA
         if (s.ms_level() != 2) { continue; }
 
         SpectrumInfo info;
-        std::size_t precursors_seen = 0;
         info.index = i;
         info.ms_level = s.ms_level();
         // Seconds. The file stores minutes and the reader converts; passing
         // minutes on would be a 60x error that silently selects wrong scans.
         info.retention_time = s.retention_time().value_or(0.0);
 
+        // diaPASEF window attribution.
+        //
+        // S08 packs TWO isolation windows into one frame, separated only in ion
+        // mobility, and the reader hands both the same merged peak list. The
+        // per-window mobility band would separate them -- but measured over all
+        // 32,210 entries of that file, `ion_mobility_lower_limit` and
+        // `_upper_limit` are NULL in every one, so there is no band to read.
+        //
+        // The assignment IS present, mis-attached: both SelectedIonInfo entries
+        // land on precursor #0 and precursor #1 gets none. Each carries a
+        // `selected_ion_mz` equal to one of the two window centres, and an
+        // `ion_mobility_value` -- the window's mobility position, not a band.
+        //
+        // So: collect every selected ion of the spectrum, match each to the
+        // window whose centre it names, and take the midpoint between adjacent
+        // mobility positions as the split. That is a derived boundary, not one
+        // the file states, which is why it is only applied when the ions
+        // actually resolve to distinct windows.
+        struct Ion { double mz; double im; };
+        std::vector<Ion> ions;
+        for (const auto& prec : s.precursors())
+        {
+          for (const auto& sel : prec.selected_ions)
+          {
+            if (sel.selected_ion_mz && sel.ion_mobility_value)
+            {
+              ions.push_back({*sel.selected_ion_mz, *sel.ion_mobility_value});
+            }
+          }
+        }
+
+        std::vector<SpectrumInfo> here;
         for (const auto& prec : s.precursors())
         {
           const auto& w = prec.isolation_window;
           if (!w.target_mz) { continue; }
-          info.window.mz_low = *w.target_mz - (w.lower_offset ? *w.lower_offset : 0.0f);
-          info.window.mz_high = *w.target_mz + (w.upper_offset ? *w.upper_offset : 0.0f);
+          SpectrumInfo one = info;
+          one.window.mz_low = *w.target_mz - (w.lower_offset ? *w.lower_offset : 0.0f);
+          one.window.mz_high = *w.target_mz + (w.upper_offset ? *w.upper_offset : 0.0f);
 
-          // diaPASEF: one frame carries several windows over disjoint mobility
-          // ranges, so the mobility limits are part of the window's identity,
-          // not a property of the spectrum.
-          for (const auto& ion : prec.selected_ions)
+          for (const auto& sel : prec.selected_ions)
           {
-            if (ion.ion_mobility_lower_limit)
-            {
-              info.window.im_low = *ion.ion_mobility_lower_limit;
-            }
-            if (ion.ion_mobility_upper_limit)
-            {
-              info.window.im_high = *ion.ion_mobility_upper_limit;
-            }
+            if (sel.ion_mobility_lower_limit) { one.window.im_low = *sel.ion_mobility_lower_limit; }
+            if (sel.ion_mobility_upper_limit) { one.window.im_high = *sel.ion_mobility_upper_limit; }
           }
 
           // "lower" and "upper" are the writer's SCAN order, not an ordering of
-          // 1/K0 -- and on a timsTOF 1/K0 *decreases* with scan number, so the
-          // file's "lower limit" is the numerically larger value. S08_diaPASEF
-          // gives lower = 1.3712, upper = 0.8898. Taken verbatim, the band test
-          // `im < im_low || im > im_high` is true for every finite mobility, so
-          // every peak is dropped and every chromatogram comes out identically
-          // zero -- silently, because the precursor is still "placed" and still
-          // gets a full-length all-zero trace.
-          if (info.window.im_low > info.window.im_high)
+          // 1/K0: on a timsTOF 1/K0 decreases with scan number, so the file's
+          // "lower limit" can be the numerically larger value. Taken verbatim
+          // the band test rejects every peak, silently, because the precursor
+          // is still placed and still gets a full-length all-zero trace.
+          if (one.window.im_low > one.window.im_high)
           {
-            std::swap(info.window.im_low, info.window.im_high);
+            std::swap(one.window.im_low, one.window.im_high);
           }
-
-          // A degenerate band is not a filter that admits one value; it is a
-          // writer that recorded only the midpoint. mzPeak's own header
-          // documents the limits falling back to `ion_mobility_value`. Treated
-          // as a band it is the most aggressive filter possible -- exact float
-          // equality -- so treat it as "no band known" instead.
-          if (!(info.window.im_low < info.window.im_high))
-          {
-            info.window.im_low = -std::numeric_limits<double>::infinity();
-            info.window.im_high = std::numeric_limits<double>::infinity();
-          }
-          distinct.emplace(quantise(info.window.mz_low), info.window);
-
-          // One entry PER PRECURSOR, not per spectrum.
-          //
-          // This used to `break` after the first, on the belief that every DIA
-          // scheme carries one precursor per spectrum. S08_diaPASEF does not:
-          // the mzPeak conversion merged each pair of MS2 spectra into one
-          // spectrum carrying two isolation windows -- 32,210 precursor entries
-          // across 16,105 spectra, exactly 2.0 per spectrum. The break threw
-          // away the second window of every spectrum, which made the entire
-          // low-m/z half of the scheme unreachable: probing all 24 windows,
-          // windows 0-11 (m/z 327-708) returned no assignment and zero points
-          // while windows 12-23 (m/z 707-1401) worked. Half the precursors were
-          // silently unextractable.
-          //
-          // Both entries share the file spectrum index, so `peaks()` fetches
-          // the same peaks for each and searches them against that window's own
-          // transitions, which is what a shared-spectrum scheme means.
-          info_.push_back(info);
-          ++precursors_seen;
+          here.push_back(one);
         }
-        if (precursors_seen == 0) { info_.push_back(info); }
+
+        // No stated band: derive one from the mobility positions, but only when
+        // they actually distinguish the windows. Attributing by nearest centre
+        // and splitting at the midpoint is a guess about the instrument, and a
+        // wrong guess here rejects real signal -- so it is taken only when each
+        // window claims exactly one ion.
+        if (here.size() > 1 && ions.size() == here.size())
+        {
+          std::vector<double> at(here.size(), std::numeric_limits<double>::quiet_NaN());
+          std::vector<char> used(ions.size(), 0);
+          for (std::size_t k = 0; k < here.size(); ++k)
+          {
+            const double centre = 0.5 * (here[k].window.mz_low + here[k].window.mz_high);
+            std::size_t best = ions.size();
+            double best_d = std::numeric_limits<double>::infinity();
+            for (std::size_t j = 0; j < ions.size(); ++j)
+            {
+              if (used[j]) { continue; }
+              const double d = std::abs(ions[j].mz - centre);
+              if (d < best_d) { best_d = d; best = j; }
+            }
+            // Half a window's width is generous; beyond that the ion is not
+            // naming this window and the whole attribution is abandoned.
+            const double tol = 0.5 * (here[k].window.mz_high - here[k].window.mz_low) + 1.0;
+            if (best < ions.size() && best_d <= tol) { used[best] = 1; at[k] = ions[best].im; }
+          }
+
+          bool all_known = true;
+          for (const double v : at) { if (!std::isfinite(v)) { all_known = false; } }
+          if (all_known)
+          {
+            std::vector<std::size_t> order(here.size());
+            for (std::size_t k = 0; k < order.size(); ++k) { order[k] = k; }
+            std::sort(order.begin(), order.end(),
+                      [&](std::size_t a, std::size_t b) { return at[a] < at[b]; });
+            for (std::size_t r = 0; r < order.size(); ++r)
+            {
+              const std::size_t k = order[r];
+              if (!std::isfinite(here[k].window.im_low) || !std::isfinite(here[k].window.im_high) ||
+                  here[k].window.im_low >= here[k].window.im_high)
+              {
+                const double lo = r == 0 ? -std::numeric_limits<double>::infinity()
+                                         : 0.5 * (at[order[r - 1]] + at[k]);
+                const double hi = r + 1 == order.size() ? std::numeric_limits<double>::infinity()
+                                                        : 0.5 * (at[k] + at[order[r + 1]]);
+                here[k].window.im_low = lo;
+                here[k].window.im_high = hi;
+              }
+            }
+          }
+        }
+
+        // A band that is still degenerate means the writer recorded only a
+        // midpoint. Read as a band that is exact float equality -- the most
+        // aggressive filter possible -- so it means "no band known" instead.
+        for (auto& one : here)
+        {
+          if (!(one.window.im_low < one.window.im_high))
+          {
+            one.window.im_low = -std::numeric_limits<double>::infinity();
+            one.window.im_high = std::numeric_limits<double>::infinity();
+          }
+          distinct.emplace(quantise(one.window.mz_low), one.window);
+          info_.push_back(one);
+        }
+        if (here.empty()) { info_.push_back(info); }
       }
 
       // Ascending in retention time, which the extractor relies on. Stated as
