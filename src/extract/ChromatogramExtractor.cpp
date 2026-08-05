@@ -89,7 +89,10 @@ namespace ODIA
       std::vector<double> mz;              ///< ascending
       std::vector<std::uint32_t> transition;
       std::vector<std::uint32_t> first_live_cycle, last_live_cycle;
-      std::vector<std::uint32_t> point_begin;   ///< where this transition's points start
+      /// Where this transition's points start in the flat point array. 64-bit
+      /// for the same reason Chromatograms::begin is: it is an offset into the
+      /// whole array, not a per-transition length.
+      std::vector<std::uint64_t> point_begin;
       /// Expected 1/K0 of each transition's precursor. NaN when the library has
       /// none, which disables the per-precursor mobility test for it rather
       /// than rejecting it -- absent information is not evidence of mismatch.
@@ -267,17 +270,26 @@ namespace ODIA
       }
     }
 
-    if (total_points > std::numeric_limits<std::uint32_t>::max())
+    // The index is 64-bit, so what is left to refuse is memory, and it is
+    // refused with the number rather than left to a bad_alloc from an
+    // allocation whose size nothing reported. The array is preallocated as
+    // transitions x cycles before a peak is seen -- see Chromatograms::begin --
+    // so this is knowable here, exactly, and it is the point at which a run
+    // that cannot fit should say so.
+    if (total_points > out.intensity.max_size())
     {
       throw std::runtime_error(
-        "more than 2^32 chromatogram points; narrow the retention-time window "
-        "(-rt_window) or reduce the precursor count. The CSR index is 32-bit.");
+        "chromatograms need " + std::to_string(total_points) + " points (" +
+        std::to_string(total_points * sizeof(float) / (1024ull * 1024 * 1024)) +
+        " GiB); narrow the retention-time window (-rt_window) or reduce the "
+        "precursor count. Extraction is not chunked, so the whole point array "
+        "is allocated at once.");
     }
 
     std::uint64_t running = 0;
     for (std::size_t j = 0; j < n_trans; ++j)
     {
-      out.begin[j] = static_cast<std::uint32_t>(running);
+      out.begin[j] = running;
       running += out.count[j];
     }
     out.intensity.assign(running, 0.0f);

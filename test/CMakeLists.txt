@@ -449,6 +449,26 @@ add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
 add_test(NAME extract_im_gating_is_independent COMMAND odia_extract_cases im_gating)
 add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 
+# More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
+# outright at 266,664 precursors -- against the 4,255,113 the library generator
+# emits. The point array is preallocated as transitions x cycles, so crossing
+# that line costs 17.2 GiB and there is no cheaper way to cross it: the defect
+# is an OFFSET that overflows, and an offset past 2^32 only exists once 2^32
+# points do.
+#
+# Guarded on the machine having the memory, and SAID rather than skipped
+# silently, because a test that quietly vanishes is how the brute-force check
+# came to model an extractor four commits out of date.
+cmake_host_system_information(RESULT ODIA_TOTAL_RAM_MB QUERY TOTAL_PHYSICAL_MEMORY)
+if(ODIA_TOTAL_RAM_MB GREATER 32768)
+  add_test(NAME extract_past_32bit_csr COMMAND odia_extract_cases wide_csr)
+  set_tests_properties(extract_past_32bit_csr PROPERTIES TIMEOUT 900
+                       RUN_SERIAL TRUE)
+else()
+  message(STATUS "extract_past_32bit_csr skipped; it needs ~17.2 GiB and this "
+                 "machine reports ${ODIA_TOTAL_RAM_MB} MiB")
+endif()
+
 # The extraction against a brute-force scan of the same spectra, on real runs.
 #
 # odia_extract has carried this check since the extractor existed and it had NO

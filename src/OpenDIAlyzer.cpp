@@ -584,7 +584,7 @@ protected:
       {
         const std::uint32_t tr = p.transition_begin[i] + k;
         if (tr >= chromatograms.begin.size()) { continue; }
-        const std::uint32_t b = chromatograms.begin[tr];
+        const std::uint64_t b = chromatograms.begin[tr];
         const std::uint32_t n = chromatograms.count[tr];
         for (std::uint32_t j = 0; j < n; ++j)
         {

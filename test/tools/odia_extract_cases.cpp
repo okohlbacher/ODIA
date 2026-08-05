@@ -16,6 +16,8 @@
 //   im_gating     -no_ion_mobility must not also switch that window off
 //   band_edge     a peak exactly on the boundary between two co-packed
 //                 windows belongs to one of them, not to both
+//   wide_csr      more than 2^32 chromatogram points, which the 32-bit CSR
+//                 offsets refused outright (needs ~17.2 GiB)
 //
 // Usage: odia_extract_cases <case>
 
@@ -430,6 +432,63 @@ namespace
     checkNear(sumTrace(x, lower) + sumTrace(x, upper), 3 * 10.0,
               "every peak of the frame is counted exactly once");
   }
+
+  /// More than 2^32 chromatogram points.
+  ///
+  /// The CSR offsets used to be uint32 over a flat point array, so extraction
+  /// threw above 2^32 points -- 266,664 precursors at S08's 12 transitions x
+  /// 1,342 cycles, against the 4,255,113 precursors Phase 1's own human
+  /// library holds. ODIA could not extract against the library it generated,
+  /// and the failure was a hard throw rather than a wrong number.
+  ///
+  /// Reproduced at the smallest geometry that crosses the line: 1,048,577
+  /// transitions of 4,096 cycles each, so the last transition's `begin` is
+  /// exactly 2^32 -- the first offset a uint32 cannot hold, and the one it
+  /// would silently wrap to 0. The peak below is placed on that transition, so
+  /// this asserts that the points ABOVE the old ceiling are written and read
+  /// back at the right place, not merely that nothing threw.
+  ///
+  /// Costs ~17.2 GiB, because the point array is preallocated as transitions x
+  /// cycles. That is the whole remaining limit and the reason the header says
+  /// running at proteome scale needs chunking, not a wider type. The test is
+  /// registered only where the memory exists.
+  void caseWideCsr()
+  {
+    constexpr std::uint32_t CYCLES = 4096;
+    // ceil(2^32 / CYCLES) + 1, so the last transition starts at or above 2^32.
+    constexpr std::size_t TRANSITIONS = (std::size_t(1) << 32) / CYCLES + 1;
+
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0);
+
+    ScriptedLibrary lib;
+    // One transition per precursor, which also puts the precursor count 3.9x
+    // over the old 266,664 ceiling.
+    for (std::size_t k = 0; k < TRANSITIONS; ++k)
+    {
+      lib.addPrecursor(505.0);
+      lib.addTransition(200.0 + double(k) * 0.01);
+    }
+    const std::uint32_t last = static_cast<std::uint32_t>(TRANSITIONS - 1);
+    const double last_mz = 200.0 + double(TRANSITIONS - 1) * 0.01;
+
+    for (std::uint32_t c = 0; c < CYCLES; ++c)
+    {
+      const auto s = run.addSpectrum(w, 100.0 + double(c));
+      run.addPeak(s, last_mz, 7.0f);
+    }
+
+    const auto x = ODIA::ChromatogramExtractor::extract(lib.library(), run, plainOptions());
+    checkRepresentation(x);
+
+    const std::uint64_t ceiling = std::uint64_t(std::numeric_limits<std::uint32_t>::max()) + 1;
+    check(x.points() > ceiling, "more than 2^32 points were extracted");
+    check(x.begin[last] >= ceiling,
+          "the last transition starts past what a 32-bit offset can hold");
+    check(x.count[last] == CYCLES, "and it has one point per cycle");
+    checkNear(sumTrace(x, last), double(CYCLES) * 7.0,
+              "every point above the ceiling holds the intensity written to it");
+  }
 }
 
 int main(int argc, char** argv)
@@ -442,11 +501,12 @@ int main(int argc, char** argv)
   else if (which == "mobility") { caseMobility(); }
   else if (which == "im_gating") { caseImGating(); }
   else if (which == "band_edge") { caseBandEdge(); }
+  else if (which == "wide_csr") { caseWideCsr(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
-                 "<invalid_mz|aggregate|mobility|im_gating|band_edge>\n");
+                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr>\n");
     return 2;
   }
 

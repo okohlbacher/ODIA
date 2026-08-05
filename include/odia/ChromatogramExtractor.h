@@ -61,7 +61,26 @@ namespace ODIA
     std::vector<std::uint32_t> axis_begin;
 
     /// transition index -> [begin, begin + count) into the intensity arrays.
-    std::vector<std::uint32_t> begin;
+    ///
+    /// `begin` is 64-bit and `count` is not, because they measure different
+    /// things. `count` is a number of CYCLES -- at most the run's cycle count,
+    /// 1,342 on S08 -- and 32 bits will outlive the instrument. `begin` is an
+    /// offset into the whole flat point array, and 32 bits ran out at 2^32
+    /// points, which is 266,664 precursors at S08's 12 transitions x 1,342
+    /// cycles. Phase 1's own human library is 4,255,113 precursors, so ODIA
+    /// could not extract against the library it had just generated: measured by
+    /// bisection at 260,000 precursors passing and 270,000 throwing in 5.1 s.
+    ///
+    /// The cost is 4 bytes per transition, against 4 bytes per POINT for the
+    /// intensities -- 1,342 points per transition here, so under 0.1%.
+    ///
+    /// This widening removes the index limit and nothing else. The remaining
+    /// limit is memory: the array is preallocated as transitions x cycles
+    /// before a peak is seen, so a full human library at S08's geometry wants
+    /// 4.26 M precursors x 12 x 1,342 x 4 B = 274 GiB. Running at that scale
+    /// needs extraction chunked into precursor blocks with the chromatograms
+    /// flushed per block, which this does not do.
+    std::vector<std::uint64_t> begin;
     std::vector<std::uint32_t> count;
 
     std::vector<float> intensity;

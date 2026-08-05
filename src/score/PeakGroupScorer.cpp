@@ -29,7 +29,7 @@ namespace ODIA
       std::vector<double> total(points, 0.0);
       for (std::uint32_t t = 0; t < count; ++t)
       {
-        const std::uint32_t b = c.begin[begin + t];
+        const std::uint64_t b = c.begin[begin + t];
         const std::uint32_t n = c.count[begin + t];
         const double w = weights ? (*weights)[t] : 1.0;
         for (std::uint32_t i = 0; i < n && i < points; ++i)
@@ -54,11 +54,12 @@ namespace ODIA
       std::vector<double> scratch;
       for (std::uint32_t t = 0; t < count; ++t)
       {
-        const std::uint32_t b = c.begin[begin + t];
+        const std::uint64_t b = c.begin[begin + t];
         const std::uint32_t n = c.count[begin + t];
         if (n == 0) { continue; }
 
-        scratch.assign(c.intensity.begin() + b, c.intensity.begin() + b + n);
+        const auto at = c.intensity.begin() + static_cast<std::ptrdiff_t>(b);
+        scratch.assign(at, at + n);
         std::sort(scratch.begin(), scratch.end());
         const double median = scratch[scratch.size() / 2];
         for (auto& v : scratch) { v = std::abs(v - median); }
@@ -295,7 +296,7 @@ namespace ODIA
         traces.reserve(tc);
         for (std::uint32_t k = 0; k < tc; ++k)
         {
-          const std::uint32_t b = chromatograms.begin[tb + k];
+          const std::uint64_t b = chromatograms.begin[tb + k];
           const std::uint32_t n = chromatograms.count[tb + k];
           std::vector<double> tr(width, 0.0);
           for (std::size_t j = 0; j < width; ++j)
@@ -317,7 +318,7 @@ namespace ODIA
         std::size_t at_apex = 0;
         for (std::uint32_t k = 0; k < tc; ++k)
         {
-          const std::uint32_t b = chromatograms.begin[tb + k];
+          const std::uint64_t b = chromatograms.begin[tb + k];
           const std::uint32_t n = chromatograms.count[tb + k];
           std::vector<double> whole(n, 0.0);
           for (std::uint32_t j = 0; j < n; ++j) { whole[j] = chromatograms.intensity[b + j]; }
@@ -363,7 +364,6 @@ namespace ODIA
         PeakGroup g;
         g.precursor = static_cast<std::uint32_t>(i);
         g.decoy = p.decoy[i] != 0;
-        const std::uint32_t b0 = chromatograms.begin[tb];
         g.apex_rt = chromatograms.retentionTime(tb, cand.apex);
         g.left_rt = chromatograms.retentionTime(tb, lo);
         g.right_rt = chromatograms.retentionTime(tb, hi);
