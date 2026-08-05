@@ -1,6 +1,7 @@
 // Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+#include <odia/MobilityBands.h>
 #include <odia/SpectrumSource.h>
 
 #include <limits>
@@ -9,6 +10,8 @@
 #include <mzpeak.h>
 
 #include <algorithm>
+#include <array>
+#include <iostream>
 #include <map>
 #include <numeric>
 #include <stdexcept>
@@ -78,8 +81,7 @@ namespace ODIA
         // mobility positions as the split. That is a derived boundary, not one
         // the file states, which is why it is only applied when the ions
         // actually resolve to distinct windows.
-        struct Ion { double mz; double im; };
-        std::vector<Ion> ions;
+        std::vector<MobilityPosition> ions;
         for (const auto& prec : s.precursors())
         {
           for (const auto& sel : prec.selected_ions)
@@ -118,60 +120,20 @@ namespace ODIA
           here.push_back(one);
         }
 
-        // No stated band: derive one from the mobility positions, but only when
-        // they actually distinguish the windows. Attributing by nearest centre
-        // and splitting at the midpoint is a guess about the instrument, and a
-        // wrong guess here rejects real signal -- so it is taken only when each
-        // window claims exactly one ion.
-        if (here.size() > 1 && ions.size() == here.size())
+        // No stated band: derive one from the mobility positions. The rule and
+        // its refusals live in MobilityBands, where they can be tested without
+        // a file; the outcome is COUNTED here, because a derivation that
+        // quietly does not happen leaves two co-packed windows sharing one
+        // merged peak list with nothing to separate them.
+        if (here.size() > 1)
         {
-          std::vector<double> at(here.size(), std::numeric_limits<double>::quiet_NaN());
-          std::vector<char> used(ions.size(), 0);
-          for (std::size_t k = 0; k < here.size(); ++k)
+          std::vector<IsolationWindow> band(here.size());
+          for (std::size_t k = 0; k < here.size(); ++k) { band[k] = here[k].window; }
+          const auto result = deriveMobilityBands(ions, band);
+          ++derivation_[std::size_t(result)];
+          if (result == MobilityBandResult::Derived)
           {
-            const double centre = 0.5 * (here[k].window.mz_low + here[k].window.mz_high);
-            std::size_t best = ions.size();
-            double best_d = std::numeric_limits<double>::infinity();
-            for (std::size_t j = 0; j < ions.size(); ++j)
-            {
-              if (used[j]) { continue; }
-              const double d = std::abs(ions[j].mz - centre);
-              if (d < best_d) { best_d = d; best = j; }
-            }
-            // Half a window's width is generous; beyond that the ion is not
-            // naming this window and the whole attribution is abandoned.
-            const double tol = 0.5 * (here[k].window.mz_high - here[k].window.mz_low) + 1.0;
-            if (best < ions.size() && best_d <= tol) { used[best] = 1; at[k] = ions[best].im; }
-          }
-
-          bool all_known = true;
-          for (const double v : at) { if (!std::isfinite(v)) { all_known = false; } }
-          if (all_known)
-          {
-            std::vector<std::size_t> order(here.size());
-            for (std::size_t k = 0; k < order.size(); ++k) { order[k] = k; }
-            std::sort(order.begin(), order.end(),
-                      [&](std::size_t a, std::size_t b) { return at[a] < at[b]; });
-            // Adjacent bands SHARE their boundary: one window's upper limit is
-            // the next one's lower limit, the same double. That is deliberate
-            // -- there is no gap to leave between two halves of a midpoint --
-            // and it is safe only because the band is half-open, [low, high).
-            // See IsolationWindow: with a closed interval a peak landing
-            // exactly on a split enters both windows and is counted twice.
-            for (std::size_t r = 0; r < order.size(); ++r)
-            {
-              const std::size_t k = order[r];
-              if (!std::isfinite(here[k].window.im_low) || !std::isfinite(here[k].window.im_high) ||
-                  here[k].window.im_low >= here[k].window.im_high)
-              {
-                const double lo = r == 0 ? -std::numeric_limits<double>::infinity()
-                                         : 0.5 * (at[order[r - 1]] + at[k]);
-                const double hi = r + 1 == order.size() ? std::numeric_limits<double>::infinity()
-                                                        : 0.5 * (at[k] + at[order[r + 1]]);
-                here[k].window.im_low = lo;
-                here[k].window.im_high = hi;
-              }
-            }
+            for (std::size_t k = 0; k < here.size(); ++k) { here[k].window = band[k]; }
           }
         }
 
@@ -201,6 +163,35 @@ namespace ODIA
 
       windows_.reserve(distinct.size());
       for (auto& [key, w] : distinct) { windows_.push_back(w); }
+
+      // Say so when the band could not be derived. A refusal is the safe
+      // outcome -- the windows keep the full mobility range, which admits
+      // everything -- but it is not a harmless one: on a run that co-packs
+      // windows into one frame it means the co-packed windows are no longer
+      // separated at all, and the only visible symptom would be interference
+      // that looks like the instrument's.
+      std::size_t refused = 0;
+      for (std::size_t r = 0; r < derivation_.size(); ++r)
+      {
+        if (r != std::size_t(MobilityBandResult::Derived) &&
+            r != std::size_t(MobilityBandResult::NotNeeded))
+        {
+          refused += derivation_[r];
+        }
+      }
+      if (refused)
+      {
+        std::cerr << "warning: no ion-mobility band derived for " << refused << " of "
+                  << (refused + derivation_[std::size_t(MobilityBandResult::Derived)])
+                  << " co-packed spectra;"
+                  << " those windows keep the full mobility range and are not separated ("
+                  << toString(MobilityBandResult::TooFewIons) << ": "
+                  << derivation_[std::size_t(MobilityBandResult::TooFewIons)] << ", "
+                  << toString(MobilityBandResult::Unattributable) << ": "
+                  << derivation_[std::size_t(MobilityBandResult::Unattributable)] << ", "
+                  << toString(MobilityBandResult::Ambiguous) << ": "
+                  << derivation_[std::size_t(MobilityBandResult::Ambiguous)] << ")\n";
+      }
     }
 
     const std::vector<SpectrumInfo>& spectra() const override { return info_; }
@@ -241,8 +232,25 @@ namespace ODIA
 
     std::string describe() const override
     {
-      return "mzPeak " + filename_ + " (" + std::to_string(info_.size()) + " MS2 spectra, " +
-             std::to_string(windows_.size()) + " isolation windows)";
+      std::string out = "mzPeak " + filename_ + " (" + std::to_string(info_.size()) +
+                        " MS2 spectra, " + std::to_string(windows_.size()) +
+                        " isolation windows";
+      const std::size_t derived = derivation_[std::size_t(MobilityBandResult::Derived)];
+      std::size_t refused = 0;
+      for (std::size_t r = 0; r < derivation_.size(); ++r)
+      {
+        if (r != std::size_t(MobilityBandResult::Derived) &&
+            r != std::size_t(MobilityBandResult::NotNeeded))
+        {
+          refused += derivation_[r];
+        }
+      }
+      if (derived || refused)
+      {
+        out += ", mobility band derived for " + std::to_string(derived) +
+               " co-packed spectra and refused for " + std::to_string(refused);
+      }
+      return out + ")";
     }
 
   private:
@@ -251,6 +259,9 @@ namespace ODIA
     MzPeak::Spectra spectra_;
     std::vector<SpectrumInfo> info_;
     std::vector<IsolationWindow> windows_;
+    /// One counter per MobilityBandResult, so a refusal is reported rather
+    /// than inferred from chromatograms that came out worse.
+    std::array<std::size_t, 5> derivation_{};
   };
 
   void SpectrumSource::peaks(std::size_t index, SpectrumPeaks& out)

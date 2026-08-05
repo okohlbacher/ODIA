@@ -449,6 +449,11 @@ add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
 add_test(NAME extract_im_gating_is_independent COMMAND odia_extract_cases im_gating)
 add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 
+# The diaPASEF mobility band derived from the mis-attached selected ions. It
+# used to live inside MzPeakSource's constructor, where nothing could reach it
+# without a file; these cases are the refusals and the order independence.
+add_test(NAME mobility_band_derivation COMMAND odia_mobility_bands)
+
 # The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
 # Runs on synthesised residuals only, so it needs no data: it checks that a
 # known offset is recovered from a narrow peak on a uniform background, that a
