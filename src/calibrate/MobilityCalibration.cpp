@@ -606,6 +606,7 @@ namespace ODIA
       std::vector<Query> query;                ///< ascending in m/z
       std::vector<std::uint32_t> bucket;       ///< log-m/z bucket -> first query
       std::vector<float> cell_im;              ///< local cell -> library 1/K0
+      std::vector<float> cell_rt;              ///< local cell -> predicted RT, s (NaN = any)
       std::vector<std::uint32_t> cell_slot;    ///< local cell -> sampled slot
       std::vector<std::uint8_t> cell_variant;  ///< local cell -> 0 target, else control
       double log_base = 0.0, log_lo = 0.0;
@@ -720,6 +721,7 @@ namespace ODIA
     }
     const std::size_t variants = 1 + shifts.size();
     const auto& lib_decoy = p.decoy;
+    const bool rt_restricted = opt.rt_window_seconds > 0.0 && opt.irt_slope != 0.0;
 
     // ---- one window each, and that window's query index --------------------
     std::vector<WindowIndex> index(windows.size());
@@ -769,6 +771,9 @@ namespace ODIA
         }
         if (!any) { continue; }
         x.cell_im.push_back(p.im[i]);
+        x.cell_rt.push_back(rt_restricted
+                              ? static_cast<float>(opt.irt_slope * p.irt[i] + opt.irt_intercept)
+                              : std::numeric_limits<float>::quiet_NaN());
         x.cell_slot.push_back(static_cast<std::uint32_t>(s));
         x.cell_variant.push_back(static_cast<std::uint8_t>(v));
       }
@@ -804,7 +809,7 @@ namespace ODIA
     std::vector<std::uint8_t> seen_n(total_cells * block_len, 0);
     std::vector<std::uint32_t> touched;
 
-    std::size_t decoded = 0, with_mobility = 0, probed = 0;
+    std::size_t decoded = 0, with_mobility = 0, probed = 0, off_rt = 0;
     for (std::size_t bi = 0; bi < starts.size(); ++bi)
     {
       const std::size_t first_cycle = starts[bi];
@@ -844,6 +849,7 @@ namespace ODIA
         // lie inside the frame's band, or the residual is truncated on one side
         // only and its centre is pulled inwards.
         usable.assign(x.cell_im.size(), 1);
+        const double now = info[si].retention_time;
         for (std::size_t lc = 0; lc < x.cell_im.size(); ++lc)
         {
           const float want = x.cell_im[lc];
@@ -851,6 +857,15 @@ namespace ODIA
           if (bounded && (want - opt.search_im < im_low || want + opt.search_im > im_high))
           {
             usable[lc] = 0;
+            continue;
+          }
+          // Only where the library says this precursor elutes, when the caller
+          // has an iRT map to say it with.
+          const float when = x.cell_rt[lc];
+          if (std::isfinite(when) && std::abs(now - double(when)) > opt.rt_window_seconds)
+          {
+            usable[lc] = 0;
+            ++off_rt;
             continue;
           }
           ever_usable[x.cell_slot[lc]] = 1;
@@ -1027,6 +1042,7 @@ namespace ODIA
     if (diag)
     {
       diag->cells_probed = probed;
+      diag->cells_off_rt = off_rt;
       diag->spectra_decoded = decoded;
       diag->spectra_with_mobility = with_mobility;
       diag->run_has_mobility = with_mobility > 0;

@@ -597,6 +597,11 @@ int main(int argc, char** argv)
     { opt.fragment_ppm_log_slope = std::atof(s); }
     if (const char* s = std::getenv("ODIA_IMCAL_PPM_REF_MZ"))
     { opt.fragment_ppm_ref_mz = std::atof(s); }
+    if (const char* s = std::getenv("ODIA_IMCAL_IRT_SLOPE")) { opt.irt_slope = std::atof(s); }
+    if (const char* s = std::getenv("ODIA_IMCAL_IRT_INTERCEPT"))
+    { opt.irt_intercept = std::atof(s); }
+    if (const char* s = std::getenv("ODIA_IMCAL_RT_WINDOW"))
+    { opt.rt_window_seconds = std::atof(s); }
     if (const char* s = std::getenv("ODIA_IMCAL_QUANTILE"))
     { opt.min_intensity_quantile = std::atof(s); }
 

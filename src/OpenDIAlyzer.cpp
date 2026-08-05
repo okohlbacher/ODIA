@@ -178,6 +178,13 @@ protected:
                        "library, which is the default because one precursor yields one "
                        "residual on this axis and the cost is the spectra decoded, not the "
                        "queries.", false, true);
+    registerDoubleOption_("im_calib_rt_window", "<seconds>", 150.0,
+                          "Look for a precursor's 1/K0 only within this much of where "
+                          "-irt_slope/-irt_intercept say it elutes. 0, or no iRT map, searches "
+                          "the whole gradient -- which is measurably worse, because the probe "
+                          "keeps the brightest cluster over every block it looks in and an "
+                          "absent precursor gets one draw from the interference per block.",
+                          false, true);
     registerIntOption_("im_calib_cycles", "<n>", 200,
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
@@ -278,11 +285,6 @@ protected:
 
     ODIA::ChromatogramExtractor::Options options;
     applyMassCalibration_(library, *source, options);
-    // After the mass calibration, not before: the mobility probe matches
-    // fragments through the mass window, and matching through a mis-centred one
-    // fills its sample with the interference the mass calibration exists to
-    // exclude.
-    applyMobilityCalibration_(library, *source, options);
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
     options.max_precursors = static_cast<std::size_t>(
@@ -294,6 +296,11 @@ protected:
                           : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
     options.irt_slope = library_rt_is_run_seconds ? 1.0 : getDoubleOption_("irt_slope");
     options.irt_intercept = library_rt_is_run_seconds ? 0.0 : getDoubleOption_("irt_intercept");
+    // After the mass calibration, because the mobility probe matches fragments
+    // through the mass window and a mis-centred one fills its sample with the
+    // interference that calibration exists to exclude; and after the iRT map,
+    // because the probe uses it to look only where a precursor should elute.
+    applyMobilityCalibration_(library, *source, options);
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     options.max_live_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_live_precursors")));
@@ -1108,6 +1115,15 @@ private:
       imc.fragment_ppm_log_slope = options.fragment_ppm_log_slope;
       imc.fragment_ppm_slope_per_1000 = options.fragment_ppm_slope_per_1000;
       imc.fragment_ppm_ref_mz = options.fragment_ppm_ref_mz;
+      // The run's own iRT map, so the probe looks only where a precursor should
+      // be. Measured on S08: it takes the data-against-control peakedness margin
+      // from 1.01x to 1.08x and the charge-2 centre from +0.0060 to +0.0016,
+      // where an independent check against DIA-NN's observed 1/K0 says +0.0017.
+      // Still short of the 1.25x the gate wants, which is the run's answer, not
+      // a reason to leave the information unused.
+      imc.irt_slope = options.irt_slope;
+      imc.irt_intercept = options.irt_intercept;
+      imc.rt_window_seconds = getDoubleOption_("im_calib_rt_window");
       try
       {
         mobility_model_ = ODIA::MobilityCalibration::calibrate(library, source, imc,

@@ -314,6 +314,22 @@ namespace ODIA
       enum class Control { LibraryDecoys, MzShift, None };
       Control control = Control::LibraryDecoys;
 
+      /// Restrict the probe to blocks near where the library says the precursor
+      /// elutes: rt = irt_slope * iRT + irt_intercept, +/- rt_window_seconds.
+      /// 0 for either means no restriction, which is the default because a run
+      /// need not have an iRT map before its first pass.
+      ///
+      /// It is worth having when there IS one. The probe keeps the brightest
+      /// cluster a precursor produces over every block it probes, so a precursor
+      /// that is ABSENT gets one draw per block from the interference and the
+      /// maximum of forty draws is a long way into that distribution, while one
+      /// that is PRESENT has its real peak in one or two blocks only. Cutting
+      /// the blocks a precursor may be found in cuts the absent precursor's
+      /// advantage and not the present one's.
+      double irt_slope = 0.0;
+      double irt_intercept = 0.0;
+      double rt_window_seconds = 0.0;
+
       /// Used only when `control` is MzShift, or when it is LibraryDecoys and
       /// the library has none. Each shifts ALL of a precursor's fragments
       /// together, so the cell passes the same cluster and co-occurrence tests.
@@ -534,6 +550,9 @@ namespace ODIA
       /// Excluded because `search_im` about their library 1/K0 did not fit
       /// inside their frame's mobility band -- see (3).
       std::size_t precursors_outside_band = 0;
+      /// Cell-spectra skipped because the spectrum was outside the precursor's
+      /// predicted retention-time window.
+      std::size_t cells_off_rt = 0;
       std::size_t cells_probed = 0;
       std::size_t target_cells = 0;
       std::size_t decoy_cells = 0;
