@@ -236,6 +236,103 @@ namespace
     checkNear(sumTrace(x, valid), 5 * 6.0, "the valid transition is extracted");
     checkNear(sumTrace(x, after), 5 * 6.0, "the transition after it is extracted");
   }
+
+  /// Sum against Max over several peaks inside one transition's tolerance.
+  ///
+  /// The default is Sum and has been since the aggregate became an option: a
+  /// diaPASEF frame's peak array is the concatenation of 600-810 mobility
+  /// scans, so peaks inside one m/z tolerance are the same ion at many mobility
+  /// steps and Max returns the interference envelope instead of the ion. Both
+  /// arms are asserted here because a default that silently reverted, or an
+  /// option that stopped being read, looks like nothing at all downstream.
+  void caseAggregate()
+  {
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0);
+    for (int c = 0; c < 3; ++c)
+    {
+      const auto s = run.addSpectrum(w, 100.0 + 10.0 * c);
+      // +/- 10 ppm of 400 Th is +/- 0.004: the first two are inside one
+      // tolerance, the third is outside it and must never be counted.
+      run.addPeak(s, 400.0, 10.0f);
+      run.addPeak(s, 400.001, 4.0f);
+      run.addPeak(s, 400.010, 99.0f);
+    }
+
+    ScriptedLibrary lib;
+    lib.addPrecursor(505.0);
+    const auto tr = lib.addTransition(400.0);
+
+    auto opt = plainOptions();
+    opt.aggregate = ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
+    const auto summed = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkRepresentation(summed);
+    check(summed.count[tr] == 3, "three cycles");
+    checkNear(sumTrace(summed, tr), 3 * 14.0, "Sum integrates both peaks in the tolerance");
+
+    opt.aggregate = ODIA::ChromatogramExtractor::Options::Aggregate::Max;
+    const auto maxed = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkNear(sumTrace(maxed, tr), 3 * 10.0, "Max takes the larger of the two");
+
+    const auto& defaulted = ODIA::ChromatogramExtractor::Options{}.aggregate;
+    check(defaulted == ODIA::ChromatogramExtractor::Options::Aggregate::Sum,
+          "Sum is the default");
+  }
+
+  /// The per-precursor ion-mobility window, admitting and rejecting.
+  ///
+  /// Three peaks at the same m/z, one per mobility position: the precursor's
+  /// own, one elsewhere in the frame's band, and one outside the band
+  /// altogether. Which of them survives says which of the two mobility tests
+  /// did the work, and the case is run four ways so that neither test can be
+  /// removed without a failure.
+  void caseMobility()
+  {
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0, 0.80, 1.20);
+    for (int c = 0; c < 3; ++c)
+    {
+      const auto s = run.addSpectrum(w, 100.0 + 10.0 * c);
+      // Descending 1/K0, which is the order a merged TIMS frame arrives in.
+      run.addPeak(s, 400.0, 3.0f, 1.30f);    // outside the frame's band
+      run.addPeak(s, 400.0, 7.0f, 1.10f);    // inside the band, wrong precursor
+      run.addPeak(s, 400.0, 10.0f, 0.91f);   // this precursor, 0.01 off its library 1/K0
+    }
+
+    ScriptedLibrary lib;
+    lib.addPrecursor(505.0, 0.90f);
+    const auto known = lib.addTransition(400.0);
+    lib.addPrecursor(505.0, NA);            // library carries no 1/K0
+    const auto unknown = lib.addTransition(400.0);
+
+    auto opt = plainOptions();
+    const auto both = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkRepresentation(both);
+    checkNear(sumTrace(both, known), 3 * 10.0,
+              "both tests: only the precursor's own mobility survives");
+    checkNear(sumTrace(both, unknown), 3 * 17.0,
+              "no library 1/K0 disables only the per-precursor test, not the band");
+
+    opt.precursor_im_window = 0.0;
+    const auto band_only = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkNear(sumTrace(band_only, known), 3 * 17.0,
+              "band only: the frame's band admits the whole same-window axis");
+
+    // What the per-precursor window is worth on this case: 17 -> 10, i.e. the
+    // same-window interference is 0.7x the signal and the band cannot see it.
+    opt.precursor_im_window = 0.025;
+    opt.use_ion_mobility = true;
+    ScriptedRun no_im;
+    const auto w2 = no_im.addWindow(500.0, 510.0, 0.80, 1.20);
+    for (int c = 0; c < 3; ++c)
+    {
+      const auto s = no_im.addSpectrum(w2, 100.0 + 10.0 * c);
+      no_im.addPeak(s, 400.0, 10.0f);       // a run that reports no mobility at all
+    }
+    const auto without = ODIA::ChromatogramExtractor::extract(lib.library(), no_im, opt);
+    checkNear(sumTrace(without, known), 3 * 10.0,
+              "a run without mobility is not filtered by mobility");
+  }
 }
 
 int main(int argc, char** argv)
@@ -244,9 +341,11 @@ int main(int argc, char** argv)
   std::printf("case: %s\n", which.c_str());
 
   if (which == "invalid_mz") { caseInvalidMz(); }
+  else if (which == "aggregate") { caseAggregate(); }
+  else if (which == "mobility") { caseMobility(); }
   else
   {
-    std::fprintf(stderr, "usage: odia_extract_cases <invalid_mz>\n");
+    std::fprintf(stderr, "usage: odia_extract_cases <invalid_mz|aggregate|mobility>\n");
     return 2;
   }
 

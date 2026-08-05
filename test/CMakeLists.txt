@@ -444,6 +444,8 @@ add_test(NAME extract_rt_axis COMMAND odia_extract_axis)
 # written out in the test, so a case is exactly the hazard it names. Each is a
 # defect that reached main because nothing here called extract() at all.
 add_test(NAME extract_invalid_product_mz COMMAND odia_extract_cases invalid_mz)
+add_test(NAME extract_aggregate COMMAND odia_extract_cases aggregate)
+add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
 
 # The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
 # Runs on synthesised residuals only, so it needs no data: it checks that a
