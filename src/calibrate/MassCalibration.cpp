@@ -3,6 +3,8 @@
 
 #include <odia/MassCalibration.h>
 
+#include "RunProbe.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -773,66 +775,20 @@ namespace ODIA
     const std::size_t max_frag = std::clamp<std::size_t>(opt.max_fragments, 1, 255 / variants);
 
     // ---- which window each spectrum belongs to, and where the cycles are ----
-    std::vector<std::uint32_t> window_of(info.size(), std::numeric_limits<std::uint32_t>::max());
-    for (std::size_t si = 0; si < info.size(); ++si)
-    {
-      for (std::size_t w = 0; w < windows.size(); ++w)
-      {
-        if (std::abs(info[si].window.mz_low - windows[w].mz_low) < 1e-6 &&
-            std::abs(info[si].window.mz_high - windows[w].mz_high) < 1e-6)
-        {
-          window_of[si] = static_cast<std::uint32_t>(w);
-          break;
-        }
-      }
-    }
-
-    // A DIA cycle is a contiguous run of spectra covering each window once, so a
-    // cycle boundary is where a window repeats. Contiguity is what makes the
-    // sample cheap: one cycle is ONE range request, and every window is probed
-    // at the same retention time.
-    std::vector<std::pair<std::size_t, std::size_t>> cycles;
-    {
-      std::vector<char> seen(windows.size(), 0);
-      std::size_t begin = 0;
-      for (std::size_t si = 0; si < info.size(); ++si)
-      {
-        const std::uint32_t w = window_of[si];
-        if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
-        if (seen[w])
-        {
-          cycles.emplace_back(begin, si);
-          std::fill(seen.begin(), seen.end(), 0);
-          begin = si;
-        }
-        seen[w] = 1;
-      }
-      if (begin < info.size()) { cycles.emplace_back(begin, info.size()); }
-    }
+    // Both of these, and the sampling below, are RunProbe's. They are how any
+    // calibration reaches a run rather than anything about the mass axis, and
+    // they are shared with MobilityCalibration so the two can never disagree
+    // about what an acquisition cycle is.
+    const auto window_of = RunProbe::windowOfSpectrum(source);
+    const auto cycles = RunProbe::cycles(source, window_of);
     if (cycles.empty()) { return out; }
 
     // ---- sample precursors, spread through the library ---------------------
-    std::vector<std::uint32_t> sampled;
-    {
-      std::vector<std::uint32_t> eligible;
-      eligible.reserve(library.precursorCount());
-      for (std::size_t i = 0; i < library.precursorCount(); ++i)
-      {
-        if (p.decoy[i]) { continue; }
-        if (p.mz[i] == MZ_INVALID) { continue; }
-        if (p.transition_count[i] < opt.min_fragments_matched) { continue; }
-        eligible.push_back(static_cast<std::uint32_t>(i));
-      }
-      if (eligible.empty()) { return out; }
-      // A stride rather than the first N: the library may be sorted by m/z, and
-      // taking a prefix would then measure the bottom of the mass range only --
-      // which is precisely the axis the shape fit has to see.
-      const std::size_t want = std::min(opt.max_precursors, eligible.size());
-      for (std::size_t k = 0; k < want; ++k)
-      {
-        sampled.push_back(eligible[k * eligible.size() / want]);
-      }
-    }
+    // No 1/K0 is required: the mass axis is measurable on a run that has no
+    // mobility dimension at all.
+    const auto sampled = RunProbe::samplePrecursors(library, opt.max_precursors,
+                                                    opt.min_fragments_matched, false);
+    if (sampled.empty()) { return out; }
 
     // ---- assign each to one window, and build that window's query index ----
     std::vector<WindowIndex> index(windows.size());
@@ -841,19 +797,7 @@ namespace ODIA
                                                    std::numeric_limits<std::uint32_t>::max());
     for (std::size_t s = 0; s < sampled.size(); ++s)
     {
-      const double mz = fromFixed(p.mz[sampled[s]]);
-      // The most CENTRAL window, when several contain it. An edge precursor is
-      // transmitted with reduced efficiency, so the central window is the one
-      // whose spectra actually hold its fragments.
-      std::uint32_t best = std::numeric_limits<std::uint32_t>::max();
-      double best_margin = -1.0;
-      for (std::size_t w = 0; w < windows.size(); ++w)
-      {
-        if (!windows[w].contains(mz)) { continue; }
-        const double margin = std::min(mz - windows[w].mz_low, windows[w].mz_high - mz);
-        if (margin > best_margin) { best_margin = margin; best = static_cast<std::uint32_t>(w); }
-      }
-      window_of_precursor[s] = best;
+      window_of_precursor[s] = RunProbe::centralWindow(windows, fromFixed(p.mz[sampled[s]]));
     }
 
     // Cells are numbered globally so a cell id carries its precursor and its
@@ -896,26 +840,9 @@ namespace ODIA
     std::vector<float> best_int;
     std::vector<double> best_mz;
 
-    // STRATIFIED RANDOM over the gradient: the run is cut into `want_cycles`
-    // equal strata and one cycle is drawn from each. Guaranteed coverage of the
-    // whole gradient (so an RT trend is visible) without the aliasing a fixed
-    // stride would risk against a periodic acquisition. Seeded, so the answer is
-    // reproducible -- otherwise "the offset moved" could not be told apart from
-    // "the sample moved".
-    const std::size_t want_cycles = std::min(opt.cycles, cycles.size());
-    std::vector<std::size_t> chosen;
-    chosen.reserve(want_cycles);
-    {
-      std::mt19937_64 rng(opt.sample_seed);
-      for (std::size_t b = 0; b < want_cycles; ++b)
-      {
-        const std::size_t lo = b * cycles.size() / want_cycles;
-        const std::size_t hi = std::max(lo + 1, (b + 1) * cycles.size() / want_cycles);
-        std::uniform_int_distribution<std::size_t> pick(lo, hi - 1);
-        chosen.push_back(pick(rng));
-      }
-      std::sort(chosen.begin(), chosen.end());
-    }
+    // STRATIFIED RANDOM over the gradient -- see RunProbe::stratifiedCycles for
+    // why neither a prefix nor a fixed stride would do here.
+    const auto chosen = RunProbe::stratifiedCycles(cycles.size(), opt.cycles, opt.sample_seed);
 
     std::size_t decoded = 0, probed = 0;
     for (std::size_t c = 0; c < chosen.size(); ++c)
