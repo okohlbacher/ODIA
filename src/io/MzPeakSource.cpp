@@ -15,6 +15,7 @@
 #include <map>
 #include <numeric>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace ODIA
 {
@@ -206,26 +207,58 @@ namespace ODIA
       }
       out.assign(end - begin, SpectrumPeaks{});
 
-      // Through the batch entry point, so this call gets faster for free when
-      // the reader decodes each row group once instead of once per spectrum.
+      // One request per DISTINCT physical spectrum, not one per entry.
+      //
+      // `info_` holds one entry per (spectrum, isolation window), because a
+      // diaPASEF frame co-packs several windows into one physical spectrum and
+      // each of them is a separate thing to extract. Those entries share a
+      // `index`. mzPeak does no deduplication and no inter-request caching, so
+      // asking for the same index twice costs twice: measured on S08,
+      // 8.500 ms/request for 4,096 distinct indices against 8.248 ms/request
+      // for 2,048 indices asked for twice each -- flat per request, regardless
+      // of whether the frame was just decoded.
+      //
+      // S08 has 17,448 physical spectra and 32,210 entries, so the un-deduped
+      // request list asked for every MS2 frame twice and spent ~297 s of its
+      // ~594 s decode re-decoding what it already had.
       std::vector<std::size_t> want;
       want.reserve(end - begin);
-      for (std::size_t i = begin; i < end; ++i) { want.push_back(info_[i].index); }
+      // Position in [begin, end) -> which entry of `want`, and therefore of the
+      // batch, carries its peaks. `out` is indexed by position in the range,
+      // NOT by file index, so this indirection is what keeps the two apart.
+      std::vector<std::size_t> slot(end - begin, 0);
+      {
+        std::unordered_map<std::size_t, std::size_t> first_request;
+        first_request.reserve((end - begin) * 2);
+        for (std::size_t i = begin; i < end; ++i)
+        {
+          const auto [it, fresh] = first_request.emplace(info_[i].index, want.size());
+          if (fresh) { want.push_back(info_[i].index); }
+          slot[i - begin] = it->second;
+        }
+      }
       auto batch = spectra_.get_spectra_batch(want);
 
-      for (std::size_t k = 0; k < batch.size(); ++k)
+      for (std::size_t k = 0; k < out.size(); ++k)
       {
+        const std::size_t s = slot[k];
+        if (s >= batch.size()) { continue; }
         auto& dst = out[k];
-        const auto& mz = batch[k].mz();
-        const auto& intensity = batch[k].intensity();
+        const auto& mz = batch[s].mz();
+        const auto& intensity = batch[s].intensity();
         // A short intensity array against a long m/z array would silently
         // pair the wrong values, so the arrays are trusted only to their
         // common length and the shortfall is visible as missing peaks.
         const std::size_t n = std::min(mz.size(), intensity.size());
+        // Copies, one per entry, rather than a shared buffer: the caller keeps
+        // the block alive across the whole match and several threads read it,
+        // and a later stage may retain it. Two entries of a co-packed frame
+        // hold equal peak lists and are separated by their mobility bands, not
+        // by their storage.
         dst.mz.assign(mz.begin(), mz.begin() + n);
         dst.intensity.assign(intensity.begin(), intensity.begin() + n);
 
-        const auto& im = batch[k].ion_mobility_array();
+        const auto& im = batch[s].ion_mobility_array();
         if (im.size() >= n) { dst.ion_mobility.assign(im.begin(), im.begin() + n); }
       }
     }
