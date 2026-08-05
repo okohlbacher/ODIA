@@ -533,7 +533,7 @@ protected:
         for (std::uint32_t j = 0; j < n; ++j)
         {
           out << id << '\t' << tr << '\t' << ODIA::fromFixed(t.product_mz[tr]) << '\t'
-              << chromatograms.retention_time[b + j] << '\t'
+              << chromatograms.retentionTime(tr, j) << '\t'
               << chromatograms.intensity[b + j] << '\n';
         }
       }

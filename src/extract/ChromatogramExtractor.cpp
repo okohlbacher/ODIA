@@ -21,7 +21,10 @@ namespace ODIA
   std::size_t Chromatograms::footprintBytes() const
   {
     const auto vec = [](const auto& v) { return v.capacity() * sizeof(v[0]); };
-    return vec(retention_time) + vec(intensity) + vec(begin) + vec(count);
+    std::size_t axes_bytes = 0;
+    for (const auto& a : axes) { axes_bytes += vec(a); }
+    return axes_bytes + vec(axis_of) + vec(axis_begin) + vec(begin) + vec(count) +
+           vec(intensity);
   }
 
   namespace
@@ -246,8 +249,15 @@ namespace ODIA
       out.begin[j] = static_cast<std::uint32_t>(running);
       running += out.count[j];
     }
-    out.retention_time.assign(running, 0.0f);
     out.intensity.assign(running, 0.0f);
+    out.axis_of.assign(n_trans, 0);
+    out.axis_begin.assign(n_trans, 0);
+
+    // One axis per window, shared by every transition extracted from it. The
+    // per-point timestamps this replaces were the same ~1,000 values repeated
+    // once per transition.
+    out.axes.resize(axis.size());
+    for (std::size_t w = 0; w < axis.size(); ++w) { out.axes[w] = axis[w].rt; }
 
     std::vector<std::uint32_t> offset(n_trans, 0);
     for (const auto& a : assignments)
@@ -291,12 +301,15 @@ namespace ODIA
       // filled once here. Writing it during the pass meant walking every
       // transition of a window for every spectrum -- the exact O(N) per
       // spectrum this index exists to remove.
+      // A point's time is fixed by its cycle, so nothing is written per point.
+      // Each transition records its window's axis and the cycle its run starts
+      // at, and retentionTime() resolves the rest -- one pair of uint32 per
+      // transition in place of a float per point.
       for (std::size_t i = 0; i < x.transition.size(); ++i)
       {
-        for (std::uint32_t c = x.first_live_cycle[i]; c < x.last_live_cycle[i]; ++c)
-        {
-          out.retention_time[x.point_begin[i] + (c - x.first_live_cycle[i])] = axis[w].rt[c];
-        }
+        const std::uint32_t t = x.transition[i];
+        out.axis_of[t] = static_cast<std::uint32_t>(w);
+        out.axis_begin[t] = x.first_live_cycle[i];
       }
     }
     st.index_seconds = std::chrono::duration<double>(

@@ -238,6 +238,23 @@ code the decision named, so it is not a substitute without saying so.
 Peak-group detection and the sub-scores do not depend on this and proceed
 meanwhile; see `doc/07-scoring-plan.md`.
 
+## Quantise chromatogram intensity to one byte
+
+The shared retention-time axis landed; the intensity encoding did not. Storing
+each point as a uint8 log step against a **per-transition** float32 scale is a
+further 4x on the point arrays.
+
+Recorded because the objection raised against it was wrong: the concern was
+that quantisation would cost precision in the weak-signal regime currently
+under investigation. It does not, because the scale is per transition rather
+than global -- 255 log steps over one transition's own two-decade range is
+~2.7% per step, well below the noise on any point that matters. The reference
+implementation uses exactly this (`odia_chromstore.h`, `Quantised8Log`).
+
+Reserve 0 for exact zero rather than for the smallest representable value: an
+absent measurement and a very small one are different claims, and a
+chromatogram is mostly the former.
+
 ## Implementation, unblocked
 
 *Still uncovered by any fixture, from the mutation-testing review: neutral loss

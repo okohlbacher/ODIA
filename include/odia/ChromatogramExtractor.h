@@ -6,6 +6,7 @@
 #include <odia/Library.h>
 #include <odia/SpectrumSource.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -19,22 +20,55 @@ namespace ODIA
   /// Stored as one flat point array with a CSR index, for the same reason the
   /// library is: a vector-per-transition would be millions of small
   /// allocations, which is exactly the arena fragmentation D3 exists to avoid.
+  /// Extracted-ion chromatograms for a library's transitions.
+  ///
+  /// Two space decisions, both taken from the reference implementation:
+  ///
+  /// **Retention time is an index, not a number.** A transition's points sit on
+  /// its window's acquisition grid, so storing a float per point stored the
+  /// same ~1,000 timestamps once per transition. The axis is held once per
+  /// window and a transition records where on it its run starts. At 157 M
+  /// points that is 630 MB of duplicated timestamps not stored. The deeper
+  /// reason is correctness rather than size: recalibrating a run rewrites one
+  /// array of ~1,000 doubles and every point follows, instead of rewriting
+  /// every structure that cached a time and silently missing one.
+  ///
+  /// Intensity stays float32 for now; one-byte log quantisation is in the
+  /// backlog. It is a further 4x and costs nothing real, because the scale is
+  /// per transition rather than global -- 255 log steps over one transition's
+  /// own two-decade range is ~2.7% per step.
+  ///
+  /// The axis is behind an accessor, so callers index by (transition, position)
+  /// and never see the representation.
   struct Chromatograms
   {
-    /// Retention times, seconds, ascending within each transition's run.
-    std::vector<float> retention_time;
-    std::vector<float> intensity;
+    /// One retention-time axis per isolation window, seconds, ascending.
+    std::vector<std::vector<float>> axes;
 
-    /// transition index -> [begin, begin + count) into the arrays above.
+    /// transition -> which axis, and where on it point 0 sits.
+    std::vector<std::uint32_t> axis_of;
+    std::vector<std::uint32_t> axis_begin;
+
+    /// transition index -> [begin, begin + count) into the intensity arrays.
     std::vector<std::uint32_t> begin;
     std::vector<std::uint32_t> count;
+
+    std::vector<float> intensity;
 
     /// Precursors that no isolation window covered. They cannot be extracted
     /// and are reported rather than silently absent from the output.
     std::size_t precursors_without_window = 0;
 
-    std::size_t points() const { return retention_time.size(); }
+    std::size_t points() const { return intensity.size(); }
     std::size_t footprintBytes() const;
+
+    /// Retention time of point @p j of @p transition, in seconds.
+    float retentionTime(std::uint32_t transition, std::uint32_t j) const
+    {
+      const std::uint32_t a = axis_of[transition];
+      return axes[a][axis_begin[transition] + j];
+    }
+
   };
 
   /// Reads a run once and extracts every requested transition from it.

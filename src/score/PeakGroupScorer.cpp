@@ -237,7 +237,9 @@ namespace ODIA
   {
     static const std::vector<std::string> names{
       "var_xcorr_shape", "var_xcorr_coelution", "var_library_corr",
-      "var_library_dotprod", "var_intensity_score", "var_log_sn"};
+      "var_library_dotprod", "var_intensity_score", "var_log_sn",
+      "var_usable_fragments", "var_library_rmsd", "var_yseries_score",
+      "var_fragment_coverage"};
     return names;
   }
 
@@ -362,9 +364,9 @@ namespace ODIA
         g.precursor = static_cast<std::uint32_t>(i);
         g.decoy = p.decoy[i] != 0;
         const std::uint32_t b0 = chromatograms.begin[tb];
-        g.apex_rt = chromatograms.retention_time[b0 + cand.apex];
-        g.left_rt = chromatograms.retention_time[b0 + lo];
-        g.right_rt = chromatograms.retention_time[b0 + hi];
+        g.apex_rt = chromatograms.retentionTime(tb, cand.apex);
+        g.left_rt = chromatograms.retentionTime(tb, lo);
+        g.right_rt = chromatograms.retentionTime(tb, hi);
         g.apex_intensity = static_cast<float>(cand.apex_value);
 
         g.sub_scores.assign(N_SUB_SCORES, 0.0);
@@ -405,6 +407,37 @@ namespace ODIA
           ? std::min(10.0, std::log(std::max(1e-12, cand.apex_value) / floor_bg))
           : 0.0;
         g.sub_scores[USABLE_FRAGMENTS] = static_cast<double>(usable);
+
+        // Both vectors normalised to unit sum first: RMSD on raw areas would
+        // measure how intense the precursor is, not how well it matches.
+        {
+          double so = 0.0, sl = 0.0;
+          for (std::uint32_t k = 0; k < tc; ++k) { so += corrected[k]; sl += library_intensity[k]; }
+          double rmsd = 0.0;
+          if (so > 0.0 && sl > 0.0)
+          {
+            for (std::uint32_t k = 0; k < tc; ++k)
+            {
+              const double d = corrected[k] / so - library_intensity[k] / sl;
+              rmsd += d * d;
+            }
+            rmsd = std::sqrt(rmsd / static_cast<double>(tc));
+          }
+          // Negated so larger is better, as every other column is.
+          g.sub_scores[LIBRARY_RMSD] = -rmsd;
+        }
+
+        {
+          double y_area = 0.0, all_area = 0.0;
+          for (std::uint32_t k = 0; k < tc; ++k)
+          {
+            all_area += corrected[k];
+            if (t.type[tb + k] == FragmentType::Y) { y_area += corrected[k]; }
+          }
+          g.sub_scores[YSERIES_SCORE] = all_area > 0.0 ? y_area / all_area : 0.0;
+          g.sub_scores[FRAGMENT_COVERAGE] =
+            tc > 0 ? static_cast<double>(at_apex) / static_cast<double>(tc) : 0.0;
+        }
         result.groups.push_back(std::move(g));
       }
     }
