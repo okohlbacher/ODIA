@@ -449,6 +449,70 @@ add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
 add_test(NAME extract_im_gating_is_independent COMMAND odia_extract_cases im_gating)
 add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 
+# The extraction against a brute-force scan of the same spectra, on real runs.
+#
+# odia_extract has carried this check since the extractor existed and it had NO
+# add_test: ODIA_EXTRACT_VERIFY never ran anywhere, which is how the brute force
+# came to model an extractor four commits out of date (it still took a maximum
+# after the default became Sum, and applied no mobility test and no mass
+# calibration). Registered here in three arms, because a single arm only ever
+# covers the defaults:
+#
+#   .._brute_force            12_80, the shipped defaults
+#   .._brute_force_calibrated 12_80 with a fitted mass offset, an m/z-dependent
+#                             term and Max, over a deliberately wide 100 ppm
+#                             box -- the paths a default run never reaches, and
+#                             wide enough that Sum and Max differ at all (at 10
+#                             ppm on a centroided run they almost never do, so
+#                             a narrow arm cannot tell them apart: forcing the
+#                             extractor to Sum passes the default arm and fails
+#                             this one on 270 points)
+#   .._brute_force_mobility   S08, whose frames co-pack two windows and whose
+#                             library carries 1/K0, so both mobility tests are
+#                             exercised -- also at 100 ppm, so the mobility
+#                             tests rather than the mass box are what decides.
+#                             Dropping the per-precursor window disagrees on
+#                             108 points here.
+#
+# Each arm asserts that some of the points it compared were NON-ZERO: most of a
+# slice is zeros, an all-zero comparison agrees with anything, and a check that
+# quietly became vacuous is what this whole exercise is about.
+#
+# Each is a slice of the run rather than the whole of it: the mzPeak reader
+# costs ~6-7 ms a spectrum, so the slice is what keeps these in the seconds.
+if(EXISTS "${ODIA_DATA_DIR}/12_80.mzpeak" AND
+   EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
+  add_test(NAME extract_matches_brute_force
+           COMMAND ${CMAKE_COMMAND} -E env ODIA_EXTRACT_VERIFY=1
+                   $<TARGET_FILE:odia_extract>
+                   "${ODIA_FIXTURE_DIR}/diann_library_small.tsv"
+                   "${ODIA_DATA_DIR}/12_80.mzpeak" 500 300 340)
+  set_tests_properties(extract_matches_brute_force PROPERTIES
+    PASS_REGULAR_EXPRESSION "decoded spectra, [1-9][0-9]* of [0-9]+ points non-zero, 0 disagree")
+
+  add_test(NAME extract_matches_brute_force_calibrated
+           COMMAND ${CMAKE_COMMAND} -E env ODIA_EXTRACT_VERIFY=1
+                   ODIA_EXTRACT_PPM_OFFSET=-9.8 ODIA_EXTRACT_PPM_LOG_SLOPE=3.5
+                   ODIA_EXTRACT_AGGREGATE=max ODIA_EXTRACT_PPM=100
+                   $<TARGET_FILE:odia_extract>
+                   "${ODIA_FIXTURE_DIR}/diann_library_small.tsv"
+                   "${ODIA_DATA_DIR}/12_80.mzpeak" 500 300 340)
+  set_tests_properties(extract_matches_brute_force_calibrated PROPERTIES
+    PASS_REGULAR_EXPRESSION "decoded spectra, [1-9][0-9]* of [0-9]+ points non-zero, 0 disagree")
+endif()
+
+if(EXISTS "${ODIA_DATA_DIR}/S08_diaPASEF.mzpeak" AND
+   EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
+  add_test(NAME extract_matches_brute_force_mobility
+           COMMAND ${CMAKE_COMMAND} -E env ODIA_EXTRACT_VERIFY=1
+                   ODIA_EXTRACT_VERIFY_MAX=200 ODIA_EXTRACT_PPM=100
+                   $<TARGET_FILE:odia_extract>
+                   "${ODIA_FIXTURE_DIR}/diann_library_small.tsv"
+                   "${ODIA_DATA_DIR}/S08_diaPASEF.mzpeak" 0 300 320)
+  set_tests_properties(extract_matches_brute_force_mobility PROPERTIES
+    PASS_REGULAR_EXPRESSION "decoded spectra, [1-9][0-9]* of [0-9]+ points non-zero, 0 disagree")
+endif()
+
 # The diaPASEF mobility band derived from the mis-attached selected ions. It
 # used to live inside MzPeakSource's constructor, where nothing could reach it
 # without a file; these cases are the refusals and the order independence.
