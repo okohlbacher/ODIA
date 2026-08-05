@@ -5,52 +5,62 @@ external fix are marked **[you]**; the rest are mine to work through.
 
 ---
 
-## The 1/K0 calibration wants pass-2 anchors, not a pre-pass probe (2026-08-05)
+## The 1/K0 anchors are in; what is still open on that axis (2026-08-06)
 
-`MobilityCalibration` is built and wired (`-ion_mobility_calibration auto`,
-default), gated, and tested. On S08 the gate REFUSES, and the reason is the
-open item.
+The 1/K0 calibration now measures at anchors instead of guessing at them, and
+the gate passes on its own margin. `collectAt()` visits only the cycle blocks
+that hold a scored peak group's apex; the null is the library's own decoys at
+the apexes THEIR groups claimed. On S08, with 1,534 confident targets and a
+rank-matched null: peakedness **12.41 against 3.75, a 3.31x margin** where 1.25x
+is required and where the blind probe managed 1.09x. 23.7% of the mean squared
+1/K0 error removed out of fold. The fitted curve matches DIA-NN's observed 1/K0,
+which the probe never sees, to within a couple of milli-1/K0 per m/z bin.
 
-The class probes the run before the first pass, the way `MassCalibration`
-does: sample cycles, find each precursor's fragments, keep the best cell. On
-the mass axis a wrong cell is harmless -- its residual is uniform and the mode
-steps over it. On the mobility axis it is not: a wrong cell's 1/K0 sits
-wherever the frame's peaks are dense, which is a systematic, and three
-measurements say the probe is finding those and not the precursors:
+End to end on the frozen discriminant: **52.27% -> 53.17% (1393 -> 1417 of
+2,665) at a matched, re-measured 1.00% entrapment false rate**; 54.15% at the
+frozen threshold, where the entrapment null has itself moved to 1.23%. The gain
+sits exactly where the lever was aimed -- the 388 outside-the-cell misses go
+15.7% -> 23.2%, and every other bucket moves by less than a point.
 
-  * 7,995 Arabidopsis ENTRAPMENT precursors, which cannot be in a human
-    sample, give the same residual distribution as the 2,665 real targets;
-  * the library's own decoy precursors give peakedness 3.02 against the
-    targets' 3.06;
-  * the correction fitted to that sample makes the out-of-fold scatter worse,
-    0.0099 -> 0.0141, and puts charge 3 at +0.030 where DIA-NN's observed 1/K0
-    says +0.005.
+What is still open:
 
-Restricting the probe to the precursor's predicted retention time helps and is
-now the default (`-im_calib_rt_window 150`): the charge-2 centre goes from
-+0.0060 to +0.0016 against a truth of +0.0017, and the margin from 1.01x to
-1.08x. Still under the 1.25x the gate wants, and charge 3 stays wrong for a
-structural reason -- a 3+ precursor sits low in a diaPASEF band whose peak
-density is set by 2+ species, so the brightest cluster within +/-0.06 is pulled
-upward.
+- **The stage costs a second sequential decode: 22,440 of 32,210 spectra,
+  ~450 s, roughly doubling a single-pass extraction.** Anchors are spread over
+  the whole gradient, so "only the blocks with an apex" is 70% of the run. The
+  saving available is that within a visited block only the ONE isolation window
+  each anchor lives in is needed -- about 2 of 32 spectra per cycle. That is a
+  `SpectrumSource::peaks` call pattern change, not an algorithm change, and it
+  is worth ~10x if the reader serves sub-ranges without re-decoding a row group
+  per spectrum. It does not today (see the mzPeak item below), so this is
+  blocked behind the same decode fix everything else is.
 
-**What would fix it.** The prototype that measured +2.21 recovery points chose
-its anchors as "the precursors ODIA already recovers confidently ON ITS OWN
-SCORE" -- pass-2 information. ODIA already has that slot: `-passes 2` scores
-pass 1 and fits the retention-time map from the confident identifications, and
-the mobility offset belongs beside it. What it needs that does not exist yet is
-an observed 1/K0 per scored peak group, which means the extractor accumulating
-an intensity-weighted mobility alongside each chromatogram point (about double
-the chromatogram store, 1.65 GiB -> 3.3 GiB on the S08 combined library) or a
-second targeted probe that visits only the confident apexes. The second is
-cheaper and is the one to try first: one sequential pass, anchors sorted by
-apex retention time, no chromatogram-store change at all.
+- **The gain at 1% is the smallest point on its own sweep**, and the 1%
+  entrapment quantile rests on 26 events. Each arm at its own entrapment
+  quantile: +1.02 points at 5%, +1.51 at 2%, +0.90 at 1%, +1.16 at 0.5%, +1.62
+  at 0.2%. Nothing here says 1% is special; it is where the operating point was
+  fixed. Worth re-measuring on a second run before the +0.90 is quoted as the
+  number.
 
-Note also that this makes the entrapment library the right null for anything
-on this axis. The m/z-shifted control `MassCalibration` uses reported 99.7%
-purity on a sample that was almost entirely noise, because shifting a fragment
-by 7.33 Th moves it off the amino-acid mass lattice into a part of the spectrum
-where peaks never are.
+- **66 precursors are LOST at the frozen threshold against 116 gained.** A
+  recentred window that moves off a precursor whose library 1/K0 was already
+  right is the obvious mechanism, and it is not yet measured. The out-of-fold
+  scatter says the correction is right on average; it does not say it is right
+  for those 66.
+
+- **The width lever is still untaken.** The model reports that the corrected
+  residual would support +/-0.0333 against the +/-0.025 in force, and does not
+  apply it -- deliberately, so that this measurement stays attributable to the
+  centring. Iteration 3 measured the width lever at +0.56 points on its own.
+  Now that the centre has moved, that number needs re-taking, not reusing.
+
+- **The production path -- anchors from ODIA's OWN pass-1 scorer, `-passes 2`
+  -- is wired and unit-tested but has not been measured end to end on S08.**
+  The frozen-discriminant harness is single-pass by construction: it extracts
+  once with a fixed iRT map and scores outside ODIA, so running ODIA's two-pass
+  workflow would move the retention-time axis at the same time and make the
+  measurement unattributable. `-im_calib_anchors` is what closed that gap --
+  the same anchors, from the same run, chosen on the same score. The internal
+  path should be measured once the scorer's own recovery is comparable.
 
 ---
 

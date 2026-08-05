@@ -134,10 +134,38 @@
 // WHAT IT COSTS, AND WHAT IT HAS SO FAR BOUGHT
 // ---------------------------------------------------------------------------
 //
-// S08_diaPASEF, whole library, 200 cycles as 40 blocks of 5: 4,800 of 32,210
-// spectra decoded, 128 s against a 12.7 min extraction. 12_80, which has no
-// mobility, stops after the first block: 84.1 s against 83.3 s with the stage
-// switched off, i.e. it costs 0.8 s to establish that there is nothing here.
+// The BLIND probe on S08_diaPASEF, whole library, 200 cycles as 40 blocks of 5:
+// 4,800 of 32,210 spectra decoded, 128 s against a 12.7 min extraction.
+//
+// The ANCHORED probe on the same run, 3,068 anchors (1,534 confident targets
+// and a rank-matched null of the best-scoring decoys): 187 cycle blocks,
+// 22,440 of 32,210 spectra, 446-453 s. That is the honest price of option (b)
+// -- anchors are spread over the whole gradient, so "only the blocks that hold
+// an apex" is 70% of the run, and the stage roughly doubles a single-pass
+// extraction. It buys, out of fold:
+//
+//   * a gate that PASSES on its own margin: peakedness 12.41 against a null of
+//     3.75, a margin of 3.31x where 1.25x is required. The blind probe managed
+//     1.09x on the same run with the same gate.
+//   * 23.7% of the mean squared 1/K0 error removed, scatter 0.0123 -> 0.0111;
+//   * a curve that matches a truth it never sees. Against DIA-NN's OBSERVED
+//     1/K0 on the 2,665 real targets: charge 3 constant +0.0065 against +0.0047
+//     (the blind probe put it at +0.030), and the charge-2 m/z shape running
+//     +0.0153 at 365 Th to -0.0144 at 1191 Th against a truth of +0.0163 to
+//     -0.0199;
+//   * end to end, on the frozen entrapment-calibrated discriminant: the 388
+//     precursors iteration 3 measured as missed because the signal lies OUTSIDE
+//     the extraction cell go from 15.7% to 23.2% recovered (+7.5 points, and
+//     +8.3 on the 339 whose sub-reason is 1/K0), while every other miss bucket
+//     moves by less than a point. Overall recovery 52.27% -> 53.17% at a
+//     MATCHED, re-measured 1.00% entrapment false rate; 54.15% at the frozen
+//     threshold, where the null itself has moved to 1.23% -- moving the
+//     extraction cell moves the null, so the threshold has to be re-derived and
+//     not inherited.
+//
+// 12_80, which has no mobility, stops after the first block in either mode:
+// 82.3 s with 500 anchors read against 83.3 s with the stage switched off, i.e.
+// it costs nothing to establish that there is nothing here.
 //
 // On S08 the BLIND probe bought a refusal. The gate read a peakedness of 3.99
 // against a control at 3.65, a margin of 1.09x where 1.25x is required, and no
