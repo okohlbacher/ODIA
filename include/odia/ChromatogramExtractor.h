@@ -143,20 +143,32 @@ namespace ODIA
       /// centred on the wrong place discards signal -- see the table above.
       double fragment_ppm_offset = 0.0;
 
-      /// m/z dependence of that offset, in ppm per e-fold in m/z, about
-      /// `fragment_ppm_ref_mz`. 0 means the correction is a constant.
+      /// m/z dependence of that offset, about `fragment_ppm_ref_mz`. Both zero
+      /// means the correction is a constant.
       ///
-      /// A TOF's calibration error is characteristically a function of m/z, so a
-      /// scalar is only the leading term and the shape has to be MEASURABLE
-      /// rather than assumed either way. On S08 it was measured, and the trend
-      /// is real -- -12.1 ppm at 200-288 Th rising to -5.8 ppm at 1067-1694 Th,
-      /// ppm = -24.98 + 2.79 ln(m/z) over 124 M peak-transition hits -- and
-      /// still not worth applying: it takes the residual MAD-SD from 7.82 to
-      /// 7.62 ppm. The systematic part is small against the per-fragment
-      /// scatter, so this stays 0 on this instrument and the constant carries
-      /// the correction. `MassCalibration::fit` makes that choice per run,
-      /// against the residual each model leaves, and records it in `Model::form`.
-      double fragment_ppm_slope = 0.0;
+      /// Two named fields rather than one slope plus a basis flag, because the
+      /// UNITS differ -- ppm per e-fold against ppm per 1000 Th -- and a single
+      /// number whose meaning depends on a neighbouring enum is the same silent
+      /// unit error this header separates `im` from `ccs` to avoid. At most one
+      /// is ever non-zero; both are applied additively, so there is no invalid
+      /// combination to guard against.
+      ///
+      /// A TOF's calibration error is characteristically a function of m/z, and
+      /// on S08 it measurably is: the per-m/z-bin modes run from -12.91 ppm at
+      /// 238 Th to -7.43 at 1,102 (and to -3.5 at 1,327 Th in a measurement
+      /// reaching further up the range). A single constant therefore mis-centres
+      /// by ~3 ppm at BOTH ends in opposite directions, against a +/-10 ppm
+      /// window -- which costs the lightest and heaviest fragments
+      /// preferentially. Correcting it removes 68% of that systematic error:
+      /// the bin modes go from 1.71 ppm off a constant to 0.54 ppm off the fit.
+      ///
+      /// Note this is nearly invisible in the total per-hit scatter (4.66 ppm ->
+      /// 4.19), because that is dominated by irreducible per-fragment noise that
+      /// no calibration can touch. Judging the correction by its effect on total
+      /// scatter understates it structurally, and `MassCalibration` deliberately
+      /// does not -- an earlier version did, and refused this correction.
+      double fragment_ppm_log_slope = 0.0;         ///< ppm per e-fold in m/z
+      double fragment_ppm_slope_per_1000 = 0.0;    ///< ppm per 1000 Th
       double fragment_ppm_ref_mz = 700.0;
 
       /// Half-width of the ion-mobility window around the PRECURSOR's own

@@ -18,19 +18,19 @@
 //   3. An m/z-DEPENDENT offset is recovered as a trend, not as its average. A
 //      mean-only estimator passes test 1 and fails here, which is the point --
 //      a TOF's calibration error is characteristically a function of m/z.
-//   4. A residual that is flat in m/z yields the CONSTANT model, not a spurious
-//      slope. This is the guard against over-fitting: a line fitted to a flat
-//      residual contorts at the ends of the m/z range, where a tryptic library
-//      has fewest fragments.
+//   4. A PURE CONSTANT offset yields the constant model and neither basis
+//      contributes a slope -- checked at three sample sizes, because a
+//      two-parameter fit always beats a one-parameter fit on the same bins and
+//      "more data" is when a badly built selector starts finding slopes in flat
+//      residuals.
 //
 //   4c. The two scale estimators are compared head to head on a planted sigma,
 //      which is what makes "the reference's estimator does not work at this
 //      purity" a measurement rather than an assertion.
 //
-//   4b. A trend that is REAL and statistically overwhelming, but which barely
-//      moves the residual, still yields the constant. This is S08's own case,
-//      and it is the one where a criterion based on significance -- or on how
-//      many ppm the trend swings -- would ship a curve that buys nothing.
+//   4b. A trend that is linear in m/z rather than in log m/z comes back with
+//      the LINEAR basis, so "both bases are fitted and the better one wins" is
+//      tested rather than asserted.
 //
 // Given arguments it instead runs the real thing on a real run, which is how the
 // number in the commit message was measured. That path is deliberately NOT a
@@ -60,7 +60,8 @@ namespace
   std::vector<ODIA::MassResidual> synthesise(std::mt19937& rng, std::size_t n_true,
                                              std::size_t n_noise, double offset_at_ref,
                                              double log_slope, double sigma,
-                                             double search_ppm, bool with_control = true)
+                                             double search_ppm, bool with_control = true,
+                                             double linear_slope_per_1000 = 0.0)
   {
     std::vector<ODIA::MassResidual> out;
     std::uniform_real_distribution<double> mz_of(300.0, 1500.0);
@@ -75,7 +76,8 @@ namespace
       r.mz = static_cast<float>(mz_of(rng));
       r.rt = static_cast<float>(rt_of(rng));
       r.intensity = static_cast<float>(bright(rng));
-      const double truth = offset_at_ref + log_slope * std::log(r.mz / 700.0);
+      const double truth = offset_at_ref + log_slope * std::log(r.mz / 700.0)
+                           + linear_slope_per_1000 * (r.mz - 700.0) / 1000.0;
       r.ppm = static_cast<float>(truth + jitter(rng));
       if (std::abs(r.ppm) > search_ppm) { continue; }   // the search would not have seen it
       out.push_back(r);
@@ -193,7 +195,10 @@ namespace
       const auto m = ODIA::MassCalibration::fit(r, opt, &d);
       std::printf("3. offset shaped in m/z\n%s", ODIA::MassCalibration::report(m, &d).c_str());
       check(m.fitted, "the gate passes");
-      check(m.form == "log_mz", "the model chosen is the shaped one");
+      check(m.form == "log_mz", "the LOG basis is chosen, which is the planted one");
+      check(m.systematic_log < m.systematic_linear,
+            "and it is chosen because it fits better (" + std::to_string(m.systematic_log) +
+              " vs " + std::to_string(m.systematic_linear) + " ppm of bin-mode residual)");
       check(std::abs(m.log_slope_ppm - (-8.0)) < 1.5,
             "slope recovered within 1.5 ppm per e-fold (got " +
               std::to_string(m.log_slope_ppm) + ")");
@@ -202,46 +207,61 @@ namespace
       check(std::abs(m.ppmAt(400.0) - truth400) < 1.0 &&
             std::abs(m.ppmAt(1400.0) - truth1400) < 1.0,
             "the correction is right at BOTH ends of the m/z range, not just on average");
-      check(m.sigma_after < m.sigma_constant,
-            "and it leaves a tighter residual than the constant (" +
-              std::to_string(m.sigma_constant) + " -> " + std::to_string(m.sigma_after) + " ppm)");
+      check(m.systematic_after < 0.5 * m.systematic_before,
+            "and it removes most of the systematic error (" +
+              std::to_string(m.systematic_before) + " -> " +
+              std::to_string(m.systematic_after) + " ppm of bin-mode residual)");
     }
 
-    // ---- 4. a flat residual must not acquire a slope -----------------------
-    // Same size and purity as case 3, so the only difference is the truth.
+    // ---- 4. a PURE CONSTANT must not acquire a slope ----------------------
+    // Same size and purity as case 3, so the only difference is the truth. This
+    // is the direction of error the systematic-reduction criterion makes easier:
+    // a two-parameter fit always beats a one-parameter fit on the same bins, so
+    // the ratio alone would eventually wave a slope through on nothing but bin
+    // noise. Run at three sample sizes, because "more data" is exactly when a
+    // significance-driven selector starts finding slopes in flat residuals.
+    for (const std::size_t scale : {1u, 3u, 8u})
     {
-      std::mt19937 rng(20260808);
-      const auto r = synthesise(rng, 8000, 12000, -10.0, 0.0, 2.0, opt.search_ppm);
+      std::mt19937 rng(20260808 + scale);
+      const auto r = synthesise(rng, 8000 * scale, 12000 * scale, -10.0, 0.0, 2.0, opt.search_ppm);
       ODIA::MassCalibration::Diagnostics d;
       const auto m = ODIA::MassCalibration::fit(r, opt, &d);
-      std::printf("4. flat in m/z, same sample size as 3\n%s",
-                  ODIA::MassCalibration::report(m, &d).c_str());
+      std::printf("4. pure constant offset, %zux sample (%zu residuals)\n%s",
+                  scale, m.residuals, ODIA::MassCalibration::report(m, nullptr).c_str());
       check(m.fitted, "the gate passes");
       check(m.form == "constant", "a flat residual yields the CONSTANT model");
-      check(m.log_slope_ppm == 0.0, "and no shape is applied at all");
-      check(std::abs(m.ppmAt(350.0) - (-10.0)) < 0.6 && std::abs(m.ppmAt(1450.0) - (-10.0)) < 0.6,
+      check(m.log_slope_ppm == 0.0 && m.linear_slope_ppm_per_1000 == 0.0,
+            "and NEITHER basis contributes a slope");
+      check(std::abs(m.ppmAt(350.0) - (-10.0)) < 0.6 &&
+            std::abs(m.ppmAt(1450.0) - (-10.0)) < 0.6,
             "so the correction stays put at the sparse ends of the range");
     }
 
-    // ---- 4b. a REAL trend that does not pay for itself ---------------------
-    // This is S08 as measured: a genuine log-m/z term of -2.79 ppm per e-fold
-    // sitting under a per-fragment scatter of ~7.8 ppm. The slope is hugely
-    // significant -- with this many residuals it is tens of standard errors from
-    // zero -- and modelling it still barely moves the residual. A criterion built
-    // on significance, or on how many ppm the trend swings, would ship the curve
-    // here. The criterion built on what the residual actually does, does not.
+    // ---- 4b. the basis is chosen by measurement, not by habit -------------
+    // The same machinery, handed a trend that is linear in m/z rather than in
+    // log m/z, must come back with the linear basis. Without this, "we fit both
+    // and take the better" is an untested claim and the log basis is just the
+    // one that happened to be written first.
     {
-      std::mt19937 rng(20260810);
-      const auto r = synthesise(rng, 24000, 24000, -9.8, -2.79, 7.8, opt.search_ppm);
+      std::mt19937 rng(20260812);
+      const auto r = synthesise(rng, 8000, 12000, -9.0, 0.0, 2.0, opt.search_ppm, true, -9.0);
       ODIA::MassCalibration::Diagnostics d;
       const auto m = ODIA::MassCalibration::fit(r, opt, &d);
-      std::printf("4b. a real but immaterial m/z trend (S08's own numbers)\n%s",
+      std::printf("4b. a trend that is linear in m/z, not in log m/z\n%s",
                   ODIA::MassCalibration::report(m, &d).c_str());
       check(m.fitted, "the gate passes");
-      check(m.slope_t >= opt.min_slope_t,
-            "the slope IS statistically significant (t=" + std::to_string(m.slope_t) + ")");
-      check(m.form == "constant",
-            "and the constant is chosen anyway, because the shape does not pay");
+      check(m.form == "linear_mz", "the LINEAR basis is chosen");
+      check(m.systematic_linear < m.systematic_log,
+            "because it fits better (" + std::to_string(m.systematic_linear) + " vs " +
+              std::to_string(m.systematic_log) + " ppm of bin-mode residual)");
+      check(std::abs(m.linear_slope_ppm_per_1000 - (-9.0)) < 2.0,
+            "slope recovered within 2 ppm/kTh (got " +
+              std::to_string(m.linear_slope_ppm_per_1000) + ")");
+      const double truth400 = -9.0 - 9.0 * (400.0 - 700.0) / 1000.0;
+      const double truth1400 = -9.0 - 9.0 * (1400.0 - 700.0) / 1000.0;
+      check(std::abs(m.ppmAt(400.0) - truth400) < 1.2 &&
+            std::abs(m.ppmAt(1400.0) - truth1400) < 1.2,
+            "and the correction is right at both ends");
     }
 
     // ---- 4c. why the reference's scale estimator was replaced -------------

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -408,36 +409,102 @@ namespace ODIA
       m.reference_mz = s / static_cast<double>(bins.size());
     }
 
-    Line line;
+    // Both bases are fitted. Which one the instrument actually has is a
+    // question about the data, not a modelling preference, so it is answered by
+    // measuring both and taking the better -- see `Model::log_slope_ppm`.
+    struct Candidate
+    {
+      const char* form = "";
+      Line line;
+      double systematic = std::numeric_limits<double>::max();
+      bool is_log = false;
+    };
+
+    std::vector<double> y, sg;
+    for (const auto& b : bins) { y.push_back(b.location); sg.push_back(b.stderr_ppm); }
+
+    // How far the bin modes sit from a model, weighted by how well each mode is
+    // known. This is the systematic error the model leaves behind, and it is the
+    // quantity the whole choice turns on.
+    const auto systematicRms = [&](const std::vector<double>& x, const Line& l) {
+      double sw = 0.0, swr = 0.0;
+      for (std::size_t i = 0; i < bins.size(); ++i)
+      {
+        const double e = sg[i] > 0.0 ? sg[i] : 1.0;
+        const double w = 1.0 / (e * e);
+        const double r = y[i] - (l.ok ? l.intercept + l.slope * x[i] : l.intercept);
+        sw += w; swr += w * r * r;
+      }
+      return sw > 0.0 ? std::sqrt(swr / sw) : 0.0;
+    };
+
+    // The constant, fitted to the SAME bins, so the comparison is like for like.
+    // (What eventually gets applied is re-centred on the global mode below,
+    // which is the better estimator; this one exists only to be compared.)
+    Line flat;
+    if (!bins.empty())
+    {
+      double sw = 0.0, swy = 0.0;
+      for (std::size_t i = 0; i < bins.size(); ++i)
+      {
+        const double e = sg[i] > 0.0 ? sg[i] : 1.0;
+        const double w = 1.0 / (e * e);
+        sw += w; swy += w * y[i];
+      }
+      flat.intercept = sw > 0.0 ? swy / sw : mode0;
+      flat.slope = 0.0;
+      flat.ok = false;                      // ok==false means "no x term"
+    }
+    std::vector<double> zero_x(bins.size(), 0.0);
+    m.systematic_before = bins.empty() ? 0.0 : systematicRms(zero_x, flat);
+
+    Candidate best;
+    std::vector<double> log_x, lin_x;
     if (bins.size() >= 4)
     {
-      std::vector<double> x, y, sg;
       for (const auto& b : bins)
       {
-        x.push_back(std::log(b.centre / m.reference_mz));
-        y.push_back(b.location);
-        sg.push_back(b.stderr_ppm);
+        log_x.push_back(std::log(b.centre / m.reference_mz));
+        lin_x.push_back((b.centre - m.reference_mz) / 1000.0);
       }
-      line = weightedLine(x, y, sg);
+      Candidate lg{"log_mz", weightedLine(log_x, y, sg), 0.0, true};
+      Candidate ln{"linear_mz", weightedLine(lin_x, y, sg), 0.0, false};
+      lg.systematic = lg.line.ok ? systematicRms(log_x, lg.line)
+                                 : std::numeric_limits<double>::max();
+      ln.systematic = ln.line.ok ? systematicRms(lin_x, ln.line)
+                                 : std::numeric_limits<double>::max();
+      m.systematic_log = lg.line.ok ? lg.systematic : 0.0;
+      m.systematic_linear = ln.line.ok ? ln.systematic : 0.0;
+      best = lg.systematic <= ln.systematic ? lg : ln;
     }
+
+    const Line line = best.line;
+    const std::vector<double>& best_x = best.is_log ? log_x : lin_x;
     m.slope_t = (line.ok && line.slope_stderr > 0.0)
                   ? std::abs(line.slope) / line.slope_stderr : 0.0;
-    m.shape_swing_ppm = line.ok && m.mz_low > 0.0
-                          ? std::abs(line.slope) * std::log(m.mz_high / m.mz_low) : 0.0;
+    m.shape_swing_ppm = (line.ok && m.mz_low > 0.0)
+                          ? std::abs(line.slope) * (best.is_log
+                              ? std::log(m.mz_high / m.mz_low)
+                              : (m.mz_high - m.mz_low) / 1000.0)
+                          : 0.0;
 
-    // Both candidates are evaluated, and the CHOICE is made on the residual each
-    // one leaves. `applied` centres the model on the global mode of its own
-    // corrected residuals, so the two are compared on equal terms rather than
-    // one of them carrying an accidental offset into its spread.
-    const auto sigmaAfter = [&](double intercept, double slope, double* centred_intercept) {
+    // The applied model is re-centred on the global mode of ITS OWN corrected
+    // residuals, which is a better-determined intercept than the weighted bin
+    // fit gives. The total scatter each candidate leaves is computed here too --
+    // reported, no longer decisive.
+    const auto applyAndScore = [&](double intercept, double slope, bool is_log,
+                                   double* centred_intercept) {
       std::vector<double> c;
       c.reserve(target.size());
       for (const auto& r : kept)
       {
         if (r.decoy) { continue; }
-        const double corr = (slope != 0.0 && r.mz > 0.0)
-                              ? intercept + slope * std::log(r.mz / m.reference_mz)
-                              : intercept;
+        double corr = intercept;
+        if (slope != 0.0)
+        {
+          corr += is_log ? (r.mz > 0.0 ? slope * std::log(r.mz / m.reference_mz) : 0.0)
+                         : slope * (r.mz - m.reference_mz) / 1000.0;
+        }
         c.push_back(r.ppm - corr);
       }
       std::sort(c.begin(), c.end());
@@ -458,48 +525,70 @@ namespace ODIA
     };
 
     double constant_intercept = mode0;
-    m.sigma_constant = sigmaAfter(mode0, 0.0, &constant_intercept);
+    m.sigma_constant = applyAndScore(mode0, 0.0, false, &constant_intercept);
     double shaped_intercept = line.ok ? line.intercept : 0.0;
-    if (line.ok) { m.sigma_shaped = sigmaAfter(line.intercept, line.slope, &shaped_intercept); }
+    if (line.ok)
+    {
+      m.sigma_shaped = applyAndScore(line.intercept, line.slope, best.is_log, &shaped_intercept);
+    }
 
-    // MODEL CHOICE. The simpler model wins unless the data insists TWICE: the
-    // slope must be several standard errors from zero, and modelling the shape
-    // must leave a materially tighter residual than the constant does.
+    // MODEL CHOICE, on how much of the SYSTEMATIC term the shape removes.
     //
-    // Significance alone is not enough, and S08 is the case that proves it. Its
-    // m/z trend is real and large -- -12.1 ppm at 200-288 Th rising to -5.8 ppm
-    // at 1067-1694 Th over 124 M hits, so a swing of ~6 ppm and a t of many tens
-    // -- and correcting it still moves the residual MAD-SD only from 7.82 to
-    // 7.62 ppm. The systematic part is small against the per-fragment scatter,
-    // so the shape buys 2.6%, and 2.6% does not justify a model that can contort
-    // where the library has no fragments to hold it down. A criterion based on
-    // the swing, or on significance, would have shipped that curve.
+    // NOT on total per-hit scatter. That was the first version of this and it
+    // was wrong: total scatter on S08 is ~5.1 ppm and is mostly irreducible
+    // per-fragment noise, so a correction that removes nearly all of the
+    // systematic term still moves the total by only ~11% and looked like a wash.
+    // Measured on the bin modes instead, the same correction takes 1.40 ppm to
+    // 0.51 -- 64% of the systematic gone -- which is what it is actually worth.
+    //
+    // The stakes are set by the window, not by the scatter. On S08 the per-bin
+    // modes run from about -13 ppm at the light end to about -8 at the heavy end
+    // here, and to -3.5 ppm at 1327 Th in a measurement reaching further up the
+    // range. A single constant therefore mis-centres by several ppm at both
+    // ends, in OPPOSITE directions, against a +/-10 ppm window -- which costs
+    // the lightest and heaviest fragments preferentially, exactly the ones a
+    // peak group can least afford to lose.
+    //
+    // Three conditions, and the third is what protects a genuinely flat run:
+    // a two-parameter fit always beats a one-parameter fit on the same bins, so
+    // without an absolute floor the ratio alone would eventually wave through a
+    // slope fitted to nothing but bin noise.
+    const double gain = m.systematic_before - best.systematic;
     const bool take_shape = line.ok && bins.size() >= 4 &&
                             m.slope_t >= opt.min_slope_t &&
-                            m.sigma_shaped > 0.0 && m.sigma_constant > 0.0 &&
-                            m.sigma_shaped <= opt.max_sigma_ratio * m.sigma_constant;
+                            m.systematic_before > 0.0 &&
+                            best.systematic <= opt.max_systematic_ratio * m.systematic_before &&
+                            gain >= opt.min_systematic_gain_ppm;
 
     m.fitted = true;
-    char buf[420];
+    char buf[560];
     if (take_shape)
     {
-      m.form = "log_mz";
-      m.log_slope_ppm = line.slope;
+      m.form = best.form;
+      if (best.is_log) { m.log_slope_ppm = line.slope; }
+      else { m.linear_slope_ppm_per_1000 = line.slope; }
       m.intercept_ppm = shaped_intercept;
       m.sigma_after = m.sigma_shaped;
+      m.systematic_after = best.systematic;
       std::snprintf(buf, sizeof buf,
-                    "log m/z: %.3f ppm per e-fold (t=%.1f), swing %.2f ppm over the %.0f-%.0f Th "
-                    "sampled, and it tightens the residual from %.2f to %.2f ppm (ratio %.2f "
-                    "<= %.2f)", line.slope, m.slope_t, m.shape_swing_ppm, m.mz_low, m.mz_high,
-                    m.sigma_constant, m.sigma_shaped, m.sigma_shaped / m.sigma_constant,
-                    opt.max_sigma_ratio);
+                    "%s: %.3f ppm per %s (t=%.1f), swing %.2f ppm over the %.0f-%.0f Th sampled. "
+                    "It removes %.0f%% of the systematic error -- the per-m/z-bin modes sit %.2f "
+                    "ppm from a constant and %.2f ppm from this (log %.2f, linear %.2f). Total "
+                    "per-hit scatter barely moves (%.2f -> %.2f ppm) because that is dominated by "
+                    "irreducible per-fragment noise, which is why it is not what decides.",
+                    best.form, line.slope, best.is_log ? "e-fold in m/z" : "1000 Th",
+                    m.slope_t, m.shape_swing_ppm, m.mz_low, m.mz_high,
+                    100.0 * gain / m.systematic_before, m.systematic_before, best.systematic,
+                    m.systematic_log, m.systematic_linear, m.sigma_constant, m.sigma_shaped);
     }
     else
     {
       m.form = "constant";
       m.log_slope_ppm = 0.0;
+      m.linear_slope_ppm_per_1000 = 0.0;
       m.intercept_ppm = constant_intercept;
       m.sigma_after = m.sigma_constant;
+      m.systematic_after = m.systematic_before;
       if (!line.ok)
       {
         std::snprintf(buf, sizeof buf,
@@ -508,20 +597,20 @@ namespace ODIA
       else if (m.slope_t < opt.min_slope_t)
       {
         std::snprintf(buf, sizeof buf,
-                      "constant: the m/z slope is %.3f ppm per e-fold at only t=%.1f (need %.1f), "
-                      "so the residual is flat in m/z and a curve would only contort at the ends",
-                      line.slope, m.slope_t, opt.min_slope_t);
+                      "constant: the best shape (%s) has a slope of %.3f at only t=%.1f (need "
+                      "%.1f), so the residual is flat in m/z and a curve would only contort at "
+                      "the ends", best.form, line.slope, m.slope_t, opt.min_slope_t);
       }
       else
       {
         std::snprintf(buf, sizeof buf,
-                      "constant: the m/z trend is real (%.3f ppm per e-fold, t=%.1f, swing %.2f "
-                      "ppm over %.0f-%.0f Th) but does not pay -- it moves the residual only "
-                      "%.2f -> %.2f ppm (ratio %.2f > %.2f), which does not justify a model that "
-                      "can contort where the library has no fragments",
-                      line.slope, m.slope_t, m.shape_swing_ppm, m.mz_low, m.mz_high,
-                      m.sigma_constant, m.sigma_shaped, m.sigma_shaped / m.sigma_constant,
-                      opt.max_sigma_ratio);
+                      "constant: the best shape (%s, %.3f, t=%.1f) leaves %.2f ppm of bin-mode "
+                      "residual against the constant's %.2f -- a gain of %.2f ppm (ratio %.2f). "
+                      "That does not clear ratio <= %.2f AND gain >= %.2f ppm, so the residual is "
+                      "flat enough in m/z that a curve would only be fitting bin noise",
+                      best.form, line.slope, m.slope_t, best.systematic, m.systematic_before,
+                      gain, m.systematic_before > 0.0 ? best.systematic / m.systematic_before : 0.0,
+                      opt.max_systematic_ratio, opt.min_systematic_gain_ppm);
       }
     }
     m.reason = buf;
@@ -807,11 +896,31 @@ namespace ODIA
     std::vector<float> best_int;
     std::vector<double> best_mz;
 
+    // STRATIFIED RANDOM over the gradient: the run is cut into `want_cycles`
+    // equal strata and one cycle is drawn from each. Guaranteed coverage of the
+    // whole gradient (so an RT trend is visible) without the aliasing a fixed
+    // stride would risk against a periodic acquisition. Seeded, so the answer is
+    // reproducible -- otherwise "the offset moved" could not be told apart from
+    // "the sample moved".
     const std::size_t want_cycles = std::min(opt.cycles, cycles.size());
-    std::size_t decoded = 0, probed = 0;
-    for (std::size_t c = 0; c < want_cycles; ++c)
+    std::vector<std::size_t> chosen;
+    chosen.reserve(want_cycles);
     {
-      const auto& cyc = cycles[c * cycles.size() / want_cycles];
+      std::mt19937_64 rng(opt.sample_seed);
+      for (std::size_t b = 0; b < want_cycles; ++b)
+      {
+        const std::size_t lo = b * cycles.size() / want_cycles;
+        const std::size_t hi = std::max(lo + 1, (b + 1) * cycles.size() / want_cycles);
+        std::uniform_int_distribution<std::size_t> pick(lo, hi - 1);
+        chosen.push_back(pick(rng));
+      }
+      std::sort(chosen.begin(), chosen.end());
+    }
+
+    std::size_t decoded = 0, probed = 0;
+    for (std::size_t c = 0; c < chosen.size(); ++c)
+    {
+      const auto& cyc = cycles[chosen[c]];
       source.peaks(cyc.first, cyc.second, block);
       decoded += cyc.second - cyc.first;
 
@@ -968,9 +1077,11 @@ namespace ODIA
         o << " + " << m.log_slope_ppm << " ppm per e-fold in m/z";
       }
       o << "\n";
-      o << "  model choice: constant leaves " << m.sigma_constant << " ppm, shaped leaves "
-        << m.sigma_shaped << " ppm (slope t=" << m.slope_t << ", swing " << m.shape_swing_ppm
-        << " ppm); chose " << m.form << "\n";
+      o << "  systematic:  per-m/z-bin modes sit " << m.systematic_before
+        << " ppm from a constant, " << m.systematic_after << " ppm from the chosen model"
+        << " (log " << m.systematic_log << ", linear " << m.systematic_linear << ")\n";
+      o << "  scatter:     total per-hit " << m.sigma_constant << " ppm constant, "
+        << m.sigma_shaped << " ppm shaped -- reported, not decisive\n";
       o << "  sigma:       " << m.sigma_before << " ppm before correction, "
         << m.sigma_after << " ppm after\n";
       o << "  rt drift:    " << m.rt_drift_ppm << " ppm across the sampled gradient (t="

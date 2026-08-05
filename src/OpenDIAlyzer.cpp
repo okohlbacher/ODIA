@@ -164,6 +164,16 @@ protected:
                           "is inferred. Deliberately far wider than anything extracted with: the "
                           "distribution's shoulders have to be visible. 0 disables inference.",
                           false, true);
+    registerDoubleOption_("precursor_im_window", "<1/K0>", 0.025,
+                          "Half-width of the ion-mobility window around the PRECURSOR's own "
+                          "library 1/K0. 0 disables it, leaving only the isolation window's "
+                          "band, which is ~8x wider than a precursor occupies.", false, true);
+    registerStringOption_("aggregate", "<how>", "sum",
+                          "How several peaks inside one transition's tolerance box become one "
+                          "number. sum integrates; max takes the largest, which returns the "
+                          "interference envelope once the box spans the mobility axis.",
+                          false, true);
+    setValidStrings_("aggregate", {"sum", "max"});
     registerDoubleOption_("rt_window", "<seconds>", 600.0,
                           "Half-width of the retention-time window around the "
                           "predicted elution. 600 s matches OpenSWATH's second "
@@ -247,6 +257,10 @@ protected:
     options.max_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_precursors")));
     options.use_ion_mobility = !getFlag_("no_ion_mobility");
+    options.precursor_im_window = getDoubleOption_("precursor_im_window");
+    options.aggregate = getStringOption_("aggregate") == "max"
+                          ? ODIA::ChromatogramExtractor::Options::Aggregate::Max
+                          : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
     options.irt_slope = library_rt_is_run_seconds ? 1.0 : getDoubleOption_("irt_slope");
     options.irt_intercept = library_rt_is_run_seconds ? 0.0 : getDoubleOption_("irt_intercept");
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
@@ -990,7 +1004,8 @@ private:
     }
 
     options.fragment_ppm_offset = mass_model_.intercept_ppm;
-    options.fragment_ppm_slope = mass_model_.log_slope_ppm;
+    options.fragment_ppm_log_slope = mass_model_.log_slope_ppm;
+    options.fragment_ppm_slope_per_1000 = mass_model_.linear_slope_ppm_per_1000;
     options.fragment_ppm_ref_mz = mass_model_.reference_mz;
 
     // With the window centred, the narrow width is the right one -- see the
@@ -1030,9 +1045,14 @@ private:
     std::ostringstream os;
     os << "extracting at +/-" << options.fragment_ppm << " ppm centred on "
        << options.fragment_ppm_offset << " ppm";
-    if (options.fragment_ppm_slope != 0.0)
+    if (options.fragment_ppm_log_slope != 0.0)
     {
-      os << " + " << options.fragment_ppm_slope << " ppm per e-fold in m/z about "
+      os << " + " << options.fragment_ppm_log_slope << " ppm per e-fold in m/z about "
+         << options.fragment_ppm_ref_mz << " Th";
+    }
+    if (options.fragment_ppm_slope_per_1000 != 0.0)
+    {
+      os << " + " << options.fragment_ppm_slope_per_1000 << " ppm per 1000 Th about "
          << options.fragment_ppm_ref_mz << " Th";
     }
     writeLogInfo_(os.str());

@@ -104,25 +104,39 @@
 // WHAT THIS PRODUCES ON S08, 2026-08-05
 // ---------------------------------------------------------------------------
 //
-// 3,000 sampled precursors, 160 cycles, 3,840 spectra decoded, 84 s:
+// 3,000 sampled precursors, 160 stratified-random cycles = 3,840 of 32,210
+// spectra (11.9% of the run), 84.6 s:
 //
-//   gate            peakedness 5.10 against a control at 2.69, threshold 3
-//   residuals       7,010 target and 1,602 control, after the brightness cut
-//   correction      CONSTANT, -9.96 ppm
-//   sigma           5.11 ppm, unchanged by the shape
-//   m/z trend       real and refused: -12.90 ppm at 238 Th to -8.16 at 1,089,
-//                   +2.62 ppm per e-fold at t=6.5, and it moves the residual
-//                   only 5.11 -> 4.56 ppm (ratio 0.89, threshold 0.85)
-//   rt drift        -0.89 ppm across 1,590 s at t=1.3, i.e. none
-//   window          3 sigma would be 15.3 ppm, which is WIDER than the 10 ppm
-//                   in force, so it is rejected -- calibration may only narrow
+//   gate            peakedness 4.34 against a control at 2.98, threshold 3
+//   residuals       7,066 target and 1,516 control, after the brightness cut
+//   correction      LOG m/z: -9.35 ppm at 599 Th, +3.32 ppm per e-fold (t=7.4)
+//   systematic      per-m/z-bin modes sit 1.71 ppm from a constant and 0.54 ppm
+//                   from this -- 68% of the systematic error removed. The linear
+//                   basis was fitted too and leaves 0.77, so log wins on the
+//                   number rather than by assumption.
+//   bin modes       -12.91 ppm at 238 Th rising to -7.43 at 1,102 Th
+//   scatter         4.66 -> 4.19 ppm total per-hit, which is NOT what decided
+//   rt drift        -0.11 ppm across 1,600 s at t=0.26, i.e. none
+//   window          3 sigma would be 12.6 ppm, WIDER than the 10 ppm in force,
+//                   so it is rejected -- calibration may only narrow
+//
+// The correction therefore runs from about -13.0 ppm at 200 Th to -6.4 at
+// 1,473. A single constant near -9.9 would mis-centre by ~3 ppm at both ends in
+// OPPOSITE directions, against a +/-10 ppm window, costing the lightest and
+// heaviest fragments preferentially -- which is the case for modelling the
+// shape, and it is not visible at all in the total scatter.
 //
 // Two independent checks that this is the instrument and not the method. An
 // unrelated measurement over 124 M peak-transition hits at DIA-NN's retention
 // times puts the offset at -9.78 ppm, the log-m/z fit at +2.79 ppm per e-fold,
-// and finds no RT trend; all three agree. And sweeping the brightness cut from
-// 0 to 0.9 walks the answer only from -10.51 to -9.50 ppm, so the selection is
-// buying purity rather than manufacturing a number.
+// and finds no RT trend; all three agree with what is fitted here from the run
+// alone. And sweeping the brightness cut from 0 to 0.9 walks the offset only
+// from -10.51 to -9.50 ppm, so the selection is buying purity rather than
+// manufacturing a number.
+//
+// On 12_80 with a library that does not match it, the same code refuses:
+// peakedness 2.44 over 679 residuals against a control at 2.69, no offset
+// applied, window left wide at 15 ppm, extraction proceeds normally.
 //
 #pragma once
 
@@ -206,12 +220,32 @@ namespace ODIA
       /// A scalar-plus-slope needs hundreds of anchors, not thousands.
       std::size_t max_precursors = 3000;
 
-      /// Acquisition cycles probed, spread evenly over the gradient.
+      /// Acquisition cycles probed. STRATIFIED RANDOM across the gradient: the
+      /// run is cut into this many equal strata and one cycle is drawn at
+      /// random from each.
       ///
       /// One cycle is a contiguous run of spectra covering every isolation
-      /// window, so this is also how the sample is spread in retention time --
-      /// which is what makes an RT drift measurable at all.
+      /// window, so a cycle is one range request and every window gets probed at
+      /// the same instant. It is also how the sample is spread in retention
+      /// time, which is what makes an RT drift measurable at all.
+      ///
+      /// Stratified random rather than either alternative, and both alternatives
+      /// are wrong in a way that matters here. A PREFIX (or any contiguous
+      /// block) measures one stretch of the gradient and cannot see a drift at
+      /// all. A fixed STRIDE covers the gradient but can alias against anything
+      /// periodic in the acquisition -- and a DIA run is periodic by
+      /// construction. Drawing at random inside each stratum keeps the guaranteed
+      /// coverage and destroys the aliasing.
+      ///
+      /// On S08: 160 of 1,342 cycles = 3,840 of 32,210 spectra, 11.9% of the
+      /// run, 84 s against a ~10 min full extraction pass.
       std::size_t cycles = 160;
+
+      /// Seed for that draw. Fixed, not clock-derived: a calibration that
+      /// returns a different number each time it is run cannot be checked
+      /// against a previous run, and "the offset moved" would be
+      /// indistinguishable from "the sample moved".
+      std::uint64_t sample_seed = 0x0D1A0805u;
 
       /// Fragments used per precursor, most intense first in library order.
       std::size_t max_fragments = 12;
@@ -252,33 +286,44 @@ namespace ODIA
       /// to be neither a common neutral loss nor an isotope spacing.
       std::vector<double> decoy_shifts{7.33, -7.19};
 
-      /// An m/z-dependent term is accepted only when it clears BOTH tests.
+      /// An m/z-dependent term is accepted only when it clears all three tests
+      /// below. They ask one question between them: how much of the SYSTEMATIC
+      /// error does modelling the shape actually remove?
+      ///
+      /// It is deliberately NOT judged on the total per-hit residual, and that
+      /// correction is worth recording because the first version of this class
+      /// got it wrong. Total scatter on S08 is ~5.1 ppm and is dominated by
+      /// irreducible per-fragment noise that no calibration can touch. Judging a
+      /// systematic correction against that denominator understates it
+      /// structurally: the trend can be almost perfectly removed and still move
+      /// the total by ~11%, because the total was mostly never going to move.
+      /// That criterion refused a correction on S08 that removes 64% of the
+      /// systematic term.
+      ///
+      /// So the comparison is between the per-m/z-bin MODES and the model: the
+      /// weighted RMS of the bin modes about the fitted shape, against their
+      /// weighted RMS about the best constant. On S08 that is 1.71 ppm about a
+      /// constant and 0.54 ppm about the log fit -- 68% of the systematic error
+      /// removed, where the total-scatter view saw 4.66 -> 4.19 and called it a
+      /// wash.
       ///
       /// `min_slope_t`: the slope must be this many standard errors from zero.
-      /// Necessary, and nowhere near sufficient -- with tens of thousands of
-      /// residuals a slope can be overwhelmingly significant and still worth
-      /// nothing.
+      /// Necessary, not sufficient.
       ///
-      /// `max_sigma_ratio`: the residual spread AFTER the shaped correction must
-      /// be at most this fraction of the spread after a plain constant. This is
-      /// the test that actually decides, because it asks the only question that
-      /// matters -- does modelling the shape leave a materially tighter
-      /// distribution to size a window from?
+      /// `max_systematic_ratio`: the shape must leave at most this fraction of
+      /// the systematic spread the constant leaves.
       ///
-      /// On S08 the m/z trend is real and measurable (-12.1 ppm at 200-288 Th
-      /// rising to -5.8 ppm at 1067-1694 Th, ppm = -24.98 + 2.79 ln(m/z),
-      /// measured over 124 M peak-transition hits) and STILL fails this test:
-      /// it takes the residual MAD-SD from 7.82 to 7.62 ppm, a 2.6% improvement.
-      /// A 2.6% gain does not justify a model that can contort at the ends of
-      /// the m/z range, where a tryptic library has fewest fragments. So on this
-      /// instrument the constant is the right answer and the gate says so.
-      /// 0.85 rather than something closer to 1: a shape has to earn a clear
-      /// reduction, not win a coin toss. S08 lands at 0.91 on this sampling and
-      /// at 0.974 in the 124 M-hit measurement, so it is refused either way --
-      /// but a threshold set where one of those two would have flipped it would
-      /// be a threshold set by the noise in the estimate.
+      /// `min_systematic_gain_ppm`: and it must do so by an absolute margin. A
+      /// two-parameter fit always beats a one-parameter fit on the same bins, so
+      /// on a run whose residual really is flat the ratio alone would eventually
+      /// wave a slope through -- the bins would just be noise, and fitting noise
+      /// better is not an improvement. The absolute floor is what makes that
+      /// impossible: on a flat residual the constant already leaves only the
+      /// bin-estimation error (a few tenths of a ppm), so no shape can gain half
+      /// a ppm on it.
       double min_slope_t = 3.0;
-      double max_sigma_ratio = 0.85;
+      double max_systematic_ratio = 0.70;
+      double min_systematic_gain_ppm = 0.50;
 
       /// Worker threads for the matching. 0 uses the hardware concurrency.
       unsigned threads = 0;
@@ -295,19 +340,24 @@ namespace ODIA
     struct Model
     {
       bool fitted = false;
-      std::string form = "none";        ///< "none" | "constant" | "log_mz"
+      /// "none" | "constant" | "log_mz" | "linear_mz"
+      std::string form = "none";
       std::string reason;               ///< why, in words, for the log
 
       double intercept_ppm = 0.0;       ///< correction at `reference_mz`
 
-      /// ppm per e-fold in m/z, about `reference_mz`. 0 for the constant form.
+      /// The two candidate bases. At most one is ever non-zero; both zero is the
+      /// constant form. They are separate named fields rather than one slope
+      /// plus a basis flag because the UNITS differ, and a single field whose
+      /// meaning depends on a neighbouring enum is exactly the silent unit error
+      /// this codebase separates `im` from `ccs` to avoid.
       ///
-      /// LOG, not linear in m/z, because that is the shape the error was
-      /// measured to have: ppm = -24.98 + 2.79 ln(m/z) over 200-1694 Th on S08.
-      /// A log basis is also the better-behaved of the two at the ends of the
-      /// range, which is where the anchors run out and where an over-flexible
-      /// model does its damage.
-      double log_slope_ppm = 0.0;
+      /// Which basis is used is decided by measurement, not assumed. On S08 the
+      /// log fit leaves 0.54 ppm of bin-mode residual against the linear fit's
+      /// 0.77, so log wins -- but it wins on the number, and a run that prefers
+      /// the linear basis gets it (the synthetic suite checks both directions).
+      double log_slope_ppm = 0.0;             ///< ppm per e-fold in m/z
+      double linear_slope_ppm_per_1000 = 0.0; ///< ppm per 1000 Th
       double reference_mz = 700.0;
 
       std::size_t residuals = 0;        ///< target-cell residuals used
@@ -315,10 +365,22 @@ namespace ODIA
 
       double sigma_before = 0.0;        ///< robust sigma of raw residuals, ppm
       double sigma_after = 0.0;         ///< ... after the chosen correction
-      /// The two candidates, both reported, so the model choice is auditable
-      /// rather than announced. `sigma_shaped` is 0 when no shape could be fitted.
+      /// Total per-hit scatter under each candidate. REPORTED ONLY -- these no
+      /// longer decide anything. They are kept because the difference between
+      /// them and `systematic_*` below is the whole point: on S08 they say 5.11
+      /// against 4.56 and look like a wash, while the systematic numbers say
+      /// 1.40 against 0.51 and say the opposite.
       double sigma_constant = 0.0;
       double sigma_shaped = 0.0;
+
+      /// What DOES decide: weighted RMS of the per-m/z-bin modes about the best
+      /// constant, and about the chosen shape. In ppm of systematic error.
+      double systematic_before = 0.0;
+      double systematic_after = 0.0;
+      /// The losing basis's systematic residual, so the basis choice is visible.
+      double systematic_log = 0.0;
+      double systematic_linear = 0.0;
+
       double slope_t = 0.0;             ///< standard errors the slope is from zero
       double shape_swing_ppm = 0.0;     ///< what the shape predicts across the range
       double peakedness = 0.0;          ///< target cells
@@ -351,8 +413,16 @@ namespace ODIA
       double ppmAt(double mz) const
       {
         if (!fitted) { return 0.0; }
-        if (log_slope_ppm == 0.0 || !(mz > 0.0) || !(reference_mz > 0.0)) { return intercept_ppm; }
-        return intercept_ppm + log_slope_ppm * std::log(mz / reference_mz);
+        double ppm = intercept_ppm;
+        if (log_slope_ppm != 0.0 && mz > 0.0 && reference_mz > 0.0)
+        {
+          ppm += log_slope_ppm * std::log(mz / reference_mz);
+        }
+        if (linear_slope_ppm_per_1000 != 0.0)
+        {
+          ppm += linear_slope_ppm_per_1000 * (mz - reference_mz) / 1000.0;
+        }
+        return ppm;
       }
     };
 

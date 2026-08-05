@@ -278,10 +278,15 @@ namespace ODIA
         // same reason: it is a property of the transition's own mass, so it is
         // known here and never has to be evaluated per peak.
         double correction_ppm = options.fragment_ppm_offset;
-        if (options.fragment_ppm_slope != 0.0 && options.fragment_ppm_ref_mz > 0.0)
+        if (options.fragment_ppm_log_slope != 0.0 && options.fragment_ppm_ref_mz > 0.0)
         {
           correction_ppm +=
-            options.fragment_ppm_slope * std::log(theoretical / options.fragment_ppm_ref_mz);
+            options.fragment_ppm_log_slope * std::log(theoretical / options.fragment_ppm_ref_mz);
+        }
+        if (options.fragment_ppm_slope_per_1000 != 0.0)
+        {
+          correction_ppm += options.fragment_ppm_slope_per_1000 *
+                            (theoretical - options.fragment_ppm_ref_mz) / 1000.0;
         }
         const double product = theoretical * (1.0 + correction_ppm * 1e-6);
         x.mz.push_back(product);
