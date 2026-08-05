@@ -434,6 +434,14 @@ in the underlying mass error.
   than the data supports, and every extra ppm admits proportionally more
   interfering peaks into every transition's chromatogram. It is a guess, and
   nothing currently measures it.
+
+  **Done, 2026-08-05** (`include/odia/MassCalibration.h`). The run's own
+  fragment mass error is now measured before extraction and the window is
+  centred on it, gated so that a run with no measurable error is a no-op. The
+  finding that mattered was not the width but the CENTRE: on S08 the axis is
+  about -10 ppm out, and a window narrowed about zero throws away more than it
+  saves. `-fragment_ppm` therefore no longer has a fixed default at all -- it is
+  10 ppm when the calibration centres the window and 15 when it cannot.
 - `rt_low`/`rt_high` are caller-supplied, global, and the extractor never reads
   a retention time from the library at all (see section 4a of
   `doc/06-rt-refinement-plan.md`).

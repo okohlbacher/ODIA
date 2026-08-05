@@ -274,8 +274,16 @@ namespace ODIA
         if (!(theoretical > 0.0)) { continue; }
         // The offset is applied to the TRANSITION, once, here -- not to every
         // peak in the match loop. Shifting the target is equivalent and costs
-        // nothing per peak.
-        const double product = theoretical * (1.0 + options.fragment_ppm_offset * 1e-6);
+        // nothing per peak. The m/z-dependent term rides along for free for the
+        // same reason: it is a property of the transition's own mass, so it is
+        // known here and never has to be evaluated per peak.
+        double correction_ppm = options.fragment_ppm_offset;
+        if (options.fragment_ppm_slope != 0.0 && options.fragment_ppm_ref_mz > 0.0)
+        {
+          correction_ppm +=
+            options.fragment_ppm_slope * std::log(theoretical / options.fragment_ppm_ref_mz);
+        }
+        const double product = theoretical * (1.0 + correction_ppm * 1e-6);
         x.mz.push_back(product);
         x.transition.push_back(static_cast<std::uint32_t>(j));
         x.first_live_cycle.push_back(a.lo);

@@ -89,7 +89,10 @@ namespace ODIA
       /// Fragment mass tolerance, as a HALF-width in ppm: a peak matches when
       /// |peak - transition| <= transition * fragment_ppm * 1e-6.
       ///
-      /// 15 rather than 10, and only because the window is not yet CENTRED.
+      /// 10, which is correct ONCE THE WINDOW IS CENTRED. 15 was the
+      /// uncalibrated fallback and is still the right answer when it is not:
+      /// see `MassCalibration`, which fits the centring per run and gates
+      /// itself, and the tool, which asks for 15 when that gate fails.
       ///
       /// This instrument has a systematic fragment mass offset of about
       /// -10 ppm, measured on S08 as the centroid of the retention-time-
@@ -106,10 +109,24 @@ namespace ODIA
       /// So narrowing a window that is centred on the wrong place THROWS AWAY
       /// signal: +/-10 about zero keeps half the evidence, and the half it
       /// keeps is the tail rather than the peak. Until `fragment_ppm_offset` is
-      /// fitted per run, the safe default is the wider window. With a fitted
-      /// offset, +/-10 captures 0.81 at a quarter of the interference area of
-      /// +/-20, which is the configuration to aim at.
-      double fragment_ppm = 15.0;
+      /// fitted per run, the safe width is therefore the wider one.
+      ///
+      /// With the offset fitted, narrow is measurably right and wide measurably
+      /// wrong. Target-minus-decoy fragment presence falls monotonically with
+      /// tolerance -- 0.083 at 10 ppm, 0.051 at 20, 0.034 at 30, 0.019 at 50 --
+      /// and +/-10 centred on -9.8 measured x1.13 overall and x1.24 in the
+      /// weakest abundance decile, with a further x1.12 inside a per-precursor
+      /// mobility band. So 10 it is, and the calibration is what earns it.
+      double fragment_ppm = 10.0;
+
+      /// The width to fall back to when no calibration could be fitted.
+      ///
+      /// Not a second tolerance: it is the same decision as `fragment_ppm`,
+      /// taken with less information. An uncentred +/-10 keeps 0.51 of true
+      /// fragments where an uncentred +/-15 keeps 0.78, so a run whose gate
+      /// fails is strictly better off wide -- and a run that silently narrowed
+      /// anyway would look like a calibration working.
+      double fragment_ppm_uncalibrated = 15.0;
 
       /// Systematic fragment mass offset, ppm, added to the theoretical m/z
       /// before matching. 0 means uncalibrated.
@@ -118,8 +135,29 @@ namespace ODIA
       /// per-run mass calibration is for, and it is the single measured
       /// difference most likely to account for the recovery gap. -10 is the
       /// measured value for S08 and is NOT a default, because it is a property
-      /// of that instrument and that acquisition.
+      /// of that instrument and that acquisition. `MassCalibration` fits it;
+      /// this is where its answer is applied.
+      ///
+      /// Note this is a RECALIBRATION of the mass axis and is a different thing
+      /// from `fragment_ppm`, which is the width around it. Narrowing a window
+      /// centred on the wrong place discards signal -- see the table above.
       double fragment_ppm_offset = 0.0;
+
+      /// m/z dependence of that offset, in ppm per e-fold in m/z, about
+      /// `fragment_ppm_ref_mz`. 0 means the correction is a constant.
+      ///
+      /// A TOF's calibration error is characteristically a function of m/z, so a
+      /// scalar is only the leading term and the shape has to be MEASURABLE
+      /// rather than assumed either way. On S08 it was measured, and the trend
+      /// is real -- -12.1 ppm at 200-288 Th rising to -5.8 ppm at 1067-1694 Th,
+      /// ppm = -24.98 + 2.79 ln(m/z) over 124 M peak-transition hits -- and
+      /// still not worth applying: it takes the residual MAD-SD from 7.82 to
+      /// 7.62 ppm. The systematic part is small against the per-fragment
+      /// scatter, so this stays 0 on this instrument and the constant carries
+      /// the correction. `MassCalibration::fit` makes that choice per run,
+      /// against the residual each model leaves, and records it in `Model::form`.
+      double fragment_ppm_slope = 0.0;
+      double fragment_ppm_ref_mz = 700.0;
 
       /// Half-width of the ion-mobility window around the PRECURSOR's own
       /// library 1/K0, in 1/K0 units. 0 disables it.

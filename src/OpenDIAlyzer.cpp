@@ -9,6 +9,7 @@
 #include <fstream>
 #include <odia/SpectrumSource.h>
 #include <odia/ChromatogramExtractor.h>
+#include <odia/MassCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/RtCalibration.h>
 
@@ -122,8 +123,47 @@ protected:
                         "Write extracted chromatograms here (TSV).", false);
     setValidFormats_("out_chrom", {"tsv"}, false);
 
-    registerDoubleOption_("fragment_ppm", "<ppm>", 20.0,
-                          "Fragment mass tolerance for extraction.", false, true);
+    // NO DEFAULT. -1 means "not given", and the run's own calibration then
+    // supplies it. Naming a number up front is a guess about the instrument, and
+    // a wrong guess is expensive in both directions -- too wide admits
+    // interference, too narrow discards real fragments before anything can score
+    // them. Measured on S08: target-minus-decoy fragment presence falls
+    // monotonically with tolerance (0.083 at 10 ppm, 0.051 at 20, 0.034 at 30,
+    // 0.019 at 50), and +/-10 CENTRED on the fitted -9.8 measured x1.13 overall
+    // and x1.24 in the weakest abundance decile -- while +/-10 about zero keeps
+    // only 0.51 of true fragments against 0.78 for +/-15. So the right width
+    // depends on whether the centring succeeded, which is not knowable here.
+    //
+    // The "calibration may only narrow" clamp therefore applies ONLY when a
+    // value was given explicitly. Unset means "tell me what this run says", and
+    // clamping that against a number nobody chose would silently reinstate a
+    // default.
+    registerDoubleOption_("fragment_ppm", "<ppm>", -1.0,
+                          "Fragment mass tolerance, ppm half-width. UNSET by default: 10 when the "
+                          "run's own mass calibration centres the window, 15 when it cannot. Give "
+                          "a value to pin it, in which case calibration may only narrow from "
+                          "there.", false, true);
+    registerStringOption_("mass_calibration", "<mode>", "auto",
+                          "auto: measure the run's systematic fragment mass error before "
+                          "extracting and centre the window on it. off: extract uncalibrated, "
+                          "which on this instrument class discards about half the fragment "
+                          "evidence.", false);
+    setValidStrings_("mass_calibration", {"auto", "off"});
+    registerDoubleOption_("fragment_ppm_offset", "<ppm>", 0.0,
+                          "Pin the systematic fragment mass offset instead of measuring it. "
+                          "Non-zero also switches -mass_calibration off, because a measured "
+                          "value and a pinned one cannot both be applied.", false, true);
+    registerIntOption_("mz_calib_precursors", "<n>", 3000,
+                       "Precursors sampled when measuring the mass error.", false, true);
+    registerIntOption_("mz_calib_cycles", "<n>", 160,
+                       "Acquisition cycles probed, spread over the gradient. This is what the "
+                       "measurement costs: one cycle is one decoded spectrum per isolation "
+                       "window.", false, true);
+    registerDoubleOption_("mz_calib_search_ppm", "<ppm>", 50.0,
+                          "Half-width searched while COLLECTING the residuals, before any window "
+                          "is inferred. Deliberately far wider than anything extracted with: the "
+                          "distribution's shoulders have to be visible. 0 disables inference.",
+                          false, true);
     registerDoubleOption_("rt_window", "<seconds>", 600.0,
                           "Half-width of the retention-time window around the "
                           "predicted elution. 600 s matches OpenSWATH's second "
@@ -201,7 +241,7 @@ protected:
     }
 
     ODIA::ChromatogramExtractor::Options options;
-    options.fragment_ppm = getDoubleOption_("fragment_ppm");
+    applyMassCalibration_(library, *source, options);
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
     options.max_precursors = static_cast<std::size_t>(
@@ -872,6 +912,132 @@ protected:
   }
 
 private:
+  /// The run's fitted mass model, measured once and reused by every pass.
+  ///
+  /// Cached because it is a property of the RUN, not of the pass: measuring it
+  /// again in pass 2 would decode the same spectra to reach the same answer, and
+  /// -- worse -- a second measurement taken through a window the first one
+  /// narrowed would be a feedback loop that can only shrink.
+  ODIA::MassCalibration::Model mass_model_;
+  bool mass_model_known_ = false;
+
+  /// Decide the fragment window's CENTRE and its WIDTH, in that order.
+  ///
+  /// They are two questions and they are answered from different things. The
+  /// centre is a recalibration of the mass axis and comes from the run's own
+  /// residuals; the width is the scatter left after that correction, bounded by
+  /// what the caller was willing to accept.
+  void applyMassCalibration_(const ODIA::Library& library, ODIA::SpectrumSource& source,
+                             ODIA::ChromatogramExtractor::Options& options)
+  {
+    const double configured = getDoubleOption_("fragment_ppm");
+    const double pinned = getDoubleOption_("fragment_ppm_offset");
+    const bool off = getStringOption_("mass_calibration") == "off";
+    const double search = getDoubleOption_("mz_calib_search_ppm");
+
+    if (pinned != 0.0 || off || !(search > 0.0))
+    {
+      options.fragment_ppm_offset = pinned;
+      // Uncalibrated means the WIDE width, and that is not a hedge: +/-10 about
+      // zero keeps 0.51 of true fragments on this instrument where +/-15 keeps
+      // 0.78, because the window is centred on the wrong place. A pinned offset
+      // is a centring the caller asserted, so it earns the narrow width.
+      const double fallback = pinned != 0.0 ? options.fragment_ppm
+                                            : options.fragment_ppm_uncalibrated;
+      options.fragment_ppm = configured > 0.0 ? configured : fallback;
+      std::ostringstream os;
+      os << "fragment mass calibration: not measured ("
+         << (pinned != 0.0 ? "offset pinned by -fragment_ppm_offset"
+                           : (off ? "-mass_calibration off" : "-mz_calib_search_ppm 0"))
+         << "); extracting at " << options.fragment_ppm << " ppm about "
+         << options.fragment_ppm_offset << " ppm";
+      writeLogInfo_(os.str());
+      return;
+    }
+
+    ODIA::MassCalibration::Diagnostics diagnostics;
+    if (!mass_model_known_)
+    {
+      ODIA::MassCalibration::Options mzc;
+      mzc.search_ppm = search;
+      mzc.max_precursors = static_cast<std::size_t>(
+        std::max(1, getIntOption_("mz_calib_precursors")));
+      mzc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("mz_calib_cycles")));
+      mzc.use_ion_mobility = !getFlag_("no_ion_mobility");
+      try
+      {
+        mass_model_ = ODIA::MassCalibration::calibrate(library, source, mzc, &diagnostics);
+      }
+      catch (const std::exception& e)
+      {
+        writeLogWarn_(std::string("Mass calibration failed (") + e.what() +
+                      "); extracting uncalibrated.");
+        mass_model_ = ODIA::MassCalibration::Model{};
+      }
+      mass_model_known_ = true;
+    }
+    writeLogInfo_(ODIA::MassCalibration::report(mass_model_, &diagnostics));
+
+    if (!mass_model_.fitted)
+    {
+      options.fragment_ppm_offset = 0.0;
+      options.fragment_ppm = configured > 0.0 ? configured : options.fragment_ppm_uncalibrated;
+      writeLogWarn_("The mass calibration gate FAILED, so no offset is applied and the window "
+                    "stays wide at " + std::to_string(options.fragment_ppm) + " ppm. An "
+                    "uncentred narrow window is the worse of the two errors: it keeps the tail "
+                    "of the true distribution rather than its peak.");
+      return;
+    }
+
+    options.fragment_ppm_offset = mass_model_.intercept_ppm;
+    options.fragment_ppm_slope = mass_model_.log_slope_ppm;
+    options.fragment_ppm_ref_mz = mass_model_.reference_mz;
+
+    // With the window centred, the narrow width is the right one -- see the
+    // header for the presence-versus-tolerance numbers that say so.
+    const double baseline = configured > 0.0 ? configured : options.fragment_ppm;
+
+    // CALIBRATION MAY ONLY NARROW. A fit that says "actually, use a wider
+    // window" is telling you the fit failed, not that the instrument is bad, and
+    // acting on it is strictly worse than doing nothing because it admits
+    // interference the caller excluded. In the reference this rail was added
+    // after an ungated estimate widened a window to 72.6 ppm on an instrument
+    // measured at 1.66 ppm and took identifications from 6,798 to 4,496.
+    //
+    // Divergence from the reference, deliberate: there, an UNSET window let the
+    // estimate stand however wide. Here it does not, because on this instrument
+    // wide is measurably the wrong direction -- target-minus-decoy fragment
+    // presence falls monotonically with tolerance (0.083 at 10 ppm down to 0.019
+    // at 50), so 3 sigma of a scatter that is dominated by interference rather
+    // than by measurement error would size the window from the interference.
+    if (mass_model_.window_ppm > 0.0 && mass_model_.window_ppm < baseline)
+    {
+      options.fragment_ppm = mass_model_.window_ppm;
+    }
+    else
+    {
+      options.fragment_ppm = baseline;
+      if (mass_model_.window_ppm > 0.0)
+      {
+        std::ostringstream os;
+        os << "The mass calibration's own width, " << mass_model_.window_ppm
+           << " ppm, is WIDER than the " << baseline << " ppm in force -- rejecting it. "
+           << "Calibration may only narrow.";
+        writeLogInfo_(os.str());
+      }
+    }
+
+    std::ostringstream os;
+    os << "extracting at +/-" << options.fragment_ppm << " ppm centred on "
+       << options.fragment_ppm_offset << " ppm";
+    if (options.fragment_ppm_slope != 0.0)
+    {
+      os << " + " << options.fragment_ppm_slope << " ppm per e-fold in m/z about "
+         << options.fragment_ppm_ref_mz << " Th";
+    }
+    writeLogInfo_(os.str());
+  }
+
   void reportLibrary_(const ODIA::Library& library, double load_ms)
   {
     const std::size_t decoys = library.decoyCount();

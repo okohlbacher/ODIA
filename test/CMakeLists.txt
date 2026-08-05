@@ -434,3 +434,11 @@ add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)
 # outliers, and that the result is monotone -- a map that reorders the
 # gradient is wrong however well it fits.
 add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
+
+# The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
+# Runs on synthesised residuals only, so it needs no data: it checks that a
+# known offset is recovered from a narrow peak on a uniform background, that a
+# purely uniform sample is REJECTED rather than fitted, that an m/z-dependent
+# offset comes back as a trend rather than as its average, and that a residual
+# which is flat in m/z yields the constant model instead of a spurious slope.
+add_test(NAME mass_calibration_recovers_offset COMMAND odia_mass_calibration)
