@@ -15,12 +15,19 @@
 namespace ODIA
 {
 
-  /// Extracted-ion chromatograms for a library's transitions.
+  /// Extracted-ion chromatograms for a library's transitions, ALL OF THEM AT
+  /// ONCE.
   ///
   /// Stored as one flat point array with a CSR index, for the same reason the
   /// library is: a vector-per-transition would be millions of small
   /// allocations, which is exactly the arena fragmentation D3 exists to avoid.
-  /// Extracted-ion chromatograms for a library's transitions.
+  ///
+  /// This is no longer what extraction produces. It is what a caller asks for
+  /// when it needs every chromatogram simultaneously -- `-out_chrom` and the
+  /// diagnostics built on it -- and it is bounded by the LIBRARY, which is the
+  /// thing `ChromatogramSink` exists to escape. A full human library at S08's
+  /// geometry is 274 GiB here. Everything else takes a
+  /// `PrecursorChromatogram` as the pass finishes it.
   ///
   /// Two space decisions, both taken from the reference implementation:
   ///
@@ -74,12 +81,18 @@ namespace ODIA
     /// The cost is 4 bytes per transition, against 4 bytes per POINT for the
     /// intensities -- 1,342 points per transition here, so under 0.1%.
     ///
-    /// This widening removes the index limit and nothing else. The remaining
-    /// limit is memory: the array is preallocated as transitions x cycles
-    /// before a peak is seen, so a full human library at S08's geometry wants
-    /// 4.26 M precursors x 12 x 1,342 x 4 B = 274 GiB. Running at that scale
-    /// needs extraction chunked into precursor blocks with the chromatograms
-    /// flushed per block, which this does not do.
+    /// The widening removed the index limit and nothing else. The limit that
+    /// remained was memory: this array is sized transitions x cycles before a
+    /// peak is seen, so a full human library at S08's geometry wants
+    /// 4.26 M precursors x 12 x 1,342 x 4 B = 274 GiB -- and only 58% of those
+    /// points are ever non-zero, so sparse storage is not a way out either.
+    ///
+    /// That limit belongs to THIS TYPE and not to extraction any more. The
+    /// extractor hands a precursor over when the pass leaves its retention-time
+    /// window and frees it; `ChromatogramCollector` is what puts them all back
+    /// into one array, and a caller that does not need them all never asks for
+    /// one. A run that does ask is refused with the number rather than left to
+    /// a bad_alloc.
     std::vector<std::uint64_t> begin;
     std::vector<std::uint32_t> count;
 
@@ -122,6 +135,130 @@ namespace ODIA
 
   };
 
+  /// One precursor's finished chromatograms, as a VIEW onto whoever owns the
+  /// points -- the streaming extractor's block pool, or a whole `Chromatograms`.
+  ///
+  /// This is the unit the extractor produces and every consumer consumes. It
+  /// exists because a precursor's chromatogram is complete the moment the
+  /// forward pass leaves its retention-time window, and holding it after that
+  /// is what made memory scale with the library instead of with the run: see
+  /// `ChromatogramSink`.
+  ///
+  /// A precursor's transitions all sit on ONE window's axis over ONE cycle
+  /// range, so `rt` and `axis_begin` are per precursor and not per transition.
+  /// The per-transition (offset, count) pair is kept rather than a single
+  /// stride because a transition with no representable product m/z gets no
+  /// points at all -- count 0 -- and the flat `Chromatograms` it must also be
+  /// able to describe packs those out.
+  struct PrecursorChromatogram
+  {
+    std::uint32_t precursor = 0;
+    std::uint32_t transition_begin = 0;   ///< first transition, library index
+    std::uint32_t transition_count = 0;
+    std::uint32_t axis = 0;               ///< which isolation window's axis
+    std::uint32_t axis_begin = 0;         ///< first cycle on it
+    std::uint32_t cycles = 0;             ///< points per live transition
+
+    const float* rt = nullptr;            ///< `cycles` retention times, seconds
+    const float* points = nullptr;        ///< base of the intensity storage
+    const std::uint64_t* offset = nullptr;///< transition_count offsets into it
+    const std::uint32_t* count = nullptr; ///< transition_count point counts
+
+    /// Points of transition @p k of this precursor, `pointCount(k)` of them.
+    const float* trace(std::uint32_t k) const { return points + offset[k]; }
+    std::uint32_t pointCount(std::uint32_t k) const { return count ? count[k] : 0; }
+    float retentionTime(std::uint32_t j) const { return rt[j]; }
+
+    /// False for a precursor nothing extracted -- no isolation window covered
+    /// it, or it was predicted to elute outside the run. Such a precursor is
+    /// still handed to the sink, empty, so that a consumer counting
+    /// "precursors that yielded nothing" sees the same number it saw when every
+    /// precursor had a row in one flat array.
+    bool extracted() const { return cycles != 0; }
+  };
+
+  /// The shape of what a pass will produce, known before a peak is read.
+  struct ChromatogramLayout
+  {
+    std::size_t transitions = 0;               ///< entries the CSR would have
+    std::uint64_t points = 0;                  ///< points it would hold
+    const std::vector<std::vector<float>>* axes = nullptr;  ///< one per window
+
+    /// Points per transition, in transition order -- present only for a sink
+    /// that asked (`ChromatogramSink::needsLayoutCounts`).
+    ///
+    /// It is four bytes per transition, 204 MB at 51 M transitions, and the
+    /// only reason it is optional is that a streaming sink must have NO array
+    /// proportional to the library. A sink that lays out one flat CSR needs it,
+    /// because the offsets are that CSR's prefix sum in transition order and a
+    /// precursor arriving in retention-time order cannot know its own offset.
+    const std::vector<std::uint32_t>* counts = nullptr;
+  };
+
+  /// Where finished chromatograms go.
+  ///
+  /// The extractor no longer materialises every chromatogram before anything
+  /// reads one. It hands each precursor over as the forward pass leaves that
+  /// precursor's retention-time window, and then frees it -- so memory scales
+  /// with how many windows overlap at one instant, not with the library. Two
+  /// implementations, and the choice between them IS the memory decision:
+  ///
+  ///  * `ChromatogramCollector` keeps everything, which is what `-out_chrom`
+  ///    and every diagnostic built on it need. It is bounded by a precursor
+  ///    count, not by the run.
+  ///  * `PeakGroupScorer::Sink` scores each precursor and drops it. That is
+  ///    the default at scale and has no term proportional to the library at
+  ///    all.
+  ///
+  /// The storage a `PrecursorChromatogram` points at is valid ONLY for the
+  /// duration of `accept`. A sink that wants it afterwards must copy it, which
+  /// is exactly what the collector does and what the scorer does not.
+  class ChromatogramSink
+  {
+  public:
+    virtual ~ChromatogramSink() = default;
+
+    /// Called once per extraction, before any trace, with what the whole run
+    /// would produce -- including the parts that will never exist at once.
+    virtual void begin(const ChromatogramLayout&) {}
+
+    virtual void accept(const PrecursorChromatogram&) = 0;
+
+    /// Whether `ChromatogramLayout::counts` has to be filled in. See it.
+    virtual bool needsLayoutCounts() const { return false; }
+  };
+
+  /// The sink that keeps every point: the behaviour this class had before
+  /// there was a choice.
+  ///
+  /// Memory is the whole library's worth of points, so this is for a bounded
+  /// precursor count -- `-out_chrom`, the oracle experiments, the bucket
+  /// attribution. It reproduces the flat `Chromatograms` exactly, including
+  /// which transitions get zero points, so a file written through it is byte
+  /// for byte the file written before the extractor streamed.
+  class ChromatogramCollector final : public ChromatogramSink
+  {
+  public:
+    void begin(const ChromatogramLayout& layout) override;
+    void accept(const PrecursorChromatogram& trace) override;
+    bool needsLayoutCounts() const override { return true; }
+
+    Chromatograms& chromatograms() { return c_; }
+    Chromatograms take() { return std::move(c_); }
+
+  private:
+    Chromatograms c_;
+  };
+
+  /// A sink that counts and discards. Useful on its own -- `-stop_after
+  /// extract` with no `-out_chrom` is a decode-and-match benchmark -- and it
+  /// is the control that says what the sink costs.
+  class NullChromatogramSink final : public ChromatogramSink
+  {
+  public:
+    void accept(const PrecursorChromatogram&) override {}
+  };
+
   /// Reads a run once and extracts every requested transition from it.
   ///
   /// One forward pass, not one pass per precursor. The cost of decoding a
@@ -129,6 +266,13 @@ namespace ODIA
   /// which is what makes the extraction scale with the run rather than with
   /// the library. With the current mzPeak reader a spectrum costs ~294 ms to
   /// decode, so this ordering is the difference between one pass and none.
+  ///
+  /// That same forward order is what bounds the memory. A precursor's
+  /// chromatogram is COMPLETE the moment the pass passes the end of its
+  /// retention-time window: nothing later in the run can add to it. So a
+  /// chromatogram is allocated when the pass reaches the start of its window,
+  /// filled as the pass proceeds, handed to the sink when the pass leaves it,
+  /// and freed. See `ChromatogramSink`.
   class ChromatogramExtractor
   {
   public:
@@ -265,6 +409,30 @@ namespace ODIA
       /// Extract only the first N precursors of the library, 0 for all.
       std::size_t max_precursors = 0;
 
+      /// Cap on how many precursors may have their chromatograms live at one
+      /// instant. 0 lets the data decide.
+      ///
+      /// The sliding window bounds memory by RETENTION-TIME OVERLAP, which is
+      /// a property of the run and the window width rather than of the library
+      /// -- and on a wide window that bound is weak. With a 600 s half-width on
+      /// a 1,859 s gradient a precursor is live for ~1,200 s, so about 65% of
+      /// the library is live at once and the win over holding all of it is
+      /// 1.5x. At a calibrated 120 s it is ~13% and the win is 7x.
+      ///
+      /// This is the second mechanism, for when the first is not enough. Above
+      /// the cap the library is split into chunks whose live sets each fit, and
+      /// each chunk is a separate pass -- restricted to the spectra its own
+      /// precursors need, so the extra decode is the chunks' retention-time
+      /// spans and not a whole run per chunk. It is stated in precursors rather
+      /// than bytes because that is the number a caller can reason about
+      /// against a library size; `Stats::peak_live_points` reports what it
+      /// cost.
+      ///
+      /// A pass is expensive -- decode is ~600 s on S08 and is 65% of Phase 2
+      /// -- so chunking is a fallback, not a default. Which mechanism actually
+      /// bound the memory is reported in `Stats::memory_bound_by`.
+      std::size_t max_live_precursors = 0;
+
       /// Maps the library's iRT onto this run's retention time, in seconds:
       /// rt = irt_slope * irt + irt_intercept.
       ///
@@ -321,6 +489,10 @@ namespace ODIA
       double decode_seconds = 0.0;
       double match_seconds = 0.0;
       double index_seconds = 0.0;
+      /// Allocating, zeroing and releasing the live chromatograms.
+      double assemble_seconds = 0.0;
+      /// Time inside the sink -- copying, or scoring and discarding.
+      double sink_seconds = 0.0;
 
       /// Precursors not extracted because their predicted elution fell outside
       /// the run entirely, or could not be predicted at all (a NaN iRT).
@@ -328,8 +500,46 @@ namespace ODIA
       /// Mean transitions live at one cycle, which is what the inverted match
       /// actually costs per spectrum.
       double mean_live_transitions = 0.0;
+
+      /// What the sliding window actually bought, measured rather than
+      /// assumed: the largest number of precursors -- and of points -- whose
+      /// retention-time windows overlap at one instant. `peak_live_points x 4`
+      /// bytes is the chromatogram term of peak RSS.
+      std::size_t peak_live_precursors = 0;
+      std::uint64_t peak_live_points = 0;
+      /// Precursors that were extracted at all, i.e. had a window and a
+      /// non-empty cycle range.
+      std::size_t precursors_extracted = 0;
+      /// Passes over the run. More than one means the live set did not fit
+      /// under `max_live_precursors` and the library was chunked.
+      std::size_t chunks = 1;
+      /// Spectra decoded across all chunks, against `spectra_read` for one
+      /// pass. Equal when there is one chunk.
+      std::size_t spectra_decoded = 0;
+
+      /// Also reported on the returned `Chromatograms`; here so a streaming
+      /// caller, which never sees one, still gets them.
+      std::size_t precursors_without_window = 0;
+      std::size_t precursors_in_several_windows = 0;
+
+      /// Which of the two mechanisms set the peak: "retention-time overlap"
+      /// when the live set fitted, "precursor cap (N), C chunks" when it did
+      /// not. Said out loud because the two have completely different costs --
+      /// the first is free, the second buys memory with decode passes.
+      std::string memory_bound_by;
     };
 
+    /// Extract into a sink, holding only what is live.
+    static void extract(const Library& library, SpectrumSource& source,
+                        const Options& options, ChromatogramSink& sink,
+                        Stats* stats = nullptr);
+
+    /// Extract into one flat `Chromatograms`, as this class always did.
+    ///
+    /// Kept because `-out_chrom` and every diagnostic built on it need the
+    /// whole thing at once. It is the streaming form with a collecting sink,
+    /// so it is bounded by the library and says so: at S08's geometry a full
+    /// human library is 274 GiB here and a few GiB through the sink.
     static Chromatograms extract(const Library& library, SpectrumSource& source,
                                  const Options& options, Stats* stats = nullptr);
   };
