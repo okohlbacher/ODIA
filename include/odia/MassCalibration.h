@@ -274,6 +274,33 @@ namespace ODIA
       /// 1/K0. 0 disables it; it is also skipped per precursor when the library
       /// carries no 1/K0, because absent information is not evidence of
       /// mismatch.
+      ///
+      /// DELIBERATELY TIGHTER than the extractor's `precursor_im_window`
+      /// (0.025), which is the window this offset is ultimately applied
+      /// through. That looks wrong -- fitting through a narrower band than you
+      /// correct through -- and it is not, because the two windows are sized
+      /// for different jobs. The extractor wants COMPLETENESS: 0.025 is ~2.6
+      /// sigma on the library-vs-observed agreement, so it keeps the peptide's
+      /// real fragments. This wants PURITY: a mode in the residual histogram
+      /// that an m/z-shifted control does not also have. The offset itself is a
+      /// property of the mass axis, not of the mobility axis, so estimating it
+      /// on the cleanest subset is unbiased -- what it costs is residuals, and
+      /// there are thousands.
+      ///
+      /// Measured on S08, 3,000 precursors over the default 160 cycles:
+      ///
+      ///     0.010   GATE PASSED, peakedness 5.03 against a control at 2.94,
+      ///             -9.02 ppm at 668.9 Th + 2.68 ppm per e-fold
+      ///     0.025   GATE FAILED, peakedness 4.41 against a control at 4.60 --
+      ///             the shifted control is as peaked as the data
+      ///     0.050   GATE FAILED, residuals FLAT (2.89)
+      ///
+      /// So widening this to match the extractor does not loosen the fit, it
+      /// removes it: at 0.025 the same-window interference the band cannot see
+      /// makes the target sample indistinguishable from its own null, and the
+      /// run gets no calibration at all. The two numbers are the same decision
+      /// taken against different denominators, and reconciling them by making
+      /// them equal would be reconciling away the measurement.
       double im_window = 0.010;
       bool use_ion_mobility = true;
 

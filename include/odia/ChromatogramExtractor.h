@@ -217,6 +217,13 @@ namespace ODIA
       /// 0.025 half-width is ~2.6 sigma on the measured library-vs-observed
       /// agreement (SD 0.019, and 0.0186 on precursors we currently miss, so
       /// not a selection effect).
+      ///
+      /// `MassCalibration::Options::im_window` is 0.010 -- tighter than this,
+      /// through which the offset it fits is then applied. That difference is
+      /// deliberate and measured: this window is sized to KEEP a peptide's real
+      /// fragments, that one to isolate a residual mode a shifted control does
+      /// not have, and at 0.025 the calibration's gate fails outright on S08
+      /// (peakedness 4.41 against a control at 4.60). See that field.
       double precursor_im_window = 0.025;
 
       /// How several peaks inside one transition's box become one number.
