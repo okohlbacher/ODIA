@@ -190,6 +190,10 @@ namespace
     bool mobility = true;              ///< false = a run with no 1/K0 at all
     bool library_im = true;            ///< false = a library with no 1/K0
     bool random_mobility = false;      ///< a 1/K0 unrelated to the library's, but STABLE
+    /// With `random_mobility`, the fraction that nevertheless sits where the
+    /// library says. 0 is pure nonsense; a small value is a real peak too
+    /// dilute to be evidence, which is what the peakedness gate is for.
+    double true_fraction = 0.0;
     bool wandering = false;            ///< a 1/K0 that is different in every cycle
     bool peaked_control = false;       ///< also emit the m/z-shifted control, tighter
     std::size_t background = 2000;     ///< unrelated peaks per spectrum
@@ -243,7 +247,12 @@ namespace
     // every time the precursor is seen, which is the case the peakedness gate
     // has to catch. `wandering` is the other one, and the block rule catches it.
     std::vector<double> nonsense(plan.precursors);
-    for (auto& v : nonsense) { v = band(rng); }
+    std::vector<char> real(plan.precursors, 0);
+    for (std::size_t i = 0; i < plan.precursors; ++i)
+    {
+      nonsense[i] = band(rng);
+      real[i] = u01(rng) < plan.true_fraction ? 1 : 0;
+    }
     std::uniform_real_distribution<double> bg_mz(240.0, 1500.0);
     std::uniform_real_distribution<double> bright(2e3, 2e5);
     const double scan[5] = {-0.006, -0.003, 0.0, 0.003, 0.006};
@@ -260,7 +269,7 @@ namespace
           if (!w.present[i]) { continue; }
           if (w.mz[i] < lo || w.mz[i] >= hi) { continue; }
           const double truth = plan.wandering ? band(rng)
-                             : plan.random_mobility ? nonsense[i] + jitter(rng)
+                             : (plan.random_mobility && !real[i]) ? nonsense[i] + jitter(rng)
                              : w.im_library[i] + w.planted[i] + jitter(rng);
           const float I = static_cast<float>(bright(rng));
           for (int k = 0; k < 8; ++k)
@@ -411,6 +420,31 @@ namespace
       check(m.decoy_peakedness >= m.peakedness,
             "and that is why (" + std::to_string(m.decoy_peakedness) + " vs " +
               std::to_string(m.peakedness) + ")");
+    }
+
+    // ---- 3d. a real peak, too dilute to be evidence ------------------------
+    // One precursor in twelve is where the library says; the rest are somewhere
+    // stable and unrelated. There IS a peak, the mode would find it, and a
+    // scale can be computed -- so nothing degenerate refuses this. Only the
+    // peakedness gate does, which is the point: it refuses on the STRENGTH of
+    // the evidence, not on whether an answer can be computed.
+    {
+      Plan plan;
+      plan.random_mobility = true;
+      plan.true_fraction = 0.04;
+      plan.precursors = 2000;
+      plan.present = 1.0;
+      World w;
+      build(w, plan, [](std::size_t, std::uint8_t, double) { return 0.015; });
+      MC::Diagnostics d;
+      const auto m = MC::calibrate(w.lib.library(), w.run, baseOptions(), &d);
+      std::printf("3d. a real +0.015 offset on one precursor in twenty-five\n%s",
+                  MC::report(m, &d).c_str());
+      check(!m.fitted, "the gate refuses a peak too dilute to be evidence");
+      check(m.peakedness > 1.2 && m.peakedness < baseOptions().min_peakedness,
+            "and it is the PEAKEDNESS that refuses it (" + std::to_string(m.peakedness) +
+              "), not a degenerate scale");
+      check(m.offsetFor(3, 500.0, 2) == 0.0, "so nothing is applied");
     }
 
     // ---- 3c. a 1/K0 that does not survive the next cycle -------------------
