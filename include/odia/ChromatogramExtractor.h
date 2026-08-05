@@ -86,7 +86,73 @@ namespace ODIA
       /// Fragment mass tolerance. Relative, because that is how a mass
       /// spectrometer's accuracy behaves; an absolute window would be far too
       /// wide at 200 Th and far too narrow at 1800.
-      double fragment_ppm = 20.0;
+      /// Fragment mass tolerance, as a HALF-width in ppm: a peak matches when
+      /// |peak - transition| <= transition * fragment_ppm * 1e-6.
+      ///
+      /// 15 rather than 10, and only because the window is not yet CENTRED.
+      ///
+      /// This instrument has a systematic fragment mass offset of about
+      /// -10 ppm, measured on S08 as the centroid of the retention-time-
+      /// specific excess over a local decoy-cell null: -11.2 ppm on precursors
+      /// we recover, -12.6 ppm on those we miss, and present at off-peak times
+      /// too, so it is a genuine instrument term and not an artefact of peak
+      /// selection. Fraction of true fragments captured:
+      ///
+      ///     half-width   centred on 0   centred on -10 ppm
+      ///        +/- 5        0.22             0.52
+      ///        +/-10        0.51             0.81
+      ///        +/-15        0.78             0.92
+      ///
+      /// So narrowing a window that is centred on the wrong place THROWS AWAY
+      /// signal: +/-10 about zero keeps half the evidence, and the half it
+      /// keeps is the tail rather than the peak. Until `fragment_ppm_offset` is
+      /// fitted per run, the safe default is the wider window. With a fitted
+      /// offset, +/-10 captures 0.81 at a quarter of the interference area of
+      /// +/-20, which is the configuration to aim at.
+      double fragment_ppm = 15.0;
+
+      /// Systematic fragment mass offset, ppm, added to the theoretical m/z
+      /// before matching. 0 means uncalibrated.
+      ///
+      /// Should be fitted from the run rather than set by hand -- that is what
+      /// per-run mass calibration is for, and it is the single measured
+      /// difference most likely to account for the recovery gap. -10 is the
+      /// measured value for S08 and is NOT a default, because it is a property
+      /// of that instrument and that acquisition.
+      double fragment_ppm_offset = 0.0;
+
+      /// Half-width of the ion-mobility window around the PRECURSOR's own
+      /// library 1/K0, in 1/K0 units. 0 disables it.
+      ///
+      /// Distinct from the isolation window's band, which is what
+      /// `use_ion_mobility` gates and which only separates co-packed windows.
+      /// A frame's band is ~0.40 wide on S08; a precursor occupies ~0.05 of it.
+      /// Filtering only by the band therefore admits the entire same-window
+      /// mobility axis -- measured as ~8.5x more mobility than the reference
+      /// accepts, and the reason a band-only fix bought 1.12x while the
+      /// same-window interference it left behind is what dominates.
+      ///
+      /// 0.025 half-width is ~2.6 sigma on the measured library-vs-observed
+      /// agreement (SD 0.019, and 0.0186 on precursors we currently miss, so
+      /// not a selection effect).
+      double precursor_im_window = 0.025;
+
+      /// How several peaks inside one transition's box become one number.
+      ///
+      /// `Sum` integrates; `Max` takes the largest. Max was the original and is
+      /// wrong for this data: a frame's peak array is the concatenation of
+      /// 600-810 TIMS mobility scans, so peaks inside one m/z tolerance are the
+      /// same ion across many mobility steps PLUS every co-isolated interferent
+      /// at every other step. Max over that returns the interference envelope,
+      /// and -- being an order statistic -- acts as a hard threshold rather
+      /// than a graded penalty: a peptide below the envelope contributes
+      /// nothing at all. That is the shape of the measured failure, where the
+      /// bottom four abundance deciles sat exactly at the decoy null.
+      ///
+      /// Sum is only correct once the box is small. Summing over the old
+      /// oversized box makes the trace worse, not better.
+      enum class Aggregate { Sum, Max };
+      Aggregate aggregate = Aggregate::Sum;
 
       /// Extract only the first N precursors of the library, 0 for all.
       std::size_t max_precursors = 0;

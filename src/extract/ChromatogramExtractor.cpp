@@ -90,6 +90,10 @@ namespace ODIA
       std::vector<std::uint32_t> transition;
       std::vector<std::uint32_t> first_live_cycle, last_live_cycle;
       std::vector<std::uint32_t> point_begin;   ///< where this transition's points start
+      /// Expected 1/K0 of each transition's precursor. NaN when the library has
+      /// none, which disables the per-precursor mobility test for it rather
+      /// than rejecting it -- absent information is not evidence of mismatch.
+      std::vector<float> precursor_im;
       std::vector<std::uint32_t> bucket;        ///< bucket -> first entry
       double log_base = 0.0, log_lo = 0.0;
 
@@ -266,13 +270,22 @@ namespace ODIA
       for (std::uint32_t k = 0; k < p.transition_count[a.precursor]; ++k)
       {
         const std::size_t j = p.transition_begin[a.precursor] + k;
-        const double product = fromFixed(t.product_mz[j]);
-        if (!(product > 0.0)) { continue; }
+        const double theoretical = fromFixed(t.product_mz[j]);
+        if (!(theoretical > 0.0)) { continue; }
+        // The offset is applied to the TRANSITION, once, here -- not to every
+        // peak in the match loop. Shifting the target is equivalent and costs
+        // nothing per peak.
+        const double product = theoretical * (1.0 + options.fragment_ppm_offset * 1e-6);
         x.mz.push_back(product);
         x.transition.push_back(static_cast<std::uint32_t>(j));
         x.first_live_cycle.push_back(a.lo);
         x.last_live_cycle.push_back(a.hi);
         x.point_begin.push_back(out.begin[j] + offset[j]);
+        // The precursor's own 1/K0, carried onto each of its transitions so the
+        // match loop can test a peak against the peptide it claims to be from
+        // rather than against the whole frame. NaN when the library has none,
+        // which disables the test for that transition.
+        x.precursor_im.push_back(p.im[a.precursor]);
         offset[j] += a.hi - a.lo;
       }
     }
@@ -292,7 +305,7 @@ namespace ODIA
         for (std::size_t i = 0; i < order.size(); ++i) { tmp[i] = v[order[i]]; }
         v.swap(tmp);
       };
-      permute(x.mz); permute(x.transition);
+      permute(x.mz); permute(x.transition); permute(x.precursor_im);
       permute(x.first_live_cycle); permute(x.last_live_cycle);
       permute(x.point_begin);
       x.build(options.fragment_ppm);
@@ -451,10 +464,14 @@ namespace ODIA
             // simply not there.
             const double slack = m * options.fragment_ppm * 1e-6 * 1.01 + 1e-6;
             if (m + slack < x.mz.front() || m - slack > x.mz.back()) { continue; }
+            // The frame's band separates the co-packed windows. It cannot
+            // separate a precursor from its same-window neighbours, which is
+            // what the per-transition test below does.
+            double peak_im = std::numeric_limits<double>::quiet_NaN();
             if (use_im)
             {
-              const double im = peaks.ion_mobility[k];
-              if (im < im_low || im > im_high) { continue; }
+              peak_im = peaks.ion_mobility[k];
+              if (peak_im < im_low || peak_im > im_high) { continue; }
             }
             // The tolerance belongs to the TRANSITION, not to the peak:
             // a match means |peak - transition| <= transition * ppm. Searching
@@ -466,20 +483,27 @@ namespace ODIA
             // So the SEARCH window is deliberately a little wide, and the
             // exact test is applied per candidate inside it.
             const double ppm = options.fragment_ppm * 1e-6;
+          const double im_half = options.precursor_im_window;
+          const bool sum_peaks = options.aggregate == Options::Aggregate::Sum;
             std::size_t i = x.bucket[x.bucketOf(std::max(m - slack, x.mz.front()))];
             const float intensity = peaks.intensity[k];
             for (; i < x.mz.size() && x.mz[i] <= m + slack; ++i)
             {
               if (std::abs(m - x.mz[i]) > x.mz[i] * ppm) { continue; }
+              // Per-precursor mobility. Skipped when either side is unknown:
+              // absent information is not evidence of mismatch.
+              if (im_half > 0.0 && !std::isnan(peak_im))
+              {
+                const float want = x.precursor_im[i];
+                if (!std::isnan(want) && std::abs(peak_im - want) > im_half) { continue; }
+              }
               if (c < x.first_live_cycle[i] || c >= x.last_live_cycle[i]) { continue; }
               const std::size_t at = x.point_begin[i] + (c - x.first_live_cycle[i]);
               // Maximum, not sum: two peaks inside one tolerance are the same
               // ion split by centroiding far more often than they are two ions.
-              if (intensity > out.intensity[at])
-              {
-                if (out.intensity[at] == 0.0f) { ++local_nonzero; }
-                out.intensity[at] = intensity;
-              }
+              if (out.intensity[at] == 0.0f && intensity > 0.0f) { ++local_nonzero; }
+              if (sum_peaks) { out.intensity[at] += intensity; }
+              else if (intensity > out.intensity[at]) { out.intensity[at] = intensity; }
             }
           }
         }
