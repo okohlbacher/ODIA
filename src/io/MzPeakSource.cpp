@@ -152,6 +152,12 @@ namespace ODIA
             for (std::size_t k = 0; k < order.size(); ++k) { order[k] = k; }
             std::sort(order.begin(), order.end(),
                       [&](std::size_t a, std::size_t b) { return at[a] < at[b]; });
+            // Adjacent bands SHARE their boundary: one window's upper limit is
+            // the next one's lower limit, the same double. That is deliberate
+            // -- there is no gap to leave between two halves of a midpoint --
+            // and it is safe only because the band is half-open, [low, high).
+            // See IsolationWindow: with a closed interval a peak landing
+            // exactly on a split enters both windows and is counted twice.
             for (std::size_t r = 0; r < order.size(); ++r)
             {
               const std::size_t k = order[r];

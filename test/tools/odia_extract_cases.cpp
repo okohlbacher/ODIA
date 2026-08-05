@@ -382,6 +382,54 @@ namespace
     const auto none = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
     checkNear(sumTrace(none, tr), 3 * 20.0, "with both off, nothing is filtered");
   }
+
+  /// A peak exactly on the boundary between two co-packed windows.
+  ///
+  /// S08 packs two isolation windows into one frame and the reader hands both
+  /// the SAME merged peak list, separated only by a mobility band -- and that
+  /// band is derived, not stated: the split is the midpoint between the two
+  /// windows' mobility positions, so the bands are adjacent and share their
+  /// boundary exactly. A test inclusive at both ends therefore puts a peak
+  /// sitting on the midpoint into BOTH windows, where under Sum it is
+  /// integrated twice into two different precursors' traces.
+  ///
+  /// Measure zero on real data and impossible to see downstream, which is
+  /// exactly why it needs a test rather than a measurement: the band is
+  /// half-open, [im_low, im_high), so every peak of a frame lands in one
+  /// window.
+  void caseBandEdge()
+  {
+    ScriptedRun run;
+    const auto w0 = run.addWindow(500.0, 510.0, 0.80, 1.00);
+    const auto w1 = run.addWindow(510.001, 520.0, 1.00, 1.20);
+    for (int c = 0; c < 3; ++c)
+    {
+      // One frame, two windows, one peak list -- as the reader serves S08.
+      for (const auto w : {w0, w1})
+      {
+        const auto s = run.addSpectrum(w, 100.0 + 10.0 * c);
+        run.addPeak(s, 400.0, 3.0f, 1.10f);    // window 1's band
+        run.addPeak(s, 400.0, 5.0f, 1.00f);    // exactly on the boundary
+        run.addPeak(s, 400.0, 2.0f, 0.90f);    // window 0's band
+      }
+    }
+
+    ScriptedLibrary lib;
+    lib.addPrecursor(505.0);                   // window 0, no library 1/K0
+    const auto lower = lib.addTransition(400.0);
+    lib.addPrecursor(515.0);                   // window 1
+    const auto upper = lib.addTransition(400.0);
+
+    auto opt = plainOptions();
+    opt.precursor_im_window = 0.0;             // the frame's band is the only test
+    const auto x = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+    checkRepresentation(x);
+
+    checkNear(sumTrace(x, lower), 3 * 2.0, "the lower window stops below the boundary");
+    checkNear(sumTrace(x, upper), 3 * 8.0, "the upper window starts at the boundary");
+    checkNear(sumTrace(x, lower) + sumTrace(x, upper), 3 * 10.0,
+              "every peak of the frame is counted exactly once");
+  }
 }
 
 int main(int argc, char** argv)
@@ -393,10 +441,12 @@ int main(int argc, char** argv)
   else if (which == "aggregate") { caseAggregate(); }
   else if (which == "mobility") { caseMobility(); }
   else if (which == "im_gating") { caseImGating(); }
+  else if (which == "band_edge") { caseBandEdge(); }
   else
   {
     std::fprintf(stderr,
-                 "usage: odia_extract_cases <invalid_mz|aggregate|mobility|im_gating>\n");
+                 "usage: odia_extract_cases "
+                 "<invalid_mz|aggregate|mobility|im_gating|band_edge>\n");
     return 2;
   }
 

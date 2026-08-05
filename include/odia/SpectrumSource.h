@@ -23,9 +23,16 @@ namespace ODIA
     double mz_low = 0.0;
     double mz_high = 0.0;
 
-    /// Ion-mobility bounds, for a run that separates by it. A run without
+    /// Ion-mobility bounds, HALF-OPEN: [im_low, im_high). A run without
     /// mobility reports the full range rather than a sentinel, so callers
     /// never have to branch on "does this run have mobility".
+    ///
+    /// Half-open because adjacent bands share a boundary exactly. On a
+    /// diaPASEF run the band is derived rather than stated -- the split
+    /// between two co-packed windows is the midpoint between their mobility
+    /// positions -- so a closed interval at both ends puts a peak sitting on
+    /// that midpoint into both windows, where under Sum it is integrated
+    /// twice. Measure zero, and cheaper to define away than to find later.
     double im_low = -std::numeric_limits<double>::infinity();
     double im_high = std::numeric_limits<double>::infinity();
 

@@ -543,7 +543,13 @@ namespace ODIA
             // what the per-transition test below does.
             const double peak_im = has_im ? double(peaks.ion_mobility[k])
                                           : std::numeric_limits<double>::quiet_NaN();
-            if (use_band && (peak_im < im_low || peak_im > im_high)) { continue; }
+            // Half-open, [im_low, im_high). Co-packed windows are separated by
+            // a DERIVED band -- the split is the midpoint between their two
+            // mobility positions -- so adjacent bands share their boundary
+            // exactly, and a peak sitting on it would enter both windows and be
+            // integrated twice under Sum. Measure zero on real data, and the
+            // reason it is stated as a convention rather than left to chance.
+            if (use_band && (peak_im < im_low || peak_im >= im_high)) { continue; }
             // The tolerance belongs to the TRANSITION, not to the peak:
             // a match means |peak - transition| <= transition * ppm. Searching
             // by peak makes it tempting to size the window on the peak
