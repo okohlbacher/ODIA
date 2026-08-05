@@ -545,3 +545,21 @@ add_test(NAME mobility_band_derivation COMMAND odia_mobility_bands)
 # offset comes back as a trend rather than as its average, and that a residual
 # which is flat in m/z yields the constant model instead of a spurious slope.
 add_test(NAME mass_calibration_recovers_offset COMMAND odia_mass_calibration)
+
+# The two TSV writers, byte for byte against the std::ofstream form they
+# replace.
+#
+# Both were formatting-bound and not disk-bound -- `ofstream <<` measured at
+# 25.4 MB/s against 1,042 MB/s for fwrite of pre-rendered bytes on the same
+# NVMe -- so both now render through std::to_chars. That buys ~40x against
+# exactly one risk: to_chars defaults to shortest round-trip where the stream
+# defaults to 6 significant digits, so a wrong precision does not round
+# differently, it writes a different file. Nothing else in the suite reads
+# either file's numbers closely enough to notice.
+#
+# `files` is the end-to-end diff; `formatting` is the sweep that covers the
+# values a fixture cannot hold -- subnormals, extreme exponents, NaN and inf.
+add_test(NAME tsv_writers_are_byte_identical
+         COMMAND odia_tsv_writers files "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME tsv_number_formatting_matches_ostream
+         COMMAND odia_tsv_writers formatting)

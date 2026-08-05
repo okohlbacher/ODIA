@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <odia/DIANNLibraryFile.h>
+#include <odia/TextWriter.h>
 
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
@@ -437,21 +438,32 @@ namespace ODIA
     }
   }
 
+  /// 7.28 GB for the human library, and it was the second-largest item in
+  /// Phase 1 -- 211.7 s, 26% of the stage, and untimed until now. At 34.4 MB/s
+  /// it sat on `ofstream <<`'s measured 25.4 MB/s line and nowhere near the
+  /// NVMe's 1,042 MB/s, so the cost is number formatting, not disk. TextWriter
+  /// renders the same digits through to_chars into a reusable buffer; see its
+  /// header for why the precisions below are passed explicitly, and
+  /// `odia_tsv_writers` for the byte-for-byte check against this function's
+  /// previous ofstream form.
   void DIANNLibraryFile::storeTSV(const std::string& filename, const Library& library)
   {
-    std::ofstream out(filename);
-    if (!out) { throw std::runtime_error("cannot write library: " + filename); }
+    TextWriter out(filename);
 
-    out << Columns::PRECURSOR_ID << '\t' << Columns::MODIFIED_SEQUENCE << '\t'
-        << Columns::PRECURSOR_CHARGE << '\t' << Columns::DECOY << '\t'
-        << Columns::RT << '\t' << Columns::IM << '\t'
-        << Columns::PRECURSOR_MZ << '\t' << Columns::PRODUCT_MZ << '\t'
-        << Columns::RELATIVE_INTENSITY << '\t' << Columns::FRAGMENT_TYPE << '\t'
-        << Columns::FRAGMENT_CHARGE << '\t' << Columns::FRAGMENT_SERIES_NUMBER << '\t'
-        << Columns::FRAGMENT_LOSS_TYPE << '\t' << Columns::PROTEIN_GROUP << '\t'
-        << Columns::CCS << '\n';
+    for (const char* column : {Columns::PRECURSOR_ID, Columns::MODIFIED_SEQUENCE,
+                               Columns::PRECURSOR_CHARGE, Columns::DECOY,
+                               Columns::RT, Columns::IM,
+                               Columns::PRECURSOR_MZ, Columns::PRODUCT_MZ,
+                               Columns::RELATIVE_INTENSITY, Columns::FRAGMENT_TYPE,
+                               Columns::FRAGMENT_CHARGE, Columns::FRAGMENT_SERIES_NUMBER,
+                               Columns::FRAGMENT_LOSS_TYPE, Columns::PROTEIN_GROUP})
+    {
+      out.put(column);
+      out.put('\t');
+    }
+    out.put(Columns::CCS);
+    out.put('\n');
 
-    out << std::defaultfloat;
     const auto& p = library.precursors();
     const auto& t = library.transitions();
     for (std::size_t i = 0; i < library.precursorCount(); ++i)
@@ -470,35 +482,34 @@ namespace ODIA
         // Without the suffix, reloading our own output merged each such pair and
         // re-labelled the decoy's transitions as target evidence -- 33,390
         // precursors became 33,386, silently, with no transitions lost.
-        out << seq << z << (p.decoy[i] ? "_decoy" : "") << '\t'
-            << seq << '\t' << z << '\t'
-            << static_cast<int>(p.decoy[i]) << '\t';
-        out.precision(9);
+        out.put(seq); out.integer(z); out.put(p.decoy[i] ? "_decoy" : ""); out.put('\t');
+        out.put(seq); out.put('\t'); out.integer(z); out.put('\t');
+        out.integer(p.decoy[i]); out.put('\t');
         // An unpredicted retention time is written as an empty field, not as
         // "nan": no TSV consumer accepts the latter, and it propagates into
         // anything that reads the library back.
-        if (std::isnan(p.irt[i])) { out << ""; } else { out << p.irt[i]; }
-        out << '\t';
-        if (has_im) { out << p.im[i]; } else { out << 0; }
-        out << '\t';
-        out.precision(10);
-        out << fromFixed(p.mz[i]) << '\t' << fromFixed(t.product_mz[j]) << '\t';
-        out.precision(9);
-        out << t.library_intensity[j] << '\t' << toString(t.type[j]) << '\t'
-            << static_cast<int>(t.charge[j]) << '\t'
-            << static_cast<int>(t.ordinal[j]) << '\t'
-            << toString(t.loss[j]) << '\t' << pg << '\t';
+        if (!std::isnan(p.irt[i])) { out.number(p.irt[i], 9); }
+        out.put('\t');
+        if (has_im) { out.number(p.im[i], 9); } else { out.integer(0); }
+        out.put('\t');
+        out.number(fromFixed(p.mz[i]), 10); out.put('\t');
+        out.number(fromFixed(t.product_mz[j]), 10); out.put('\t');
+        out.number(t.library_intensity[j], 9); out.put('\t');
+        out.put(toString(t.type[j])); out.put('\t');
+        out.integer(t.charge[j]); out.put('\t');
+        out.integer(t.ordinal[j]); out.put('\t');
+        out.put(toString(t.loss[j])); out.put('\t');
+        out.put(pg); out.put('\t');
         // Empty rather than "nan" when absent, as for RT: no TSV consumer
         // accepts the latter, and a 0 here would read as a real cross-section.
-        if (has_ccs) { out << p.ccs[i]; }
-        out << '\n';
+        if (has_ccs) { out.number(p.ccs[i], 9); }
+        out.put('\n');
       }
     }
 
-    // A stream checked only at open reports success on a full disk, an exceeded
+    // A file checked only at open reports success on a full disk, an exceeded
     // quota or a broken mount, leaving a truncated library behind.
-    out.flush();
-    if (!out) { throw std::runtime_error("failed while writing library: " + filename); }
+    out.close();
   }
 
 } // namespace ODIA

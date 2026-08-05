@@ -9,6 +9,7 @@
 #include <fstream>
 #include <odia/SpectrumSource.h>
 #include <odia/ChromatogramExtractor.h>
+#include <odia/ChromatogramTsv.h>
 #include <odia/MassCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/RtCalibration.h>
@@ -312,16 +313,25 @@ protected:
 
     if (!out_chrom.empty())
     {
+      // Timed and reported. It was neither, despite being 33% of Phase-2 wall
+      // -- ~301 s against 613 s of extraction at 9,522 precursors -- which had
+      // to be recovered by subtracting the extractor's own timers from the
+      // total.
+      long long chrom_write_ms = 0;
       try
       {
-        writeChromatograms_(out_chrom, library, chromatograms);
+        const auto t_write = std::chrono::steady_clock::now();
+        ODIA::writeChromatogramTsv(out_chrom, library, chromatograms);
+        chrom_write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t_write).count();
       }
       catch (const std::exception& e)
       {
         writeLogError_(std::string("Failed to write chromatograms: ") + e.what());
         return CANNOT_WRITE_OUTPUT_FILE;
       }
-      writeLogInfo_("wrote chromatograms to " + out_chrom);
+      writeLogInfo_("wrote chromatograms to " + out_chrom + " in " +
+                    std::to_string(chrom_write_ms) + " ms");
     }
     if (keep != nullptr) { *keep = std::move(chromatograms); }
     return EXECUTION_OK;
@@ -554,45 +564,6 @@ protected:
           << '\t' << g.qvalue << '\t' << g.pep;
       for (const auto v : g.sub_scores) { out << '\t' << v; }
       out << '\n';
-    }
-    if (!out) { throw std::runtime_error("write failed for " + path); }
-  }
-
-  /// Long format, one row per point: transition, retention time, intensity.
-  ///
-  /// Deliberately not one row per transition with packed arrays. This file is
-  /// what the scoring stage and any external check will read, and a long table
-  /// is what every tool that might read it -- pandas, R, DuckDB -- takes
-  /// without a parser of its own.
-  static void writeChromatograms_(const std::string& path, const ODIA::Library& library,
-                                  const ODIA::Chromatograms& chromatograms)
-  {
-    std::ofstream out(path);
-    if (!out) { throw std::runtime_error("cannot open " + path); }
-    out << "Precursor.Id\tTransition.Index\tProduct.Mz\tRT\tIntensity\n";
-
-    const auto& p = library.precursors();
-    const auto& t = library.transitions();
-    for (std::size_t i = 0; i < library.precursorCount(); ++i)
-    {
-      // The library does not store Precursor.Id; DIA-NN's convention is
-      // sequence + charge, and the writer reconstructs it the same way the
-      // library writer does so the two files join on it.
-      const auto seq = library.strings().get(p.modified_sequence[i]);
-      const std::string id = std::string(seq) + std::to_string(static_cast<int>(p.charge[i]));
-      for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
-      {
-        const std::uint32_t tr = p.transition_begin[i] + k;
-        if (tr >= chromatograms.begin.size()) { continue; }
-        const std::uint64_t b = chromatograms.begin[tr];
-        const std::uint32_t n = chromatograms.count[tr];
-        for (std::uint32_t j = 0; j < n; ++j)
-        {
-          out << id << '\t' << tr << '\t' << ODIA::fromFixed(t.product_mz[tr]) << '\t'
-              << chromatograms.retentionTime(tr, j) << '\t'
-              << chromatograms.intensity[b + j] << '\n';
-        }
-      }
     }
     if (!out) { throw std::runtime_error("write failed for " + path); }
   }
@@ -913,6 +884,12 @@ protected:
 
     if (!out_lib.empty())
     {
+      // Timed and reported. It was neither, and it is 26% of Phase 1 -- 211.7 s
+      // of 821.1 s on the human library -- so the stage table had to obtain it
+      // by subtracting the generator's own `load time` from the total wall.
+      // That also makes it the only Phase-1 item no accelerator touches: on a
+      // GPU, where inference is ~4 min, this write is the largest single item.
+      const auto t_write = std::chrono::steady_clock::now();
       try
       {
         ODIA::DIANNLibraryFile::storeTSV(out_lib, library);
@@ -922,6 +899,10 @@ protected:
         writeLogError_(std::string("Failed to write assay library: ") + e.what());
         return CANNOT_WRITE_OUTPUT_FILE;
       }
+      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t_write).count();
+      writeLogInfo_("wrote assay library to " + out_lib + " in " +
+                    std::to_string(ms) + " ms");
     }
 
     return EXECUTION_OK;
