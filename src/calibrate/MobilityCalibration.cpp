@@ -659,10 +659,19 @@ namespace ODIA
     };
   } // namespace
 
-  std::vector<MobilityResidual> MobilityCalibration::collect(const Library& library,
-                                                             SpectrumSource& source,
-                                                             const Options& opt,
-                                                             Diagnostics* diag)
+  /// The one probe body. @p anchors null is the BLIND probe -- sample
+  /// precursors, sample blocks; non-null is the ANCHORED one -- probe exactly
+  /// the given precursors, exactly where their scored peak groups put them.
+  ///
+  /// The two differ in three places and nowhere else: which precursors become
+  /// cells, what retention time each cell is pinned to, and which cycle blocks
+  /// are visited. Everything after that -- the fragment agreement, the mobility
+  /// clustering, the co-occurrence over a block, the brightest-cluster rule --
+  /// is the same code, so a residual from one is comparable with a residual
+  /// from the other.
+  std::vector<MobilityResidual> MobilityCalibration::probe(
+    const Library& library, SpectrumSource& source, const Options& opt,
+    const std::vector<MobilityAnchor>* anchors, Diagnostics* diag)
   {
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<MobilityResidual> out;
@@ -680,48 +689,137 @@ namespace ODIA
     const auto cycles = RunProbe::cycles(source, window_of);
     if (cycles.empty()) { return out; }
 
+    // The run's cycle geometry, needed before the cells are built because the
+    // anchored probe pins a cell to a MEASURED retention time and has to turn
+    // that into a block index.
+    const std::size_t block_len = std::max<std::size_t>(1, opt.cycle_block);
+    std::vector<double> cycle_rt(cycles.size());
+    for (std::size_t c = 0; c < cycles.size(); ++c)
+    {
+      cycle_rt[c] = info[cycles[c].first].retention_time;
+    }
+    double cycle_seconds = 0.0;
+    if (cycles.size() > 1)
+    {
+      std::vector<double> step;
+      step.reserve(cycles.size() - 1);
+      for (std::size_t c = 1; c < cycles.size(); ++c)
+      {
+        const double d = cycle_rt[c] - cycle_rt[c - 1];
+        if (d > 0.0) { step.push_back(d); }
+      }
+      cycle_seconds = medianOf(step);
+    }
+    const auto cycleAt = [&](double when) {
+      const auto it = std::lower_bound(cycle_rt.begin(), cycle_rt.end(), when);
+      if (it == cycle_rt.begin()) { return std::size_t{0}; }
+      if (it == cycle_rt.end()) { return cycle_rt.size() - 1; }
+      const std::size_t hi = static_cast<std::size_t>(it - cycle_rt.begin());
+      return when - cycle_rt[hi - 1] <= cycle_rt[hi] - when ? hi - 1 : hi;
+    };
+
     // require_im: a precursor with no library 1/K0 has no residual to give, and
     // a library with none at all is the second no-op this class has to name.
-    auto sampled = RunProbe::samplePrecursors(library, opt.max_precursors,
-                                              opt.min_fragments_matched, true, false);
-    const std::size_t n_targets = sampled.size();
-    if (diag)
+    const bool anchored = anchors != nullptr;
+    std::vector<std::uint32_t> sampled;
+    std::vector<float> slot_rt;     ///< where to look; NaN = wherever the iRT map says
+    std::vector<char> slot_decoy;   ///< 1 = this slot is part of the null
+    std::vector<double> shifts;
+    std::size_t n_targets = 0;
+
+    if (anchored)
     {
-      diag->precursors_sampled = n_targets;
-      diag->precursors_with_library_im = n_targets;
-      diag->library_has_mobility = n_targets != 0;
+      // A precursor named twice is kept once. The fold key of the fit is the
+      // precursor, so a second cell for the same one is the same anchor voting
+      // twice -- and on this axis a precursor has exactly one 1/K0 anyway.
+      std::vector<char> seen(library.precursorCount(), 0);
+      sampled.reserve(anchors->size());
+      bool any_library_im = false;
+      for (const auto& a : *anchors)
+      {
+        const std::size_t i = a.precursor;
+        if (i >= library.precursorCount() || seen[i]) { continue; }
+        seen[i] = 1;
+        if (std::isfinite(p.im[i])) { any_library_im = true; }
+        if (p.mz[i] == MZ_INVALID || !std::isfinite(p.im[i]) || !std::isfinite(a.rt)) { continue; }
+        if (p.transition_count[i] < opt.min_fragments_matched) { continue; }
+        sampled.push_back(static_cast<std::uint32_t>(i));
+        slot_rt.push_back(a.rt);
+        slot_decoy.push_back(a.decoy || p.decoy[i] != 0 ? 1 : 0);
+      }
+      for (char d : slot_decoy) { n_targets += d ? 0u : 1u; }
+      if (diag)
+      {
+        diag->anchors_given = anchors->size();
+        diag->anchors_probed = sampled.size();
+        diag->precursors_sampled = n_targets;
+        diag->precursors_with_library_im = sampled.size();
+        diag->library_has_mobility = any_library_im;
+        diag->control_precursors = sampled.size() - n_targets;
+        diag->anchor_kind = "peak groups this run has already SCORED";
+        // Not Options::control: the m/z-shifted control is measurably too easy
+        // on this axis -- it reported 99.7% purity on a sample that was almost
+        // entirely noise, because +7.33 Th lands off the amino-acid mass
+        // lattice where peaks never are. The null here is the library's own
+        // decoys at the apexes their own peak groups claimed.
+        diag->control_kind = diag->control_precursors == 0
+          ? "none (no decoy anchor was given, so the gate has nothing to compare against)"
+          : "the library's own decoys, at the apexes their own peak groups claimed";
+      }
+    }
+    else
+    {
+      sampled = RunProbe::samplePrecursors(library, opt.max_precursors,
+                                           opt.min_fragments_matched, true, false);
+      n_targets = sampled.size();
+      slot_decoy.assign(sampled.size(), 0);
+      if (diag)
+      {
+        diag->precursors_sampled = n_targets;
+        diag->precursors_with_library_im = n_targets;
+        diag->library_has_mobility = n_targets != 0;
+      }
+
+      // ---- the null --------------------------------------------------------
+      // The library's own decoys where it has them, an m/z shift where it does
+      // not. See Options::control for the measurement that made that the order.
+      if (opt.control == Options::Control::LibraryDecoys)
+      {
+        const auto controls = RunProbe::samplePrecursors(library, opt.max_precursors,
+                                                         opt.min_fragments_matched, true, true);
+        sampled.insert(sampled.end(), controls.begin(), controls.end());
+        slot_decoy.resize(sampled.size(), 1);
+        if (diag)
+        {
+          diag->control_precursors = controls.size();
+          diag->control_kind = controls.empty() ? "none (the library has no decoys)"
+                                                : "the library's own decoy precursors";
+        }
+        if (controls.empty() && !opt.decoy_shifts.empty())
+        {
+          shifts = opt.decoy_shifts;
+          if (diag) { diag->control_kind = "m/z-shifted fragments (no library decoys)"; }
+        }
+      }
+      else if (opt.control == Options::Control::MzShift)
+      {
+        shifts = opt.decoy_shifts;
+        if (diag) { diag->control_kind = "m/z-shifted fragments"; }
+      }
+      slot_rt.assign(sampled.size(), std::numeric_limits<float>::quiet_NaN());
     }
     if (sampled.empty()) { return out; }
 
-    // ---- the null ----------------------------------------------------------
-    // The library's own decoys where it has them, an m/z shift where it does
-    // not. See Options::control for the measurement that made that the order.
-    std::vector<double> shifts;
-    if (opt.control == Options::Control::LibraryDecoys)
-    {
-      const auto controls = RunProbe::samplePrecursors(library, opt.max_precursors,
-                                                       opt.min_fragments_matched, true, true);
-      sampled.insert(sampled.end(), controls.begin(), controls.end());
-      if (diag)
-      {
-        diag->control_precursors = controls.size();
-        diag->control_kind = controls.empty() ? "none (the library has no decoys)"
-                                              : "the library's own decoy precursors";
-      }
-      if (controls.empty() && !opt.decoy_shifts.empty())
-      {
-        shifts = opt.decoy_shifts;
-        if (diag) { diag->control_kind = "m/z-shifted fragments (no library decoys)"; }
-      }
-    }
-    else if (opt.control == Options::Control::MzShift)
-    {
-      shifts = opt.decoy_shifts;
-      if (diag) { diag->control_kind = "m/z-shifted fragments"; }
-    }
     const std::size_t variants = 1 + shifts.size();
-    const auto& lib_decoy = p.decoy;
     const bool rt_restricted = opt.rt_window_seconds > 0.0 && opt.irt_slope != 0.0;
+    // An anchor's retention time is measured, so the window round it only has
+    // to cover the block the probe scores over -- not the tens of seconds a
+    // predicted iRT is wrong by.
+    const double rt_window = anchored
+      ? (opt.anchor_rt_window_seconds > 0.0
+           ? opt.anchor_rt_window_seconds
+           : std::max(1.0, cycle_seconds * static_cast<double>(block_len)))
+      : opt.rt_window_seconds;
 
     // ---- one window each, and that window's query index --------------------
     std::vector<WindowIndex> index(windows.size());
@@ -771,9 +869,12 @@ namespace ODIA
         }
         if (!any) { continue; }
         x.cell_im.push_back(p.im[i]);
-        x.cell_rt.push_back(rt_restricted
-                              ? static_cast<float>(opt.irt_slope * p.irt[i] + opt.irt_intercept)
-                              : std::numeric_limits<float>::quiet_NaN());
+        x.cell_rt.push_back(anchored
+                              ? slot_rt[s]
+                              : (rt_restricted
+                                   ? static_cast<float>(opt.irt_slope * p.irt[i] +
+                                                        opt.irt_intercept)
+                                   : std::numeric_limits<float>::quiet_NaN()));
         x.cell_slot.push_back(static_cast<std::uint32_t>(s));
         x.cell_variant.push_back(static_cast<std::uint8_t>(v));
       }
@@ -789,10 +890,28 @@ namespace ODIA
 
     // CONTIGUOUS BLOCKS, not scattered cycles -- see Options::cycle_block for the
     // measurement that says the scattered version cannot work on this axis.
-    const std::size_t block_len = std::max<std::size_t>(1, opt.cycle_block);
-    const std::size_t want_blocks = std::max<std::size_t>(1, opt.cycles / block_len);
-    const auto starts = RunProbe::stratifiedBlocks(cycles.size(), want_blocks, block_len,
-                                                   opt.sample_seed);
+    std::vector<std::size_t> starts;
+    if (anchored)
+    {
+      // Only the blocks that hold an anchor's apex, in run order. That is the
+      // whole cost model: one sequential walk whose length is decided by where
+      // the run's own confident peaks are, not by a sampling parameter.
+      std::vector<char> want(cycles.size() / block_len + 1, 0);
+      for (std::size_t s = 0; s < sampled.size(); ++s)
+      {
+        want[cycleAt(static_cast<double>(slot_rt[s])) / block_len] = 1;
+      }
+      for (std::size_t b = 0; b < want.size(); ++b)
+      {
+        if (want[b] && b * block_len < cycles.size()) { starts.push_back(b * block_len); }
+      }
+    }
+    else
+    {
+      const std::size_t want_blocks = std::max<std::size_t>(1, opt.cycles / block_len);
+      starts = RunProbe::stratifiedBlocks(cycles.size(), want_blocks, block_len,
+                                          opt.sample_seed);
+    }
     if (diag) { diag->blocks = starts.size(); }
 
     std::vector<Cell> cell(total_cells);
@@ -862,7 +981,7 @@ namespace ODIA
           // Only where the library says this precursor elutes, when the caller
           // has an iRT map to say it with.
           const float when = x.cell_rt[lc];
-          if (std::isfinite(when) && std::abs(now - double(when)) > opt.rt_window_seconds)
+          if (std::isfinite(when) && std::abs(now - double(when)) > rt_window)
           {
             usable[lc] = 0;
             ++off_rt;
@@ -1034,7 +1153,7 @@ namespace ODIA
         r.rt = cl.rt;
         r.fragments = cl.n;
         r.cycles = cl.cycles;
-        r.decoy = x.cell_variant[lc] != 0 || lib_decoy[i] != 0;
+        r.decoy = x.cell_variant[lc] != 0 || slot_decoy[x.cell_slot[lc]] != 0;
         out.push_back(r);
       }
     }
@@ -1047,8 +1166,12 @@ namespace ODIA
       diag->spectra_with_mobility = with_mobility;
       diag->run_has_mobility = with_mobility > 0;
       for (const auto& r : out) { (r.decoy ? diag->decoy_cells : diag->target_cells) += 1; }
-      diag->precursors_outside_band = static_cast<std::size_t>(
-        std::count(ever_usable.begin(), ever_usable.begin() + n_targets, 0));
+      std::size_t outside = 0;
+      for (std::size_t s = 0; s < sampled.size(); ++s)
+      {
+        if (!slot_decoy[s] && !ever_usable[s]) { ++outside; }
+      }
+      diag->precursors_outside_band = outside;
       if (!band_widths.empty())
       {
         std::nth_element(band_widths.begin(), band_widths.begin() + band_widths.size() / 2,
@@ -1061,6 +1184,68 @@ namespace ODIA
     return out;
   }
 
+  std::vector<MobilityResidual> MobilityCalibration::collect(const Library& library,
+                                                             SpectrumSource& source,
+                                                             const Options& opt, Diagnostics* diag)
+  {
+    return probe(library, source, opt, nullptr, diag);
+  }
+
+  std::vector<MobilityResidual> MobilityCalibration::collectAt(
+    const Library& library, SpectrumSource& source,
+    const std::vector<MobilityAnchor>& anchors, const Options& opt, Diagnostics* diag)
+  {
+    return probe(library, source, opt, &anchors, diag);
+  }
+
+  namespace
+  {
+    /// The two states that are NOT a failed calibration, named once so both
+    /// entry points report them identically.
+    bool noAxis(const MobilityCalibration::Diagnostics& d, MobilityCalibration::Model& m)
+    {
+      if (!d.run_has_mobility)
+      {
+        m.run_has_mobility = false;
+        m.form = "none";
+        m.reason = "the run carries no ion mobility (no spectrum in the probed cycles has a "
+                   "per-peak 1/K0), so there is no mobility axis to calibrate and extraction "
+                   "is left exactly as it was";
+        return true;
+      }
+      if (!d.library_has_mobility)
+      {
+        m.library_has_mobility = false;
+        m.form = "none";
+        m.reason = "the library carries no 1/K0, so there is nothing to correct and extraction "
+                   "is left exactly as it was";
+        return true;
+      }
+      return false;
+    }
+  } // namespace
+
+  MobilityCalibration::Model MobilityCalibration::calibrateFrom(
+    const Library& library, SpectrumSource& source,
+    const std::vector<MobilityAnchor>& anchors, const Options& opt, Diagnostics* diag)
+  {
+    Diagnostics local;
+    Diagnostics& d = diag ? *diag : local;
+    if (anchors.empty())
+    {
+      Model m;
+      d.anchor_kind = "peak groups this run has already SCORED";
+      m.form = "none";
+      m.reason = "no scored anchor was offered, so there is nothing to measure the 1/K0 axis "
+                 "at and the library's value is used as supplied";
+      return m;
+    }
+    const auto residuals = collectAt(library, source, anchors, opt, &d);
+    Model m;
+    if (noAxis(d, m)) { return m; }
+    return fit(residuals, opt, &d);
+  }
+
   MobilityCalibration::Model MobilityCalibration::calibrate(const Library& library,
                                                             SpectrumSource& source,
                                                             const Options& opt, Diagnostics* diag)
@@ -1071,25 +1256,8 @@ namespace ODIA
 
     // The two no-ops come first and are named, because "there is no 1/K0 axis
     // here" is not a failed calibration and must not be logged as one.
-    if (!d.run_has_mobility)
-    {
-      Model m;
-      m.run_has_mobility = false;
-      m.form = "none";
-      m.reason = "the run carries no ion mobility (no spectrum in the probed cycles has a "
-                 "per-peak 1/K0), so there is no mobility axis to calibrate and extraction "
-                 "is left exactly as it was";
-      return m;
-    }
-    if (!d.library_has_mobility)
-    {
-      Model m;
-      m.library_has_mobility = false;
-      m.form = "none";
-      m.reason = "the library carries no 1/K0, so there is nothing to correct and extraction "
-                 "is left exactly as it was";
-      return m;
-    }
+    Model m;
+    if (noAxis(d, m)) { return m; }
     return fit(residuals, opt, &d);
   }
 
@@ -1104,6 +1272,14 @@ namespace ODIA
     o << "ion-mobility calibration: " << verdict << " -- " << m.reason << "\n";
     if (!m.run_has_mobility || !m.library_has_mobility) { return o.str(); }
 
+    if (diag && diag->anchors_given)
+    {
+      o << "  anchors:     " << diag->anchors_probed << " of " << diag->anchors_given
+        << " offered were probed at their own apexes ("
+        << diag->precursors_sampled << " target, "
+        << diag->control_precursors << " null), over " << diag->blocks
+        << " cycle blocks\n";
+    }
     o << "  residuals:   " << m.residuals << " target, " << m.decoy_residuals << " control"
       << (diag ? " from " + diag->control_kind : std::string());
     if (diag && diag->spectra_decoded)

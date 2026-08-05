@@ -139,13 +139,66 @@
 // mobility, stops after the first block: 84.1 s against 83.3 s with the stage
 // switched off, i.e. it costs 0.8 s to establish that there is nothing here.
 //
-// On S08 it has so far bought a refusal. The gate reads a peakedness of 3.99
+// On S08 the BLIND probe bought a refusal. The gate read a peakedness of 3.99
 // against a control at 3.65, a margin of 1.09x where 1.25x is required, and no
-// offset is applied -- the extracted chromatograms are byte-identical to the
-// uncalibrated ones. That is the correct answer for this probe on this run and
-// the reasons are in doc/BACKLOG.md; the lever is real (an oracle 1/K0 is worth
-// +7.99 recovery points) but reaching it needs anchors the run has SCORED, not
-// anchors a blind probe has guessed.
+// offset was applied. That is the correct answer for that probe on that run:
+// the lever is real (an oracle 1/K0 is worth +7.99 recovery points) but
+// reaching it needs anchors the run has SCORED, not anchors a blind probe has
+// guessed.
+//
+// ---------------------------------------------------------------------------
+// THE TWO ANCHOR SOURCES, AND WHY THERE ARE TWO
+// ---------------------------------------------------------------------------
+//
+// `collect()` is the BLIND probe: sample precursors, sample cycle blocks
+// spread over the gradient, keep whatever cluster the fragments agree on. It
+// needs nothing but the run, so it can be measured before the first extraction
+// -- and that is also its defect. On the mass axis a cell that holds no
+// precursor is harmless, because its residual is uniform in ppm and the mode
+// steps over it. On the mobility axis it is not: a wrong cell's 1/K0 sits
+// wherever the frame's peaks are DENSE, and peak density is a systematic.
+// Three measurements on S08 say the blind probe was finding density and not
+// precursors -- 7,995 Arabidopsis entrapment precursors, which cannot be in a
+// human sample, gave the same residual distribution as the 2,665 real targets;
+// the library's own decoys gave peakedness 3.65 against the targets' 3.99; and
+// the fitted correction made the out-of-fold scatter WORSE, 0.0099 -> 0.0141.
+//
+// `collectAt()` is the ANCHORED probe, and it is the one the prototype's +2.21
+// points came from. It is given a list of precursors that have ALREADY been
+// identified confidently, each with the retention time of the peak group that
+// identified it, and it looks only there -- one sequential walk of the run,
+// visiting only the cycle blocks that hold an anchor's apex. Two things change
+// and both matter:
+//
+//   * WHERE it looks is no longer a guess. A blind probe asked to find a
+//     precursor somewhere in a 150 s window over 40 scattered blocks gets one
+//     draw from the interference per block whether the precursor is there or
+//     not. An anchored probe looks at the few cycles where a SCORED peak group
+//     already put the peak, so an empty cell has nowhere to hide.
+//
+//   * WHAT the null is changes with it. The m/z-shifted control is too easy
+//     here -- MassCalibration's +7.33 Th shift moves a fragment off the
+//     amino-acid mass lattice into a part of the spectrum where peaks never
+//     are, and it reported 99.7% purity on a sample that was almost entirely
+//     noise. The anchored probe's null is the LIBRARY'S OWN DECOYS, probed at
+//     the apexes their own peak groups claimed. A decoy's fragments are real
+//     fragment masses of a real (shuffled) sequence and its claimed apex sits
+//     on real signal, so the null is drawn from the same interference the
+//     targets swim in.
+//
+// The chain is: pass 1 extracts wide and scores -> the confident targets and
+// the best-scoring decoys become anchors -> `collectAt()` measures their 1/K0
+// -> `fit()` gates and fits -> pass 2 extracts on the corrected axis. The fold
+// machinery is unchanged and still load-bearing: an anchor never receives the
+// correction its own fold produced.
+//
+// What the anchored probe COSTS is a second sequential pass over the run's
+// spectra. Anchors are spread over the whole gradient by construction, so the
+// blocks they select cover most of it; the alternative considered and rejected
+// was to accumulate an intensity-weighted 1/K0 alongside every chromatogram
+// point, which needs no extra decode but roughly doubles the chromatogram
+// store (1.65 -> 3.3 GiB on the S08 combined library) and pays that cost for
+// every point when only the apex is ever read.
 //
 #pragma once
 
@@ -180,7 +233,22 @@ namespace ODIA
     float rt = 0.0f;               ///< retention time of the winning spectrum, s
     std::uint8_t fragments = 0;    ///< how many agreed
     std::uint8_t cycles = 0;       ///< consecutive cycles it was seen in
-    bool decoy = false;            ///< from an m/z-shifted control cell
+    bool decoy = false;            ///< a control cell -- shifted, or a library decoy
+  };
+
+  /// One place in the run where a peak group has already been scored, and the
+  /// precursor it was scored for.
+  ///
+  /// This is what turns the blind probe into the anchored one. `rt` is the
+  /// APEX of a peak group, measured, not predicted -- so the probe does not
+  /// search a window, it visits a place. `decoy` marks the anchors that make up
+  /// the null: the same procedure applied to the library's own decoys, whose
+  /// best peak groups sit on real signal that is nevertheless not theirs.
+  struct MobilityAnchor
+  {
+    std::uint32_t precursor = 0;   ///< library index
+    float rt = 0.0f;               ///< the peak group's apex retention time, s
+    bool decoy = false;            ///< true for the null arm
   };
 
   /// Fits the run's 1/K0 prediction error, per charge and as a function of m/z.
@@ -280,6 +348,17 @@ namespace ODIA
       /// a block that overlaps its elution and a coincidence is in one.
       std::size_t cycle_block = 5;
       std::size_t min_cycles_matched = 4;
+
+      /// How far from an ANCHOR's apex the anchored probe may look, in seconds.
+      ///
+      /// Only `collectAt()` reads this; the blind probe uses
+      /// `rt_window_seconds` around a PREDICTED retention time and needs it
+      /// wide, because a predicted iRT is wrong by more than a peak is broad.
+      /// An anchor's retention time is measured, so this only has to cover the
+      /// blocks the peak actually spans. 0 means "derive it from the run": the
+      /// median cycle duration times `cycle_block`, which is the width of the
+      /// block the probe scores over.
+      double anchor_rt_window_seconds = 0.0;
 
       /// Seed for that draw. Fixed, not clock-derived.
       std::uint64_t sample_seed = 0x0D1A1130u;
@@ -575,6 +654,12 @@ namespace ODIA
       std::size_t decoy_cells = 0;
       std::size_t control_precursors = 0;   ///< library decoys probed as the null
       std::string control_kind = "none";
+
+      /// Where the probed positions came from, for the log: the blind sample,
+      /// or a named number of scored anchors.
+      std::string anchor_kind = "a blind sample of the run";
+      std::size_t anchors_given = 0;        ///< handed to collectAt(), before filtering
+      std::size_t anchors_probed = 0;       ///< of those, actually turned into a cell
       std::size_t spectra_decoded = 0;
       std::size_t spectra_with_mobility = 0;
       double band_width = 0.0;          ///< median frame band width seen
@@ -588,6 +673,20 @@ namespace ODIA
                                                  const Options& options,
                                                  Diagnostics* diagnostics = nullptr);
 
+    /// The ANCHORED probe: measure 1/K0 only where @p anchors say a peak group
+    /// was already scored.
+    ///
+    /// One sequential walk of the run, visiting the cycle blocks that hold an
+    /// anchor's apex and no others. Anchors need not be sorted. Anchors marked
+    /// `decoy`, and anchors that name a library decoy, produce control
+    /// residuals; `Options::control` is not consulted, because the null on this
+    /// axis is the library's own decoys and an m/z shift is measurably too easy.
+    static std::vector<MobilityResidual> collectAt(const Library& library,
+                                                   SpectrumSource& source,
+                                                   const std::vector<MobilityAnchor>& anchors,
+                                                   const Options& options,
+                                                   Diagnostics* diagnostics = nullptr);
+
     /// Fit a model to residuals from anywhere -- a run, or a synthetic sample.
     static Model fit(const std::vector<MobilityResidual>& residuals, const Options& options,
                      Diagnostics* diagnostics = nullptr);
@@ -596,8 +695,22 @@ namespace ODIA
     static Model calibrate(const Library& library, SpectrumSource& source,
                            const Options& options, Diagnostics* diagnostics = nullptr);
 
+    /// collectAt() then fit(), with the same no-mobility reporting calibrate()
+    /// has. This is the pass-2 entry point.
+    static Model calibrateFrom(const Library& library, SpectrumSource& source,
+                               const std::vector<MobilityAnchor>& anchors,
+                               const Options& options, Diagnostics* diagnostics = nullptr);
+
     /// Multi-line human-readable report. This is what the tool writes to the log.
     static std::string report(const Model& model, const Diagnostics* diagnostics = nullptr);
+
+  private:
+    /// The one probe body behind collect() and collectAt(). @p anchors null is
+    /// the blind sample; non-null is the anchored walk.
+    static std::vector<MobilityResidual> probe(const Library& library, SpectrumSource& source,
+                                               const Options& options,
+                                               const std::vector<MobilityAnchor>* anchors,
+                                               Diagnostics* diagnostics);
   };
 
 } // namespace ODIA

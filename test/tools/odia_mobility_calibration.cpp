@@ -196,6 +196,19 @@ namespace
     double true_fraction = 0.0;
     bool wandering = false;            ///< a 1/K0 that is different in every cycle
     bool peaked_control = false;       ///< also emit the m/z-shifted control, tighter
+    /// A precursor elutes only around its own apex cycle instead of being in
+    /// every cycle of the run. Needed for anything about ANCHORS: an anchor is
+    /// a retention time, and a run in which everything is everywhere cannot
+    /// tell a probe that looked in the right place from one that did not.
+    bool elute = false;
+    std::size_t elution_cycles = 4;    ///< half-width of the elution, in cycles
+    /// Fraction of the ABSENT precursors whose cell nevertheless fills with a
+    /// coherent cluster -- most of its fragments, at one stable but WRONG 1/K0,
+    /// in every cycle of the run. This is what a cell holding no precursor
+    /// actually looks like on this axis, and it is the whole reason the blind
+    /// probe was refused on S08: the cluster is there, it is reproducible, and
+    /// it is not the precursor.
+    double absent_interference = 0.0;
     std::size_t background = 2000;     ///< unrelated peaks per spectrum
     /// The truth: what to add to the library 1/K0 for this precursor.
     std::function<double(std::size_t /*index*/, std::uint8_t /*charge*/, double /*mz*/,
@@ -209,6 +222,9 @@ namespace
     std::vector<double> mz, im_library, planted;
     std::vector<std::uint8_t> charge;
     std::vector<char> present;
+    std::vector<char> interferes;          ///< absent, but its cell is full anyway
+    std::vector<std::size_t> apex_cycle;   ///< only meaningful with Plan::elute
+    std::vector<double> apex_rt;
   };
 
   void build(World& w, const Plan& plan,
@@ -232,6 +248,12 @@ namespace
       w.im_library.push_back(im);
       w.planted.push_back(offset_of(i, z, mz));
       w.present.push_back(u01(rng) < plan.present ? 1 : 0);
+      w.interferes.push_back(!w.present.back() && u01(rng) < plan.absent_interference ? 1 : 0);
+      w.apex_cycle.push_back(plan.elute
+        ? plan.elution_cycles +
+            std::size_t(u01(rng) * double(plan.cycles - 2 * plan.elution_cycles - 1))
+        : plan.cycles / 2);
+      w.apex_rt.push_back(60.0 + 12.0 * double(w.apex_cycle.back()));
       w.lib.addPrecursor(mz, z, plan.library_im ? static_cast<float>(im) : NA);
       for (int k = 0; k < 8; ++k)
       {
@@ -266,13 +288,23 @@ namespace
         const double lo = 400.0 + 100.0 * win, hi = 500.0 + 100.0 * win;
         for (std::size_t i = 0; i < plan.precursors; ++i)
         {
-          if (!w.present[i]) { continue; }
+          const bool here = w.present[i] != 0;
+          if (!here && !w.interferes[i]) { continue; }
           if (w.mz[i] < lo || w.mz[i] >= hi) { continue; }
-          const double truth = plan.wandering ? band(rng)
+          // A precursor that is HERE is here only while it elutes. The
+          // interference an absent one's cell picks up is there the whole time,
+          // which is exactly why a probe that does not know where to look finds
+          // it and a probe that does, does not.
+          if (here && plan.elute &&
+              (c > w.apex_cycle[i] ? c - w.apex_cycle[i] : w.apex_cycle[i] - c)
+                > plan.elution_cycles) { continue; }
+          const double truth = !here ? nonsense[i] + jitter(rng)
+                             : plan.wandering ? band(rng)
                              : (plan.random_mobility && !real[i]) ? nonsense[i] + jitter(rng)
                              : w.im_library[i] + w.planted[i] + jitter(rng);
-          const float I = static_cast<float>(bright(rng));
-          for (int k = 0; k < 8; ++k)
+          const float I = static_cast<float>(bright(rng)) * (here ? 1.0f : 0.5f);
+          const int nfrag = here ? 8 : 5;
+          for (int k = 0; k < nfrag; ++k)
           {
             const double fmz = 250.0 + 1.10 * double(i) + 137.0 * k;
             for (int s = 0; s < 5; ++s)
@@ -544,7 +576,119 @@ namespace
             "fold 1 is corrected by fold 0's number");
     }
 
-    // ---- 6. nothing at all -------------------------------------------------
+    // ---- 6. the ANCHORED probe --------------------------------------------
+    // A run in which 60% of the library is ABSENT, everything present elutes in
+    // a narrow band, and every absent cell is nevertheless full of a coherent
+    // cluster at a wrong 1/K0. That is the S08 case in miniature, and it is the
+    // case the blind probe gets wrong: asked to find a precursor somewhere in a
+    // window it keeps the brightest cluster it can see, and an absent precursor
+    // still returns one.
+    //
+    // The anchored probe is told where a scored peak group put each precursor.
+    // Three things are checked and none of them can be checked of a blind
+    // probe: that the planted offset comes back; that anchors pointed at the
+    // WRONG time find nothing, so the probe really is looking where it is told
+    // rather than succeeding everywhere; and that the null arm -- the absent
+    // precursors, which is what a decoy peak group is a claim about -- is flat
+    // enough that the control margin clears its gate on its own.
+    {
+      Plan plan;
+      plan.elute = true;
+      plan.present = 0.4;                  // 60% of the library is not in this run
+      plan.absent_interference = 1.0;      // and every absent cell is full anyway
+      plan.cycles = 60;
+      World w;
+      const auto planted = [](std::size_t, std::uint8_t z, double) {
+        return z == 2 ? 0.018 : -0.012;
+      };
+      build(w, plan, planted);
+
+      std::vector<ODIA::MobilityAnchor> anchors, misplaced;
+      std::size_t n_target = 0, n_null = 0;
+      for (std::size_t i = 0; i < w.mz.size(); ++i)
+      {
+        const auto id = static_cast<std::uint32_t>(i);
+        if (w.present[i])
+        {
+          anchors.push_back({id, static_cast<float>(w.apex_rt[i]), false});
+          // The same anchors, pointed 240 s away from where the peak is.
+          misplaced.push_back({id, static_cast<float>(w.apex_rt[i] + 240.0), false});
+          ++n_target;
+        }
+        else if (w.interferes[i])
+        {
+          // The null: a precursor that is not in this run, with an apex claimed
+          // for it anyway. A decoy peak group is exactly that claim.
+          anchors.push_back({id, static_cast<float>(w.apex_rt[i]), true});
+          ++n_null;
+        }
+      }
+      std::printf("6. the ANCHORED probe: %zu target anchors, %zu null, on a run "
+                  "that is 60%% absent\n", n_target, n_null);
+
+      auto opt = baseOptions();
+      MC::Diagnostics d;
+      const auto m = MC::calibrateFrom(w.lib.library(), w.run, anchors, opt, &d);
+      std::printf("%s", MC::report(m, &d).c_str());
+      check(m.fitted, "the gate passes on anchors it was given");
+      check(m.decoy_residuals > 0 &&
+            m.peakedness >= opt.min_control_margin * m.decoy_peakedness,
+            "and passes the CONTROL MARGIN against the library's own null, not "
+            "just the peakedness floor");
+      const double got2 = m.offsetFor(0xFFFFFFFFu, 600.0, 2);
+      const double got3 = m.offsetFor(0xFFFFFFFFu, 600.0, 3);
+      std::printf("     charge 2 %+.5f (planted +0.018), charge 3 %+.5f (planted -0.012)\n",
+                  got2, got3);
+      check(std::abs(got2 - 0.018) < 0.004, "charge 2's planted offset comes back");
+      check(std::abs(got3 + 0.012) < 0.004, "charge 3's planted offset comes back");
+
+      MC::Diagnostics dm;
+      const auto mm = MC::calibrateFrom(w.lib.library(), w.run, misplaced, opt, &dm);
+      std::printf("     the same anchors, pointed 240 s away: %zu residuals -- %s\n",
+                  mm.residuals, mm.reason.c_str());
+      check(!mm.fitted && mm.residuals * 10 < m.residuals,
+            "anchors pointed at the wrong time find nothing: the probe looks where "
+            "it is told, and nowhere else");
+    }
+
+    // ---- 7. the anchored probe on a run with no mobility -------------------
+    // The 12_80 / SCIEX SWATH case again, this time through the pass-2 entry
+    // point. It has to be the same no-op with the same words: a stage that
+    // warned here would train the reader to ignore a warning that on a timsTOF
+    // run means something.
+    {
+      Plan plan;
+      plan.mobility = false;
+      plan.elute = true;
+      plan.cycles = 40;
+      World w;
+      build(w, plan, [](std::size_t, std::uint8_t, double) { return 0.0; });
+      std::vector<ODIA::MobilityAnchor> anchors;
+      for (std::size_t i = 0; i < w.mz.size(); ++i)
+      {
+        if (w.present[i])
+        {
+          anchors.push_back({static_cast<std::uint32_t>(i),
+                             static_cast<float>(w.apex_rt[i]), false});
+        }
+      }
+      MC::Diagnostics d;
+      const auto m = MC::calibrateFrom(w.lib.library(), w.run, anchors, baseOptions(), &d);
+      std::printf("7. anchored, on a run whose peaks carry no 1/K0\n%s",
+                  MC::report(m, &d).c_str());
+      check(!m.run_has_mobility && !m.fitted && m.form == "none",
+            "a run with no mobility axis is a NO-OP through the anchored path too");
+      check(m.reason.find("no ion mobility") != std::string::npos,
+            "and says so in those words, not as a failed fit");
+      check(m.offsetFor(0, 600.0, 2) == 0.0, "nothing is applied");
+
+      const auto none = MC::calibrateFrom(w.lib.library(), w.run, {}, baseOptions());
+      check(!none.fitted && none.reason.find("no scored anchor") != std::string::npos,
+            "and an empty anchor list says THAT, rather than measuring nothing "
+            "and calling it a failed measurement");
+    }
+
+    // ---- 8. nothing at all -------------------------------------------------
     {
       const auto m = MC::fit({}, baseOptions());
       check(!m.fitted && m.offsetFor(0, 700.0, 2) == 0.0,
