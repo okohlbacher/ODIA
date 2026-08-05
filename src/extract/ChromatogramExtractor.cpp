@@ -193,14 +193,26 @@ namespace ODIA
     std::uint64_t total_points = 0;
     std::uint64_t live_sum = 0;
 
-    // Which windows carry each precursor, and over which cycles.
+    // Which window carries each precursor, and over which cycles.
     //
-    // A precursor can belong to SEVERAL windows -- the scheme on 12_80 overlaps
-    // adjacent windows by 1.0 Th, putting 0.8% of precursors in two -- and each
-    // is a separate measurement of the same ion, not a duplicate. So a
-    // transition's points are the CONCATENATION of its windows' cycles, and
-    // every window needs its own slice. Assigning rather than accumulating here
-    // made two windows share one slice and overwrite each other.
+    // ONE window, even though several may cover it: the schemes on 12_80 and
+    // S08 overlap adjacent windows by 1.0 Th, which puts 1.1% of precursors in
+    // two. Each of those is a separate measurement of the same ion at
+    // interleaved times -- and interleaved times is exactly why they cannot be
+    // one chromatogram. Concatenating them (which this replaces) made a
+    // transition's points span two axes, so the single (axis_of, axis_begin)
+    // pair the representation stores could only name one of them: every point
+    // of the first window then read the second window's axis, past its end.
+    // Even with a per-run axis table it would still hand the scorer a trace
+    // that runs backwards in time at the seam and elutes the peptide twice,
+    // and the scorer reads these points as one time series.
+    //
+    // So: the window whose centre the precursor is nearest, which is where it
+    // is furthest from the edge and best transmitted. The comparison is strict,
+    // so an exact tie would fall to the lower index -- but m/z arrives here
+    // through 10 nTh fixed point, which makes an exact tie a thing to state
+    // rather than a thing to rely on. The discarded measurement is counted, not
+    // dropped silently.
     struct Assignment
     {
       std::uint32_t precursor, window, lo, hi;
@@ -211,33 +223,39 @@ namespace ODIA
     for (std::size_t i = 0; i < n_prec; ++i)
     {
       const double mz = fromFixed(p.mz[i]);
-      bool placed = false;
+      std::size_t best = windows.size();
+      double best_offset = std::numeric_limits<double>::infinity();
+      std::size_t covering = 0;
       for (std::size_t w = 0; w < windows.size(); ++w)
       {
         if (!windows[w].contains(mz) || axis[w].rt.empty()) { continue; }
-        placed = true;
-
-        std::size_t lo = global_lo[w], hi = global_hi[w];
-        if (restrict_rt)
-        {
-          const double centre = options.irt_slope * double(p.irt[i]) + options.irt_intercept;
-          if (std::isnan(centre)) { continue; }
-          lo = std::max(lo, axis[w].lowerBound(centre - options.rt_window_seconds));
-          hi = std::min(hi, axis[w].lowerBound(centre + options.rt_window_seconds));
-        }
-        if (lo >= hi) { ++st.outside_rt_range; continue; }
-
-        assignments.push_back({static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(w),
-                               static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(hi)});
-        for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
-        {
-          const std::size_t j = p.transition_begin[i] + k;
-          out.count[j] += static_cast<std::uint32_t>(hi - lo);
-          total_points += hi - lo;
-          live_sum += hi - lo;
-        }
+        ++covering;
+        const double offset_from_centre = std::abs(mz - windows[w].centre());
+        if (offset_from_centre < best_offset) { best_offset = offset_from_centre; best = w; }
       }
-      if (!placed) { ++out.precursors_without_window; }
+      if (covering == 0) { ++out.precursors_without_window; continue; }
+      if (covering > 1) { ++out.precursors_in_several_windows; }
+
+      const std::size_t w = best;
+      std::size_t lo = global_lo[w], hi = global_hi[w];
+      if (restrict_rt)
+      {
+        const double centre = options.irt_slope * double(p.irt[i]) + options.irt_intercept;
+        if (std::isnan(centre)) { ++st.outside_rt_range; continue; }
+        lo = std::max(lo, axis[w].lowerBound(centre - options.rt_window_seconds));
+        hi = std::min(hi, axis[w].lowerBound(centre + options.rt_window_seconds));
+      }
+      if (lo >= hi) { ++st.outside_rt_range; continue; }
+
+      assignments.push_back({static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(w),
+                             static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(hi)});
+      for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
+      {
+        const std::size_t j = p.transition_begin[i] + k;
+        out.count[j] += static_cast<std::uint32_t>(hi - lo);
+        total_points += hi - lo;
+        live_sum += hi - lo;
+      }
     }
 
     if (total_points > std::numeric_limits<std::uint32_t>::max())
@@ -323,19 +341,41 @@ namespace ODIA
       permute(x.point_begin);
       x.build(options.fragment_ppm);
 
-      // A point's retention time is fixed by its cycle, so the whole column is
-      // filled once here. Writing it during the pass meant walking every
-      // transition of a window for every spectrum -- the exact O(N) per
-      // spectrum this index exists to remove.
       // A point's time is fixed by its cycle, so nothing is written per point.
       // Each transition records its window's axis and the cycle its run starts
       // at, and retentionTime() resolves the rest -- one pair of uint32 per
-      // transition in place of a float per point.
+      // transition in place of a float per point. Writing a time during the
+      // pass instead meant walking every transition of a window for every
+      // spectrum, the exact O(N) per spectrum this index exists to remove.
+      //
+      // Assigning (rather than accumulating) is correct only because a
+      // transition appears in exactly ONE window's index; the loop over
+      // assignments guarantees that and the invariant below re-checks it.
       for (std::size_t i = 0; i < x.transition.size(); ++i)
       {
-        const std::uint32_t t = x.transition[i];
-        out.axis_of[t] = static_cast<std::uint32_t>(w);
-        out.axis_begin[t] = x.first_live_cycle[i];
+        const std::uint32_t tr = x.transition[i];
+        out.axis_of[tr] = static_cast<std::uint32_t>(w);
+        out.axis_begin[tr] = x.first_live_cycle[i];
+      }
+    }
+
+    // The representation's invariant, checked rather than assumed: every point
+    // of every transition must land on the axis the transition names. Breaking
+    // it does not crash -- retentionTime() reads past the end of a vector and
+    // returns whatever is there -- so it has to be caught here or not at all.
+    for (std::size_t j = 0; j < n_trans; ++j)
+    {
+      if (out.count[j] == 0) { continue; }
+      const std::size_t a = out.axis_of[j];
+      if (a >= out.axes.size() ||
+          std::size_t(out.axis_begin[j]) + out.count[j] > out.axes[a].size())
+      {
+        throw std::logic_error(
+          "chromatogram transition " + std::to_string(j) + " has " +
+          std::to_string(out.count[j]) + " points from cycle " +
+          std::to_string(out.axis_begin[j]) + " on axis " + std::to_string(a) +
+          ", which holds " + std::to_string(a < out.axes.size() ? out.axes[a].size() : 0) +
+          " cycles");
       }
     }
     st.index_seconds = std::chrono::duration<double>(

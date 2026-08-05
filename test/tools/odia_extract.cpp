@@ -56,6 +56,10 @@ int main(int argc, char** argv)
                 stats.nonzero_points,
                 stats.points ? 100.0 * double(stats.nonzero_points) / double(stats.points) : 0.0);
     std::printf("  without window: %zu precursors\n", xics.precursors_without_window);
+    std::printf("  several windows: %zu precursors (%.2f%%), extracted from the nearest centre\n",
+                xics.precursors_in_several_windows,
+                stats.precursors ? 100.0 * double(xics.precursors_in_several_windows) /
+                                     double(stats.precursors) : 0.0);
     std::printf("  memory:         %.1f MiB\n", xics.footprintBytes() / 1048576.0);
     std::printf("  decode:         %.2f s   match: %.2f s   total: %.2f s\n",
                 stats.decode_seconds, stats.match_seconds, sec);

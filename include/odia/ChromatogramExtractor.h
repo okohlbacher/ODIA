@@ -33,6 +33,17 @@ namespace ODIA
   /// array of ~1,000 doubles and every point follows, instead of rewriting
   /// every structure that cached a time and silently missing one.
   ///
+  /// That representation says a transition's points are ONE contiguous run on
+  /// ONE window's axis, and the extractor now guarantees it by extracting each
+  /// precursor from a single window (see `precursors_in_several_windows`). The
+  /// invariant it rests on is
+  ///
+  ///     axis_begin[t] + count[t] <= axes[axis_of[t]].size()
+  ///
+  /// and the extractor checks it rather than assuming it: violating it is a
+  /// silent heap over-read through retentionTime(), which is what happened when
+  /// two windows' cycles were concatenated into one transition's run.
+  ///
   /// Intensity stays float32 for now; one-byte log quantisation is in the
   /// backlog. It is a further 4x and costs nothing real, because the scale is
   /// per transition rather than global -- 255 log steps over one transition's
@@ -58,6 +69,27 @@ namespace ODIA
     /// Precursors that no isolation window covered. They cannot be extracted
     /// and are reported rather than silently absent from the output.
     std::size_t precursors_without_window = 0;
+
+    /// Precursors that MORE than one window covered -- 1.1% of them on 12_80
+    /// and on S08, whose schemes overlap adjacent windows by 1.0 Th.
+    ///
+    /// Each such window is a separate measurement of the same ion at
+    /// interleaved times, and only one of them is extracted: the window whose
+    /// centre the precursor is nearest, which is where it is furthest from the
+    /// edge and best transmitted. The other is discarded, so it is counted
+    /// here rather than silently dropped.
+    ///
+    /// The alternative -- concatenating the windows' cycles into one point run
+    /// -- is what this field replaces. It broke the axis (a run cannot start at
+    /// two places on two axes at once, so the last window won both fields and
+    /// every point of the first was read from the wrong axis, past its end) and
+    /// it also handed every consumer a "chromatogram" that runs backwards in
+    /// time at the seam and elutes the same peptide twice. PeakGroupScorer
+    /// reads these points as one time series -- median/MAD background,
+    /// cross-correlation with a lag, apex/left/right retention time -- so
+    /// repairing only the axis lookup would have left the scorer reading a
+    /// trace that no acquisition ever produced.
+    std::size_t precursors_in_several_windows = 0;
 
     std::size_t points() const { return intensity.size(); }
     std::size_t footprintBytes() const;
@@ -256,7 +288,8 @@ namespace ODIA
       double match_seconds = 0.0;
       double index_seconds = 0.0;
 
-      /// Precursors whose predicted elution fell outside the run entirely.
+      /// Precursors not extracted because their predicted elution fell outside
+      /// the run entirely, or could not be predicted at all (a NaN iRT).
       std::size_t outside_rt_range = 0;
       /// Mean transitions live at one cycle, which is what the inverted match
       /// actually costs per spectrum.

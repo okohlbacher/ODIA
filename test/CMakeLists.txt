@@ -435,6 +435,11 @@ add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)
 # gradient is wrong however well it fits.
 add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
 
+# The retention-time axis of a precursor that falls in more than one isolation
+# window. Data-free: two overlapping windows and four cycles each, built in the
+# test. Nothing in the suite constructed a Chromatograms before this.
+add_test(NAME extract_rt_axis COMMAND odia_extract_axis)
+
 # The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
 # Runs on synthesised residuals only, so it needs no data: it checks that a
 # known offset is recovered from a narrow peak on a uniform background, that a
