@@ -129,6 +129,16 @@ namespace ODIA
       /// independent of everything the sub-scores later measure.
       bool noise_normalised_picking = true;
 
+      /// Reject a candidate whose observed spectrum correlates with the
+      /// library below this. -1.0 disables it, which is the default.
+      ///
+      /// This is the one sub-score measured to separate real identifications
+      /// from misplaced ones: on S08, median 0.582 for calls landing within
+      /// 30 s of the true apex against -0.036 for those that do not -- and
+      /// -0.032 for decoys, i.e. a misplaced target is indistinguishable from a
+      /// decoy here. See the comment at the gate in PeakGroupScorer.cpp.
+      double min_library_corr = -1.0;
+
       /// Classifier for the semi-supervised loop.
       /// "lda" is deterministic and dependency-light; "gbt" is what the
       /// upstream benchmarks use.
@@ -182,6 +192,11 @@ namespace ODIA
 
       /// Targets at q <= 0.01, counted on the best group per precursor.
       std::size_t identified_at_1pct = 0;
+
+      /// Candidates dropped by `min_library_corr`. Reported rather than
+      /// silently absent: a filter that discards without saying so is
+      /// indistinguishable from a search that found nothing.
+      std::size_t candidates_below_library_corr = 0;
     };
 
     /// Scoring one precursor at a time.

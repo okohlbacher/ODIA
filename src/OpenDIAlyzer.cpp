@@ -257,6 +257,17 @@ protected:
                           "Guards the case where few anchors happen to agree, giving "
                           "a p95 too small for the calibration to actually support.",
                           false, true);
+    registerDoubleOption_("min_library_corr", "<x>", -1.0,
+                          "Reject peak groups whose observed spectrum correlates "
+                          "with the library below this. -1 disables it. Measured on "
+                          "S08 against DIA-NN: median 0.582 for calls within 30 s of "
+                          "the true apex, -0.036 for those that miss, -0.032 for "
+                          "decoys -- so a misplaced target is indistinguishable from "
+                          "a decoy here, which is why target-decoy FDR does not catch "
+                          "it. A 0.5 cut keeps 54.1% of on-RT targets, 12.5% of "
+                          "off-RT ones and 12.0% of decoys; the last two matching is "
+                          "the label symmetry that keeps the FDR valid.",
+                          false, true);
     registerIntOption_("decode_block", "<n>", 256,
                        "How many spectra are decoded and held at once. This is "
                        "the largest single term in the run's memory: a heap "
@@ -650,6 +661,7 @@ protected:
   {
     ODIA::PeakGroupScorer::Options options;
     options.classifier = getStringOption_("classifier");
+    options.min_library_corr = getDoubleOption_("min_library_corr");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));

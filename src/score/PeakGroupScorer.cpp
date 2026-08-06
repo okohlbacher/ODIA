@@ -439,6 +439,39 @@ namespace ODIA
         g.sub_scores[FRAGMENT_COVERAGE] =
           tc > 0 ? static_cast<double>(at_apex) / static_cast<double>(tc) : 0.0;
       }
+      // A candidate whose spectrum does not resemble the library is not this
+      // peptide, wherever it eluted.
+      //
+      // Measured on S08 against DIA-NN's confident set, splitting our own
+      // q<=0.01 calls by whether they land within 30 s of the true apex:
+      //
+      //   group             n     median library_corr   frac > 0.5
+      //   on-RT targets   1360             0.582           54.1%
+      //   off-RT targets  5724            -0.036           12.5%
+      //   decoys          7007            -0.032           12.0%
+      //
+      // Off-RT targets and decoys are the SAME population on this feature. That
+      // is why target-decoy FDR cannot see them: every target is trained as a
+      // potential positive, so the classifier learns whatever separates off-RT
+      // targets from decoys -- signal presence -- rather than library
+      // agreement. A target at the wrong retention time still sits on real
+      // co-eluting ions from a real peptide, so it looks alive on log_sn and
+      // intensity_score in a way a shuffled decoy never does.
+      //
+      // This gate is safe for the FDR by the criterion doc/08 states for any
+      // selection upstream of it: it must be label-symmetric. It is, and that
+      // is measured rather than assumed -- 12.5% of off-RT targets and 12.0% of
+      // decoys survive a 0.5 cut, while 54.1% of on-RT targets do. Targets and
+      // decoys traverse identical code here.
+      //
+      // Off by default: it changes which candidates exist, so it must be turned
+      // on deliberately and its effect measured, not inherited.
+      if (options.min_library_corr > -1.0 &&
+          g.sub_scores[LIBRARY_CORR] < options.min_library_corr)
+      {
+        ++result.candidates_below_library_corr;
+        continue;
+      }
       result.groups.push_back(std::move(g));
     }
   }
