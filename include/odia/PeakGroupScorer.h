@@ -50,6 +50,10 @@ namespace ODIA
       /// from three live fragments is not the same evidence as one scored from
       /// twelve, and without this the two are indistinguishable to the
       /// classifier.
+      /// Fragments whose own maximum coincides with the group apex (within one
+      /// cycle). Co-elution depth, not signal presence: the previous definition
+      /// counted non-degenerate traces and returned a constant 12.000 for right
+      /// and wrong answers alike.
       USABLE_FRAGMENTS,
 
       // Added toward the 10-14 orthogonal scores every working implementation
@@ -128,6 +132,36 @@ namespace ODIA
       /// rather than to library expectation or to raw intensity, so it is
       /// independent of everything the sub-scores later measure.
       bool noise_normalised_picking = true;
+
+      /// Detect candidates by co-elution among the precursor's own fragments,
+      /// the way DIA-NN's Searcher::peaks does, instead of by the height of a
+      /// summed trace.
+      ///
+      /// The ordering is the point. A standardised sum is dominated by whatever
+      /// is loud, so an amplitude-detected list is ordered by how much signal
+      /// is present rather than by whether it is THIS peptide. Measured on S08
+      /// against DIA-NN's confident set, the amplitude picker put the true peak
+      /// first for 24.4% of precursors, in the top 3 for 47.2%, in the top 25
+      /// for 89.8% -- it finds the peak and cannot rank it.
+      bool coelution_picking = false;
+
+      /// Half-window, in cycles, for the pairwise correlation at each position.
+      std::size_t corr_half_window = 4;
+
+      /// The reference fragment's summed correlation to the others must reach
+      /// this for a position to be a peak at all. DIA-NN's MinCorrScore.
+      double min_corr_score = 0.5;
+
+      /// Candidates are kept by MARGIN from the best correlation sum rather
+      /// than by rank, so an unambiguous precursor yields one candidate and an
+      /// ambiguous one yields several. DIA-NN's MaxCorrDiff. This is why a
+      /// fixed top-N hurt: at 25 it manufactured 24 competitors regardless of
+      /// whether any was plausible, and precision fell to 21.4%.
+      double max_corr_diff = 2.0;
+
+      /// The apex must be this fraction of the maximum evidence nearby on the
+      /// reference fragment's own smoothed trace. DIA-NN's PeakApexEvidence.
+      double apex_evidence = 0.99;
 
       /// Reject a candidate whose observed spectrum correlates with the
       /// library below this. -1.0 disables it, which is the default.

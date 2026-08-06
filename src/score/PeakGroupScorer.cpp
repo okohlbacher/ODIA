@@ -219,6 +219,160 @@ namespace ODIA
       return d > 0.0 ? num / d : 0.0;
     }
 
+    /// Candidates detected by CO-ELUTION rather than by amplitude.
+    ///
+    /// This is DIA-NN's `Searcher::peaks` (diann.cpp:7423) as described in
+    /// DIA-NN-workflow-handoff.md §5, and it differs from `findCandidates` in
+    /// the one way that matters: the acceptance criterion is the pairwise
+    /// correlation among the precursor's own fragments, evaluated AT detection
+    /// time, not the height of a summed trace with correlation checked later.
+    ///
+    /// Why that ordering is the whole point. A standardised sum is dominated by
+    /// whatever is loud: one bright interfering ion, or a dozen unrelated
+    /// species that happen to share the window, out-sum a real but weak
+    /// peptide. So an amplitude-detected candidate list is ordered by "how much
+    /// signal is here" and the correct peak lands at rank 2, 3, 7. Measured on
+    /// S08 against DIA-NN's confident set, our amplitude picker put the true
+    /// peak first for 24.4% of precursors, inside the top 3 for 47.2%, and
+    /// inside the top 25 for 89.8% -- a slow decay, which is the signature of a
+    /// detector that finds the peak but cannot tell it from its neighbours.
+    ///
+    /// Fragments of one peptide come from one eluting molecule, so they
+    /// correlate. Interference does not.
+    ///
+    /// Three parameters are DIA-NN's, named as it names them:
+    ///  * `min_corr_score` (0.5) -- the reference fragment's summed correlation
+    ///    to the others must reach this, or the position is not a peak at all;
+    ///  * `max_corr_diff` (2.0) -- candidates are kept by MARGIN from the best
+    ///    correlation sum, so a precursor with one convincing peak yields one
+    ///    candidate and an ambiguous one yields several. That is why a fixed
+    ///    top-N hurts: at depth 25 it manufactures 24 competitors whether or
+    ///    not any of them is plausible.
+    ///  * `apex_evidence` (0.99) -- the apex must be essentially the local
+    ///    maximum of the reference fragment's own smoothed trace, which is a
+    ///    far stricter shape test than a maximum of a sum.
+    std::vector<Candidate> findCandidatesByCorrelation(
+      const PrecursorChromatogram& c, std::size_t half_window,
+      double min_corr_score, double max_corr_diff, double apex_evidence,
+      std::size_t smooth_half_width, double boundary_fraction,
+      std::size_t max_candidates)
+    {
+      std::vector<Candidate> found;
+      const std::uint32_t tc = c.transition_count;
+      const std::size_t n = c.cycles;
+      const std::size_t S = std::max<std::size_t>(1, half_window);
+      if (n < 2 * S + 4 || tc < 2) { return found; }
+
+      // Traces once, smoothed once. DIA-NN smooths the reference trace before
+      // the local-maximum test (kernel 1/4-1/2-1/4); `smooth` here is the
+      // moving average the rest of this file uses, which is the same idea.
+      std::vector<std::vector<double>> tr(tc), sm(tc);
+      for (std::uint32_t k = 0; k < tc; ++k)
+      {
+        const std::uint32_t m = c.pointCount(k);
+        const float* pk = m ? c.trace(k) : nullptr;
+        tr[k].assign(n, 0.0);
+        for (std::uint32_t j = 0; j < m && j < n; ++j) { tr[k][j] = pk[j]; }
+        sm[k] = smooth(tr[k], smooth_half_width);
+      }
+
+      struct Hit { std::size_t apex; double corr_sum; };
+      std::vector<Hit> hits;
+      std::vector<double> a, b;
+      for (std::size_t k = S + 1; k + S + 2 < n; ++k)
+      {
+        // Cheap rejects first: something must be here, and it must persist
+        // across neighbouring cycles rather than being a single spike.
+        std::size_t present = 0;
+        for (std::uint32_t f = 0; f < tc; ++f)
+        {
+          if (tr[f][k - 1] > 0.0 || tr[f][k] > 0.0 || tr[f][k + 1] > 0.0) { ++present; }
+        }
+        if (present < 2) { continue; }
+
+        // Pairwise correlation over [k-S, k+S]; each fragment scores the sum of
+        // its correlations to the others.
+        const std::size_t lo = k - S, hi = k + S + 1;
+        std::vector<double> score(tc, 0.0);
+        for (std::uint32_t i = 0; i < tc; ++i)
+        {
+          a.assign(tr[i].begin() + lo, tr[i].begin() + hi);
+          for (std::uint32_t j = i + 1; j < tc; ++j)
+          {
+            b.assign(tr[j].begin() + lo, tr[j].begin() + hi);
+            const double r = pearson(a, b);
+            if (std::isfinite(r)) { score[i] += r; score[j] += r; }
+          }
+        }
+
+        std::vector<std::uint32_t> order(tc);
+        for (std::uint32_t i = 0; i < tc; ++i) { order[i] = i; }
+        std::stable_sort(order.begin(), order.end(),
+                         [&](std::uint32_t x, std::uint32_t y) { return score[x] > score[y]; });
+
+        // Walk the ranked fragments; the first that satisfies every test makes
+        // this position a peak, and we stop -- at most one candidate per cycle.
+        for (const std::uint32_t ref : order)
+        {
+          if (score[ref] < min_corr_score) { break; }
+          if (!(sm[ref][k] > 0.0)) { continue; }
+
+          const std::size_t half = std::max<std::size_t>(S / 3, 1);
+          bool is_max = true;
+          for (std::size_t j = (k > half ? k - half : 0); j <= k + half && j < n; ++j)
+          {
+            if (sm[ref][j] > sm[ref][k]) { is_max = false; break; }
+          }
+          if (!is_max) { continue; }
+
+          double best_near = 0.0;
+          const std::size_t e = S > 1 ? S - 1 : 1;
+          for (std::size_t j = (k > e ? k - e : 0); j <= k + e && j < n; ++j)
+          {
+            best_near = std::max(best_near, sm[ref][j]);
+          }
+          if (best_near > 0.0 && sm[ref][k] < apex_evidence * best_near) { continue; }
+
+          hits.push_back({k, score[ref]});
+          break;
+        }
+      }
+      if (hits.empty()) { return found; }
+
+      // Keep by MARGIN from the best, not by rank.
+      double best = 0.0;
+      for (const auto& h : hits) { best = std::max(best, h.corr_sum); }
+      std::stable_sort(hits.begin(), hits.end(),
+                       [](const Hit& x, const Hit& y) { return x.corr_sum > y.corr_sum; });
+
+      // Boundaries from the summed trace, as before: the extent of a peak is
+      // not what changed here, only which positions are peaks.
+      std::vector<double> total(n, 0.0);
+      for (std::uint32_t f = 0; f < tc; ++f)
+      {
+        for (std::size_t j = 0; j < n; ++j) { total[j] += tr[f][j]; }
+      }
+      for (const auto& h : hits)
+      {
+        if (h.corr_sum < best - max_corr_diff) { break; }
+        if (found.size() >= max_candidates) { break; }
+        Candidate cd;
+        cd.apex = h.apex;
+        cd.apex_value = total[h.apex];
+        const double floor_value = boundary_fraction * total[h.apex];
+        std::size_t l = h.apex, r = h.apex;
+        while (l > 0 && total[l - 1] > floor_value) { --l; }
+        while (r + 1 < n && total[r + 1] > floor_value) { ++r; }
+        cd.left = l; cd.right = r;
+        // One candidate per apex; DIA-NN accepts at most one per scan position
+        // and we must not emit two peaks that share one.
+        bool dup = false;
+        for (const auto& g : found) { if (g.apex == cd.apex) { dup = true; break; } }
+        if (!dup) { found.push_back(cd); }
+      }
+      return found;
+    }
+
     double dotProduct(std::vector<double> a, std::vector<double> b)
     {
       const std::size_t n = std::min(a.size(), b.size());
@@ -273,9 +427,13 @@ namespace ODIA
     const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
     if (window_total <= 0.0) { ++result.precursors_without_candidate; return; }
 
-    const auto candidates =
-      findCandidates(smooth(total, options.smooth_half_width),
-                     options.max_candidates, options.boundary_fraction);
+    const auto candidates = options.coelution_picking
+      ? findCandidatesByCorrelation(chromatogram, options.corr_half_window,
+                                    options.min_corr_score, options.max_corr_diff,
+                                    options.apex_evidence, options.smooth_half_width,
+                                    options.boundary_fraction, options.max_candidates)
+      : findCandidates(smooth(total, options.smooth_half_width),
+                       options.max_candidates, options.boundary_fraction);
     if (candidates.empty()) { ++result.precursors_without_candidate; return; }
 
     // Library intensities, in the transition order the chromatograms use.
@@ -407,6 +565,15 @@ namespace ODIA
       g.sub_scores[LOG_SN] = floor_bg > 0.0
         ? std::min(10.0, std::log(std::max(1e-12, cand.apex_value) / floor_bg))
         : 0.0;
+      // NOTE: this is a CONSTANT 12.000 for right and wrong answers alike --
+      // a trace is degenerate only if constant, and in a window where 45-60%
+      // of points are non-zero none ever is. Replacing it with co-elution
+      // depth (fragments whose own maximum coincides with the group apex) was
+      // tried and measured: best-ranked-right moved 47.0->47.0, 43.2->43.0,
+      // 40.7->40.8 at depths 3/10/25 -- nothing, because it is collinear with
+      // XCORR_SHAPE -- while on-RT identifications fell 530->332. Reverted.
+      // A replacement has to be orthogonal to the pair correlations, and
+      // co-elution timing is not.
       g.sub_scores[USABLE_FRAGMENTS] = static_cast<double>(usable);
 
       // Both vectors normalised to unit sum first: RMSD on raw areas would
