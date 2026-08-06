@@ -143,7 +143,16 @@ namespace ODIA
       /// against DIA-NN's confident set, the amplitude picker put the true peak
       /// first for 24.4% of precursors, in the top 3 for 47.2%, in the top 25
       /// for 89.8% -- it finds the peak and cannot rank it.
-      bool coelution_picking = false;
+      ///
+      /// ON by default, because it is better on every axis measured and not
+      /// marginally. Same run, same library, DIA-NN as truth, depth 25:
+      ///
+      ///                  cand/pr  on-RT  off-RT  precision  rank-1  avail
+      ///   amplitude         7.88   1102    4038      21.4%   40.7%  69.1%
+      ///   co-elution        8.81   1862     228      89.1%   75.7%  97.4%
+      ///
+      /// Set false to get the old amplitude detector back.
+      bool coelution_picking = true;
 
       /// Half-window, in cycles, for the pairwise correlation at each position.
       std::size_t corr_half_window = 4;

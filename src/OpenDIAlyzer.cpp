@@ -257,13 +257,14 @@ protected:
                           "Guards the case where few anchors happen to agree, giving "
                           "a p95 too small for the calibration to actually support.",
                           false, true);
-    registerFlag_("coelution_picking",
-                  "Detect candidate peaks by pairwise correlation among the "
-                  "precursor's own fragments (DIA-NN's Searcher::peaks) instead of "
-                  "by the height of a summed trace. The summed trace is dominated "
-                  "by whatever is loud, so it finds the true peak but ranks it 2nd "
-                  "or 7th; measured on S08 it was 1st for only 24.4% of precursors "
-                  "and in the top 25 for 89.8%.", true);
+    registerFlag_("amplitude_picking",
+                  "Detect candidate peaks as local maxima of the summed trace, the "
+                  "way this tool used to. The default detects them by pairwise "
+                  "correlation among the precursor's own fragments (DIA-NN's "
+                  "Searcher::peaks), which on S08 raised availability of the true "
+                  "peak from 69.1% to 97.4%, rank-1 accuracy from 40.7% to 75.7% "
+                  "and precision from 21.4% to 89.1%. This flag restores the old "
+                  "behaviour for comparison.", true);
     registerDoubleOption_("min_corr_score", "<x>", 0.5,
                           "With -coelution_picking: the reference fragment's summed "
                           "correlation to the others required for a position to be a "
@@ -678,7 +679,7 @@ protected:
     ODIA::PeakGroupScorer::Options options;
     options.classifier = getStringOption_("classifier");
     options.min_library_corr = getDoubleOption_("min_library_corr");
-    options.coelution_picking = getFlag_("coelution_picking");
+    options.coelution_picking = !getFlag_("amplitude_picking");
     options.min_corr_score = getDoubleOption_("min_corr_score");
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
