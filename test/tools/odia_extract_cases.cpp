@@ -162,9 +162,9 @@ namespace
       if (x.begin[j] != running) { consistent = false; }
       running += x.count[j];
       if (x.count[j] == 0) { continue; }
-      const std::size_t a = x.axis_of[j];
+      const std::size_t a = x.axisOf(j);
       if (a >= x.axes.size() ||
-          std::size_t(x.axis_begin[j]) + x.count[j] > x.axes[a].size())
+          std::size_t(x.axisBegin(j)) + x.count[j] > x.axes[a].size())
       {
         in_bounds = false;
       }
@@ -610,7 +610,7 @@ namespace
     // where its window starts, and its intensity is that cycle's own number.
     {
       const std::uint32_t tr = lib.library().precursors().transition_begin[5];
-      const std::uint32_t first = x.axis_begin[tr];
+      const std::uint32_t first = x.axisBegin(tr);
       checkNear(x.intensity[x.begin[tr]], double(first) + 1.0,
                 "a precursor's first point is the cycle its window starts at");
       checkNear(x.retentionTime(tr, 0), STEP * double(first),
@@ -640,7 +640,7 @@ namespace
       {
         const std::uint32_t tr = t.transition_begin + static_cast<std::uint32_t>(k);
         if (x.count[tr] != t.points[k].size()) { same = false; continue; }
-        if (x.axis_of[tr] != t.axis || x.axis_begin[tr] != t.axis_begin) { same = false; }
+        if (x.axisOf(tr) != t.axis || x.axisBegin(tr) != t.axis_begin) { same = false; }
         for (std::size_t j = 0; j < t.points[k].size(); ++j)
         {
           if (x.intensity[x.begin[tr] + j] != t.points[k][j]) { same = false; }
@@ -672,8 +672,9 @@ namespace
           "and the live set is tighter than without it");
     check(chunk_stats.spectra_decoded >= flat_stats.spectra_decoded,
           "which is paid for in spectra decoded more than once");
-    check(y.count == x.count && y.axis_of == x.axis_of &&
-          y.axis_begin == x.axis_begin && y.intensity == x.intensity,
+    check(y.count == x.count && y.precursor_axis == x.precursor_axis &&
+          y.precursor_axis_begin == x.precursor_axis_begin &&
+          y.precursor_cycles == x.precursor_cycles && y.intensity == x.intensity,
           "chunking changes how many passes it takes, not the answer");
     std::printf("       %zu chunks, %zu spectra decoded against %zu in the run\n",
                 chunk_stats.chunks, chunk_stats.spectra_decoded, chunk_stats.spectra_read);

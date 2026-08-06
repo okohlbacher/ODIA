@@ -7,6 +7,7 @@
 #include <odia/MobilityCalibration.h>
 #include <odia/SpectrumSource.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -64,29 +65,61 @@ namespace ODIA
     /// One retention-time axis per isolation window, seconds, ascending.
     std::vector<std::vector<float>> axes;
 
-    /// transition -> which axis, and where on it point 0 sits.
-    std::vector<std::uint32_t> axis_of;
-    std::vector<std::uint32_t> axis_begin;
+    /// Where a precursor's points sit: which axis, where on it point 0 is, and
+    /// how many cycles. **Indexed by precursor, not by transition.**
+    ///
+    /// These were per transition until it was measured what that costs. The
+    /// extractor already guarantees a precursor is extracted from ONE window
+    /// over ONE cycle range -- that is what `precursors_in_several_windows`
+    /// enforces -- so all twelve of a precursor's transitions carried three
+    /// identical values. `PeakGroupScorer` gave the game away by only ever
+    /// reading index `transition_begin` and never the other eleven.
+    ///
+    /// The redundancy is not small at the size that matters. A 4.26 M-precursor
+    /// library at twelve transitions is 51.1 M transitions, and per transition
+    /// `begin`(8 B) + `count`(4 B) + `axis_of`(4 B) + `axis_begin`(4 B) is
+    /// **1.02 GB of index for 4.26 M distinct facts**. Per precursor it is
+    /// ~85 MB. The axes themselves are ~129 KB and were never the point.
+    std::vector<std::uint32_t> precursor_axis;
+    std::vector<std::uint32_t> precursor_axis_begin;
+    std::vector<std::uint32_t> precursor_cycles;
 
-    /// transition index -> [begin, begin + count) into the intensity arrays.
+    /// Which transition each precursor's run starts at, so a transition can be
+    /// resolved back to its precursor without a per-transition map.
+    std::vector<std::uint32_t> precursor_transition_begin;
+
+    /// `begin` and `count` are still PER TRANSITION, and that is the other
+    /// 614 MB of the 1.02 GB.
     ///
-    /// `begin` is 64-bit and `count` is not, because they measure different
-    /// things. `count` is a number of CYCLES -- at most the run's cycle count,
-    /// 1,342 on S08 -- and 32 bits will outlive the instrument. `begin` is an
-    /// offset into the whole flat point array, and 32 bits ran out at 2^32
-    /// points, which is 266,664 precursors at S08's 12 transitions x 1,342
-    /// cycles. Phase 1's own human library is 4,255,113 precursors, so ODIA
-    /// could not extract against the library it had just generated: measured by
-    /// bisection at 260,000 precursors passing and 270,000 throwing in 5.1 s.
+    /// They are not collapsed here because the stride is not simply
+    /// `(t - transition_begin) * cycles`: a transition with no representable
+    /// product m/z gets count 0 and is **packed out** of the flat array, so a
+    /// later sibling's offset depends on how many of its predecessors were
+    /// real. Deriving it needs a validity bitmap (1 bit per transition, 6.4 MB
+    /// at 51.1 M) and a rank, plus `ChromatogramLayout` carrying per-precursor
+    /// shape instead of the per-transition `counts` it passes today -- which is
+    /// itself 204 MB and has the same problem. That is a bigger change than
+    /// this one and belongs on its own.
     ///
-    /// The cost is 4 bytes per transition, against 4 bytes per POINT for the
-    /// intensities -- 1,342 points per transition here, so under 0.1%.
+    /// Getting it wrong is silent: multiplying by position rather than by rank
+    /// reads every transition after the first absent one from its neighbour's
+    /// points, with all offsets in range and all totals matching.
+    std::vector<std::uint64_t> begin;
+    std::vector<std::uint32_t> count;
+
+    /// Every point of every transition, one flat array.
+    ///
+    /// `precursor_begin` is 64-bit deliberately. A 32-bit offset ran out at
+    /// 2^32 points, which is 266,664 precursors at S08's 12 transitions x 1,342
+    /// cycles -- and phase 1's own human library is 4,255,113 precursors, so
+    /// ODIA could not extract against the library it had just generated.
+    /// Measured by bisection at 260,000 passing and 270,000 throwing in 5.1 s.
     ///
     /// The widening removed the index limit and nothing else. The limit that
-    /// remained was memory: this array is sized transitions x cycles before a
+    /// remains is memory: this array is sized transitions x cycles before a
     /// peak is seen, so a full human library at S08's geometry wants
-    /// 4.26 M precursors x 12 x 1,342 x 4 B = 274 GiB -- and only 58% of those
-    /// points are ever non-zero, so sparse storage is not a way out either.
+    /// 4.26 M x 12 x 1,342 x 4 B = 274 GiB -- and 51.3% of those points are
+    /// non-zero, so sparse storage is not a way out either.
     ///
     /// That limit belongs to THIS TYPE and not to extraction any more. The
     /// extractor hands a precursor over when the pass leaves its retention-time
@@ -94,10 +127,35 @@ namespace ODIA
     /// into one array, and a caller that does not need them all never asks for
     /// one. A run that does ask is refused with the number rather than left to
     /// a bad_alloc.
-    std::vector<std::uint64_t> begin;
-    std::vector<std::uint32_t> count;
-
     std::vector<float> intensity;
+
+    /// Which precursor owns a transition. Needed only where a caller has a
+    /// transition and no precursor; the extractor and the scorer both walk
+    /// precursors and never call this.
+    ///
+    /// Binary search over `precursor_transition_begin` rather than a stored
+    /// 4-byte-per-transition map, because storing that map would hand back
+    /// 204 MB of the 1.02 GB this change was made to remove.
+    std::uint32_t precursorOf(std::uint32_t transition) const
+    {
+      const auto it = std::upper_bound(precursor_transition_begin.begin(),
+                                       precursor_transition_begin.end(), transition);
+      return static_cast<std::uint32_t>(it - precursor_transition_begin.begin() - 1);
+    }
+
+    /// Which axis @p transition sits on, and where its first point is.
+    ///
+    /// Resolved through the precursor, because that is where the fact lives
+    /// now. Callers that already know the precursor should read
+    /// `precursor_axis` / `precursor_axis_begin` directly and skip the search.
+    std::uint32_t axisOf(std::uint32_t transition) const
+    {
+      return precursor_axis[precursorOf(transition)];
+    }
+    std::uint32_t axisBegin(std::uint32_t transition) const
+    {
+      return precursor_axis_begin[precursorOf(transition)];
+    }
 
     /// Precursors that no isolation window covered. They cannot be extracted
     /// and are reported rather than silently absent from the output.
@@ -130,8 +188,15 @@ namespace ODIA
     /// Retention time of point @p j of @p transition, in seconds.
     float retentionTime(std::uint32_t transition, std::uint32_t j) const
     {
-      const std::uint32_t a = axis_of[transition];
-      return axes[a][axis_begin[transition] + j];
+      return retentionTimeOfPrecursor(precursorOf(transition), j);
+    }
+
+    /// Retention time of point @p j of @p precursor, in seconds. Prefer this:
+    /// the RT is a property of the precursor's cycle range, not of which of its
+    /// transitions is being read, and this form skips the `precursorOf` search.
+    float retentionTimeOfPrecursor(std::uint32_t precursor, std::uint32_t j) const
+    {
+      return axes[precursor_axis[precursor]][precursor_axis_begin[precursor] + j];
     }
 
   };
@@ -182,6 +247,7 @@ namespace ODIA
   struct ChromatogramLayout
   {
     std::size_t transitions = 0;               ///< entries the CSR would have
+    std::size_t precursors = 0;                ///< precursors it covers
     std::uint64_t points = 0;                  ///< points it would hold
     const std::vector<std::vector<float>>* axes = nullptr;  ///< one per window
 

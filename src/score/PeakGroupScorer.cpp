@@ -553,9 +553,9 @@ namespace ODIA
       trace.precursor = static_cast<std::uint32_t>(i);
       trace.transition_begin = tb;
       trace.transition_count = tc;
-      trace.axis = chromatograms.axis_of[tb];
-      trace.axis_begin = chromatograms.axis_begin[tb];
-      trace.cycles = chromatograms.count[tb];
+      trace.axis = chromatograms.precursor_axis[i];
+      trace.axis_begin = chromatograms.precursor_axis_begin[i];
+      trace.cycles = chromatograms.precursor_cycles[i];
       if (trace.axis < chromatograms.axes.size())
       {
         trace.rt = chromatograms.axes[trace.axis].data() + trace.axis_begin;

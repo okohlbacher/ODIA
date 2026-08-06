@@ -28,8 +28,9 @@ namespace ODIA
     const auto vec = [](const auto& v) { return v.capacity() * sizeof(v[0]); };
     std::size_t axes_bytes = 0;
     for (const auto& a : axes) { axes_bytes += vec(a); }
-    return axes_bytes + vec(axis_of) + vec(axis_begin) + vec(begin) + vec(count) +
-           vec(intensity);
+    return axes_bytes + vec(precursor_axis) + vec(precursor_axis_begin) +
+           vec(precursor_cycles) + vec(precursor_transition_begin) + vec(begin) +
+           vec(count) + vec(intensity);
   }
 
   namespace
@@ -264,8 +265,14 @@ namespace ODIA
     c_ = Chromatograms{};
     if (layout.axes != nullptr) { c_.axes = *layout.axes; }
     c_.count = *layout.counts;
-    c_.axis_of.assign(layout.transitions, 0);
-    c_.axis_begin.assign(layout.transitions, 0);
+    // Per PRECURSOR, not per transition. The extractor guarantees a precursor
+    // is extracted from one window over one cycle range, so these were three
+    // identical values repeated across its dozen transitions -- 612 MB of the
+    // index at 51.1 M transitions, for 4.26 M distinct facts.
+    c_.precursor_axis.assign(layout.precursors, 0);
+    c_.precursor_axis_begin.assign(layout.precursors, 0);
+    c_.precursor_cycles.assign(layout.precursors, 0);
+    c_.precursor_transition_begin.assign(layout.precursors, 0);
 
     // The offsets are the prefix sum in TRANSITION order, which is what every
     // reader of a `Chromatograms` assumes and what the flat form guarantees.
@@ -286,13 +293,20 @@ namespace ODIA
   void ChromatogramCollector::accept(const PrecursorChromatogram& trace)
   {
     if (!trace.extracted()) { return; }
+    // Once per precursor. These used to be written once per transition with
+    // the same three values each time.
+    if (trace.precursor < c_.precursor_axis.size())
+    {
+      c_.precursor_axis[trace.precursor] = trace.axis;
+      c_.precursor_axis_begin[trace.precursor] = trace.axis_begin;
+      c_.precursor_cycles[trace.precursor] = trace.cycles;
+      c_.precursor_transition_begin[trace.precursor] = trace.transition_begin;
+    }
     for (std::uint32_t k = 0; k < trace.transition_count; ++k)
     {
       const std::uint32_t n = trace.pointCount(k);
       if (n == 0) { continue; }
       const std::uint32_t tr = trace.transition_begin + k;
-      c_.axis_of[tr] = trace.axis;
-      c_.axis_begin[tr] = trace.axis_begin;
       const float* from = trace.trace(k);
       std::copy(from, from + n, c_.intensity.begin() +
                                  static_cast<std::ptrdiff_t>(c_.begin[tr]));
@@ -498,6 +512,7 @@ namespace ODIA
 
     ChromatogramLayout layout;
     layout.transitions = n_trans;
+    layout.precursors = library.precursorCount();
     layout.points = total_points;
     layout.axes = &axes;
     layout.counts = sink.needsLayoutCounts() ? &layout_counts : nullptr;

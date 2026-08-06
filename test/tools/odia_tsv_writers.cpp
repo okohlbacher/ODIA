@@ -221,10 +221,14 @@ namespace
     {
       c.begin.push_back(running);
       c.count.push_back(cycles);
-      c.axis_of.push_back(0);
-      c.axis_begin.push_back(0);
       running += cycles;
     }
+    // One precursor owning every transition: the axis fields are per precursor
+    // now, so a hand-built Chromatograms has to say which precursor that is.
+    c.precursor_axis.assign(1, 0);
+    c.precursor_axis_begin.assign(1, 0);
+    c.precursor_cycles.assign(1, static_cast<std::uint32_t>(cycles));
+    c.precursor_transition_begin.assign(1, 0);
     c.intensity.reserve(running);
     for (std::size_t k = 0; k < running; ++k)
     {

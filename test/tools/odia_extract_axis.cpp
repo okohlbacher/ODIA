@@ -144,9 +144,9 @@ int main()
   {
     const std::uint32_t n = x.count[tr];
     const std::size_t axis_size =
-      x.axis_of[tr] < x.axes.size() ? x.axes[x.axis_of[tr]].size() : 0;
+      x.axisOf(tr) < x.axes.size() ? x.axes[x.axisOf(tr)].size() : 0;
     std::printf("transition %u: %u points, axis_of=%u axis_begin=%u, axes[%u].size()=%zu\n",
-                tr, n, x.axis_of[tr], x.axis_begin[tr], x.axis_of[tr], axis_size);
+                tr, n, x.axisOf(tr), x.axisBegin(tr), x.axisOf(tr), axis_size);
 
     // One window's cycles, not two windows' concatenated.
     if (n != TwoWindowRun::CYCLES)
@@ -162,20 +162,20 @@ int main()
     // must fit on the named axis. If it does not, every read past the end is
     // out of bounds. (The extractor also checks this itself and throws; this
     // asserts the result rather than trusting that check.)
-    if (std::size_t(x.axis_begin[tr]) + n > axis_size)
+    if (std::size_t(x.axisBegin(tr)) + n > axis_size)
     {
       std::printf("FAIL: transition %u: axis_begin(%u) + count(%u) = %zu exceeds axis size %zu "
                   "-- retentionTime() reads out of bounds\n",
-                  tr, x.axis_begin[tr], n, std::size_t(x.axis_begin[tr]) + n, axis_size);
+                  tr, x.axisBegin(tr), n, std::size_t(x.axisBegin(tr)) + n, axis_size);
       ++failures;
       continue;
     }
 
     const std::uint32_t w = want_window[tr];
-    if (x.axis_of[tr] != w)
+    if (x.axisOf(tr) != w)
     {
       std::printf("FAIL: transition %u: expected window %u (nearest centre), got %u\n",
-                  tr, w, x.axis_of[tr]);
+                  tr, w, x.axisOf(tr));
       ++failures;
     }
 
