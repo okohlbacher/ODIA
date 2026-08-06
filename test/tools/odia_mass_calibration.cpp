@@ -41,6 +41,7 @@
 #include <odia/DIANNLibraryFile.h>
 #include <odia/MassCalibration.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
