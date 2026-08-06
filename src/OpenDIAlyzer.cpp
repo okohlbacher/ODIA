@@ -114,7 +114,9 @@ protected:
     setValidFormats_("out_lib", {"tsv"}, false);
 
     registerStringOption_("stop_after", "<stage>", "",
-                          "End the run after this stage and write its output.", false);
+                          "End the run after this stage and write its output. The "
+                          "default runs to the end: 'library' when no -in is given, "
+                          "'score' when one is.", false);
     setValidStrings_("stop_after", {"", "library", "extract", "score"});
 
     // No setValidFormats_ here on purpose. OpenMS has no mzPeak entry in
@@ -810,7 +812,7 @@ protected:
     const std::string tr = getStringOption_("tr");
     const std::string fasta = getStringOption_("fasta");
     const std::string out_lib = getStringOption_("out_lib");
-    const std::string stop_after = getStringOption_("stop_after");
+    std::string stop_after = getStringOption_("stop_after");
     const bool sort_library = getFlag_("sort_library");
 
     if (tr.empty() == fasta.empty())
@@ -821,6 +823,18 @@ protected:
 
     const std::string in_run = getStringOption_("in");
     const std::string out_chrom = getStringOption_("out_chrom");
+
+    // Naming no stage means "run to the end", and which end that is depends on
+    // whether there is a run to work on.
+    //
+    // This option is registered with a default of "" and `setValidStrings_`
+    // accepts "", but the check below rejected it -- so the documented default
+    // was rejected by the tool's own validation and NO invocation without an
+    // explicit -stop_after could start. It is resolved here rather than by
+    // changing the registered default because the right end differs: with only
+    // -tr the run has nothing to extract from and stops at the library, and
+    // erroring with "needs -in" would be wrong for a caller who only wanted one.
+    if (stop_after.empty()) { stop_after = in_run.empty() ? "library" : "score"; }
 
     // Checked before any work is done. Doing it afterwards meant a run that
     // built and wrote a library still exited 6.
