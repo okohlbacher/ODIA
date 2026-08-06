@@ -240,6 +240,21 @@ protected:
                        "and each is a separate pass over the run, which costs a "
                        "decode. The run reports which of the two bound it.",
                        false, true);
+    registerDoubleOption_("rt_window_p95_factor", "<x>", 2.0,
+                          "Pass 2 extracts over this many times the fitted map's p95 "
+                          "residual, instead of the flat -rt_window. Points per "
+                          "precursor scale directly with the width, so this is the "
+                          "dominant memory lever in phase 2. On p95 rather than an SD "
+                          "because a window has to cover the tail it is meant to "
+                          "catch, and bounded below by -rt_window_min and above by "
+                          "-rt_window, so it can only narrow. 0 disables it and "
+                          "restores the flat window.",
+                          false, true);
+    registerDoubleOption_("rt_window_min", "<s>", 20.0,
+                          "Floor for the residual-driven pass-2 window, seconds. "
+                          "Guards the case where few anchors happen to agree, giving "
+                          "a p95 too small for the calibration to actually support.",
+                          false, true);
     registerIntOption_("decode_block", "<n>", 256,
                        "How many spectra are decoded and held at once. This is "
                        "the largest single term in the run's memory: a heap "
@@ -577,17 +592,54 @@ protected:
       }
     }
 
+    // Pass 2's window comes from the fit's OWN residual, not from a constant.
+    //
+    // Until now the p95 was computed, logged, and thrown away: pass 2 re-used
+    // the flat -rt_window, so a run that had just measured its calibration to
+    // be good extracted exactly as wide as one that had not. Points per
+    // precursor scale directly with this width, and it is the dominant memory
+    // lever in phase 2 -- measured at n100k, w600 -> w60 takes peak RSS from
+    // 14.00 to 10.75 GiB, against 0.19 GiB for the extract/score fusion.
+    //
+    // The factor is on p95 rather than on an SD because a window has to cover
+    // the tail it is meant to catch. The floor exists for the opposite failure:
+    // few anchors that happen to agree give a tiny p95 and would place a window
+    // narrower than the calibration can actually support. -rt_window stops
+    // being the value and becomes the CAP, so this can only ever narrow.
+    //
+    // The measurement this guards against is on record: a flat 60 s was below
+    // the run's own 76.6 s SD residual and put the true peak outside the window
+    // for a third of precursors. Deriving the width from p95 is what makes a
+    // narrow window safe rather than a gamble.
+    double pass2_window = 0.0;
+    const double p95_factor = getDoubleOption_("rt_window_p95_factor");
+    if (p95_factor > 0.0 && std::isfinite(p95) && p95 > 0.0)
+    {
+      const double cap = getDoubleOption_("rt_window");
+      const double floor_s = getDoubleOption_("rt_window_min");
+      pass2_window = std::min(cap, std::max(floor_s, p95_factor * p95));
+      std::ostringstream w;
+      w << "pass 2 extraction window " << pass2_window << " s (" << p95_factor
+        << " x p95 " << p95 << " s, floor " << floor_s << " s, cap " << cap << " s)";
+      writeLogInfo_(w.str());
+    }
+    else
+    {
+      writeLogInfo_("pass 2 extraction window: flat -rt_window "
+                    "(-rt_window_p95_factor 0 disables residual-driven narrowing)");
+    }
+
     writeLogInfo_("pass 2 of 2: narrow extraction on the calibrated axis");
     chromatograms = ODIA::Chromatograms{};
     // The library now carries run seconds, so the affine map is the identity.
     if (out_chrom.empty())
     {
       ODIA::PeakGroupScorer::Result scored;
-      const auto rc = extractAndScore_(library, run, 0.0, true, scored);
+      const auto rc = extractAndScore_(library, run, pass2_window, true, scored);
       if (rc != EXECUTION_OK) { return rc; }
       return writeScoreResult_(scored, out, library);
     }
-    const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, 0.0, true);
+    const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, pass2_window, true);
     if (rc != EXECUTION_OK) { return rc; }
     return runScoring_(library, chromatograms, out);
   }
