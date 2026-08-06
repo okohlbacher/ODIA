@@ -429,6 +429,16 @@ endif()
 # would otherwise pass silently -- see the tool's own comment.
 add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)
 
+# Does the picker find the peptide, or the loudest thing in the window?
+#
+# Added because swapping the entire detection algorithm -- amplitude
+# local-maxima to DIA-NN's pairwise-correlation search -- left all 59 tests
+# passing. Nothing was sensitive to WHICH peaks were found, so a change that
+# moved rank-1 accuracy from 40.7% to 75.7% on real data was invisible here.
+# The case asserts BOTH pickers' behaviour, so it fails if either the old
+# detector stops taking the spike or the new one stops rejecting it.
+add_test(NAME picker_prefers_coelution_over_amplitude COMMAND odia_picker_cases)
+
 # The adopted RT calibration (src/calibrate, from OpenDIAlyzer odia-v0.3.0).
 # Checks it recovers a non-linear warp from anchors that include gross
 # outliers, and that the result is monotone -- a map that reorders the
