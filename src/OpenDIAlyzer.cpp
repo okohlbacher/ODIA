@@ -240,6 +240,14 @@ protected:
                        "and each is a separate pass over the run, which costs a "
                        "decode. The run reports which of the two bound it.",
                        false, true);
+    registerIntOption_("decode_block", "<n>", 256,
+                       "How many spectra are decoded and held at once. This is "
+                       "the largest single term in the run's memory: a heap "
+                       "profile put 5.57 GiB of a 9.45 GiB live peak in the "
+                       "block's peak arrays. Cost is linear in this number and "
+                       "results do not change -- only how much is resident. 0 "
+                       "means the default.",
+                       false, true);
     registerOutputFile_("out", "<file>", "",
                         "Write scored peak groups here (TSV).", false);
     setValidFormats_("out", {"tsv"}, false);
@@ -325,6 +333,8 @@ protected:
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     options.max_live_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_live_precursors")));
+    options.decode_block = static_cast<std::size_t>(
+      std::max(0, getIntOption_("decode_block")));
 
     if (options.irt_slope == 0.0 && !library_rt_is_run_seconds)
     {

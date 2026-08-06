@@ -690,7 +690,10 @@ namespace ODIA
     // Large enough that spawning workers is amortised. At 128 spectra and 64
     // threads each worker got two spectra and thread creation cost more than
     // the matching did -- measured 0.19 s against 0.14 s single-threaded.
-    constexpr std::size_t BLOCK = 1024;
+    // Was a constant; now `Options::decode_block`, because a heap profile put
+    // 5.57 GiB of a 9.45 GiB live peak in the block's `SpectrumPeaks` copies.
+    // Zero keeps the historical default rather than degenerating to no block.
+    const std::size_t BLOCK = options.decode_block ? options.decode_block : 256;
     // Matching walks the decoded block in smaller batches, because the
     // allocate/free cursors can only move between batches -- no chromatogram
     // may appear or vanish while a worker is reading `live`. The batch is

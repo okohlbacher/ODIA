@@ -450,6 +450,42 @@ namespace ODIA
       /// bound the memory is reported in `Stats::memory_bound_by`.
       std::size_t max_live_precursors = 0;
 
+      /// How many spectra are decoded and held at once.
+      ///
+      /// This is the largest single term in the run's memory, and it was found
+      /// by profile rather than by reading: a tcmalloc heap profile of a
+      /// 1,200-precursor S08 run put **5.57 GiB of a 9.45 GiB live peak** in the
+      /// three `assign` calls of `MzPeakSource::peaks` -- 2.79 / 1.39 / 1.39 GiB
+      /// across `mz` (double), `intensity` and `ion_mobility` (float), exactly
+      /// the 8:4:4 ratio of their element sizes.
+      ///
+      /// The cost is linear in this number and it is NOT the sliding window:
+      /// six other explanations were measured and refuted first (per-thread
+      /// parquet buffers, page cache, glibc fragmentation, arena count, sparse
+      /// chromatograms, and mzPeak's own row-group cache, which is bounded).
+      /// See doc/11-memory-and-compaction-plan.md.
+      ///
+      /// Measured on S08 with a 1,200-precursor library at 4 threads, where the
+      /// only variable was this number:
+      ///
+      /// | block | peak RSS | wall |
+      /// |------:|---------:|-----:|
+      /// | 1024  | 10.34 GiB | 7:00.3 |
+      /// |  256  |  2.89 GiB | 6:53.7 |
+      /// |   64  |  1.40 GiB | 6:50.3 |
+      ///
+      /// There is no tradeoff to balance: smaller is both smaller and faster,
+      /// so 1024 was pure waste. The saving is better than linear because
+      /// Arrow's decode buffers scale with the batch as well as our peak arrays.
+      ///
+      /// 256 rather than 64 because of a DIFFERENT measurement, already in this
+      /// file: at 128 spectra and 64 threads each worker got two spectra and
+      /// thread creation cost more than the matching (0.19 s against 0.14 s
+      /// single-threaded). The arms above ran at 4 threads and so cannot see
+      /// that. 256 keeps four spectra per worker at 64 threads and still takes
+      /// 3.6x of the available 7.4x. Lower it when threads are few.
+      std::size_t decode_block = 256;
+
       /// Maps the library's iRT onto this run's retention time, in seconds:
       /// rt = irt_slope * irt + irt_intercept.
       ///
