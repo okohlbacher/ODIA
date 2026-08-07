@@ -459,10 +459,25 @@ namespace ODIA
       /// rejects 28.3% of target anchors on S08 even when the calibration is
       /// correct. At +/-0.05 that falls to 5.6%.
       ///
-      /// Left at 0.025 pending a measurement of what widening costs in
-      /// interference: this window's whole purpose is excluding the ~8.5x
-      /// same-window mobility above, and trading recall for that is exactly the
-      /// tradeoff that has to be measured rather than argued.
+      /// MEASURED, and the answer is to leave it at 0.025. S08, lib_targets,
+      /// with the mobility slope fitted, identifications at 1% FDR:
+      ///
+      ///     0.025   1232      <- default
+      ///     0.035   1215
+      ///     0.050   1167
+      ///
+      /// Widening is monotonically worse. The 28.3% of anchors outside the
+      /// window are real, but they are the interference-prone tail, and
+      /// admitting them costs more than the precursors they bring: at 0.050 the
+      /// loss is 65 identifications, back to roughly the no-calibration figure.
+      /// This window's purpose is excluding the ~8.5x same-window mobility
+      /// above, and it is earning that.
+      ///
+      /// So the residual argument -- "SD 0.025, therefore this window is 1
+      /// sigma and too tight" -- was right about the width and wrong about the
+      /// remedy. The fix for a trend is to model the trend, which is what
+      /// Curve::im_slope does; it is not to widen the gate until the trend
+      /// fits through it.
       ///
       /// `MassCalibration::Options::im_window` is 0.010 -- tighter than this,
       /// through which the offset it fits is then applied. That difference is
