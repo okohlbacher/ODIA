@@ -129,6 +129,10 @@ namespace ODIA
     {
       std::size_t apex = 0, left = 0, right = 0;
       double apex_value = 0.0;
+      /// Summed pairwise fragment correlation at this position, from the
+      /// co-elution detector. 0 from the amplitude detector, which never
+      /// computes it.
+      double corr_sum = 0.0;
     };
 
     /// Local maxima of the smoothed trace, strongest first, with boundaries
@@ -359,6 +363,7 @@ namespace ODIA
         Candidate cd;
         cd.apex = h.apex;
         cd.apex_value = total[h.apex];
+        cd.corr_sum = h.corr_sum;
         const double floor_value = boundary_fraction * total[h.apex];
         std::size_t l = h.apex, r = h.apex;
         while (l > 0 && total[l - 1] > floor_value) { --l; }
@@ -392,7 +397,9 @@ namespace ODIA
       "var_xcorr_shape", "var_xcorr_coelution", "var_library_corr",
       "var_library_dotprod", "var_intensity_score", "var_log_sn",
       "var_usable_fragments", "var_library_rmsd", "var_yseries_score",
-      "var_fragment_coverage"};
+      "var_fragment_coverage",
+      "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
+      "var_rt_delta", "var_im_delta"};
     return names;
   }
 
@@ -427,6 +434,7 @@ namespace ODIA
     const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
     if (window_total <= 0.0) { ++result.precursors_without_candidate; return; }
 
+    const std::size_t first_group = result.groups.size();
     const auto candidates = options.coelution_picking
       ? findCandidatesByCorrelation(chromatogram, options.corr_half_window,
                                     options.min_corr_score, options.max_corr_diff,
@@ -606,6 +614,34 @@ namespace ODIA
         g.sub_scores[FRAGMENT_COVERAGE] =
           tc > 0 ? static_cast<double>(at_apex) / static_cast<double>(tc) : 0.0;
       }
+
+      // ---- features that were already computed and thrown away ----
+      g.sub_scores[CORR_SUM] = cand.corr_sum;
+      g.sub_scores[PEAK_WIDTH_RATIO] = static_cast<double>(width);
+
+      // |apex - predicted|, only where both are run seconds. Before the map is
+      // fitted the library carries iRT units and this would compare two
+      // different quantities, so it stays NaN and the classifier drops it.
+      if (options.library_rt_is_run_seconds && i < p.irt.size() &&
+          std::isfinite(p.irt[i]))
+      {
+        g.sub_scores[RT_DELTA] = std::fabs(static_cast<double>(g.apex_rt) -
+                                           static_cast<double>(p.irt[i]));
+      }
+      else { g.sub_scores[RT_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
+
+      // Library 1/K0 against what the run observed for this precursor. NaN
+      // wherever either side lacks mobility -- an absent measurement is not a
+      // zero deviation, and a placeholder here would be a feature the
+      // classifier weights as evidence.
+      if (options.observed_im != nullptr && i < options.observed_im->size() &&
+          i < p.im.size() && std::isfinite(p.im[i]) &&
+          std::isfinite((*options.observed_im)[i]))
+      {
+        g.sub_scores[IM_DELTA] = std::fabs(static_cast<double>(p.im[i]) -
+                                           static_cast<double>((*options.observed_im)[i]));
+      }
+      else { g.sub_scores[IM_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
       // A candidate whose spectrum does not resemble the library is not this
       // peptide, wherever it eluted.
       //
@@ -641,6 +677,31 @@ namespace ODIA
       }
       result.groups.push_back(std::move(g));
     }
+
+    // Margin over this precursor's own runner-up, on the detector's correlation
+    // sum. Computed here because it is the only place all of one precursor's
+    // candidates are in hand; a per-candidate score cannot express "this
+    // precursor had one obvious answer" versus "three equally plausible ones".
+    if (result.groups.size() > first_group)
+    {
+      double best = 0.0, second = 0.0;
+      for (std::size_t g = first_group; g < result.groups.size(); ++g)
+      {
+        const double v = result.groups[g].sub_scores[CORR_SUM];
+        if (v > best) { second = best; best = v; }
+        else if (v > second) { second = v; }
+      }
+      const bool alone = (result.groups.size() - first_group) == 1;
+      for (std::size_t g = first_group; g < result.groups.size(); ++g)
+      {
+        const double v = result.groups[g].sub_scores[CORR_SUM];
+        // The sole candidate is compared against nothing, not against zero:
+        // giving it its full corr_sum as a margin would make "only one peak
+        // found" look like overwhelming evidence.
+        result.groups[g].sub_scores[CANDIDATE_MARGIN] =
+          alone ? 0.0 : (v >= best ? best - second : v - best);
+      }
+    }
   }
 
   PeakGroupScorer::Result PeakGroupScorer::Session::finish()
@@ -648,6 +709,29 @@ namespace ODIA
     Result& result = result_;
     const Options& options = options_;
     const std::size_t n_precursors = library_->precursorCount();
+
+    // PEAK_WIDTH_RATIO was stored as a raw cycle count per candidate, because a
+    // ratio needs the run's median and no single precursor knows it. Normalise
+    // now: a peptide elutes on the chromatography's timescale, so what carries
+    // information is being wide or narrow RELATIVE to this run, not absolutely.
+    {
+      std::vector<double> widths;
+      widths.reserve(result.groups.size());
+      for (const auto& g : result.groups)
+      {
+        const double w = g.sub_scores[PEAK_WIDTH_RATIO];
+        if (std::isfinite(w) && w > 0.0) { widths.push_back(w); }
+      }
+      if (!widths.empty())
+      {
+        std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
+        const double median = widths[widths.size() / 2];
+        if (median > 0.0)
+        {
+          for (auto& g : result.groups) { g.sub_scores[PEAK_WIDTH_RATIO] /= median; }
+        }
+      }
+    }
 
     // Peak groups arrive in whatever order the extractor finished their
     // precursors, which is retention-time order rather than library order. Put

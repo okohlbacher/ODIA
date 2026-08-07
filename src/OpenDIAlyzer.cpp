@@ -766,6 +766,7 @@ protected:
     if (out_chrom.empty())
     {
       ODIA::PeakGroupScorer::Result scored;
+      scoring_rt_is_run_seconds_ = true;
       const auto rc = extractAndScore_(library, run, pass2_window, true, scored);
       if (rc != EXECUTION_OK) { return rc; }
       return writeScoreResult_(scored, out, library);
@@ -799,13 +800,17 @@ protected:
   /// -pass1_stride and pass 2 restores 1, because pass 1 extracts only to
   /// harvest RT anchors and needs a few hundred of them, not a library's worth.
   std::size_t pass_stride_ = 1;
+  /// Set before pass 2, when the library's irt has been rewritten to run
+  /// seconds. RT_DELTA is only meaningful then.
+  bool scoring_rt_is_run_seconds_ = false;
   std::size_t pass_offset_ = 0;
 
   ExitCodes extractAndScore_(const ODIA::Library& library, const std::string& run,
                              double rt_window_override, bool library_rt_is_run_seconds,
                              ODIA::PeakGroupScorer::Result& scored)
   {
-    const auto options = scoringOptions_();
+    auto options = scoringOptions_();
+    options.library_rt_is_run_seconds = scoring_rt_is_run_seconds_;
     ODIA::PeakGroupScorer::Sink sink(library, options);
     const auto t = std::chrono::steady_clock::now();
     const auto rc = extractInto_(library, run, sink, rt_window_override,

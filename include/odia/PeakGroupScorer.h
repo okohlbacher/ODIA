@@ -77,6 +77,52 @@ namespace ODIA
       /// signal: this counts those carrying signal ABOVE their own background
       /// inside the candidate, which is the co-elution the group claims.
       FRAGMENT_COVERAGE,
+
+      // --- added 2026-08-07. The first four are free: every quantity was
+      // already computed and thrown away. See doc/13.
+
+      /// The summed pairwise correlation the co-elution detector used to accept
+      /// this position as a peak at all.
+      ///
+      /// This is the quantity that moved rank-1 accuracy from 40.7% to 75.7%,
+      /// and until now the picker computed it per candidate and discarded it.
+      /// DIA-NN keeps both `best_corr_sum` and `total_corr_sum` as normalising
+      /// context for exactly this reason. Zero for the amplitude picker, which
+      /// never computes it.
+      CORR_SUM,
+
+      /// How far ahead of its own runner-up this candidate was, on CORR_SUM.
+      ///
+      /// Distinguishes "this precursor had one obvious answer" from "three
+      /// equally plausible ones", which no per-candidate score can express.
+      /// DIA-NN encodes the same idea at detection time as MaxCorrDiff, keeping
+      /// candidates by margin rather than rank; as a feature it reaches the
+      /// classifier instead of only the picker.
+      CANDIDATE_MARGIN,
+
+      /// Width of the candidate in cycles, over the run's median candidate
+      /// width. A peptide elutes on the chromatography's timescale;
+      /// interference need not.
+      PEAK_WIDTH_RATIO,
+
+      /// |apex RT - predicted RT|, seconds, on the CALIBRATED axis.
+      ///
+      /// Absent until now because the header's own reason had not expired: with
+      /// no iRT calibration the library was spread evenly over the run and this
+      /// would have been noise. Pass 2 runs on a fitted map, so both numbers
+      /// are real -- but only then, which is why it is gated on
+      /// `library_rt_is_run_seconds` and left at NaN otherwise. That gating IS
+      /// DIA-NN's min_iter_learn schedule, arrived at from the other direction.
+      ///
+      /// mProphet ranks its equivalent last of seven at AUC 0.850. Last of
+      /// seven is not zero.
+      RT_DELTA,
+
+      /// |library 1/K0 - observed 1/K0| for the precursor, or NaN where the run
+      /// or the library has no mobility. Orthogonal to everything above on
+      /// diaPASEF and simply absent elsewhere.
+      IM_DELTA,
+
       N_SUB_SCORES
     };
 
@@ -188,6 +234,16 @@ namespace ODIA
       std::string classifier = "gbt";
 
       unsigned threads = 0;
+
+      /// True when `Library::precursors().irt` holds RUN SECONDS rather than
+      /// library iRT units -- i.e. after the retention-time map has been fitted
+      /// and applied. RT_DELTA is only computed when this is set; before it,
+      /// the comparison would be between two different units.
+      bool library_rt_is_run_seconds = false;
+
+      /// Observed 1/K0 per precursor, indexed as the library is, or empty.
+      /// Supplied by the caller because the scorer never sees spectra.
+      const std::vector<float>* observed_im = nullptr;
     };
 
     struct PeakGroup
