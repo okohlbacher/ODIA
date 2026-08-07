@@ -1434,14 +1434,56 @@ is real. They say nothing about a library anyone would search.
 It also kills the "viability floor below ~5,000 precursors" diagnosis: this run
 had 50,000. The governing quantity is the true positive RATE.
 
-**The fix is DIA-NN's batching** (handoff 7.1): `MinCal` = 1000,
-`MinClassifier` = 2000 -- consume batches until 1,000 confident identifications
-exist, then calibrate and grow, bootstrapping from a subset that contains real
-signal rather than fitting the whole haystack. Already listed as item 3 of the
-iteration-schedule gap; this is the measurement that makes it the top priority.
+~~**The fix is DIA-NN's batching**~~ -- **NO. MEASURED AND REFUTED
+(2026-08-07).** This was my inference from handoff 7.1, not a measurement, and
+it is wrong. Batching cannot bootstrap from a subset that itself yields nothing,
+and that is exactly what a subset yields.
 
-Develop against `test/tools/odia_entrapment.cpp`, which reproduces the collapse
-deterministically in seconds at ~2 sigma separation, rather than 36-minute runs.
+Simulated at the real regime -- 10,000 targets, 10,000 decoys, a planted true
+positive rate, the actual `scoreSemiSupervisedLDA` with GBT. A RANDOM subset of
+2,000 (same rate, a tenth of the rows) reports **zero in all eight
+rate x separation conditions**, including the one where the full 20,000 reports
+676. Fewer rows means fewer decoys, coarser q resolution and a weaker fit.
+Subsetting is uniformly worse, never better.
+
+(The first version of this probe drew a PREFIX rather than a random subset, and
+the true positives are planted at the front, so the "subset" was a pre-selected
+library and every subset number was inflated. That is the ranking-vs-search
+confusion below, reproduced inside the very experiment meant to study it.)
+
+**The constraint is discrimination power, and the lever is FEATURE COUNT.**
+Splitting ranking from certification at a 1.5% rate and 3 sigma: the top 150
+targets by the learned dscore are **48.7% genuinely true against a 1.5% base
+rate** -- a 32x enrichment, so the ranking works -- while q there is 0.38
+against an actual FDP of 51%, so the estimator is roughly HONEST too. Neither
+is broken. At a 1.5% prior, 1% FDR needs a likelihood ratio near 6500:1, and
+that is simply more evidence than a handful of features carries.
+
+Feature count crosses it. Same regime, 3 sigma, features as independent noisy
+looks at the truth (the optimistic case -- real sub-scores are correlated, so
+real counts must be HIGHER than this):
+
+    features   top-150 purity   reported at q<=0.01
+       4           52.0%              0
+       8           72.0%              0
+      15           84.7%              0        <- what ODIA has
+      30           87.3%            104
+      60           95.3%            116
+     110           94.7%            137        <- what DIA-NN has
+
+The cliff is between 15 and 30, and ODIA carries exactly 15 sub-scores. That is
+a direct explanation for 0 against DIA-NN's 738 on the same file, and it makes
+the score-inventory item below THE priority rather than a nice-to-have. At 2
+sigma even 110 features report nothing, so per-feature strength matters as much
+as count -- more good features, not merely more.
+
+Probes: `scratchpad/batch/{probe,diag,feat}.cpp`, header-only against
+`odia/scoring/lda.h`, seconds to run.
+
+`test/tools/odia_entrapment.cpp` does NOT reproduce this regime: it plants a
+33% true positive rate, where the real library is 1.5%. It is a valid FDR
+calibration test and a poor model of the collapse. A low-rate case belongs in
+it.
 
 **Benchmark hygiene:** always state what fraction of a library's targets are
 actually present. A library built from the comparator's confident set is a
