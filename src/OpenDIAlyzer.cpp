@@ -242,6 +242,25 @@ protected:
                        "and each is a separate pass over the run, which costs a "
                        "decode. The run reports which of the two bound it.",
                        false, true);
+    registerIntOption_("pass1_precursors", "<n>", 0,
+                       "Sample about this many precursors for pass 1. It runs only to harvest "
+                       "retention-time anchors -- 692 came from 2,450 precursors and "
+                       "-min_anchors defaults to 20 -- so extracting the whole "
+                       "library costs memory proportional to it: ~274 GiB at 4.26 M "
+                       "precursors over the whole run, which is why the calibrated "
+                       "pass-2 window does not unblock a large library on its own. "
+                       "Indices are not renumbered, so anchors still refer to the "
+                       "full library. This is a TARGET COUNT rather than a stride "
+                       "because a stride is not scale-invariant: 4 starved a 2,450-"
+                       "precursor library (anchors 709 -> 149, identifications 1862 "
+                       "-> 635) while at 4.26 M it would still leave a million. 0 "
+                       "disables sampling.",
+                       false, true);
+    registerIntOption_("pass1_offset", "<n>", 0,
+                       "Which residue class -pass1_precursors keeps. Diagnostic: it "
+                       "lets equal-sized pass-1 subsets with different members be "
+                       "compared, separating how many anchors from which anchors.",
+                       false, true);
     registerDoubleOption_("rt_window_p95_factor", "<x>", 2.0,
                           "Pass 2 extracts over this many times the fitted map's p95 "
                           "residual, instead of the flat -rt_window. Points per "
@@ -358,6 +377,8 @@ protected:
     }
 
     ODIA::ChromatogramExtractor::Options options;
+    options.precursor_stride = pass_stride_;
+    options.precursor_offset = pass_offset_;
     applyMassCalibration_(library, *source, options);
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
@@ -539,6 +560,25 @@ protected:
       // chromatograms -- so it scores them as they finish and keeps none. That
       // matters most here: this is the WIDE pass, where every precursor is live
       // over most of the gradient and holding them all is at its worst.
+      // A TARGET COUNT, not a stride. A stride is the wrong control because it
+      // is not scale-invariant: 4 starves a 2,450-precursor library (measured:
+      // anchors 709 -> 149, identifications 1862 -> 635) while at 4.26 M it
+      // would still leave a million precursors, far more than any fit needs.
+      pass_offset_ = static_cast<std::size_t>(std::max(0, getIntOption_("pass1_offset")));
+      const int target = std::max(0, getIntOption_("pass1_precursors"));
+      const std::size_t n_prec = library.precursorCount();
+      pass_stride_ = (target > 0 && n_prec > static_cast<std::size_t>(target))
+                       ? n_prec / static_cast<std::size_t>(target)
+                       : 1;
+      if (pass_stride_ > 1)
+      {
+        std::ostringstream st;
+        st << "pass 1 extracts every " << pass_stride_ << "th precursor ("
+           << (library.precursorCount() / pass_stride_) << " of "
+           << library.precursorCount() << "); it exists to harvest anchors, and "
+           << "extracting all of them costs memory proportional to the library";
+        writeLogInfo_(st.str());
+      }
       const auto rc = extractAndScore_(library, run,
                                        pass1_window > 0.0 ? pass1_window : 1.0e9,
                                        false, pass1);
@@ -588,6 +628,23 @@ protected:
     // real (shuffled) sequence, and its apex sits on real signal.
     harvestMobilityAnchors_(pass1, library.precursorCount());
 
+    // A pass that identified nothing at 1% has no business supplying anchors.
+    //
+    // Anchors are harvested at -anchor_q (0.05 by default), so a pass can fail
+    // completely at 1% and still hand over a few hundred marginal anchors. That
+    // is exactly what produced the zero-identification run above: 176 anchors
+    // from q<=0.05, none at q<=0.01, a map fitted from them, and pass 2 failed
+    // too. Better to keep pass 1's own scores than to calibrate on a pass that
+    // did not work.
+    if (pass1.identified_at_1pct == 0)
+    {
+      writeLogWarn_("pass 1 identified nothing at 1% FDR, so its q<=" +
+                    std::to_string(getDoubleOption_("anchor_q")) +
+                    " anchors are not evidence of anything. Not fitting a "
+                    "retention-time map from them; returning pass 1's scores.");
+      return writeScoreResult_(pass1, out, library);
+    }
+
     const int min_anchors = std::max(1, getIntOption_("min_anchors"));
     if (static_cast<int>(anchors.size()) < min_anchors)
     {
@@ -607,6 +664,48 @@ protected:
 
     double p95 = 0.0;
     const auto trafo = ODIA::Calibration::fit(anchors, &p95, 0.0);
+
+    // p95 above is IN-SAMPLE: it is the residual on the very anchors the map
+    // was fitted to, so it cannot see overfitting. That is not hypothetical --
+    // sampling pass 1 down to 149 anchors left p95 at 81.7 s against 83.4 s for
+    // 709 anchors, and the window width (which derives from p95) barely moved,
+    // while identifications fell 66%. The fit was locally wrong wherever
+    // anchors were thin, so window PLACEMENT degraded and nothing being
+    // measured looked at placement.
+    //
+    // So refit on 80% and measure on the held-out 20%. A gap between the two is
+    // the signal that the anchors are too few for the map they are being asked
+    // to support.
+    if (anchors.size() >= 25)
+    {
+      std::vector<std::pair<double, double>> fit_set, held;
+      for (std::size_t i = 0; i < anchors.size(); ++i)
+      {
+        (i % 5 == 4 ? held : fit_set).push_back(anchors[i]);
+      }
+      double dummy = 0.0;
+      const auto probe = ODIA::Calibration::fit(fit_set, &dummy, 0.0);
+      std::vector<double> resid;
+      resid.reserve(held.size());
+      for (const auto& a : held)
+      {
+        resid.push_back(std::fabs(probe.apply(a.first) - a.second));
+      }
+      std::sort(resid.begin(), resid.end());
+      const double oos = resid.empty() ? 0.0 : resid[std::size_t(0.95 * (resid.size() - 1))];
+      std::ostringstream v;
+      v << "map generalisation: p95 " << dummy << " s in-sample on "
+        << fit_set.size() << " anchors, " << oos << " s out-of-sample on "
+        << held.size() << " held out";
+      if (dummy > 0.0 && oos > 2.0 * dummy)
+      {
+        v << " -- OUT-OF-SAMPLE IS " << (oos / dummy)
+          << "x WORSE, the map is fitted to too few anchors and its windows will "
+             "be misplaced where they are sparse";
+        writeLogWarn_(v.str());
+      }
+      else { writeLogInfo_(v.str()); }
+    }
     std::ostringstream fit;
     fit << "fitted the retention-time map from " << anchors.size()
         << " anchors; p95 residual " << p95 << " s";
@@ -659,6 +758,8 @@ protected:
                     "(-rt_window_p95_factor 0 disables residual-driven narrowing)");
     }
 
+    pass_stride_ = 1;  // pass 2 is the real search and needs every precursor
+    pass_offset_ = 0;
     writeLogInfo_("pass 2 of 2: narrow extraction on the calibrated axis");
     chromatograms = ODIA::Chromatograms{};
     // The library now carries run seconds, so the affine map is the identity.
@@ -694,6 +795,12 @@ protected:
   /// scored as the pass leaves its retention-time window and then freed. What
   /// survives is the peak-group table, which is ~120 bytes a group against tens
   /// of kilobytes a chromatogram.
+  /// Precursor stride for the pass being run. Pass 1 sets it from
+  /// -pass1_stride and pass 2 restores 1, because pass 1 extracts only to
+  /// harvest RT anchors and needs a few hundred of them, not a library's worth.
+  std::size_t pass_stride_ = 1;
+  std::size_t pass_offset_ = 0;
+
   ExitCodes extractAndScore_(const ODIA::Library& library, const std::string& run,
                              double rt_window_override, bool library_rt_is_run_seconds,
                              ODIA::PeakGroupScorer::Result& scored)
@@ -756,6 +863,27 @@ protected:
     if (scored.fdr_valid)
     {
       msg << "  identified " << scored.identified_at_1pct << " precursors at 1% FDR\n";
+      // Zero identifications from a run that produced peak groups and trained a
+      // classifier is a failure, and until now it was reported as a result.
+      //
+      // Measured: four runs differing ONLY in which 1,225 of 4,900 precursors
+      // pass 1 saw gave 635, 1820, 1211 and 0 identifications. The zero arm had
+      // the second-most anchors, a middling p95 and the WIDEST window -- every
+      // number this tool prints looked healthy -- while emitting 65,733 peak
+      // groups and identifying none of them. The same signature appeared twice
+      // more tonight (a library-correlation gate at 0.5, and an early narrowing
+      // arm), so it is a recurring mode rather than one bad configuration.
+      if (scored.identified_at_1pct == 0 && !scored.groups.empty())
+      {
+        std::ostringstream z;
+        z << "identified NOTHING at 1% FDR from " << scored.groups.size()
+          << " peak groups (" << scored.target_groups << " target, "
+          << scored.decoy_groups << " decoy). The scorer ran and the classifier "
+          << "trained; the target-decoy threshold then rejected everything. Do not "
+          << "read the other numbers as healthy -- p95, window width and anchor "
+          << "counts are all reported normally in this state.";
+        writeLogWarn_(z.str());
+      }
     }
     else
     {

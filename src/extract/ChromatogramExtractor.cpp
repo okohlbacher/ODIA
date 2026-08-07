@@ -427,6 +427,22 @@ namespace ODIA
 
     for (std::size_t i = 0; i < n_prec; ++i)
     {
+      // Pass 1 exists only to harvest retention-time anchors, and it needs very
+      // few: 692 came from 2,450 precursors, and -min_anchors defaults to 20.
+      // Extracting the whole library to find them costs memory proportional to
+      // the library -- at 4.26 M precursors over the whole run that is ~274 GiB,
+      // which is why the calibrated pass-2 window did not unblock the large
+      // library on its own.
+      //
+      // A STRIDE rather than a random sample or a sub-library, because the
+      // index `i` must stay a full-library index: anchors are harvested as
+      // (original_irt[i], best[i]->apex_rt), and remapping them is how the RT
+      // map would silently get fitted to the wrong iRTs.
+      if (options.precursor_stride > 1 &&
+          (i % options.precursor_stride) != (options.precursor_offset % options.precursor_stride))
+      {
+        continue;
+      }
       const double mz = fromFixed(p.mz[i]);
       std::size_t best = windows.size();
       double best_offset = std::numeric_limits<double>::infinity();

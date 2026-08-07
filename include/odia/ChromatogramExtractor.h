@@ -552,6 +552,19 @@ namespace ODIA
       /// 3.6x of the available 7.4x. Lower it when threads are few.
       std::size_t decode_block = 256;
 
+      /// Extract only every Nth precursor. 1 is all of them.
+      ///
+      /// For pass 1 of the two-pass workflow, which extracts solely to harvest
+      /// RT anchors. Indices are NOT renumbered -- a strided pass still reports
+      /// full-library precursor indices, so the anchor harvest and the iRT it
+      /// is fitted against cannot drift apart.
+      std::size_t precursor_stride = 1;
+
+      /// Which residue class the stride keeps, so equal-sized subsets with
+      /// DIFFERENT members can be compared. Exists to separate "how many
+      /// anchors" from "which anchors" when measuring how stable the RT fit is.
+      std::size_t precursor_offset = 0;
+
       /// Maps the library's iRT onto this run's retention time, in seconds:
       /// rt = irt_slope * irt + irt_intercept.
       ///
