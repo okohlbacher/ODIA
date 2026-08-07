@@ -1661,3 +1661,98 @@ Defaulted to 0.
 Both fixes are IN the tree and OFF: `-mass_calibration_remeasure` (flag) and
 `Options::min_control_residuals` (0). Neither is reverted, because the
 measurement half is correct and will be wanted once the application is fixed.
+
+## Three of my own claims, corrected by adversarial review (2026-08-07, late)
+
+### 1. "Feature count is the lever" -- REFUTED. It was an artefact of my own generator.
+
+`scratchpad/batch/feat.cpp:34` drew every feature as `shift + noise*2.0`:
+**independent given the class**. The sufficient statistic is then the row mean
+and d' grows as sqrt(n_features) BY CONSTRUCTION. The two earlier probes,
+`probe.cpp:32` and `diag.cpp:31`, drew a SHARED latent
+(`common*0.7 + noise*0.6`) -- so the 4-feature row of `diag.cpp` and the
+4-feature row of `feat.cpp` were never the same experiment, and I did not
+notice I had changed the generator.
+
+Re-run with the shared latent, everything else identical (same 1.5% rate, same
+3 sigma, same seed, same `scoreSemiSupervisedLDA` + GBT):
+
+    features    4    8   15   30   60  110
+    at q<=0.01  0    0    0    0    0    0
+
+**Zero at every count.** The "cliff between 15 and 30" exists only under
+independence. And ODIA is squarely in the correlated case -- by my own words
+two entries above, all 15 sub-scores read MS2 fragment traces and "share their
+failure modes", which is exactly the regime that reports nothing at 110.
+
+The corrected lever is **ORTHOGONALITY, not count**. That still points at MS1,
+but for a different and stronger reason: a second measurement with an
+independent failure mode, not a bigger number of columns. It also says that
+working through the `doc/13` inventory of additional MS2-derived sub-scores
+buys approximately nothing, which the previous framing did not.
+
+Two further defects in that simulation, both real: it plants ONE row per group,
+so the best-of-N maximum over ~9 candidates per precursor -- which is what
+`lda.h` actually computes FDR on -- cannot appear; and the reported count is a
+threshold crossing rather than a dose-response (seed 0xE47A9 gives
+30/60/110 -> 104/116/137, seed 1 gives 115/133/134, the 60-vs-110 order flips,
+while `q at 150` moves only 0.166 -> 0.147 across the "cliff").
+
+### 2. The mobility slope is REAL but INFLATED, and the cross-charge agreement was an artefact.
+
+`delta = im_observed - im_library`, and the fit regresses `delta` on
+`im_library` -- i.e. regresses (y - x) on x. With prediction noise in the
+library value that is **negative by construction**, slope
+= -Var(noise)/Var(im_library), no scale error required. Refitting on
+`im_observed` instead separates them: a genuine scale error stays negative on
+both axes, pure dilution flips positive.
+
+    charge    n      on im_library    on im_observed    dilution predicts
+      2    16498        -0.0974          -0.0703             -0.0382
+      3     5986        -0.1105          -0.0243             -0.0931
+
+**Both stay negative, so a real scale error exists** -- the claim is not
+refuted. But the magnitude fitted on `im_library` is inflated by dilution, and
+charge 3 is very nearly ALL dilution (-0.1105 observed against a -0.0931
+dilution prediction, leaving -0.0243 on the observed axis).
+
+So "charge 2 and charge 3 agree at -0.096 and -0.113, two independent fits" was
+wrong twice over: they are not independent (one CCS model, one coefficient, one
+run -- and if the shared-coefficient hypothesis is true, agreement is
+guaranteed rather than evidence), and on the honest axis they do NOT agree
+(-0.070 against -0.024).
+
+**This predicts the anomalies already recorded.** Fitting on `im_library`
+over-corrects, i.e. shrinks toward the population mean, which always improves
+MSE while moving the window off precursors whose library value was already
+right. That is exactly "18.8% of out-of-fold MSE removed but -20
+identifications", and "66 precursors LOST against 116 gained". The
+"MSE is not a proxy for identifications" finding has a mechanism now.
+
+**Fix:** an attenuation-corrected estimator (Deming / geometric-mean
+regression), since at apply time only `im_library` is available. Roughly, the
+true slope is near the midpoint of the two regressions: about -0.084 for
+charge 2 and -0.067 for charge 3.
+
+### 3. Astral's bottleneck is the PICKER, not extraction -- and the number was already in the log.
+
+I reported "5,187 precursors the library carries got no candidate at all --
+genuine extraction loss". `assess.py` labels `ref_ids & all_target` as
+"extraction produced a candidate", but that label is an assumption, and the
+measurement that separates the stages was printed by the same run:
+
+    picker rejections over 12,912,142 scan positions:
+      3,031,555 <2 fragments present, 6,870,896 below min_corr_score,
+      3,702,166 reference trace zero, 5,725,208 not a local maximum
+    -> 9,890 precursors yielded no candidate peak group
+
+The chromatograms were extracted; the PICKER returned nothing for them. Same
+shape as S08's 19,150. Other candidates not yet excluded: precursors dropped by
+`min_fragments_at_apex` AFTER a candidate was emitted (a scorer filter, not a
+picker one), pass-2 extraction on an RT map fitted from only 1,248 anchors, and
+`Precursor.Id` string mismatch -- `writeScores_` concatenates modified sequence
+and charge with NO separator, and a systematically mismatched class would land
+in neither `hit` nor `avail` while leaving the "100% of ODIA's are in DIA-NN's"
+figure untouched.
+
+**Split the 9,890 four ways before spending anything on the extractor.**
