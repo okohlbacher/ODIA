@@ -1346,3 +1346,43 @@ Every one produced a plausible number that was reasoned from before being
 checked. **When comparing against a prior result, run the prior result's
 script** -- not an equivalent command. `odia_v4_ft.sh` is four lines and would
 have been right the first time.
+
+## The scorer has never been run against a realistic library (2026-08-07)
+
+**Measured, S08, `v6_50k.tsv` (a stride sample of our own v6, no run-tuned iRT,
+neither tool privileged):**
+
+    DIA-NN   738 of 50,000 at 1% FDR   1:43
+    ODIA       0                      36:43, 9.09 GiB
+
+The true positive rate is **~1.5%** -- a whole-proteome library is almost
+entirely peptides absent from the sample. DIA-NN gets 738/50,000 here and
+37,596/2,127,559 (1.8%) on the full library, so the sample is representative.
+
+ODIA's guards fired correctly: 1,639,188 peak groups, **819,353 target and
+819,835 decoy (1:1)**, then `pass 1 identified nothing at 1% FDR`. The positive
+class is ~98.5% noise, so the semi-supervised loop has no separable seed at
+iteration 0 and never ignites.
+
+**This invalidates the regime, not the work.** Every recovery figure this week
+-- 75.4% best-ranked-right, 89.1% precision, 97.4% availability -- used
+`lib_targets.tsv`, 2,665 precursors drawn from DIA-NN's own confident set, i.e.
+~100% true positives. Those measure ranking quality among true positives, which
+is real. They say nothing about a library anyone would search.
+
+It also kills the "viability floor below ~5,000 precursors" diagnosis: this run
+had 50,000. The governing quantity is the true positive RATE.
+
+**The fix is DIA-NN's batching** (handoff 7.1): `MinCal` = 1000,
+`MinClassifier` = 2000 -- consume batches until 1,000 confident identifications
+exist, then calibrate and grow, bootstrapping from a subset that contains real
+signal rather than fitting the whole haystack. Already listed as item 3 of the
+iteration-schedule gap; this is the measurement that makes it the top priority.
+
+Develop against `test/tools/odia_entrapment.cpp`, which reproduces the collapse
+deterministically in seconds at ~2 sigma separation, rather than 36-minute runs.
+
+**Benchmark hygiene:** always state what fraction of a library's targets are
+actually present. A library built from the comparator's confident set is a
+RANKING benchmark; a proteome-scale library is a SEARCH benchmark. We have only
+ever run the first.
