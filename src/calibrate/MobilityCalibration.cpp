@@ -66,6 +66,10 @@ namespace ODIA
       double mz = 0.0;
       double delta = 0.0;
       std::uint32_t precursor = 0;
+      /// The LIBRARY's 1/K0 for this precursor -- the axis the correction is
+      /// linear in. Carried so the fit can regress delta on it; a constant and
+      /// an m/z spline between them cannot express a slope in mobility.
+      double im = 0.0;
     };
 
     /// Equal-COUNT bins along m/z, each summarised by the median delta and that
@@ -205,6 +209,52 @@ namespace ODIA
       const double clamp_milli = opt.max_correction_im * MILLI;
       out.curve.constant = std::clamp(medianOf(cd), -clamp_milli, clamp_milli) / MILLI;
       out.curve.supported = true;
+
+      // Least squares of the residual on 1/K0, about the anchors' own median
+      // mobility. Fitted on the CORE (already trimmed to 4 sigma), so a few
+      // wild cells cannot tilt it.
+      //
+      // Pivoting on the median rather than on zero keeps the slope and the
+      // constant nearly independent: with a pivot at zero, any slope also
+      // shifts every correction by slope * median_im, and the two terms fight.
+      {
+        std::vector<double> ims;
+        ims.reserve(core.size());
+        for (const auto& x : core) { ims.push_back(x.im); }
+        const double pivot = medianOf(ims);
+        double sxx = 0.0, sxy = 0.0;
+        const double cbar = medianOf(cd);
+        for (const auto& x : core)
+        {
+          if (!std::isfinite(x.im)) { continue; }
+          const double dx = x.im - pivot;
+          sxx += dx * dx;
+          sxy += dx * (x.delta - cbar);
+        }
+        if (sxx > 0.0)
+        {
+          // delta is carried in MILLI here and the curve is in 1/K0, so the
+          // slope needs the same division the constant gets above.
+          const double slope = (sxy / sxx) / MILLI;
+          // Bounded in SLOPE units, not by the constant's budget.
+          //
+          // The first version of this reused max_correction_im (0.05) spread
+          // over the observed mobility span, and that was wrong: it is a budget
+          // for an OFFSET -- how far a correction may move a precursor that
+          // should not have moved -- and a real trend across the range is a
+          // different quantity. It clamped both charges (measured raw slopes
+          // -0.097 and -0.111 against a -0.069/-0.072 limit), so the fit was
+          // being cut off precisely where it was working.
+          //
+          // The bound instead reflects what the slope MEANS. It is a relative
+          // scale error in the CCS->1/K0 conversion, so a slope of s is an
+          // s*100% error in the coefficient. Measured here at ~10%. A quarter
+          // is generous headroom for a differently-calibrated instrument while
+          // still refusing a fit that has clearly latched onto something else.
+          out.curve.im_slope = std::clamp(slope, -opt.max_im_slope, opt.max_im_slope);
+          out.curve.im_pivot = pivot;
+        }
+      }
 
       out.bins = binByMz(core, opt.max_mz_bins, opt.min_per_bin);
       double mean = 0.0;
@@ -424,7 +474,7 @@ namespace ODIA
     for (const auto& r : kept)
     {
       const std::size_t c = std::min<std::size_t>(r.charge, MAX_CHARGE);
-      by_charge[c].push_back({r.mz, r.delta * MILLI, r.precursor});
+      by_charge[c].push_back({r.mz, r.delta * MILLI, r.precursor, r.im_library});
     }
 
     // ---- the FORM, decided once per charge from all of that charge's anchors

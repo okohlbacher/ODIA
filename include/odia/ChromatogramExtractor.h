@@ -444,9 +444,25 @@ namespace ODIA
       /// accepts, and the reason a band-only fix bought 1.12x while the
       /// same-window interference it left behind is what dominates.
       ///
-      /// 0.025 half-width is ~2.6 sigma on the measured library-vs-observed
-      /// agreement (SD 0.019, and 0.0186 on precursors we currently miss, so
-      /// not a selection effect).
+      /// 0.025 half-width was justified as ~2.6 sigma on the measured
+      /// library-vs-observed agreement (SD 0.019, and 0.0186 on precursors we
+      /// currently miss, so not a selection effect).
+      ///
+      /// THAT JUSTIFICATION IS OVERSTATED. The 0.019 was computed on residuals
+      /// that still contained the mobility TREND -- the CCS->1/K0 conversion is
+      /// a pure proportionality and carries a ~10% scale error, so the residual
+      /// ran +0.017 at 1/K0 0.7 to -0.030 at 1.3. A single SD over a population
+      /// with a trend in it is not a width, it is a trend and a scatter added
+      /// together, and the scatter is the only part a symmetric window can
+      /// cover. With the trend removed by Curve::im_slope, the residual SD on
+      /// held-out anchors is 0.025 -- so this window is ~1 sigma, not 2.6, and
+      /// rejects 28.3% of target anchors on S08 even when the calibration is
+      /// correct. At +/-0.05 that falls to 5.6%.
+      ///
+      /// Left at 0.025 pending a measurement of what widening costs in
+      /// interference: this window's whole purpose is excluding the ~8.5x
+      /// same-window mobility above, and trading recall for that is exactly the
+      /// tradeoff that has to be measured rather than argued.
       ///
       /// `MassCalibration::Options::im_window` is 0.010 -- tighter than this,
       /// through which the offset it fits is then applied. That difference is

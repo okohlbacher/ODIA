@@ -214,6 +214,14 @@ protected:
                           "keeps the brightest cluster over every block it looks in and an "
                           "absent precursor gets one draw from the interference per block.",
                           false, true);
+    registerDoubleOption_("max_im_slope", "<1/K0 per 1/K0>", 0.25,
+                          "Bound on the mobility-linear term of the 1/K0 recalibration. The "
+                          "CCS->1/K0 conversion is a pure proportionality, so a scale error in "
+                          "its coefficient shows up as a slope: measured -0.096 (charge 2) and "
+                          "-0.113 (charge 3) on S08, i.e. a ~10% coefficient error, which moved "
+                          "the residual from +0.017 at 1/K0 0.7 to -0.030 at 1.3. Set 0 to "
+                          "disable the term and fit a constant offset only.",
+                          false, true);
     registerIntOption_("im_calib_cycles", "<n>", 200,
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
@@ -1714,6 +1722,7 @@ private:
       imc.max_precursors = static_cast<std::size_t>(
         std::max(0, getIntOption_("im_calib_precursors")));
       imc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("im_calib_cycles")));
+      imc.max_im_slope = std::max(0.0, getDoubleOption_("max_im_slope"));
       // Probe through the mass window that is about to be extracted with, so
       // the two calibrations cannot disagree about what a fragment match is.
       imc.fragment_ppm = options.fragment_ppm;

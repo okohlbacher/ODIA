@@ -525,6 +525,14 @@ namespace ODIA
       /// to have found the interference than the instrument.
       double max_correction_im = 0.030;
 
+      /// Bound on the mobility-linear term, in 1/K0 per 1/K0.
+      ///
+      /// A relative scale error in the CCS->1/K0 conversion: a slope of s is an
+      /// s*100% error in the coefficient. Measured at ~0.10 on S08. This is
+      /// deliberately NOT max_correction_im -- that bounds an offset, and reusing
+      /// it here clamped the real trend on both charge states.
+      double max_im_slope = 0.25;
+
       /// Window half-width the corrected residual would support: k x robust
       /// sigma, floored. FITTED AND REPORTED, NEVER APPLIED -- see the header.
       double sigma_multiple = 3.0;
@@ -553,6 +561,46 @@ namespace ODIA
       std::vector<double> knot_mz;      ///< ascending
       std::vector<double> knot_offset;
       std::size_t anchors = 0;
+
+      /// Linear term in 1/K0 itself: correction = constant + im_slope * (im - im_pivot).
+      ///
+      /// The constant and the m/z shape between them cannot express what the
+      /// residuals actually do. Measured on S08 against DIA-NN's confident set,
+      /// library 1/K0 against observed, 670 precursors:
+      ///
+      ///   library 1/K0   n    median residual   beyond +/-0.025
+      ///     0.6-0.9    139       +0.0170             25.9%
+      ///     0.9-1.0    189       +0.0061              8.5%
+      ///     1.0-1.1    178       +0.0027              4.5%
+      ///     1.1-1.2    114       -0.0079             12.3%
+      ///     1.2-1.6     50       -0.0106             20.0%
+      ///
+      /// A monotone trend from +0.017 to -0.011, crossing zero near 1.05 -- a
+      /// SLOPE, not an offset. It comes from upstream: ccs_to_mobility.py
+      /// applies a single --coefficient, i.e. a pure proportionality, and the
+      /// Mason-Schamp relation between CCS and 1/K0 is not proportional. So the
+      /// conversion is right in the middle of the range and wrong at both ends.
+      ///
+      /// 12.5% of precursors land outside the +/-0.025 extraction window
+      /// because of it, against a 14% picker loss -- close enough that this is
+      /// a strong candidate for most of that loss.
+      ///
+      /// The m/z shape cannot substitute. CCS correlates with m/z, so an m/z
+      /// spline absorbs SOME of this, which is exactly why it is dangerous: it
+      /// fits a mobility error through a mass-shaped model and leaves the
+      /// residual structured.
+      double im_slope = 0.0;
+      double im_pivot = 1.0;
+
+      /// The correction including the mobility-linear term. `at(mz)` is kept
+      /// for callers that have no 1/K0 to hand.
+      double at(double mz, double im) const
+      {
+        if (!supported) { return 0.0; }
+        const double base = at(mz);
+        if (!std::isfinite(im) || im_slope == 0.0) { return base; }
+        return base + im_slope * (im - im_pivot);
+      }
 
       double at(double mz) const
       {

@@ -779,6 +779,51 @@ namespace ODIA
       group.push_back(static_cast<long long>(g.precursor));
     }
 
+    // PART 4 step 1: "Columns that are constant or all-missing are dropped."
+    //
+    // Not implemented until now, and it bites today: USABLE_FRAGMENTS is a
+    // constant 12.000 (a trace is degenerate only if constant, and in a window
+    // where 45-60% of points are non-zero none ever is) and IM_DELTA is
+    // all-NaN (Options::observed_im was added as a plumbing point and never
+    // connected). A constant column makes the within-class covariance singular,
+    // which the ridge then papers over silently; for the tree it is a wasted
+    // split candidate. Either way the discriminant is asked to learn from a
+    // column carrying no information.
+    {
+      std::vector<char> useful(N_SUB_SCORES, 0);
+      std::vector<double> first(N_SUB_SCORES, 0.0);
+      std::vector<char> seen(N_SUB_SCORES, 0);
+      for (const auto& g : result.groups)
+      {
+        for (std::size_t j = 0; j < N_SUB_SCORES && j < g.sub_scores.size(); ++j)
+        {
+          const double v = g.sub_scores[j];
+          if (!std::isfinite(v)) { continue; }
+          if (!seen[j]) { seen[j] = 1; first[j] = v; }
+          else if (v != first[j]) { useful[j] = 1; }
+        }
+      }
+      std::vector<std::size_t> dropped;
+      for (std::size_t j = 0; j < N_SUB_SCORES; ++j)
+      {
+        if (!useful[j]) { dropped.push_back(j); }
+      }
+      if (!dropped.empty())
+      {
+        std::ostringstream d;
+        d << "dropping " << dropped.size() << " sub-score(s) carrying no information:";
+        for (const std::size_t j : dropped) { d << ' ' << subScoreNames()[j]; }
+        std::fprintf(stderr, "%s\n", d.str().c_str());
+        // Zeroed rather than removed: the column indices are a contract with
+        // subScoreNames(), nonpositive_features and seed_mask, and renumbering
+        // them here would silently misalign all three.
+        for (auto& g : result.groups)
+        {
+          for (const std::size_t j : dropped) { g.sub_scores[j] = 0.0; }
+        }
+      }
+    }
+
     Scoring::LDAParams params;
     // Two of the sub-scores are lower-is-better by construction, so their
     // weights may never come out positive. XCORR_COELUTION is the mean |lag|
@@ -912,9 +957,24 @@ namespace ODIA
     // of the feature matrix are these groups, and a classifier fitted on rows
     // ordered by elution time is a classifier that can depend on it. Stable, so
     // a precursor's candidates keep the order the search produced.
+    // Canonical order: (precursor, apex RT, apex intensity). NOT "precursor,
+    // then whatever order the search produced".
+    //
+    // PART 4 step 0 of the OpenSWATH handoff requires (group, apex RT, feature
+    // id) before anything else, and calls skipping it the determinism bug of
+    // section 3.3 -- which that project rates its most important non-result.
+    // Sorting by precursor alone leaves a precursor's candidates in discovery
+    // order, so a thread-count change reorders rows, which reassigns folds,
+    // which changes the fit. Two runs of the same input would then disagree for
+    // a reason invisible in any output.
+    //
+    // apex_intensity substitutes for "feature id": we have no stable per-feature
+    // identifier, and it breaks ties that apex RT alone leaves.
     std::stable_sort(result.groups.begin(), result.groups.end(),
                      [](const PeakGroup& a, const PeakGroup& b) {
-                       return a.precursor < b.precursor; });
+                       if (a.precursor != b.precursor) { return a.precursor < b.precursor; }
+                       if (a.apex_rt != b.apex_rt) { return a.apex_rt < b.apex_rt; }
+                       return a.apex_intensity < b.apex_intensity; });
 
     for (const auto& g : result.groups)
     {
