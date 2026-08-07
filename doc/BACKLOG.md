@@ -1307,3 +1307,42 @@ recovery number measured on S08 with that library has partly seen the answers.
 It is not the reason the library underperforms -- it underperforms because the
 tuning was bad, not because it leaked -- but both are reasons the tuned model
 must not be a persisted artefact.
+
+### Confirmed 2026-08-07: v6 reproduces v4 and beats DIA-NN
+
+Regenerated with the stock RT model, via `odia_v4_ft.sh` with only the output
+name changed (sourcing env.sh, applying ccs_to_mobility, calling search.sh):
+
+  odia_v6  stock RT model, CURRENT code   37,596
+  odia_v4  stock RT model                 37,583   (+13, 0.03%)
+  DIA-NN own                              37,247   (v6 +349, +0.9%)
+  odia_v5  run-tuned RT model             35,556   (v6 +2,040)
+
+Settles three things. No code regression -- everything changed this week left
+library generation untouched. The v5 loss was ENTIRELY the run-tuned model,
+all 2,040 recovered by the path swap. And our generator beats DIA-NN's own
+library, reproducibly, twice.
+
+Generation is also ~5x faster than when v4 was made: RT 215.7 -> 44.1 s, CCS
+364.8 -> 89.7 s, from the data-parallel ONNX sessions (2a4c73a, 43af3fc).
+Both stages use `inferenceSessions(sessions)` with 1 intra-op thread.
+
+**Process note, because it cost four wrong numbers.** Getting here took four
+attempts, each failing because I rebuilt the pipeline from memory rather than
+running the script sitting beside the data:
+
+  1. no --fasta            -> 20,065, reported as a "53.9% library gap" that
+                              does not exist; it drove a 2x2 cross-analysis
+                              and a plan step before the correctly-configured
+                              search turned up already on disk
+  2. no ccs_to_mobility    -> 14,408; nearly read as refuting the diagnosis
+  3. hand-written DIA-NN   -> search.sh exists so the settings are identical
+  4. no env.sh             -> CCS all-zero, announced as "a real code
+                              regression in HEAD" on the strength of a grep
+                              matching "CCS model available" inside the string
+                              "No CCS model available"
+
+Every one produced a plausible number that was reasoned from before being
+checked. **When comparing against a prior result, run the prior result's
+script** -- not an equivalent command. `odia_v4_ft.sh` is four lines and would
+have been right the first time.
