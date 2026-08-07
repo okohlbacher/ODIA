@@ -1188,3 +1188,59 @@ refine rounds -> output writing.
 occupancy), plus the three scaling curves. Publish it as doc/14 and keep it
 current -- the reason this backlog entry exists is that every previous
 performance claim was made from a measurement taken for a different purpose.
+
+### Part 1b: compute the EXPENSIVE scores too, then let SHAP decide
+
+Addendum. The table above sorts candidates by cost and implicitly suggests doing
+the cheap ones first. That ordering is a trap: it selects features by
+implementation convenience rather than by information, and we have no evidence
+the cheap ones carry the signal. Compute them ALL, including:
+
+- **MS1 block** (~8 features): `pMs1TimeCorr`, `pMs1TightOne/Two`, `pMs1Iso*` at
+  three tolerances, `pMs1Ratio`. Needs MS1 extraction, which we do not do at all.
+  This is the single largest missing capability -- DIA-NN also uses MS1 in
+  DETECTION (`MS1PeakSelection`, default on), so building it may pay twice.
+- **Shadow and isotope traces**: `pShadow`, `pShadowCorr+0..5` (-1.00335 Th),
+  `pHeavy` (+1 isotope from the NEIGHBOURING isolation window). Each needs an
+  extra extraction offset; `pHeavy` needs cross-window extraction, which our
+  one-precursor-one-window assignment currently forbids.
+- **Tightened-tolerance re-matching**: `pTightCorrOne/Two`, and the `p_fit` class
+  DIA-NN only enables with `--tight-mass-acc-aux-for-cal`.
+- **`elution_model_fit_score`** (OpenSWATH): fit an EMG per peak group and score
+  the residual. Expensive per candidate and orthogonal to every correlation.
+
+### Score selection by ML, with SHAP -- and why the obvious way is wrong
+
+Fit the GBT over the full candidate set and rank features by **mean |SHAP|**,
+then keep the ones that carry the model. Straightforward, and there are two
+failure modes to design around:
+
+**1. SHAP measures what separates targets from DECOYS, not what finds the right
+peak.** Those are different objectives and we have already measured them coming
+apart: off-RT targets are statistically identical to decoys on `library_corr`
+(median -0.036 vs -0.032), yet the classifier still admitted them, because it
+learned signal-PRESENCE features that separate a real-but-misplaced target from a
+shuffled decoy. A SHAP ranking would have rewarded exactly those features. So the
+selection metric must be the **external** one -- best-ranked-right against each
+file's DIA-NN confident set -- with SHAP used to generate the candidate ordering,
+not to make the decision.
+
+**2. Importance is dataset-specific, and our two files differ structurally.**
+S08 is diaPASEF (ion mobility, co-packed two-windows-per-frame); Astral has
+neither. `IM_DELTA` is definitionally worthless on Astral. Anything derived from
+frame packing is S08-only. So the procedure is:
+  - fit and rank on S08 and on Astral **independently**;
+  - report both rankings side by side, plus the rank correlation between them;
+  - keep the union of what is decisive on either, not the intersection -- a
+    feature that only works on one instrument class is still worth having, gated;
+  - treat a large ranking disagreement as a finding about the instruments, not as
+    noise to average away.
+
+A third file would make this much stronger, since two points cannot distinguish
+"instrument-specific" from "this particular run". `12_80` (SCIEX SWATH, no IM,
+different vendor) is on disk and unused.
+
+**Guard against the loop closing on itself.** If SHAP selection feeds a
+discriminant that also SELECTS candidates (Part 2), the model chooses the rows it
+is trained on and every internal metric agrees with itself. Hold out precursors,
+not rows, and judge on the external metric only.
