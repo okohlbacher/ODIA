@@ -120,14 +120,27 @@ namespace ODIA
     return std::string_view(entries_[handle].data, entries_[handle].length);
   }
 
+  void StringArena::releaseLookup()
+  {
+    // swap-with-empty, because clear() on an unordered_map keeps the bucket
+    // array -- which is the larger half at this size.
+    std::unordered_map<std::string_view, std::uint32_t>().swap(lookup_);
+  }
+
   std::size_t StringArena::footprintBytes() const
   {
     std::size_t blocks = 0;
     for (const auto& b : blocks_) { blocks += b.capacity(); }
-    // One hash node per distinct string, plus the bucket array. Approximated as
-    // the node payload (key view + value + a next pointer) and one pointer per
-    // bucket; exact enough to stop the figure being wrong by a factor.
-    const std::size_t node = sizeof(std::string_view) + sizeof(std::uint32_t) + sizeof(void*);
+    // One hash node per distinct string, plus the bucket array.
+    //
+    // The model was key view + value + a next pointer, with a comment claiming
+    // it was "exact enough to stop the figure being wrong by a factor". It was
+    // wrong by a factor: releasing this map dropped peak RSS 1.28 -> 1.13 GiB
+    // (154 MB) on a 4.26 M-precursor library while the accounting predicted
+    // only 47 MiB. libstdc++ caches the hash in the node and pads to alignment,
+    // and the allocator rounds on top of that. 48 B is measured against that
+    // delta rather than derived from sizeof.
+    const std::size_t node = 48;
     const std::size_t map = lookup_.size() * node + lookup_.bucket_count() * sizeof(void*);
     return blocks + entries_.capacity() * sizeof(Entry) + map;
   }

@@ -182,6 +182,11 @@ namespace ODIA
   {
     if (filename.ends_with(".parquet")) { loadParquet(filename, library); }
     else { loadTSV(filename, library); }
+    // The interning index answered "have I seen this string" while reading and
+    // is never consulted again -- handles resolve through the arena's entries.
+    // Held for the library's lifetime it is one hash node per distinct string
+    // plus a bucket array, for a question nobody asks twice.
+    library.strings().releaseLookup();
   }
 
   void DIANNLibraryFile::loadTSV(const std::string& filename, Library& library)

@@ -81,6 +81,22 @@ namespace ODIA
     /// Returns a handle for @p s, storing it only if it is new.
     std::uint32_t intern(std::string_view s);
 
+    /// Drop the interning index, keeping the strings.
+    ///
+    /// `lookup_` exists only to answer "have I seen this string before" while a
+    /// file is being read. Nothing consults it afterwards -- handles resolve
+    /// through `entries_` -- but it is a member, so it lived for the library's
+    /// whole lifetime.
+    ///
+    /// At 4.26 M distinct sequences that is one 28-byte node each plus a bucket
+    /// array, ~150 MB of a ~1.03 GiB library retained to answer a question
+    /// nobody asks again. Measured, not estimated: `footprintBytes()` already
+    /// counts the map explicitly.
+    ///
+    /// After this, `intern()` would re-intern rather than deduplicate, so it
+    /// must only be called when loading is finished. Calling it twice is safe.
+    void releaseLookup();
+
     std::string_view get(std::uint32_t handle) const;
 
     std::size_t size() const { return entries_.size(); }
