@@ -603,7 +603,19 @@ protected:
       {
         if (g.decoy || g.qvalue > anchor_q) { continue; }
         auto*& b = best[g.precursor];
-        if (b == nullptr || g.qvalue < b->qvalue) { b = &g; }
+        // By dscore, NOT by qvalue.
+        //
+        // The q-value is a per-PRECURSOR quantity: it is computed on the best
+        // row of each group and then broadcast to every candidate of that
+        // precursor (scoring/lda.h, assignQValues over one row per group).
+        // So `g.qvalue < b->qvalue` is never true between two candidates of the
+        // same precursor, and this kept whichever the stable sort put first --
+        // library order, not the best peak. The anchor for the retention-time
+        // fit was therefore an arbitrary candidate.
+        //
+        // dscore is genuinely per-candidate, and harvestMobilityAnchors_ has
+        // always used it. The two anchor harvests now agree.
+        if (b == nullptr || g.dscore > b->dscore) { b = &g; }
       }
       for (std::size_t i = 0; i < best.size(); ++i)
       {
