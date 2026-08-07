@@ -88,6 +88,14 @@ struct LDAParams
                             ///< model never bootstraps. pyprophet uses 0.15 here for the same reason.
   double train_fdr = 0.05;  ///< FDR for subsequent iterations, once a real discriminant exists.
   double ridge = 1e-6;      ///< diagonal regularisation for the within-class covariance solve
+
+  /// Feature columns whose weight may never be positive, because the caller
+  /// knows the feature is lower-is-better. Empty means unconstrained.
+  ///
+  /// DIA-NN's check_weights does this for its RT-deviation and mass-accuracy
+  /// features. Applies to the LDA weight vector only; a tree ensemble has no
+  /// weights to clip.
+  std::vector<std::size_t> nonpositive_features;
   unsigned seed = 42;       ///< RNG seed (fold assignment only) — determinism
   bool use_pi0 = false;     ///< Storey pi0 correction. false = HONEST/conservative (true 1% FDR,
                             ///< fewer IDs); true = pyprophet/DIA-NN parity (more IDs, but a nominal
@@ -606,6 +614,25 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         solved = lda_detail::choleskySolve(regularised, difference, out);
         ridge *= 10.0;
       }
+      // A feature the caller declares lower-is-better may never earn a positive
+      // weight, however the fold's data happens to fall.
+      //
+      // This is DIA-NN's check_weights (diann.cpp:6592), which hard-clips the
+      // RT-deviation and mass-accuracy weights to <= 0 so that a larger
+      // deviation can never raise a score. The principle is the same wherever a
+      // feature has a known direction: without it the discriminant is free to
+      // learn, in-sample, that being further from the prediction is evidence
+      // FOR a peptide -- which fits the fold and generalises to nothing.
+      //
+      // Only the linear classifier is constrained here. A tree ensemble has no
+      // weight vector to clip, and enforcing the same thing on GBT needs
+      // monotone split constraints, which is a larger change. Since GBT is the
+      // default, this currently protects the non-default path.
+      for (const std::size_t j : params.nonpositive_features)
+      {
+        if (j < out.size() && out[j] > 0.0) { out[j] = 0.0; }
+      }
+
       double norm_squared = 0.0;
       for (const double value : out) { norm_squared += value * value; }
       return solved && norm_squared > std::numeric_limits<double>::epsilon();

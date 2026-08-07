@@ -688,6 +688,19 @@ namespace ODIA
     }
 
     Scoring::LDAParams params;
+    // Two of the sub-scores are lower-is-better by construction, so their
+    // weights may never come out positive. XCORR_COELUTION is the mean |lag|
+    // between fragment maxima -- a peak group IS a co-elution, so more lag is
+    // less evidence -- and LIBRARY_RMSD is a deviation from the library
+    // spectrum. Without the constraint the discriminant can fit, in-sample,
+    // that being further from the expectation argues FOR a peptide.
+    //
+    // This is DIA-NN's check_weights (diann.cpp:6592) applied to the features
+    // we actually have. Note what we do NOT have: it clips pdRT and pAcc, and
+    // this scorer carries neither an rt_delta nor a mass_error sub-score --
+    // both deliberately absent, see the SubScore comments. So the constraint
+    // transfers in principle and covers different columns.
+    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD};
     // Threading is per-classifier, not on LDAParams: the LDA solve is a small
     // dense Cholesky and does not want threads, while the tree and network
     // fits do.
