@@ -770,7 +770,16 @@ namespace ODIA
     // Threading is per-classifier, not on LDAParams: the LDA solve is a small
     // dense Cholesky and does not want threads, while the tree and network
     // fits do.
-    if (options.classifier == "gbt")
+    if (options.classifier == "xgboost")
+    {
+      // Same learner as "gbt" -- the algorithm here IS XGBoost's, second-order
+      // Newton leaf values and the same split gain -- configured as pyProphet
+      // 3.0.15 configures XGBoost 3.2.0. Six of its nine parameters already
+      // match; this changes max_depth 4 -> 6 and eta 0.1 -> 0.3.
+      params.classifier = Scoring::LDAParams::Classifier::GBT;
+      params.gbt = Scoring::GBTParams::pyprophet();
+    }
+    else if (options.classifier == "gbt")
     {
       params.classifier = Scoring::LDAParams::Classifier::GBT;
       params.gbt.n_threads = static_cast<int>(options.threads);

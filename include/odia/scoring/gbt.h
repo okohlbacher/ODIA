@@ -78,6 +78,30 @@ struct GBTParams
   /// caller must both set this and enable a second active level, or the parallelism does nothing.
   /// Results do NOT depend on this value; see the chunking note in growTree_.
   int n_threads = 0;
+
+  /// pyProphet 3.0.15's XGBoost 3.2.0 configuration, verbatim.
+  ///
+  /// Six of the nine parameters it sets already match this struct's defaults --
+  /// lambda 1, gamma 0, min_child_weight 1, and subsample / colsample_bytree /
+  /// alpha at 1/1/0, which are no-ops and therefore equivalent to this
+  /// implementation not having them. The algorithm is already XGBoost's: same
+  /// second-order Newton leaf values, same split gain.
+  ///
+  /// The two that differ are the two that matter, and both make the model
+  /// stronger and more prone to overfitting: depth 4 -> 6 takes the leaf count
+  /// from <=16 to <=64, and eta 0.1 -> 0.3 triples the step. This project's
+  /// defaults were chosen for "pairwise interactions between sub-scores without
+  /// memorising rows" with 10 features; we now have 15.
+  static GBTParams pyprophet()
+  {
+    GBTParams p;
+    p.max_depth = 6;          // XGBoost "max_depth": 6
+    p.learning_rate = 0.3;    // XGBoost "eta": 0.3
+    p.lambda = 1.0;           // "lambda": 1   -- already the default here
+    p.gamma = 0.0;            // "gamma": 0
+    p.min_child_weight = 1.0; // "min_child_weight": 1
+    return p;
+  }
 };
 
 namespace gbt_detail

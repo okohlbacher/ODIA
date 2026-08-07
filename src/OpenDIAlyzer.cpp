@@ -332,8 +332,16 @@ protected:
                         "Write scored peak groups here (TSV).", false);
     setValidFormats_("out", {"tsv"}, false);
     registerStringOption_("classifier", "<name>", "gbt",
-                          "Discriminant for the semi-supervised scorer.", false, true);
-    setValidStrings_("classifier", {"lda", "gbt", "nn"});
+                          "Discriminant for the semi-supervised scorer. 'gbt' and "
+                          "'xgboost' are the same learner -- second-order Newton leaf "
+                          "values and XGBoost's split gain -- differing only in "
+                          "configuration: 'xgboost' uses pyProphet 3.0.15's settings "
+                          "for XGBoost 3.2.0 (max_depth 6, eta 0.3), 'gbt' the more "
+                          "conservative depth 4 / eta 0.1 chosen when there were ten "
+                          "sub-scores rather than fifteen. 'lda' is the linear "
+                          "fallback and the only one the lower-is-better weight "
+                          "constraint applies to.", false, true);
+    setValidStrings_("classifier", {"xgboost", "lda", "gbt", "nn"});
     registerIntOption_("passes", "<n>", 2,
                        "1 extracts once with the given calibration. 2 extracts wide, "
                        "scores, fits the retention-time map from the confident "

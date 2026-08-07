@@ -439,6 +439,17 @@ add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)
 # detector stops taking the spike or the new one stops rejecting it.
 add_test(NAME picker_prefers_coelution_over_amplitude COMMAND odia_picker_cases)
 
+# Does a reported 1% FDR mean 1% of the identifications are wrong?
+#
+# doc/07 lists entrapment as ordering item 4 and it had never been run. The
+# target-decoy estimate has been measured failing three ways: admitting off-RT
+# targets statistically identical to decoys, collapsing to zero identifications
+# while reporting healthy diagnostics, and swinging ~10% between refits. Decoys
+# are constructed, so the classifier can learn what construction looks like;
+# entrapment peptides are real peptides absent from the sample, so every one
+# reported is a genuine false positive with no construction signature.
+add_test(NAME entrapment_fdp_matches_claimed_fdr COMMAND odia_entrapment)
+
 # The adopted RT calibration (src/calibrate, from OpenDIAlyzer odia-v0.3.0).
 # Checks it recovers a non-linear warp from anchors that include gross
 # outliers, and that the result is monotone -- a map that reorders the
