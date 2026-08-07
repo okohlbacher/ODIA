@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <numeric>
+#include <sstream>
 
 namespace ODIA
 {
@@ -124,6 +126,26 @@ namespace ODIA
       }
       return out;
     }
+
+    /// Why the co-elution detector rejected a scan position.
+    ///
+    /// Six criteria reject silently, so "19,150 precursors yielded no candidate"
+    /// said nothing about WHICH test was responsible. On a realistic library
+    /// 14% of DIA-NN's confident precursors get no candidate at all, and those
+    /// lost are heavier (median m/z 894 vs 661), higher-mobility and ~34% less
+    /// abundant -- a pattern that points at a threshold rather than at absence
+    /// of signal, but only counting can say which threshold.
+    struct PickerRejects
+    {
+      std::size_t too_few_present = 0;   ///< <2 fragments in {k-1,k,k+1}
+      std::size_t below_corr = 0;        ///< reference corr sum < min_corr_score
+      std::size_t reference_zero = 0;    ///< smoothed reference not positive
+      std::size_t not_local_max = 0;     ///< k is not the local maximum
+      std::size_t below_apex_evidence = 0;
+      std::size_t outside_margin = 0;    ///< beyond MaxCorrDiff of the best
+      std::size_t too_few_at_apex = 0;   ///< candidate emitted, then dropped by the scorer
+      std::size_t scans = 0;             ///< positions examined
+    };
 
     struct Candidate
     {
@@ -256,7 +278,7 @@ namespace ODIA
     ///    maximum of the reference fragment's own smoothed trace, which is a
     ///    far stricter shape test than a maximum of a sum.
     std::vector<Candidate> findCandidatesByCorrelation(
-      const PrecursorChromatogram& c, std::size_t half_window,
+      const PrecursorChromatogram& c, PickerRejects& rej, std::size_t half_window,
       double min_corr_score, double max_corr_diff, double apex_evidence,
       std::size_t smooth_half_width, double boundary_fraction,
       std::size_t max_candidates)
@@ -292,7 +314,8 @@ namespace ODIA
         {
           if (tr[f][k - 1] > 0.0 || tr[f][k] > 0.0 || tr[f][k + 1] > 0.0) { ++present; }
         }
-        if (present < 2) { continue; }
+        ++rej.scans;
+        if (present < 2) { ++rej.too_few_present; continue; }
 
         // Pairwise correlation over [k-S, k+S]; each fragment scores the sum of
         // its correlations to the others.
@@ -318,8 +341,8 @@ namespace ODIA
         // this position a peak, and we stop -- at most one candidate per cycle.
         for (const std::uint32_t ref : order)
         {
-          if (score[ref] < min_corr_score) { break; }
-          if (!(sm[ref][k] > 0.0)) { continue; }
+          if (score[ref] < min_corr_score) { ++rej.below_corr; break; }
+          if (!(sm[ref][k] > 0.0)) { ++rej.reference_zero; continue; }
 
           const std::size_t half = std::max<std::size_t>(S / 3, 1);
           bool is_max = true;
@@ -327,7 +350,7 @@ namespace ODIA
           {
             if (sm[ref][j] > sm[ref][k]) { is_max = false; break; }
           }
-          if (!is_max) { continue; }
+          if (!is_max) { ++rej.not_local_max; continue; }
 
           double best_near = 0.0;
           const std::size_t e = S > 1 ? S - 1 : 1;
@@ -335,7 +358,8 @@ namespace ODIA
           {
             best_near = std::max(best_near, sm[ref][j]);
           }
-          if (best_near > 0.0 && sm[ref][k] < apex_evidence * best_near) { continue; }
+          if (best_near > 0.0 && sm[ref][k] < apex_evidence * best_near)
+          { ++rej.below_apex_evidence; continue; }
 
           hits.push_back({k, score[ref]});
           break;
@@ -358,7 +382,7 @@ namespace ODIA
       }
       for (const auto& h : hits)
       {
-        if (h.corr_sum < best - max_corr_diff) { break; }
+        if (h.corr_sum < best - max_corr_diff) { ++rej.outside_margin; break; }
         if (found.size() >= max_candidates) { break; }
         Candidate cd;
         cd.apex = h.apex;
@@ -408,6 +432,8 @@ namespace ODIA
   {
   }
 
+  namespace { thread_local PickerRejects rejects_; }
+
   void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram)
   {
     Result& result = result_;
@@ -436,7 +462,7 @@ namespace ODIA
 
     const std::size_t first_group = result.groups.size();
     const auto candidates = options.coelution_picking
-      ? findCandidatesByCorrelation(chromatogram, options.corr_half_window,
+      ? findCandidatesByCorrelation(chromatogram, rejects_, options.corr_half_window,
                                     options.min_corr_score, options.max_corr_diff,
                                     options.apex_evidence, options.smooth_half_width,
                                     options.boundary_fraction, options.max_candidates)
@@ -497,7 +523,7 @@ namespace ODIA
       // D6/D8 gate: a peak group is a co-elution. One transition above its
       // own background is a spike, and emitting it as a candidate is what
       // let single-fragment interference into the score matrix.
-      if (at_apex < options.min_fragments_at_apex) { continue; }
+      if (at_apex < options.min_fragments_at_apex) { ++rejects_.too_few_at_apex; continue; }
 
       // D1/D2/D3: self-pairs excluded, shape selected on the signed maximum,
       // lag capped to the trace, degenerate traces dropped. See score.h.
@@ -767,6 +793,36 @@ namespace ODIA
     // both deliberately absent, see the SubScore comments. So the constraint
     // transfers in principle and covers different columns.
     params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD};
+
+    // Seed the semi-supervised loop on CORR_SUM alone.
+    //
+    // The loop ignites by ranking with a single feature and taking whatever
+    // clears q <= train_fdr_initial as its first positive set. lda.h says what
+    // happens when that feature is too weak: "iteration 0 selects positives
+    // with this w, finds none at q<=train_fdr_initial, skips the fit, so w is
+    // unchanged and every later iteration skips too."
+    //
+    // That is not hypothetical here. On a REALISTIC library -- a stride sample
+    // of the human proteome, where only ~1.5% of targets are present in the
+    // sample -- ODIA identified NOTHING from 1,639,188 peak groups while DIA-NN
+    // found 738 of the same 50,000 precursors. The automatic seed picks the
+    // feature with the largest |t|, and against a positive class that is 98.5%
+    // absent peptides, no feature's class means separate enough to ignite.
+    //
+    // CORR_SUM is the detector's own summed pairwise fragment correlation --
+    // the quantity that moved rank-1 accuracy from 40.7% to 75.7%. DIA-NN
+    // mandates the same choice rather than deriving it: reset_weights sets
+    // w = (1, 0, 0, ...) so iteration 0 ranks by pTimeCorr, its co-elution sum,
+    // and nothing else (diann.cpp:6584).
+    //
+    // Only when the picker actually computed it. The amplitude detector leaves
+    // CORR_SUM at 0, and seeding on a constant would guarantee the failure this
+    // is meant to prevent.
+    if (options.coelution_picking)
+    {
+      params.seed_mask.assign(N_SUB_SCORES, 0);
+      params.seed_mask[CORR_SUM] = 1;
+    }
     // Threading is per-classifier, not on LDAParams: the LDA solve is a small
     // dense Cholesky and does not want threads, while the tree and network
     // fits do.
@@ -873,6 +929,23 @@ namespace ODIA
     if (result.decoy_groups == 0 || result.target_groups == 0)
     {
       return result;
+    }
+
+    // Which criterion actually rejected. Reported unconditionally: the
+    // aggregate "N precursors yielded no candidate peak group" was true and
+    // useless, and on a realistic library it is 19,150 of 100,000.
+    {
+      const auto& r = rejects_;
+      std::ostringstream w;
+      w << "picker rejections over " << r.scans << " scan positions: "
+        << r.too_few_present << " <2 fragments present, "
+        << r.below_corr << " below min_corr_score, "
+        << r.reference_zero << " reference trace zero, "
+        << r.not_local_max << " not a local maximum, "
+        << r.below_apex_evidence << " below apex_evidence, "
+        << r.outside_margin << " outside max_corr_diff; then "
+        << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex";
+      std::fprintf(stderr, "%s\n", w.str().c_str());
     }
 
     fitAndAssign_(*library_, result, options);
