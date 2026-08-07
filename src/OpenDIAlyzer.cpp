@@ -162,6 +162,11 @@ protected:
                           "which on this instrument class discards about half the fragment "
                           "evidence.", false);
     setValidStrings_("mass_calibration", {"auto", "off"});
+    registerFlag_("mass_calibration_offset_only",
+                  "Apply the fitted mass offset but do NOT narrow the window from it. Separates "
+                  "the two things a passing gate does, so that a loss can be attributed to the "
+                  "centring or to the width. Diagnostic; not a production setting.",
+                  true);
     registerFlag_("mass_calibration_remeasure",
                   "Re-measure the fragment mass calibration in pass 2, against the fitted "
                   "retention-time map, instead of reusing the pass-1 model taken before any map "
@@ -1946,7 +1951,16 @@ private:
     // presence falls monotonically with tolerance (0.083 at 10 ppm down to 0.019
     // at 50), so 3 sigma of a scatter that is dominated by interference rather
     // than by measurement error would size the window from the interference.
-    if (mass_model_.window_ppm > 0.0 && mass_model_.window_ppm < baseline)
+    if (getFlag_("mass_calibration_offset_only"))
+    {
+      // Centre without narrowing, to separate the two things a passing gate
+      // does. On Astral a passing gate costs 4,275 -> 1,895 identifications and
+      // we do not know whether the offset is wrong or merely the width, because
+      // the gate applies both at once and -fragment_ppm only sets the BASELINE
+      // that the model is then allowed to narrow below.
+      options.fragment_ppm = baseline;
+    }
+    else if (mass_model_.window_ppm > 0.0 && mass_model_.window_ppm < baseline)
     {
       options.fragment_ppm = mass_model_.window_ppm;
     }
