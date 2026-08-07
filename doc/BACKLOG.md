@@ -47,20 +47,55 @@ What is still open:
   scatter says the correction is right on average; it does not say it is right
   for those 66.
 
-- **The width lever is still untaken.** The model reports that the corrected
-  residual would support +/-0.0333 against the +/-0.025 in force, and does not
-  apply it -- deliberately, so that this measurement stays attributable to the
-  centring. Iteration 3 measured the width lever at +0.56 points on its own.
-  Now that the centre has moved, that number needs re-taking, not reusing.
+- ~~**The width lever is still untaken.**~~ **TAKEN AND CLOSED (2026-08-07):
+  widening is worse, keep +/-0.025.** Measured on S08/lib_targets with the
+  mobility slope fitted, identifications at 1% FDR: **0.025 -> 1232, 0.035 ->
+  1215, 0.050 -> 1167.** Monotonic, and 0.050 gives back nearly the whole gain
+  from the slope (1165 with no mobility-linear term at all).
 
-- **The production path -- anchors from ODIA's OWN pass-1 scorer, `-passes 2`
-  -- is wired and unit-tested but has not been measured end to end on S08.**
-  The frozen-discriminant harness is single-pass by construction: it extracts
-  once with a fixed iRT map and scores outside ODIA, so running ODIA's two-pass
-  workflow would move the retention-time axis at the same time and make the
-  measurement unattributable. `-im_calib_anchors` is what closed that gap --
-  the same anchors, from the same run, chosen on the same score. The internal
-  path should be measured once the scorer's own recovery is comparable.
+  The residual argument that pointed the other way -- corrected SD 0.025, so
+  +/-0.025 is ~1 sigma and rejects 28.3% of target anchors -- was right about
+  the width and wrong about the remedy. Those 28.3% are the interference-prone
+  tail; admitting them costs more than they bring, which is exactly the ~8.5x
+  same-window mobility this window exists to exclude. The fix for a trend is to
+  model the trend, not to widen the gate until the trend fits through it.
+  Recorded at `ChromatogramExtractor.h`'s `precursor_im_window`.
+
+- ~~**The production path has not been measured end to end on S08.**~~ **RUN
+  (2026-08-07).** `-ion_mobility_calibration anchors` over the two-pass
+  workflow, anchors from ODIA's own pass-1 scorer, S08/lib_targets: pass 1
+  offers 729 anchors at q<=0.01 against a null of 729 decoys, the gate passes,
+  and pass 2 reports **1232 at 1% FDR**. The stage works on its own anchors
+  without an external scorer.
+
+  Two caveats it exposed, both open below: charge 3 is left uncorrected, and
+  the run bootstraps its own iRT map (no `-irt_slope`/`-irt_intercept`), so it
+  warns that pass 1 extracts at approximately the wrong retention times. Both
+  arms of the slope comparison shared that, so the differential is clean, but
+  the absolute number is not a tuned-iRT number.
+
+- **Charge 3 is never corrected on S08/lib_targets: 93 anchors against a
+  minimum of 120.** The mobility slope is fitted per charge on purpose --
+  another charge's offset is not this charge's answer -- but that means the
+  whole correction, slope included, silently does nothing for charge 3. Charge
+  3 is ~20% of the library and its measured residual is the WORST (offline:
+  constant +0.0335 and slope -0.113, against +0.0019/-0.096 for charge 2), so
+  the charge that most needs the correction is the one that cannot reach the
+  anchor count for it. Options, in order of preference: pool charges for the
+  SLOPE only while keeping the constant per charge (the slope is a property of
+  the CCS->1/K0 conversion, which is shared, so this is physically justified in
+  a way that pooling offsets is not); or lower the threshold with a widened
+  confidence requirement. Do not simply lower the minimum.
+
+- **The mobility slope is confirmed but its magnitude is not pinned down.**
+  Fitted -0.0709 and -0.0748 per 1/K0 on the run's own 371-378 anchors, against
+  -0.096 (charge 2) and -0.113 (charge 3) estimated offline on ~22k anchors,
+  and -0.128/-0.109 from outlier-resistant bin medians. Same sign and order
+  throughout, but a ~30% spread. Since this is a scale error in the
+  `ccs_to_mobility.py` coefficient (1037.1902), the right fix is upstream and
+  one-off: fit the coefficient properly against Mason-Schamp rather than
+  re-deriving a slope per run. Worth doing once the Astral/second-run
+  measurement says whether the slope is instrument-stable.
 
 ---
 
@@ -1363,6 +1398,32 @@ ODIA's guards fired correctly: 1,639,188 peak groups, **819,353 target and
 819,835 decoy (1:1)**, then `pass 1 identified nothing at 1% FDR`. The positive
 class is ~98.5% noise, so the semi-supervised loop has no separable seed at
 iteration 0 and never ignites.
+
+**Which picker criterion rejects most, instrumented on that same run**
+(`PickerRejects`, over 107,634,884 scan positions -- note criteria are counted
+independently, so they sum to more than the positions):
+
+    not a local maximum        189,557,902
+    below min_corr_score        50,689,548
+    below apex_evidence         36,856,546
+    fewer than 2 fragments      30,191,757
+    reference trace zero        11,525,195
+    outside max_corr_diff            25,997
+    then min_fragments_at_apex        75,479 candidates dropped
+    -> 19,150 precursors yielded NO candidate at all, 0 identified at 1% FDR
+
+The local-maximum test dominates by ~4x over anything else, and
+`max_corr_diff` is doing essentially nothing (26k, a 7000x smaller effect than
+the leader) -- so `-max_corr_diff` is a tuning knob with no leverage here and
+should not be spent effort on. **The correlation thresholds together
+(min_corr_score + apex_evidence = 87.5M) are the second force**, and those are
+the ones that encode "is this a co-eluting peptide", so they are where a
+realistic-library fix has to be careful: loosening them re-admits the 98.5%
+noise the FDR then cannot separate.
+
+Note this does NOT implicate the ion-mobility window: the mobility work of
+2026-08-07 (see the 1/K0 section) found +/-0.025 already optimal, so the
+picker's loss is not a window-width problem.
 
 **This invalidates the regime, not the work.** Every recovery figure this week
 -- 75.4% best-ranked-right, 89.1% precision, 97.4% availability -- used
