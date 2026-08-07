@@ -1133,3 +1133,58 @@ Two of our existing 15 are known to be worthless: USABLE_FRAGMENTS was a constan
 12.000 for a week, and IM_DELTA is currently all-NaN because
 `Options::observed_im` was never wired to MobilityCalibration's output. Any new
 score has to beat that bar, and the ablation is what proves it.
+
+## Memory, parallel occupancy and runtime across all phases (2026-08-07)
+
+Every performance number this project has is a spot measurement of whichever
+phase was under suspicion at the time. There has never been one profile that
+covers the whole pipeline on both benchmark files, and the gaps have already
+cost us: a 3.6x memory win sat in a hardcoded `BLOCK = 1024` for weeks, and a
+1.02 GB index was per-transition when every value in it was per-precursor.
+
+What to measure, per phase and end to end, on **both** files:
+
+**Phases:** library load -> decoy generation -> (library generation if from FASTA,
+which is ONNX-dominated and separately GPU-capable) -> mass calibration ->
+mobility calibration -> pass-1 extract+score -> RT fit -> pass-2 extract+score ->
+refine rounds -> output writing.
+
+**Per phase:**
+- wall time, and its share of the total;
+- peak RSS attributable to the phase (RSS is monotone, so use the delta plus a
+  heap profile where the delta is ambiguous -- `footprintBytes()` was undercounting
+  the string-arena map by 3x until it was checked against an RSS delta);
+- **parallel occupancy**: threads requested vs mean threads actually running.
+  This is the number we have never measured and the one most likely to be
+  embarrassing. Known: mzPeak decode holds a mutex across the decode itself
+  (`src/util/parquet.cpp`, deliberately -- concurrent readers would corrupt each
+  other through one seek-and-read handle), and decode is ~98% of a scoring run on
+  the tiny library. Measured indirectly: 16 threads 18:46 vs 96 threads 9:51, a
+  1.9x for a 6x thread increase. Sublinear, unexplained in detail.
+
+**Scaling curves, not single points:**
+- threads: 1, 4, 16, 32, 64, 96, 224 (both nodes have 224 cores);
+- library size: the existing lib_tiny / n5k / n100k / lib50k / 4.26M ladder;
+- file: S08 (32,210 spectra, 12.75 GiB, diaPASEF) vs Astral (303,701 spectra,
+  3.10 GiB, no IM, no co-packed frames). Astral is 9.4x the spectra and took
+  27:55 against S08's ~10 -- 2.8x, which is either good news about per-spectrum
+  cost or bad news about something else, and nobody has looked.
+
+**Specific open questions this would answer:**
+- Where does the ~2.9 GiB decode floor actually come from now? It was 10.3 GiB,
+  `-decode_block 256` took it to 2.9, and the composition was never re-derived.
+- Does the co-elution picker's per-position pairwise correlation scale badly with
+  spectrum count? It does far more arithmetic per cycle than a local maximum of a
+  sum, and has only ever been measured on the small file.
+- What is the actual thread ceiling, and is it the decode mutex, memory
+  bandwidth, or the serial scoring on the extractor's thread (noted as unmeasured
+  when the sliding window landed)?
+- At 4.26M precursors, pass 1 wants ~274 GiB. Sampling it is blocked on the
+  classifier's viability floor (below ~5,000 precursors it fails, silently,
+  measured: 635/1820/1211/0 identifications from four equal-sized subsets). What
+  is that floor exactly?
+
+**Deliverable:** one table per file, phases x (wall, share, peak RSS, mean
+occupancy), plus the three scaling curves. Publish it as doc/14 and keep it
+current -- the reason this backlog entry exists is that every previous
+performance claim was made from a measurement taken for a different purpose.
