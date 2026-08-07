@@ -704,60 +704,42 @@ namespace ODIA
     }
   }
 
-  PeakGroupScorer::Result PeakGroupScorer::Session::finish()
+  /// Fit the discriminant over the retained groups and assign q-values.
+  ///
+  /// Split out of `finish()` so it can be run more than once over the SAME
+  /// groups. That is what makes iteration cheap: the candidate picker is
+  /// retention-time agnostic and RT_DELTA is the only sub-score that depends on
+  /// the fitted map, so refitting the map means recomputing one column and
+  /// running this again -- not re-extracting the run.
+  void PeakGroupScorer::refit(const Library& library, Result& result,
+                              const Options& options)
   {
-    Result& result = result_;
-    const Options& options = options_;
-    const std::size_t n_precursors = library_->precursorCount();
+    if (result.groups.empty()) { return; }
+    const auto& p = library.precursors();
 
-    // PEAK_WIDTH_RATIO was stored as a raw cycle count per candidate, because a
-    // ratio needs the run's median and no single precursor knows it. Normalise
-    // now: a peptide elutes on the chromatography's timescale, so what carries
-    // information is being wide or narrow RELATIVE to this run, not absolutely.
+    // One column. Everything else in sub_scores comes from the trace and is
+    // invariant under a new map.
+    for (auto& g : result.groups)
     {
-      std::vector<double> widths;
-      widths.reserve(result.groups.size());
-      for (const auto& g : result.groups)
+      if (options.library_rt_is_run_seconds && g.precursor < p.irt.size() &&
+          std::isfinite(p.irt[g.precursor]))
       {
-        const double w = g.sub_scores[PEAK_WIDTH_RATIO];
-        if (std::isfinite(w) && w > 0.0) { widths.push_back(w); }
+        g.sub_scores[RT_DELTA] = std::fabs(static_cast<double>(g.apex_rt) -
+                                           static_cast<double>(p.irt[g.precursor]));
       }
-      if (!widths.empty())
-      {
-        std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
-        const double median = widths[widths.size() / 2];
-        if (median > 0.0)
-        {
-          for (auto& g : result.groups) { g.sub_scores[PEAK_WIDTH_RATIO] /= median; }
-        }
-      }
+      else { g.sub_scores[RT_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
     }
 
-    // Peak groups arrive in whatever order the extractor finished their
-    // precursors, which is retention-time order rather than library order. Put
-    // them back in library order before anything downstream sees them: the rows
-    // of the feature matrix are these groups, and a classifier fitted on rows
-    // ordered by elution time is a classifier that can depend on it. Stable, so
-    // a precursor's candidates keep the order the search produced.
-    std::stable_sort(result.groups.begin(), result.groups.end(),
-                     [](const PeakGroup& a, const PeakGroup& b) {
-                       return a.precursor < b.precursor; });
+    // Counters are recomputed by the fit; reset so they do not accumulate
+    // across iterations.
+    result.identified_at_1pct = 0;
+    fitAndAssign_(library, result, options);
+  }
 
-    for (const auto& g : result.groups)
-    {
-      (g.decoy ? result.decoy_groups : result.target_groups) += 1;
-    }
-    if (result.groups.empty()) { return result; }
-
-    // No decoys means no negative class. The scorer would still return numbers
-    // -- q = 0 for everything -- and they would be read as an FDR. Refuse
-    // instead, leaving q at 1 so nothing downstream mistakes silence for
-    // confidence.
-    if (result.decoy_groups == 0 || result.target_groups == 0)
-    {
-      return result;
-    }
-
+  void PeakGroupScorer::fitAndAssign_(const Library& library, Result& result,
+                                      const Options& options)
+  {
+    const std::size_t n_precursors = library.precursorCount();
     std::vector<std::vector<double>> features;
     std::vector<int> labels;
     std::vector<long long> group;
@@ -828,7 +810,64 @@ namespace ODIA
       {
         if (is_target[i] && best[i] <= 0.01) { ++result.identified_at_1pct; }
       }
+    }  }
+
+  PeakGroupScorer::Result PeakGroupScorer::Session::finish()
+  {
+    Result& result = result_;
+    const Options& options = options_;
+    const std::size_t n_precursors = library_->precursorCount();
+
+    // PEAK_WIDTH_RATIO was stored as a raw cycle count per candidate, because a
+    // ratio needs the run's median and no single precursor knows it. Normalise
+    // now: a peptide elutes on the chromatography's timescale, so what carries
+    // information is being wide or narrow RELATIVE to this run, not absolutely.
+    {
+      std::vector<double> widths;
+      widths.reserve(result.groups.size());
+      for (const auto& g : result.groups)
+      {
+        const double w = g.sub_scores[PEAK_WIDTH_RATIO];
+        if (std::isfinite(w) && w > 0.0) { widths.push_back(w); }
+      }
+      if (!widths.empty())
+      {
+        std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
+        const double median = widths[widths.size() / 2];
+        if (median > 0.0)
+        {
+          for (auto& g : result.groups) { g.sub_scores[PEAK_WIDTH_RATIO] /= median; }
+        }
+      }
     }
+
+    // Peak groups arrive in whatever order the extractor finished their
+    // precursors, which is retention-time order rather than library order. Put
+    // them back in library order before anything downstream sees them: the rows
+    // of the feature matrix are these groups, and a classifier fitted on rows
+    // ordered by elution time is a classifier that can depend on it. Stable, so
+    // a precursor's candidates keep the order the search produced.
+    std::stable_sort(result.groups.begin(), result.groups.end(),
+                     [](const PeakGroup& a, const PeakGroup& b) {
+                       return a.precursor < b.precursor; });
+
+    for (const auto& g : result.groups)
+    {
+      (g.decoy ? result.decoy_groups : result.target_groups) += 1;
+    }
+    if (result.groups.empty()) { return result; }
+
+    // No decoys means no negative class. The scorer would still return numbers
+    // -- q = 0 for everything -- and they would be read as an FDR. Refuse
+    // instead, leaving q at 1 so nothing downstream mistakes silence for
+    // confidence.
+    if (result.decoy_groups == 0 || result.target_groups == 0)
+    {
+      return result;
+    }
+
+    fitAndAssign_(*library_, result, options);
+
     return result;
   }
 

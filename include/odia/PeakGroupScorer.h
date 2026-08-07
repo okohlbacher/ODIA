@@ -350,6 +350,26 @@ namespace ODIA
 
     static Result score(const Library& library, const Chromatograms& chromatograms,
                         const Options& options);
+
+    /// Refit over groups that already carry their sub-scores.
+    ///
+    /// The candidate picker is retention-time agnostic -- neither
+    /// `findCandidates` nor `findCandidatesByCorrelation` reads the library's
+    /// iRT -- and RT_DELTA is the ONLY sub-score that depends on the fitted
+    /// map. So a new map costs one recomputed column and one refit, not a
+    /// re-extraction of the run. That is what makes iterating to convergence
+    /// affordable: DIA-NN runs twelve iterations for the same reason, against
+    /// chromatograms it has already read.
+    ///
+    /// Recomputes RT_DELTA from the library's CURRENT irt (which must be in run
+    /// seconds), then refits the discriminant and reassigns q-values.
+    static void refit(const Library& library, Result& result, const Options& options);
+
+  private:
+    static void fitAndAssign_(const Library& library, Result& result,
+                              const Options& options);
+
+  public:
   };
 
 } // namespace ODIA

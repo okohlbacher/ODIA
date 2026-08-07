@@ -256,6 +256,22 @@ protected:
                        "-> 635) while at 4.26 M it would still leave a million. 0 "
                        "disables sampling.",
                        false, true);
+    registerIntOption_("refine_rounds", "<n>", 0,
+                       "After pass 2, alternately refit the retention-time map from "
+                       "the current best identifications and refit the discriminant, "
+                       "until the identification count stops improving (three "
+                       "consecutive rounds, as DIA-NN does) or this many rounds. "
+                       "Cheap because the candidate picker is RT-agnostic and "
+                       "RT_DELTA is the only map-dependent sub-score, so a round "
+                       "recomputes one column rather than re-extracting the run. "
+                       "DEFAULT 0 -- MEASURED AND IT DOES NOT HELP: on S08 it took "
+                       "the map's p95 from 104.6 to 87.4 s and left best-ranked-right "
+                       "unchanged to the decimal (75.0%, 77.4%) while costing 1.8-3.0 "
+                       "points of precision. The map's real consumer is the pass-2 "
+                       "extraction window, which has already run by then; RT_DELTA is "
+                       "one feature of fifteen and cannot carry the improvement. Kept "
+                       "for experiments.",
+                       false, true);
     registerIntOption_("pass1_offset", "<n>", 0,
                        "Which residue class -pass1_precursors keeps. Diagnostic: it "
                        "lets equal-sized pass-1 subsets with different members be "
@@ -781,6 +797,7 @@ protected:
       scoring_rt_is_run_seconds_ = true;
       const auto rc = extractAndScore_(library, run, pass2_window, true, scored);
       if (rc != EXECUTION_OK) { return rc; }
+      refineToConvergence_(library, original_irt, scored);
       return writeScoreResult_(scored, out, library);
     }
     const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, pass2_window, true);
@@ -816,6 +833,91 @@ protected:
   /// seconds. RT_DELTA is only meaningful then.
   bool scoring_rt_is_run_seconds_ = false;
   std::size_t pass_offset_ = 0;
+
+  /// Refit the retention-time map and the discriminant, alternately, until the
+  /// identification count stops moving.
+  ///
+  /// This is the iteration schedule DIA-NN runs twelve rounds of and we ran
+  /// two. It is affordable for one reason: the candidate picker is
+  /// retention-time agnostic, and RT_DELTA is the only sub-score that depends
+  /// on the map. So a round costs one recomputed column and one classifier fit
+  /// over groups already in memory -- no re-extraction, no second decode of a
+  /// file that is ~98% of the run's time.
+  ///
+  /// Convergence rather than a fixed count: DIA-NN stops after three
+  /// consecutive rounds without improvement (diann.cpp:10448-10476). The same
+  /// rule here, with a hard cap so a pathological run cannot spin.
+  ///
+  /// The map is refit from the CURRENT best group per precursor, so each round
+  /// draws anchors from a better-scored set than the last. That is the whole
+  /// mechanism: better anchors -> better map -> better RT_DELTA -> better
+  /// discriminant -> better anchors.
+  void refineToConvergence_(ODIA::Library& library,
+                            const std::vector<float>& original_irt,
+                            ODIA::PeakGroupScorer::Result& scored)
+  {
+    const int max_rounds = std::max(0, getIntOption_("refine_rounds"));
+    if (max_rounds == 0) { return; }
+    const double anchor_q = getDoubleOption_("anchor_q");
+    const int min_anchors = std::max(1, getIntOption_("min_anchors"));
+
+    auto options = scoringOptions_();
+    options.library_rt_is_run_seconds = true;
+
+    std::size_t best_ids = scored.identified_at_1pct;
+    int stagnant = 0;
+    for (int round = 1; round <= max_rounds && stagnant < 3; ++round)
+    {
+      // Anchors from the current best group per precursor, by dscore -- the
+      // q-value is broadcast across a precursor's candidates and cannot
+      // discriminate between them.
+      std::vector<const ODIA::PeakGroupScorer::PeakGroup*> best(
+        library.precursorCount(), nullptr);
+      for (const auto& g : scored.groups)
+      {
+        if (g.decoy || g.qvalue > anchor_q) { continue; }
+        auto*& b = best[g.precursor];
+        if (b == nullptr || g.dscore > b->dscore) { b = &g; }
+      }
+      std::vector<std::pair<double, double>> anchors;
+      for (std::size_t i = 0; i < best.size(); ++i)
+      {
+        if (best[i] != nullptr && std::isfinite(original_irt[i]))
+        {
+          anchors.push_back({static_cast<double>(original_irt[i]),
+                             static_cast<double>(best[i]->apex_rt)});
+        }
+      }
+      if (static_cast<int>(anchors.size()) < min_anchors) { break; }
+
+      double p95 = 0.0;
+      const auto trafo = ODIA::Calibration::fit(anchors, &p95, 0.0);
+      // Applied to the ORIGINAL iRT every round, never to the previous round's
+      // output: composing maps would drift, and each fit is a map from library
+      // units to run seconds, not a correction to the last one.
+      auto& irt = library.precursors().irt;
+      for (std::size_t i = 0; i < irt.size(); ++i)
+      {
+        if (std::isfinite(original_irt[i]))
+        {
+          irt[i] = static_cast<float>(trafo.apply(static_cast<double>(original_irt[i])));
+        }
+      }
+
+      ODIA::PeakGroupScorer::refit(library, scored, options);
+
+      std::ostringstream m;
+      m << "refine round " << round << ": " << anchors.size() << " anchors, p95 "
+        << p95 << " s, " << scored.identified_at_1pct << " identified at 1% FDR";
+      if (scored.identified_at_1pct > best_ids)
+      {
+        best_ids = scored.identified_at_1pct;
+        stagnant = 0;
+      }
+      else { ++stagnant; m << " (no gain, " << stagnant << " of 3)"; }
+      writeLogInfo_(m.str());
+    }
+  }
 
   ExitCodes extractAndScore_(const ODIA::Library& library, const std::string& run,
                              double rt_window_override, bool library_rt_is_run_seconds,
