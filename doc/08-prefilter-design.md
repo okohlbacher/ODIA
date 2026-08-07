@@ -163,3 +163,65 @@ Two consequences for the rest of the design:
 internally, so the label-symmetry rule -- equal COUNTS retained from each class
 -- cannot be checked from the library file and has to be asserted after decoy
 generation instead.
+
+## VERDICT, 2026-08-08: the prefilter does not work on diaPASEF, in any form
+
+The mobility slice did not rescue it, and neither did abandoning the maximum.
+
+**Mobility-sliced depth** (peaks restricted to +/-0.025 of the precursor's
+library 1/K0, the same window the extractor uses), S08 + `v6_50k`:
+
+    depth   targets   true/1000   enrichment
+      6      49,835        13.4        1.0x
+      <6        165         0.0        0.0x
+
+Still 99.7% saturated. The slice was not the binding problem.
+
+**The binding problem is that `depth` is a MAXIMUM over ~32,210 spectra.** An
+extreme-value statistic over thousands of draws saturates whatever the per-draw
+probability is. So the two statistics designed not to be maxima were tried:
+
+    statistic             true median   absent median   ratio   top-decile enrichment
+    qualifying_spectra            799             818   0.98x                   0.5x
+    total_matches               5,076           5,194   0.98x                   0.5x
+
+**Neither discriminates.** True and absent precursors are indistinguishable, and
+selecting the top decile by either is WORSE than random. With 15 ppm tolerance
+over ~2,000 sampled frames per isolation window, fragment coincidence is
+dominated by chance, and the unconditioned question has no power left.
+
+**The Astral control was mis-designed and is uninformative.** It ran against
+`astral_lib_own`, which is ~100% true positives, so the base rate is 1000/1000
+and enrichment is 1.0x by construction. That is the ranking-versus-search
+confusion this project keeps making, committed this time inside the control
+experiment meant to settle it. It does show depth VARIES on Astral (64% at
+depth 6, 91% at >=5) where diaPASEF saturates, so the instrument difference is
+real -- but enrichment there is unmeasured and needs a proteome-scale Astral
+library.
+
+### What would be needed to rescue it, and why none is cheap
+
+* **Tighter tolerance.** 15 ppm was chosen to match the uncalibrated extraction
+  window. The reference engine calibrates first. But on S08 the mass gate FAILS,
+  so there is no calibrated window to use -- and the prefilter was supposed to
+  run before calibration.
+* **Restrict to a retention-time neighbourhood.** This is what would actually
+  work, and it is circular: the prefilter's second purpose was to SUPPLY the RT
+  seed. It cannot consume what it exists to produce.
+* **A non-merged spectrum unit.** Per-TIMS-scan rather than per-frame. The
+  reader serves merged frames, so this is a reader change, and `ODIAInfo -peaks`
+  is already blocked on the same decode work.
+
+### Consequence for the plan
+
+`doc/12` put this on the critical path on the strength of a 1,800x separation
+measured on the reference engine's non-mobility data. **That number does not
+transfer, and the design's own success metric is what caught it** -- for two
+passes over the file rather than for a built subsystem.
+
+**MS1 (doc/12 item B) becomes the primary lever**, on the orthogonality argument
+that survived the feature-count correction: it is a second measurement with an
+independent failure mode, not more columns computed from the same fragment
+traces. It is also the one thing here that would give the RT seed without
+circularity, since an MS1 precursor trace is evidence the MS2 side does not
+supply.

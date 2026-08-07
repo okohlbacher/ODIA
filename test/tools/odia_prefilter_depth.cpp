@@ -27,6 +27,7 @@
 #include <odia/SpectrumSource.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -44,12 +45,17 @@ int main(int argc, char** argv)
   if (argc < 4)
   {
     std::fprintf(stderr,
-                 "usage: %s <library.tsv> <run.mzpeak> <out.tsv> [ppm=15] [max_spectra=0]\n",
+                 "usage: %s <library.tsv> <run.mzpeak> <out.tsv> [ppm=15] [max_spectra=0]"
+                 " [im_window=0]\n"
+                 "  im_window > 0 restricts each match to peaks within that much of the\n"
+                 "  precursor's library 1/K0. On diaPASEF this is MANDATORY: a frame is\n"
+                 "  ~700 concatenated TIMS scans, so without it every precursor saturates.\n",
                  argv[0]);
     return 2;
   }
   const double ppm = argc > 4 ? std::atof(argv[4]) : 15.0;
   const std::size_t max_spectra = argc > 5 ? static_cast<std::size_t>(std::atol(argv[5])) : 0;
+  const double im_window = argc > 6 ? std::atof(argv[6]) : 0.0;
 
   try
   {
@@ -102,7 +108,7 @@ int main(int argc, char** argv)
     // The searchable side is a flat (mz, precursor-slot) index over the top-N
     // fragments of every precursor in this spectrum's window, built once per
     // window rather than per spectrum.
-    struct Target { double mz; std::uint32_t slot; };
+    struct Target { double mz; std::uint32_t slot; float im; };
 
     ODIA::SpectrumPeaks sp;
     const std::size_t limit = max_spectra ? std::min(max_spectra, info.size()) : info.size();
@@ -136,7 +142,7 @@ int main(int argc, char** argv)
           const double mz = ODIA::fromFixed(p.mz[i]);
           if (!in.window.contains(mz)) { continue; }
           for (const auto& fr : want[i])
-          { idx.push_back({fr.mz, static_cast<std::uint32_t>(i)}); }
+          { idx.push_back({fr.mz, static_cast<std::uint32_t>(i), p.im[i]}); }
         }
         std::sort(idx.begin(), idx.end(),
                   [](const Target& a, const Target& b) { return a.mz < b.mz; });
@@ -150,8 +156,10 @@ int main(int argc, char** argv)
 
       hits.assign(lib.precursorCount(), 0);
       slots_touched.clear();
-      for (const double m : sp.mz)
+      const bool im_gated = im_window > 0.0 && sp.ion_mobility.size() == sp.mz.size();
+      for (std::size_t pk = 0; pk < sp.mz.size(); ++pk)
       {
+        const double m = sp.mz[pk];
         // Widest tolerance at this m/z; the per-target check below is exact.
         const double tol = m * ppm * 1e-6;
         auto it = std::lower_bound(idx.begin(), idx.end(), m - tol,
@@ -159,6 +167,20 @@ int main(int argc, char** argv)
         for (; it != idx.end() && it->mz <= m + tol; ++it)
         {
           if (std::abs(it->mz - m) > it->mz * ppm * 1e-6) { continue; }
+          // The peak must also lie in this precursor's mobility slice.
+          //
+          // Without this the "one spectrum" the depth question asks about is a
+          // whole merged frame -- ~600-810 TIMS scans and 32,570 peaks on S08 --
+          // and six m/z values within tolerance are near-certain to appear
+          // somewhere in it by chance. Measured: every one of 50,000 precursors
+          // reached the maximum depth, 0.9x enrichment. The slice restores
+          // "one moment" as the unit.
+          if (im_gated)
+          {
+            const float pim = sp.ion_mobility[pk];
+            if (!(std::abs(static_cast<double>(pim) - static_cast<double>(it->im)) <= im_window))
+            { continue; }
+          }
           if (hits[it->slot] == 0) { slots_touched.push_back(it->slot); }
           // One fragment may match several peaks in a mobility-merged frame;
           // depth counts DISTINCT fragments, so cap per fragment by tracking
