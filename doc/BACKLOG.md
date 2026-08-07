@@ -1824,3 +1824,40 @@ a counter rather than a grep.
 **So "Astral's bottleneck is extraction" is corrected to "the picker's
 thresholds".** Same conclusion as S08's 19,150, and the same three criteria
 dominate: `not a local maximum`, `min_corr_score`, `apex_evidence`.
+
+## Mass calibration, settled with correct code, and CLOSED (2026-08-08)
+
+Three matched arms on Astral + `astral_lib_own`, corrected code (the
+out-of-bounds RT gate is fixed), all sharing pass 1 = 1,248 so everything
+upstream is identical:
+
+    baseline, gate never passes                  4,275
+    offset + m/z shape, window NOT narrowed      3,895    -380   (-8.9%)
+    offset + shape + narrowing                   1,434  -2,461  (-63%)
+
+**The window width is the culprit, 6.5x the offset's cost.** The original
+hypothesis was right; it just could not be supported at the time because the
+measurement ran on undefined behaviour. The VOID figures (98->149 residuals,
+4,275->1,895) are superseded by these.
+
+Two things this does NOT say:
+
+* `-mass_calibration_offset_only` overrides only `fragment_ppm`; the m/z slopes
+  are already applied by then. So "-380" is the JOINT cost of the constant
+  offset and the m/z shape, not the offset alone. Separating them needs a third
+  mode that zeroes both slopes.
+* It says nothing about S08 or about a search benchmark. Astral +
+  `astral_lib_own` is ~100% true positives, so this is a ranking measurement.
+
+**What to do with it:** `ChromatogramExtractor.h` says "an uncentred narrow
+window is the worse of the two errors", measured on S08. On Astral the ordering
+is reversed and by a wide margin. The rule is instrument-specific and must stop
+being applied as if it were general. The honest fix is to size the width from
+the fit's own `sigma_after` with a floor, rather than from a constant -- but
+that is a tuning change on a subsystem that cannot move the headline number.
+
+**CLOSED per doc/12 section D.** Five commits deep on a correction that remains
+off by default. Both flags stay in the tree
+(`-mass_calibration_remeasure`, `-mass_calibration_offset_only`); neither is
+default. Revisit only after the prefilter gives pass 1 something to fit an RT
+map from, which is the precondition the whole subsystem was found to lack.
