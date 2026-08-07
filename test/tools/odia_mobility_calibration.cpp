@@ -688,6 +688,64 @@ namespace
             "and calling it a failed measurement");
     }
 
+    // ---- 7b. a residual that is a FUNCTION OF 1/K0 -------------------------
+    //
+    // The one load-bearing term added by the mobility-slope work, and nothing
+    // else in this file exercises it. Every other case plants a
+    // mobility-INDEPENDENT offset and then evaluates through the three-argument
+    // offsetFor(), i.e. with a NaN mobility -- which returns the curve at its
+    // own pivot and so reports approximately the planted value whether the
+    // slope machinery works, is inverted, or is off by 1000x.
+    //
+    // A real out-of-bounds read in the sibling mass probe's RT gate survived a
+    // full green suite for exactly this reason: 61/61 passed before and after
+    // the fix. A term nothing evaluates is a term nothing protects.
+    {
+      MC::Model m;
+      m.fitted = true;
+      m.folds = 0;
+      m.curves.assign(MC::MAX_CHARGE + 1, MC::Curve{});
+      MC::Curve& c = m.curves[2];
+      c.supported = true;
+      c.shaped = false;
+      c.constant = 0.010;      // 1/K0
+      c.im_slope = -0.100;     // per 1/K0
+      c.im_pivot = 1.000;
+      c.max_correction = 0.030;
+
+      // Evaluated AT the pivot, the slope contributes nothing.
+      check(std::abs(m.offsetFor(0, 600.0, 2, 1.000) - 0.010) < 1e-9,
+            "at the pivot the correction is the constant alone");
+
+      // 0.2 below the pivot: -0.100 * (0.8 - 1.0) = +0.020, plus 0.010.
+      check(std::abs(m.offsetFor(0, 600.0, 2, 0.800) - 0.030) < 1e-9,
+            "below the pivot the slope ADDS, with the right sign and magnitude");
+
+      // 0.2 above: -0.100 * (1.2 - 1.0) = -0.020, plus 0.010 -> -0.010.
+      check(std::abs(m.offsetFor(0, 600.0, 2, 1.200) - (-0.010)) < 1e-9,
+            "above the pivot it subtracts -- a sign error here would be silent "
+            "in every other case in this file");
+
+      // A 1000x unit slip would put this at 20.0 rather than 0.020.
+      check(std::abs(m.offsetFor(0, 600.0, 2, 0.800)) < 0.1,
+            "the slope is in 1/K0 per 1/K0, not milli-1/K0 per 1/K0");
+
+      // The composite is bounded, even though each term is individually legal:
+      // 1/K0 0.4 wants 0.010 + 0.060 = 0.070 against a 0.030 cap.
+      check(std::abs(m.offsetFor(0, 600.0, 2, 0.400) - 0.030) < 1e-9,
+            "the COMPOSITE is clamped to max_correction, not merely each term");
+      check(std::abs(m.offsetFor(0, 600.0, 2, 1.700) - (-0.030)) < 1e-9,
+            "and clamped symmetrically on the other side");
+
+      // NaN mobility must not poison the result.
+      const double nan_im = std::numeric_limits<double>::quiet_NaN();
+      check(std::abs(m.offsetFor(0, 600.0, 2, nan_im) - 0.010) < 1e-9,
+            "an absent 1/K0 falls back to the mobility-independent part rather "
+            "than producing NaN");
+      check(std::isfinite(m.offsetFor(0, 600.0, 2, nan_im)),
+            "and the result is finite");
+    }
+
     // ---- 8. nothing at all -------------------------------------------------
     {
       const auto m = MC::fit({}, baseOptions());

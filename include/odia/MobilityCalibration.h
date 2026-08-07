@@ -648,8 +648,25 @@ namespace ODIA
         if (!supported) { return 0.0; }
         const double base = at(mz);
         if (!std::isfinite(im) || im_slope == 0.0) { return base; }
-        return base + im_slope * (im - im_pivot);
+        const double composite = base + im_slope * (im - im_pivot);
+        // The COMPOSITE is what max_correction_im bounds, not each term.
+        //
+        // Every component is clamped on its own -- the constant, each knot, and
+        // the slope against max_im_slope -- and before the slope existed that
+        // was the same thing. It is not any more: a timsTOF library spans 1/K0
+        // 0.6-1.6 about a pivot near 1.0, so a fitted -0.10 slope contributes
+        // +/-0.05 at the ends, and a knot may add 0.030 on top. That is ~0.08
+        // applied against a documented cap of 0.030 and an extraction half-
+        // window of 0.025 -- the correction could move a precursor clean out of
+        // the window it is meant to centre, and it would do it worst at the
+        // extremes of the mobility range, which is the population this whole
+        // class exists to rescue.
+        return std::clamp(composite, -max_correction, max_correction);
       }
+
+      /// The bound the composite is held to. Carried on the curve so `at()` can
+      /// enforce it without reaching for Options, which it does not have.
+      double max_correction = 0.030;
 
       double at(double mz) const
       {

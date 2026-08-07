@@ -210,6 +210,7 @@ namespace ODIA
       const double clamp_milli = opt.max_correction_im * MILLI;
       out.curve.constant = std::clamp(medianOf(cd), -clamp_milli, clamp_milli) / MILLI;
       out.curve.supported = true;
+      out.curve.max_correction = opt.max_correction_im;
 
       // Least squares of the residual on 1/K0, about the anchors' own median
       // mobility. Fitted on the CORE (already trimmed to 4 sigma), so a few
@@ -516,7 +517,16 @@ namespace ODIA
     // with different constant offsets cannot tilt the shared slope: what is
     // pooled is the trend, not the offset. See min_anchors_pooled_slope for why
     // the slope is shared and the constant is not.
-    double pooled_slope = 0.0, pooled_pivot = 1.0;
+    // Fitted PER FOLD, excluding that fold's anchors.
+    //
+    // The first version fitted it once over every anchor of every charge and
+    // wrote it into all folds, which made the reduced model's DOMINANT
+    // coefficient in-sample for the precursor it corrects -- so
+    // `squared_error_removed` was not an out-of-fold number and the "18.8%
+    // against 14.1%" that documented the option was optimistically biased.
+    // With four folds over 378 and 93 anchors, a fold is ~25% of the sample;
+    // that leak is not negligible.
+    const auto pooled_for = [&](std::size_t exclude_fold, std::size_t n_folds)
     {
       std::vector<double> ims, centred;
       for (std::size_t c = 0; c <= MAX_CHARGE; ++c)
@@ -525,31 +535,42 @@ namespace ODIA
         if (all.size() < 20) { continue; }
         std::vector<double> ds;
         ds.reserve(all.size());
-        for (const auto& x : all) { ds.push_back(x.delta); }
+        for (const auto& x : all)
+        {
+          if (exclude_fold < n_folds && foldIndex(x.precursor, n_folds) == exclude_fold)
+          { continue; }
+          ds.push_back(x.delta);
+        }
+        if (ds.size() < 20) { continue; }
         const double centre = medianOf(ds);
         for (const auto& x : all)
         {
+          if (exclude_fold < n_folds && foldIndex(x.precursor, n_folds) == exclude_fold)
+          { continue; }
           if (!std::isfinite(x.im)) { continue; }
           ims.push_back(x.im);
           centred.push_back(x.delta - centre);
         }
       }
-      if (ims.size() >= 40)
+      std::pair<double, double> out{0.0, 1.0};   // slope, pivot
+      if (ims.size() < 40) { return out; }
+      out.second = medianOf(ims);
+      double sxx = 0.0, sxy = 0.0;
+      for (std::size_t i = 0; i < ims.size(); ++i)
       {
-        pooled_pivot = medianOf(ims);
-        double sxx = 0.0, sxy = 0.0;
-        for (std::size_t i = 0; i < ims.size(); ++i)
-        {
-          const double dx = ims[i] - pooled_pivot;
-          sxx += dx * dx;
-          sxy += dx * centred[i];
-        }
-        if (sxx > 0.0)
-        {
-          pooled_slope = std::clamp((sxy / sxx) / MILLI, -opt.max_im_slope, opt.max_im_slope);
-        }
+        const double dx = ims[i] - out.second;
+        sxx += dx * dx;
+        sxy += dx * centred[i];
       }
-    }
+      if (sxx > 0.0)
+      {
+        out.first = std::clamp((sxy / sxx) / MILLI, -opt.max_im_slope, opt.max_im_slope);
+      }
+      return out;
+    };
+    const auto pooled_all = pooled_for(m.folds, m.folds);   // nothing excluded
+    const double pooled_slope = pooled_all.first;
+    const double pooled_pivot = pooled_all.second;
 
     const double clamp_milli_outer = opt.max_correction_im * MILLI;
     bool any_supported = false, any_shaped = false;
@@ -593,6 +614,9 @@ namespace ODIA
         std::size_t ok = 0;
         for (std::size_t f = 0; f <= m.folds; ++f)
         {
+          const auto fold_pooled = pooled_for(f, m.folds);
+          const double fold_slope = fold_pooled.first;
+          const double fold_pivot = fold_pooled.second;
           std::vector<double> ds;
           ds.reserve(all.size());
           for (const auto& x : all)
@@ -601,16 +625,17 @@ namespace ODIA
             // Centre on what the shared slope already explains, so the constant
             // is the residual offset rather than the offset plus half the trend.
             const double explained =
-              std::isfinite(x.im) ? pooled_slope * MILLI * (x.im - pooled_pivot) : 0.0;
+              std::isfinite(x.im) ? fold_slope * MILLI * (x.im - fold_pivot) : 0.0;
             ds.push_back(x.delta - explained);
           }
           if (ds.size() < 10) { continue; }
           Curve cv;
           cv.supported = true;
           cv.shaped = false;
+          cv.max_correction = opt.max_correction_im;
           cv.constant = std::clamp(medianOf(ds), -clamp_milli_outer, clamp_milli_outer) / MILLI;
-          cv.im_slope = pooled_slope;
-          cv.im_pivot = pooled_pivot;
+          cv.im_slope = fold_slope;
+          cv.im_pivot = fold_pivot;
           cv.anchors = ds.size();
           m.curves[c * (m.folds + 1) + f] = cv;
           ++ok;
