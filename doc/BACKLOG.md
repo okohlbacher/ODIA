@@ -1791,3 +1791,36 @@ This matters for how every A/B in this document may be read:
 **Still not covered:** permutation invariance (reordering the library), and
 determinism of the library-generation and ONNX paths. This measures the
 extract-score pipeline only.
+
+## C1 done: Astral's 5,187 is real, and it is the PICKER (2026-08-07, late)
+
+The four candidate explanations, settled against the run that already existed.
+
+**ID join: clean.** `writeScores_` concatenates modified sequence and charge
+with no separator, and the suspicion was that this mismatches DIA-NN. It does
+not -- all three agree on `AAAEVAGQFVIK2`. **Zero** ODIA output rows carry an id
+absent from our library, which is the direct test for a format bug.
+
+**Library coverage: 10,891 of 11,112 (98.0%),** and the missing 221 are almost
+exactly the 220 MODIFIED precursors in DIA-NN's set. **Our Astral library
+contains zero modified peptides.** That is a library-generation gap, not a
+search failure, and it is the whole of the coverage shortfall. Worth its own
+item: the generator emits no modifications at all for this run.
+
+**The 5,187 are all in-library and all unmodified**, so they are a real pipeline
+loss, and the picker census from the same run locates it:
+
+    picker rejections over 12,912,142 scan positions
+    -> 9,890 precursors yielded no candidate peak group
+
+5,187 is a subset of that 9,890 (the rest are precursors absent from DIA-NN's
+set). **The chromatograms were extracted and the picker returned nothing.**
+
+Still unseparated within that: precursors where a candidate WAS emitted and then
+dropped by `min_fragments_at_apex` (a scorer filter), and the contribution of
+pass-2 extraction running on an RT map fitted from only 1,248 anchors. Both need
+a counter rather than a grep.
+
+**So "Astral's bottleneck is extraction" is corrected to "the picker's
+thresholds".** Same conclusion as S08's 19,150, and the same three criteria
+dominate: `not a local maximum`, `min_corr_score`, `apex_evidence`.
