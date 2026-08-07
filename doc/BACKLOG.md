@@ -1489,3 +1489,47 @@ it.
 actually present. A library built from the comparator's confident set is a
 RANKING benchmark; a proteome-scale library is a SEARCH benchmark. We have only
 ever run the first.
+
+## MS1 is present and unused -- the largest untapped feature family (2026-08-07)
+
+`ODIAInfo` on S08: **1,343 MS1 spectra against 16,105 MS2** (17,448 total).
+Over the gradient that is a ~1.8 s duty cycle, so a 30 s peak is sampled ~15
+times -- ample for a chromatographic trace, not merely a survey.
+
+**ODIA reads none of it.** `src/io/MzPeakSource.cpp:58` drops `ms_level != 2`
+at INDEX time, so MS1 is invisible everywhere downstream; nothing in ODIA's
+output reveals the file even has it.
+
+This is the concrete instance of the feature-count finding above. ODIA carries
+15 sub-scores and the simulated cliff sits between 15 and 30; MS1 is the
+biggest single family available, and it is orthogonal to everything present
+today (every current sub-score is computed on MS2 fragment traces, so they
+share their failure modes -- a co-eluting interferent corrupts all of them at
+once). DIA-NN's 110 include a substantial MS1 block.
+
+**Plan, in dependency order:**
+
+1. `MzPeakSource`: keep MS1 spectra in a SEPARATE index rather than merging
+   them into `info_`. Merging would break every consumer's assumption that an
+   entry has an isolation window. The mobility handling is the same
+   diaPASEF-derived-boundary problem already solved for MS2.
+2. An MS1 extraction pass over the precursor monoisotopic m/z plus the first
+   two isotopes, on the same RT and 1/K0 windows the MS2 extraction uses, so
+   the traces are directly comparable cycle for cycle. Reuse the existing
+   `LiveSlot`/`BlockPool` shape; the row count is ~3 per precursor against ~12
+   fragments, so the memory term is small.
+3. Features, all cheap once the traces exist:
+   - MS1/MS2 co-elution: correlation of the precursor trace against the
+     fragment consensus. A real peptide's precursor and fragments share one
+     elution profile; an interferent's do not.
+   - Isotope ratio agreement: observed vs theoretical (averagine) for M, M+1,
+     M+2. This is strong orthogonal evidence and needs no new extraction.
+   - MS1 apex RT delta against the MS2 apex.
+   - MS1 log signal-to-noise.
+4. Measure on `v6_50k` -- the SEARCH benchmark, where the current answer is 0.
+   `lib_targets` cannot show this: it is ~100% true positives, so it measures
+   ranking among true positives and the whole point here is discrimination at
+   a 1.5% prior.
+
+**Do not read a gain on `lib_targets` as progress on the real problem.** That
+is the ranking-vs-search confusion this document keeps having to restate.
