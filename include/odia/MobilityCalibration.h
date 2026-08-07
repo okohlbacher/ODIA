@@ -235,6 +235,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -698,13 +699,19 @@ namespace ODIA
       /// The 1/K0 to ADD to this precursor's library value. 0 when nothing was
       /// fitted, when this charge is unsupported, or when the precursor's
       /// mobility is unknown -- in every case, the uncorrected library value.
-      double offsetFor(std::uint32_t precursor, double mz, int charge) const
+      /// @param library_im the precursor's LIBRARY 1/K0, which the linear term
+      ///        is a function of. Defaults to NaN, which yields the constant
+      ///        plus the m/z shape and nothing else -- so a caller that has no
+      ///        mobility to hand gets exactly the pre-slope behaviour rather
+      ///        than a silently wrong correction.
+      double offsetFor(std::uint32_t precursor, double mz, int charge,
+                       double library_im = std::numeric_limits<double>::quiet_NaN()) const
       {
         if (!fitted || curves.empty()) { return 0.0; }
         const std::size_t c = static_cast<std::size_t>(
           std::clamp<int>(charge, 0, static_cast<int>(MAX_CHARGE)));
         const std::size_t f = std::min(foldOf(precursor), folds);
-        return curves[c * (folds + 1) + f].at(mz);
+        return curves[c * (folds + 1) + f].at(mz, library_im);
       }
     };
 

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <limits>
 #include <numeric>
@@ -217,6 +218,7 @@ namespace ODIA
       // Pivoting on the median rather than on zero keeps the slope and the
       // constant nearly independent: with a pivot at zero, any slope also
       // shifts every correction by slope * median_im, and the two terms fight.
+      double slope_milli = 0.0;   // the fitted slope in the deltas' own units
       {
         std::vector<double> ims;
         ims.reserve(core.size());
@@ -253,10 +255,34 @@ namespace ODIA
           // still refusing a fit that has clearly latched onto something else.
           out.curve.im_slope = std::clamp(slope, -opt.max_im_slope, opt.max_im_slope);
           out.curve.im_pivot = pivot;
+          slope_milli = out.curve.im_slope * MILLI;
         }
       }
 
-      out.bins = binByMz(core, opt.max_mz_bins, opt.min_per_bin);
+      // The m/z shape is fitted on what the SLOPE LEAVES BEHIND, not on the raw
+      // deltas.
+      //
+      // This is not tidiness. When `shaped`, at() returns the interpolated knot
+      // and ignores `constant` entirely -- the spline REPLACES the offset. So
+      // binning raw deltas here and then adding a mobility slope on top would
+      // correct the same trend twice, and it is precisely the trend both terms
+      // are best at absorbing: CCS correlates with m/z, so a mobility error
+      // reappears as an m/z shape. The pre-slope run fitted exactly that,
+      // "+0.0103 at 393 Th to -0.0099 at 1117 Th", which is the mobility
+      // residual wearing a mass-shaped disguise.
+      //
+      // Removing the slope first makes the decomposition additive and honest:
+      // the slope takes the part that is genuinely a function of 1/K0, the
+      // spline takes whatever m/z-dependence survives that.
+      std::vector<Anchor> shape_core = core;
+      if (slope_milli != 0.0)
+      {
+        for (auto& x : shape_core)
+        {
+          if (std::isfinite(x.im)) { x.delta -= slope_milli * (x.im - out.curve.im_pivot); }
+        }
+      }
+      out.bins = binByMz(shape_core, opt.max_mz_bins, opt.min_per_bin);
       double mean = 0.0;
       shapeEvidence(out.bins, out.chi2_per_dof, out.swing, mean);
       if (want_shape && out.bins.size() >= 2)
@@ -556,6 +582,18 @@ namespace ODIA
       any_supported = true;
       any_shaped = any_shaped || full.shaped;
       char buf[320];
+      // The mobility-linear term, reported separately because it is the only
+      // part of the curve the m/z shape cannot show. A run whose slope is large
+      // has a CCS->1/K0 conversion whose coefficient is wrong by that fraction,
+      // which is upstream of this tool and worth seeing.
+      char slope_buf[128] = "";
+      if (full.im_slope != 0.0)
+      {
+        std::snprintf(slope_buf, sizeof slope_buf,
+                      "; 1/K0-linear %+.4f per 1/K0 about %.3f, i.e. a %.1f%% error in "
+                      "the CCS->1/K0 coefficient",
+                      full.im_slope, full.im_pivot, 100.0 * full.im_slope);
+      }
       if (full.shaped)
       {
         std::snprintf(buf, sizeof buf,
@@ -563,6 +601,7 @@ namespace ODIA
                       "(chi2/dof %.1f >= %.1f, swing %.4f >= %.4f)",
                       rep.bins.size(), rep.low, rep.mz_low, rep.high, rep.mz_high,
                       rep.chi2_per_dof, opt.min_shape_chi2, rep.swing, opt.min_shape_swing_im);
+        std::strncat(buf, slope_buf, sizeof buf - std::strlen(buf) - 1);
       }
       else
       {
@@ -571,6 +610,7 @@ namespace ODIA
                       "fitting bin noise (chi2/dof %.1f against %.1f, swing %.4f against %.4f)",
                       rep.constant, rep.chi2_per_dof, opt.min_shape_chi2, rep.swing,
                       opt.min_shape_swing_im);
+        std::strncat(buf, slope_buf, sizeof buf - std::strlen(buf) - 1);
       }
       rep.reason = buf;
       m.by_charge.push_back(rep);
@@ -596,7 +636,7 @@ namespace ODIA
     corrected.reserve(kept.size());
     for (const auto& r : kept)
     {
-      const double off = m.offsetFor(r.precursor, r.mz, r.charge);
+      const double off = m.offsetFor(r.precursor, r.mz, r.charge, r.im_library);
       const double a = r.delta, b = r.delta - off;
       sum_before += a * a;
       sum_after += b * b;

@@ -891,7 +891,8 @@ namespace ODIA
           const double im_offset =
             options.mobility_model
               ? options.mobility_model->offsetFor(a.precursor, fromFixed(p.mz[a.precursor]),
-                                                  p.charge[a.precursor])
+                                                  p.charge[a.precursor],
+                                                  p.im[a.precursor])
               : 0.0;
           x.precursor_im.push_back(static_cast<float>(lib_im + im_offset));
           ++row;
