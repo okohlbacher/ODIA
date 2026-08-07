@@ -264,6 +264,52 @@ namespace ODIA
       /// threshold, because the threshold is what caught the 72.6 ppm fit.
       double min_peakedness = 3.0;
 
+      /// Minimum control residuals before the "control is as peaked as the
+      /// data" rule may fire at all.
+      ///
+      /// `peakednessRatio` is count(central band) / count(edge band), so its
+      /// relative error is ~sqrt(1/c + 1/e) and it is dominated by the EDGE
+      /// count. Measured on Astral: 5,769 control cells yielded **98** control
+      /// residuals against 4,033 target, because a 7 Th-shifted query rarely
+      /// matches anything at all. The statistic came out at 12.00 with an edge
+      /// count of one to three, i.e. an error bar of roughly +/-7 to +/-12,
+      /// and the gate failed the run by comparing the target's well-estimated
+      /// 6.90 +/- 0.74 against it.
+      ///
+      /// That is not a test, it is a coin flip.
+      ///
+      /// DEFAULTED OFF (0) ANYWAY, because the coin flip was landing the right
+      /// way up. Setting this to 400 let the gate PASS on Astral pass 1, which
+      /// applied a -1.27 ppm offset and narrowed the window off the
+      /// uncalibrated 15 ppm -- and pass 1 fell from **1,248 identifications to
+      /// 119**, taking the run from 4,275 to 1,994.
+      ///
+      /// So the thin control was vetoing a calibration this data genuinely does
+      /// not support. It is a bad ESTIMATOR and, here, a correct DECISION:
+      /// almost nothing matching a 7 Th-shifted query is itself evidence that
+      /// the fragment matches are not clean enough to calibrate from. The
+      /// argument that a noisy statistic "has no opinion" ignored that its
+      /// SPARSITY is the signal, independent of the ratio computed from it.
+      ///
+      /// A real fix measures the null better -- more control cells, or a
+      /// shift chosen to match at a comparable rate -- rather than ignoring it.
+      /// Do not raise this without re-running Astral end to end.
+      std::size_t min_control_residuals = 0;
+
+      /// The run's own iRT map, so the probe looks only where a precursor
+      /// should elute: rt = irt_slope * iRT + irt_intercept, +/- rt_window.
+      ///
+      /// Zero means no map, which is the FIRST pass -- there is none yet, and
+      /// the brightest-cell apex stand-in is all that is available. From the
+      /// second pass there is one, and using it matters: without it the probe
+      /// keeps the brightest cluster over every block it looks in, and an
+      /// ABSENT precursor gets one draw from the interference per block. That
+      /// is how a mostly-absent library produces flat residuals and fails the
+      /// gate for a reason that is about the probe rather than the instrument.
+      double irt_slope = 0.0;
+      double irt_intercept = 0.0;
+      double rt_window_seconds = 0.0;
+
       /// Window = k x robust sigma of the CORRECTED residuals.
       double sigma_multiple = 3.0;
 

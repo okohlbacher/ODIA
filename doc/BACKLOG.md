@@ -1616,3 +1616,48 @@ measures RANKING. `v6_50k` is 738 of 50,000, i.e. 1.5%, and measures SEARCH.
     exactly as the feature-count finding predicts.
   * Pass 1 identified nothing, so no RT map was fitted at all and pass 2 ran
     without one -- the same wrong-RT condition as the mass gate above.
+
+## The mass calibration is fixed as a MEASUREMENT and broken as an ACTION (2026-08-07)
+
+Following the gate review above, both defects it named were fixed and both fixes
+LOST identifications. Astral, our own library, at 1% FDR:
+
+    latched, gate fails both rounds (HEAD)      pass1 1248   pass2 4275
+    + min_control_residuals = 400               pass1  119   pass2 1994
+    + re-measure against the fitted RT map      pass1 1248   pass2 1895
+
+**Every variant that makes the gate PASS loses badly.** That is the finding.
+
+**The re-measurement works, by its own metrics.** Probing at the fitted
+retention times took the control from 98 residuals to 149 and it stopped
+out-peaking the data (the pass-1 gate's whole complaint), and the fitted offset
+moved -1.27 -> -1.75 ppm. So the "12.00 vs 6.90" null that failed pass 1 was
+itself partly an artefact of probing the whole gradient. The diagnosis was
+right.
+
+**And applying it costs 56% of the run.** A passing gate does two things: it
+centres the window AND narrows `fragment_ppm` off the uncalibrated 15. On Astral
+the narrowing is the more expensive error EVEN WHEN CORRECTLY CENTRED -- the
+opposite of what `ChromatogramExtractor.h` assumes when it says "an uncentred
+narrow window is the worse of the two errors". That assumption was measured on
+S08 and does not transfer.
+
+**The thin-control guard was wrong, and instructively so.** `peakednessRatio` on
+98 residuals genuinely is 12.00 +/- ~9, so the statistic is uninformative --
+but the SPARSITY is not. Almost nothing matching a 7 Th-shifted query is itself
+evidence that the fragment matches are not clean enough to calibrate from, and
+the gate was reading that correctly through a bad estimator. Ignoring a noisy
+number because it is noisy threw away the signal carried by why it was noisy.
+Defaulted to 0.
+
+**Next, in order:**
+1. **Separate the width from the offset.** Apply the fitted offset while KEEPING
+   the wide window, and measure. This is one run and it decides whether the
+   offset is good and only the width is wrong, or the whole correction is.
+2. If the offset is good: make the calibrated width a function of the measured
+   `sigma_after` with a floor, rather than a fixed narrow value.
+3. Only then consider defaulting `-mass_calibration_remeasure` on.
+
+Both fixes are IN the tree and OFF: `-mass_calibration_remeasure` (flag) and
+`Options::min_control_residuals` (0). Neither is reverted, because the
+measurement half is correct and will be wanted once the application is fixed.

@@ -162,6 +162,15 @@ protected:
                           "which on this instrument class discards about half the fragment "
                           "evidence.", false);
     setValidStrings_("mass_calibration", {"auto", "off"});
+    registerFlag_("mass_calibration_remeasure",
+                  "Re-measure the fragment mass calibration in pass 2, against the fitted "
+                  "retention-time map, instead of reusing the pass-1 model taken before any map "
+                  "existed. The re-measurement is strictly better as a MEASUREMENT -- on Astral "
+                  "it takes the control from 98 residuals to 149 and stops it out-peaking the "
+                  "data -- but applying it costs 4,275 -> 1,895 identifications there, because a "
+                  "passing gate also narrows fragment_ppm off the uncalibrated 15. Off until the "
+                  "width and the offset are separable.",
+                  true);
     registerDoubleOption_("fragment_ppm_offset", "<ppm>", 0.0,
                           "Pin the systematic fragment mass offset instead of measuring it. "
                           "Non-zero also switches -mass_calibration off, because a measured "
@@ -429,7 +438,7 @@ protected:
     ODIA::ChromatogramExtractor::Options options;
     options.precursor_stride = pass_stride_;
     options.precursor_offset = pass_offset_;
-    applyMassCalibration_(library, *source, options);
+    applyMassCalibration_(library, *source, options, rt_window_override);
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
     options.max_precursors = static_cast<std::size_t>(
@@ -774,6 +783,11 @@ protected:
     writeLogInfo_(fit.str());
 
     // Applied to the ORIGINAL values, for the reason above.
+    //
+    // After this the library's `irt` holds RUN SECONDS, not normalised iRT,
+    // which is what lets the mass probe be re-measured against it below with
+    // an identity map.
+    rt_map_fitted_ = true;
     auto& irt = library.precursors().irt;
     for (std::size_t i = 0; i < irt.size(); ++i)
     {
@@ -1531,6 +1545,16 @@ private:
   ODIA::MassCalibration::Model mass_model_;
   bool mass_model_known_ = false;
 
+  /// Whether the run's retention-time map has been fitted and written into the
+  /// library's `irt`. Until it has, the mass probe has no way to know where a
+  /// precursor should elute.
+  bool rt_map_fitted_ = false;
+
+  /// Whether the cached mass model was measured WITH that map. A model fitted
+  /// before the map is not merely older, it was measured under a different and
+  /// much worse condition, so it has to be discarded rather than kept.
+  bool mass_model_used_rt_map_ = false;
+
   /// The run's fitted 1/K0 model, cached for the same reason the mass model is:
   /// it is a property of the RUN, and a second measurement taken through a
   /// window the first pass narrowed is a feedback loop that can only shrink.
@@ -1792,7 +1816,8 @@ private:
   /// residuals; the width is the scatter left after that correction, bounded by
   /// what the caller was willing to accept.
   void applyMassCalibration_(const ODIA::Library& library, ODIA::SpectrumSource& source,
-                             ODIA::ChromatogramExtractor::Options& options)
+                             ODIA::ChromatogramExtractor::Options& options,
+                             double rt_window_seconds = 0.0)
   {
     const double configured = getDoubleOption_("fragment_ppm");
     const double pinned = getDoubleOption_("fragment_ppm_offset");
@@ -1819,8 +1844,39 @@ private:
       return;
     }
 
+    // Re-measure once the retention-time map exists.
+    //
+    // The first measurement happens before pass 1, when there is no map and the
+    // library is spread evenly over the run -- the probe's own log says it will
+    // "extract from approximately the wrong retention times". A model measured
+    // under that condition is not a stale model to be reused, it is a model
+    // taken in the worst available conditions, and the second pass can do
+    // strictly better. `applyMobilityCalibration_` already defers for exactly
+    // this reason; this arm was left behind.
+    //
+    // OPT-IN, because measuring it better and applying it are different things.
+    // Astral, our own library, at 1% FDR:
+    //
+    //     latched (gate fails both rounds)   4,275
+    //     re-measured (gate then passes)     1,895
+    //
+    // The re-measurement is genuinely better BY ITS OWN METRICS -- probing at
+    // the fitted retention times took the control from 98 residuals to 149 and
+    // it stopped out-peaking the data, so the null the pass-1 gate choked on
+    // was itself an artefact of probing everywhere. And applying the result
+    // still costs 56% of the identifications, because a passing gate also
+    // NARROWS fragment_ppm off the uncalibrated 15. On this run the narrow
+    // window is the more expensive error even when it is correctly centred,
+    // which is the opposite of what the extractor's fallback assumes.
+    //
+    // So: the measurement is fixed and the application is not. Separate the
+    // width from the offset before turning this on by default.
+    const bool remeasure_with_map =
+      getFlag_("mass_calibration_remeasure") &&
+      rt_map_fitted_ && !mass_model_used_rt_map_ && rt_window_seconds > 0.0;
+
     ODIA::MassCalibration::Diagnostics diagnostics;
-    if (!mass_model_known_)
+    if (!mass_model_known_ || remeasure_with_map)
     {
       ODIA::MassCalibration::Options mzc;
       mzc.search_ppm = search;
@@ -1828,6 +1884,14 @@ private:
         std::max(1, getIntOption_("mz_calib_precursors")));
       mzc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("mz_calib_cycles")));
       mzc.use_ion_mobility = !getFlag_("no_ion_mobility");
+      if (remeasure_with_map)
+      {
+        // The map has already been written INTO the library's irt, so those
+        // values are run seconds and the map the probe needs is the identity.
+        mzc.irt_slope = 1.0;
+        mzc.irt_intercept = 0.0;
+        mzc.rt_window_seconds = rt_window_seconds;
+      }
       try
       {
         mass_model_ = ODIA::MassCalibration::calibrate(library, source, mzc, &diagnostics);
@@ -1839,6 +1903,13 @@ private:
         mass_model_ = ODIA::MassCalibration::Model{};
       }
       mass_model_known_ = true;
+      mass_model_used_rt_map_ = remeasure_with_map;
+      if (remeasure_with_map)
+      {
+        writeLogInfo_("fragment mass calibration: RE-MEASURED against the fitted "
+                      "retention-time map (+/- " + std::to_string(rt_window_seconds) +
+                      " s); the pass-1 model was taken before any map existed");
+      }
     }
     writeLogInfo_(ODIA::MassCalibration::report(mass_model_, &diagnostics));
 

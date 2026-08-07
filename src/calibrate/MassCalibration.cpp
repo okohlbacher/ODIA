@@ -357,6 +357,11 @@ namespace ODIA
     }
 
     // ---- the gate ---------------------------------------------------------
+    // Appended to the reason when the control was too sparse to test against,
+    // so a run that passed on the absolute test alone says so rather than
+    // implying the null was consulted and agreed.
+    std::string thin_control;
+
     // A flat residual distribution is not a calibration waiting to be found; it
     // is the absence of one, and applying a mode fitted to it is strictly worse
     // than doing nothing.
@@ -379,7 +384,24 @@ namespace ODIA
     // The control cells pass the same mobility, co-occurrence and apex tests and
     // differ only in that they cannot hold the real ions. If they are as peaked
     // as the data, the peak is coming from the procedure, not the instrument.
-    if (!decoy.empty() && m.decoy_peakedness >= m.peakedness)
+    //
+    // ...but only when the control is estimable at all. peakednessRatio is a
+    // ratio of band COUNTS, so its error is dominated by the edge count, and a
+    // sparse control produces a large number with an error bar larger than
+    // itself. Astral: 98 control residuals against 4,033 target gave 12.00 with
+    // an edge count of one to three -- +/-7 to +/-12 -- and that number alone
+    // failed the run. A control that thin has no opinion and must not be
+    // allowed to overrule a well-estimated target statistic.
+    if (!decoy.empty() && decoy.size() < opt.min_control_residuals)
+    {
+      char buf[256];
+      std::snprintf(buf, sizeof buf,
+                    "; the control was too thin to test against (%zu residuals, below %zu), "
+                    "so only the absolute peakedness applied",
+                    decoy.size(), opt.min_control_residuals);
+      thin_control = buf;
+    }
+    else if (!decoy.empty() && m.decoy_peakedness >= m.peakedness)
     {
       char buf[256];
       std::snprintf(buf, sizeof buf,
@@ -616,6 +638,7 @@ namespace ODIA
       }
     }
     m.reason = buf;
+    m.reason += thin_control;
 
     // ---- retention time, as a diagnostic ----------------------------------
     // Reported and never applied. Two reasons, and the first is the decisive
@@ -844,6 +867,21 @@ namespace ODIA
     // why neither a prefix nor a fixed stride would do here.
     const auto chosen = RunProbe::stratifiedCycles(cycles.size(), opt.cycles, opt.sample_seed);
 
+    // rt = irt_slope * iRT + irt_intercept, per SAMPLED precursor. NaN where
+    // the library has no iRT, which leaves that precursor ungated rather than
+    // excluded -- an absent prediction is not evidence against a cell.
+    const bool rt_restricted = opt.rt_window_seconds > 0.0 && opt.irt_slope != 0.0;
+    std::vector<double> predicted_rt;
+    if (rt_restricted)
+    {
+      predicted_rt.resize(sampled.size(), std::numeric_limits<double>::quiet_NaN());
+      for (std::size_t i = 0; i < sampled.size(); ++i)
+      {
+        const double irt = p.irt[sampled[i]];
+        if (std::isfinite(irt)) { predicted_rt[i] = opt.irt_slope * irt + opt.irt_intercept; }
+      }
+    }
+
     std::size_t decoded = 0, probed = 0;
     for (std::size_t c = 0; c < chosen.size(); ++c)
     {
@@ -923,6 +961,25 @@ namespace ODIA
           }
           ++probed;
           if (matched < opt.min_fragments_matched) { continue; }
+          // Only where this precursor should actually elute, when a map exists.
+          //
+          // Without it, "best cell" is the brightest cluster over the WHOLE
+          // gradient, so a precursor that is ABSENT still gets one draw from
+          // the interference per block sampled and contributes a residual --
+          // uniform, by construction. On a mostly-absent library that is most
+          // of the sample, and it is why the gate sees flat residuals and
+          // reports "a mostly-noise sample": the noise is partly the probe's
+          // own doing. The first pass has no map and keeps the old behaviour.
+          if (rt_restricted)
+          {
+            const double want = predicted_rt[sampled[cid / variants]];
+            if (std::isfinite(want) &&
+                std::abs(static_cast<double>(info[si].retention_time) - want) >
+                  opt.rt_window_seconds)
+            {
+              continue;
+            }
+          }
           Cell& cl = cell[cid];
           if (total <= cl.total) { continue; }
           cl.total = total;
