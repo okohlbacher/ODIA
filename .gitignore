@@ -29,3 +29,6 @@ __pycache__/
 *.bak
 *.orig
 *~
+
+# Agent worktrees and session scratch. Build artefacts, never source.
+.claude/
