@@ -176,6 +176,69 @@ int main()
                     "scorer that reports nothing has a trivially perfect FDP and "
                     "must not be allowed to pass by silence");
 
+  // ---- the regime that actually matters -----------------------------------
+  //
+  // Everything above plants 3,000 true against 3,000 entrapment: HALF of all
+  // targets are genuinely present. A proteome-scale library is ~1.5% -- DIA-NN
+  // finds 738 of 50,000 on S08 and 37,596 of 2,127,559 on the full library. So
+  // the cases above certify q-values at a prior roughly thirty times too
+  // favourable, and the one positive result the mobility work is documented by
+  // ("+0.90 points at a matched 1.00% entrapment false rate") was measured
+  // through that harness. It should not be quoted until re-taken here.
+  //
+  // At a 1.5% prior, reporting anything at 1% FDR needs a likelihood ratio near
+  // 6,500:1. This case makes that difficulty visible in seconds rather than in
+  // a 36-minute run, and catches the day the scorer starts reporting at this
+  // rate WITHOUT the FDP following it.
+  {
+    std::printf("\n--- the production regime: 1.5%% of targets are real ---\n");
+    const std::size_t n_target = 10000;
+    const std::size_t n_true = 150;                  // 1.5% of targets
+    const std::size_t n_entrap = n_target - n_true;  // 9,850 real but absent
+    const double ratio = static_cast<double>(n_entrap) / static_cast<double>(n_true);
+
+    for (const double separation : {3.0, 2.0})
+    {
+      const auto p = plant(n_true, n_entrap, n_target, separation, 0xE47A9u);
+
+      ODIA::Scoring::LDAParams params;
+      params.classifier = ODIA::Scoring::LDAParams::Classifier::GBT;
+      const auto scored =
+        ODIA::Scoring::scoreSemiSupervisedLDA(p.features, p.labels, p.group, params);
+
+      std::size_t reported = 0, true_hits = 0;
+      for (std::size_t i = 0; i < p.labels.size(); ++i)
+      {
+        if (p.labels[i] != 1 || scored.qvalue[i] > 0.01) { continue; }
+        ++reported;
+        if (!p.is_entrapment[i]) { ++true_hits; }
+      }
+
+      if (reported == 0)
+      {
+        // The CURRENT state, recorded rather than asserted. Failing here would
+        // paint the suite red for a known open problem; asserting nothing would
+        // hide the day it changes. So it prints loudly, and the FDP check below
+        // arms itself the moment anything IS reported.
+        std::printf("  separation %.1f: NOTHING at q<=0.01 (%d iterations trained)"
+                    " -- the open problem, not a regression\n",
+                    separation, scored.n_iterations_trained);
+        continue;
+      }
+
+      const double observed = fdp(p, scored, 0.01, ratio);
+      std::printf("  separation %.1f: %zu reported, %zu genuinely true, FDP %.4f"
+                  " (claimed 0.01)\n", separation, reported, true_hits, observed);
+
+      // The moment the scorer reports at a realistic prior, its FDP must hold.
+      // A scorer that starts reporting here with a broken rate is worse than one
+      // reporting nothing, because the number looks like progress.
+      check(observed <= 0.05,
+            "at a 1.5% prior the reported FDP is within 5x of the claim at "
+            "separation " + std::to_string(separation));
+    }
+  }
+
   if (failures == 0) { std::printf("all entrapment cases passed\n"); }
   return failures == 0 ? 0 : 1;
 }
