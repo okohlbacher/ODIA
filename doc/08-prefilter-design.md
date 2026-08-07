@@ -106,3 +106,60 @@ One number worth remembering while reading any of this: of 3,980 target
 precursors with a peak group in the current S08 slice, only **84 (2.11%)** are
 in DIA-NN's confident set. That is the ceiling. An improvement from 0 to 40 is
 half of everything available, not a small number.
+
+---
+
+## MEASURED ON OUR DATA, 2026-08-08: the premise does not survive diaPASEF
+
+`test/tools/odia_prefilter_depth.cpp` computes exactly the `depth` above -- the
+maximum, over the spectra of a precursor's isolation window, of how many of its
+top-6 library fragments fall within 15 ppm in ONE spectrum. Run over all 32,210
+MS2 spectra of S08 against `v6_50k` (50,000 precursors, 738 of them in DIA-NN's
+confident set, a 14.8-per-1000 base rate):
+
+    depth   targets    true   true/1000   enrichment
+      6      50,000     670        13.4        0.9x
+
+**Every single precursor reaches depth 6.** The feature is saturated and carries
+no information at all -- 0.9x enrichment is slightly WORSE than picking at
+random.
+
+**Why: on diaPASEF a "spectrum" is not a moment.** S08's frames are
+mobility-merged -- `SpectrumSource.h` records frame 1 as 32,570 peaks with 739
+m/z descents, i.e. ~600-810 TIMS scans concatenated into one array. Finding six
+specific m/z values within 15 ppm somewhere in 32,570 peaks spanning the full
+range is near-certain by chance. The unconditioned depth question -- "does there
+exist any single spectrum where the top fragments appear together?" -- answers
+YES for everything, because the container it searches is ~700 moments, not one.
+
+The 1,800x separation in the section above was measured on the reference
+engine's data, which is not ion-mobility-merged. **It does not transfer to
+diaPASEF unchanged**, and this was the cheapest possible way to find that out:
+one pass over the file, no classifier, no subsystem.
+
+### What the feature has to become
+
+Depth must be computed within a MOBILITY SLICE, not within a frame.
+`SpectrumPeaks::ion_mobility` carries the per-peak 1/K0, and the precursor's
+expected 1/K0 is in the library, so the natural unit is "the peaks of this frame
+within +/-0.025 of this precursor's 1/K0" -- the same window the extractor uses.
+That restores "one moment" as the unit and should restore the gradient.
+
+Two consequences for the rest of the design:
+
+* This is no longer free of the mobility calibration. A precursor whose library
+  1/K0 is wrong lands in the wrong slice and its depth collapses -- so the
+  filter inherits the CCS-conversion scale error, and `best_spectrum_rt` is only
+  as good as that.
+* On a non-mobility instrument (Astral) the original formulation should work as
+  designed. **The filter is therefore instrument-conditional**, and it must be
+  re-measured on Astral before either result is generalised -- the same mistake
+  the mass calibration made when S08's "narrow window is worse" rule was carried
+  to Astral and turned out reversed.
+
+### Also learned
+
+`v6_50k.tsv` contains **no decoy rows** (0 of 50,000). ODIA generates decoys
+internally, so the label-symmetry rule -- equal COUNTS retained from each class
+-- cannot be checked from the library file and has to be asserted after decoy
+generation instead.
