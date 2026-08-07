@@ -1051,3 +1051,85 @@ exactly why only RT moved.
 * **The conda `onnxruntime-cpp` cuda build declares only `cuda-version`**, a
   metapackage. cudart/cublas/cufft/cudnn must be installed explicitly or the
   provider fails to load and ONNX Runtime falls back to CPU silently.
+
+## A comprehensive score inventory, and a learned score for SELECTION (2026-08-07)
+
+Two connected pieces of work. We have 15 sub-scores; DIA-NN has **110**, and
+OpenSWATH/pyProphet's published set is ~20. The 15 were chosen conservatively --
+"a sub-score computed from a placeholder is worse than an absent one" -- and that
+was right while extraction was broken. It is now the binding constraint: the true
+peak is available for **97.4%** of precursors and we rank it first for **75.4%**,
+so ~22 points sit in discrimination we are not computing.
+
+### Part 1: the score inventory
+
+Test every candidate below on **both** benchmark files (S08 diaPASEF, Astral),
+against each file's DIA-NN confident set, measuring **best-ranked-right** -- not
+on-RT, which counts TSV rows and is inflated by ~1.5 candidates per precursor
+sharing a broadcast q-value.
+
+**From DIA-NN (`diann.cpp:780` enum, handoff section 6.1). Cheap and applicable:**
+
+| DIA-NN name | what it is | why it may matter here | cost |
+|---|---|---|---|
+| `pTightCorrOne/Two` | Σ fragment correlations at 0.45x and 0.20x tolerance | interference survives a loose tolerance and dies at a tight one; this is the single cheapest orthogonal signal we lack | re-match at 2 extra tolerances |
+| `pAcc+0..5` | per-fragment `(\|obs-exp m/z\| / tol) x correlation` | the mass-error feature we keep deferring, but PER FRAGMENT and correlation-weighted | needs the ppm retention already planned |
+| `pBestCorrDelta` | `pTimeCorr - best_corr_sum` for this precursor | we compute CANDIDATE_MARGIN, which is close; theirs normalises against the run | free |
+| `pTotCorrSum` | `log(pTimeCorr / (total_corr_sum + 1))` | normalises a candidate against how much correlation the whole run offered | free |
+| `pResCorr`, `pResCorrNorm` | correlation of fragments BEYOND the top 6 | we use all 12 equally; splitting top-6 from the rest is a real distinction | free |
+| `pShape+0..4` | elution profile in 5 symmetric bins | peak shape as a vector rather than a width scalar | free |
+| `pSig+0..5` | per-fragment share of integrated signal | we have YSERIES_SCORE and INTENSITY_SCORE; this is finer | free |
+| `pCorr+0..11` | RAW per-fragment correlations, not summed | a summary hides which fragment disagreed | free |
+| `pMinCorr` | correlation against 3-point-minimum traces | a baseline-insensitive variant | cheap |
+| `pShadow`, `pShadowCorr` | correlation with -1.00335 Th shadow traces | an isotope shadow that a real peptide has and interference does not | needs a second extraction offset |
+| `pHeavy` | correlation with +1 isotope traces from the NEIGHBOURING window | same idea across windows | needs cross-window extraction |
+| `pdRT`, `pRT` | `sqrt(\|dRT\|/span)`, and position in gradient | we have RT_DELTA raw; the sqrt and the position are different shapes | free |
+| `pMz`, `pCharge`, `pLength`, `pFrNum`, `pMods`, `pAAs+0..19` | peptide properties and AA counts | 26 features that need no signal at all. DIA-NN marks these `p_none` -- NN-only, never used by its linear classifier. Test them, but expect them to need the NN | free |
+
+**Requires MS1 extraction, which we do not do at all (a whole sub-project):**
+`pMs1TimeCorr`, `pMs1TightOne/Two`, `pMs1Iso*`, `pMs1Ratio` -- MS1 correlation and
+isotope agreement. DIA-NN devotes ~8 features to it. Note `MS1PeakSelection` is on
+by default there, i.e. MS1 participates in DETECTION, not only scoring.
+
+**Not applicable:** the Q1 block (`pQLeft/pQRight/pQPos/pQNFCorr/pQCorr` x3) is
+Scanning SWATH only.
+
+**From OpenSWATH / pyProphet (mProphet lineage), for the ones we lack:**
+- `xx_swath_prelim_score`, `bseries_score` (we have y-series only)
+- `massdev_score` and `massdev_score_weighted`
+- `isotope_correlation_score`, `isotope_overlap_score` (needs MS1)
+- `norm_rt_score` (we have the raw delta)
+- `elution_model_fit_score` -- fit an EMG to the peak and score the residual;
+  genuinely orthogonal to every correlation we compute
+- `sn_ratio` variants beyond our single LOG_SN
+- library dot-product and manhattan variants beyond our two
+
+### Part 2: a learned score for SELECTION, not just for FDR
+
+**This is the structural gap, and it is worth more than any individual score.**
+Today the discriminant runs ONCE, after candidates are chosen: the picker emits
+candidates by correlation, sub-scores are computed, and the classifier separates
+target from decoy. Nothing learned ever feeds back into WHICH candidate wins.
+
+DIA-NN's `cscore = Sum_i w_i * score_i` (`Precursor::seek`, `diann.cpp:8121`) is
+used to SELECT the winning peak group, with the weights re-fitted every iteration
+and features gated by `min_iter_seek`. Selection and classification are the same
+learned function.
+
+We now have `PeakGroupScorer::refit` and a convergence loop, so the machinery
+exists. The missing piece is using the fitted discriminant to re-select the best
+candidate per precursor between rounds, not only to score the one already chosen.
+
+Watch for: this closes a loop that can inflate its own confidence -- the
+classifier would be selecting the rows it is then trained on. DIA-NN's answer is
+the feature schedule plus `check_weights` sign clipping. Ours must be an external
+check (best-ranked-right against DIA-NN) rather than an internal one, because
+every internal number moves together.
+
+### How to test without fooling ourselves
+
+Leave-one-out over the final set, on both files, reporting best-ranked-right.
+Two of our existing 15 are known to be worthless: USABLE_FRAGMENTS was a constant
+12.000 for a week, and IM_DELTA is currently all-NaN because
+`Options::observed_im` was never wired to MobilityCalibration's output. Any new
+score has to beat that bar, and the ablation is what proves it.
