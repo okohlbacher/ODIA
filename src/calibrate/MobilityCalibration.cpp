@@ -510,6 +510,48 @@ namespace ODIA
     // charge are not corrected by structurally different models for no reason.
     // The COEFFICIENTS -- which is what actually gets applied -- are still fitted
     // per fold, from anchors that exclude the precursor being corrected.
+    // ---- the POOLED slope, fitted across every charge at once
+    //
+    // Each charge is centred on its OWN median delta before pooling, so charges
+    // with different constant offsets cannot tilt the shared slope: what is
+    // pooled is the trend, not the offset. See min_anchors_pooled_slope for why
+    // the slope is shared and the constant is not.
+    double pooled_slope = 0.0, pooled_pivot = 1.0;
+    {
+      std::vector<double> ims, centred;
+      for (std::size_t c = 0; c <= MAX_CHARGE; ++c)
+      {
+        const auto& all = by_charge[c];
+        if (all.size() < 20) { continue; }
+        std::vector<double> ds;
+        ds.reserve(all.size());
+        for (const auto& x : all) { ds.push_back(x.delta); }
+        const double centre = medianOf(ds);
+        for (const auto& x : all)
+        {
+          if (!std::isfinite(x.im)) { continue; }
+          ims.push_back(x.im);
+          centred.push_back(x.delta - centre);
+        }
+      }
+      if (ims.size() >= 40)
+      {
+        pooled_pivot = medianOf(ims);
+        double sxx = 0.0, sxy = 0.0;
+        for (std::size_t i = 0; i < ims.size(); ++i)
+        {
+          const double dx = ims[i] - pooled_pivot;
+          sxx += dx * dx;
+          sxy += dx * centred[i];
+        }
+        if (sxx > 0.0)
+        {
+          pooled_slope = std::clamp((sxy / sxx) / MILLI, -opt.max_im_slope, opt.max_im_slope);
+        }
+      }
+    }
+
+    const double clamp_milli_outer = opt.max_correction_im * MILLI;
     bool any_supported = false, any_shaped = false;
     for (std::size_t c = 0; c <= MAX_CHARGE; ++c)
     {
@@ -527,11 +569,77 @@ namespace ODIA
 
       if (all.size() < opt.min_anchors_per_charge)
       {
-        char buf[220];
+        // Not enough for the full model. If there are still enough for a
+        // reliable median, take the reduced one: this charge's OWN constant
+        // plus the SHARED slope, no m/z shape. Otherwise nothing.
+        const bool reduced = opt.min_anchors_pooled_slope > 0 &&
+                             all.size() >= opt.min_anchors_pooled_slope &&
+                             pooled_slope != 0.0;
+        char buf[300];
+        if (!reduced)
+        {
+          std::snprintf(buf, sizeof buf,
+                        "%zu anchors is below %zu, so charge %zu is left UNCORRECTED -- another "
+                        "charge's offset is not this charge's answer",
+                        all.size(), opt.min_anchors_per_charge, c);
+          rep.reason = buf;
+          m.by_charge.push_back(rep);
+          continue;
+        }
+
+        // Per fold, from the other folds' anchors, exactly as the full path
+        // does -- a correction fitted on the precursor it corrects is not an
+        // out-of-fold number and the gate downstream would be measuring itself.
+        std::size_t ok = 0;
+        for (std::size_t f = 0; f <= m.folds; ++f)
+        {
+          std::vector<double> ds;
+          ds.reserve(all.size());
+          for (const auto& x : all)
+          {
+            if (f < m.folds && foldIndex(x.precursor, m.folds) == f) { continue; }
+            // Centre on what the shared slope already explains, so the constant
+            // is the residual offset rather than the offset plus half the trend.
+            const double explained =
+              std::isfinite(x.im) ? pooled_slope * MILLI * (x.im - pooled_pivot) : 0.0;
+            ds.push_back(x.delta - explained);
+          }
+          if (ds.size() < 10) { continue; }
+          Curve cv;
+          cv.supported = true;
+          cv.shaped = false;
+          cv.constant = std::clamp(medianOf(ds), -clamp_milli_outer, clamp_milli_outer) / MILLI;
+          cv.im_slope = pooled_slope;
+          cv.im_pivot = pooled_pivot;
+          cv.anchors = ds.size();
+          m.curves[c * (m.folds + 1) + f] = cv;
+          ++ok;
+        }
+        if (ok != m.folds + 1)
+        {
+          for (std::size_t f = 0; f <= m.folds; ++f) { m.curves[c * (m.folds + 1) + f] = Curve{}; }
+          std::snprintf(buf, sizeof buf,
+                        "%zu anchors is below %zu and the reduced model could not be fitted for "
+                        "every fold, so charge %zu is left UNCORRECTED",
+                        all.size(), opt.min_anchors_per_charge, c);
+          rep.reason = buf;
+          m.by_charge.push_back(rep);
+          continue;
+        }
+
+        const Curve& red = m.curves[c * (m.folds + 1) + m.folds];
+        rep.supported = true;
+        rep.shaped = false;
+        rep.constant = red.constant;
+        rep.low = red.at(rep.mz_low);
+        rep.high = red.at(rep.mz_high);
+        any_supported = true;
         std::snprintf(buf, sizeof buf,
-                      "%zu anchors is below %zu, so charge %zu is left UNCORRECTED -- another "
-                      "charge's offset is not this charge's answer",
-                      all.size(), opt.min_anchors_per_charge, c);
+                      "%zu anchors is below %zu, so the REDUCED model is used: this charge's own "
+                      "constant %+.4f plus the slope pooled over all charges, %+.4f per 1/K0 "
+                      "about %.3f, and no m/z shape",
+                      all.size(), opt.min_anchors_per_charge, red.constant, pooled_slope,
+                      pooled_pivot);
         rep.reason = buf;
         m.by_charge.push_back(rep);
         continue;

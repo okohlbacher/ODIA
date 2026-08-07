@@ -222,6 +222,18 @@ protected:
                           "the residual from +0.017 at 1/K0 0.7 to -0.030 at 1.3. Set 0 to "
                           "disable the term and fit a constant offset only.",
                           false, true);
+    registerIntOption_("im_calib_pooled_slope_min", "<n>", 0,
+                       "Anchors below which a charge gets the REDUCED 1/K0 model -- its own "
+                       "constant plus the slope pooled over all charges, no m/z shape -- rather "
+                       "than no correction at all. The slope is a scale error in the CCS->1/K0 "
+                       "coefficient and so is shared by every charge; a constant offset is not, "
+                       "and is still fitted per charge. Measured need: charge 3 brings 93 anchors "
+                       "against a 120 minimum on S08 and is the charge with the WORSE residual. "
+                       "DEFAULTED OFF: it corrects charge 3 and improves the out-of-fold 1/K0 "
+                       "error 14.1%% -> 18.8%%, and still COSTS 20 identifications (1232 -> 1212) "
+                       "-- the pooled slope is dominated by charge 2's 378 anchors against charge "
+                       "3's 93, so it undercorrects. Set 40 to enable.",
+                       false, true);
     registerIntOption_("im_calib_cycles", "<n>", 200,
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
@@ -1723,6 +1735,8 @@ private:
         std::max(0, getIntOption_("im_calib_precursors")));
       imc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("im_calib_cycles")));
       imc.max_im_slope = std::max(0.0, getDoubleOption_("max_im_slope"));
+      imc.min_anchors_pooled_slope = static_cast<std::size_t>(
+        std::max(0, getIntOption_("im_calib_pooled_slope_min")));
       // Probe through the mass window that is about to be extracted with, so
       // the two calibrations cannot disagree about what a fragment match is.
       imc.fragment_ppm = options.fragment_ppm;

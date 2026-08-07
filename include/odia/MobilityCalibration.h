@@ -489,6 +489,54 @@ namespace ODIA
       /// reason to share it.
       std::size_t min_anchors_per_charge = 120;
 
+      /// Anchors below which a charge gets a CONSTANT plus the POOLED slope,
+      /// rather than nothing at all.
+      ///
+      /// Measured on S08/lib_targets: charge 3 brings 93 anchors against the
+      /// 120 above, so it is left entirely uncorrected -- and charge 3's
+      /// residual is the WORSE of the two (constant +0.0335, slope -0.113,
+      /// against +0.0019 and -0.096 for charge 2). The charge that most needs
+      /// the correction is the one that cannot reach the count for it.
+      ///
+      /// Pooling the SLOPE is physically justified in a way pooling the offset
+      /// is not. The slope is a relative scale error in the CCS->1/K0
+      /// conversion coefficient, and that coefficient is a property of the
+      /// conversion, shared by every charge. A constant offset is not: it
+      /// absorbs charge-dependent instrument calibration, which is exactly the
+      /// thing "another charge's offset is not this charge's answer" refuses.
+      /// So this borrows only the shared quantity and still fits the
+      /// charge-specific one from the charge's own anchors.
+      ///
+      /// The m/z shape is NOT borrowed either -- it needs bins, and a charge
+      /// that cannot reach 120 anchors cannot fill 8 of them.
+      ///
+      /// DEFAULTED OFF, because the reasoning above is sound and the
+      /// measurement still says no. S08/lib_targets, at 1% FDR:
+      ///
+      ///     off (0)    1232      MSE removed out of fold 14.1%, 1 of 2 charges
+      ///     on  (40)   1212      MSE removed out of fold 18.8%, 2 of 2 charges
+      ///
+      /// It corrects charge 3, it improves the calibration's own out-of-fold
+      /// error by a third, and it costs 20 identifications. That divergence is
+      /// the point: **the gate metric and the outcome disagree**, for the second
+      /// time in this file -- the m/z shape did the same, passing on out-of-fold
+      /// MSE while the robust scatter got worse. Mean squared 1/K0 error is not
+      /// a proxy for identifications and must not be used as one.
+      ///
+      /// The likely mechanism is dilution. Charge 2 brings 378 anchors against
+      /// charge 3's 93, so the pooled slope is essentially charge 2's, and the
+      /// run fitted it at -0.0423 where charge 3's own residual wants about
+      /// -0.113. Applying a quarter of the needed correction, plus the noise of
+      /// a shared estimate, is worse for charge 3 than leaving it alone -- so
+      /// the shared-coefficient argument, which is physically right, is defeated
+      /// by the estimator being too weak and too unequally weighted to realise
+      /// it. An anchor-count-balanced or errors-in-variables fit might; a plain
+      /// pooled least squares does not.
+      ///
+      /// Kept, off, because it is the right shape for the problem and needs a
+      /// better estimator rather than a different idea. Set 40 to enable.
+      std::size_t min_anchors_pooled_slope = 0;
+
       /// Equal-COUNT m/z bins per charge, and the floor on each one's
       /// occupancy. Equal count rather than equal width because a library's m/z
       /// distribution is very far from uniform.
