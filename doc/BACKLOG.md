@@ -1756,3 +1756,38 @@ in neither `hit` nor `avail` while leaving the "100% of ODIA's are in DIA-NN's"
 figure untouched.
 
 **Split the 9,890 four ways before spending anything on the extractor.**
+
+## The pipeline IS deterministic, including thread-invariant (2026-08-07, late)
+
+D1 called determinism "a precondition, not a deliverable" and it had never been
+demonstrated. It is now, and the answer is good.
+
+Three runs, S08 + `lib_targets`, `-ion_mobility_calibration anchors`, same node,
+differing only in thread count:
+
+    det_a   64 threads   1046 at 1% FDR   md5 e0175e928f30a37f7bd9230011efc4a5
+    det_b   64 threads   1046             md5 e0175e928f30a37f7bd9230011efc4a5
+    det_c   16 threads   1046             md5 e0175e928f30a37f7bd9230011efc4a5
+
+**Bit-identical output files, 70,836 rows each, across a 4x thread change.**
+
+This matters for how every A/B in this document may be read:
+
+* **n=1 per arm is sufficient at fixed configuration.** The adversarial review
+  argued the +67 and -20 deltas sat inside a "~10% swing between refits" and
+  were therefore unreadable. For fixed configuration that is refuted: the swing
+  is exactly zero. The `635/1820/1211/0` figures elsewhere came from four
+  DIFFERENT subsets of a library, i.e. different data, not repeats.
+* **The `stable_sort` on `(precursor, apex_rt, apex_intensity)` is doing its
+  job.** The concern that a thread-count change reorders rows, which reassigns
+  folds, which changes the fit, is real in principle and does not occur here.
+* **A difference between two runs is therefore always a real difference** --
+  which also means every config difference must be controlled explicitly. The
+  1046 here against 1232 recorded earlier for "the same" config is NOT
+  nondeterminism: `run.sh` adds `-stop_after score -max_candidates 25` and the
+  binary now clamps the composite mobility correction. Two changed inputs, two
+  different answers, both reproducible.
+
+**Still not covered:** permutation invariance (reordering the library), and
+determinism of the library-generation and ONNX paths. This measures the
+extract-score pipeline only.
