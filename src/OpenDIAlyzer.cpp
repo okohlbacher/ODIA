@@ -1865,6 +1865,12 @@ private:
     //     latched (gate fails both rounds)   4,275
     //     re-measured (gate then passes)     1,895
     //
+    // VOID, PENDING RE-MEASUREMENT: the figures below were taken with an
+    // out-of-bounds read in the probe's RT gate (predicted_rt indexed by a
+    // library index instead of a slot), so the "RT gating" they describe was a
+    // pseudo-random cell filter over uninitialised memory. Kept here only so
+    // the claim is not silently dropped. Re-run before quoting.
+    //
     // The re-measurement is genuinely better BY ITS OWN METRICS -- probing at
     // the fitted retention times took the control from 98 residuals to 149 and
     // it stopped out-peaking the data, so the null the pass-1 gate choked on

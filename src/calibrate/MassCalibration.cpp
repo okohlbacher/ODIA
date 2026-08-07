@@ -972,7 +972,17 @@ namespace ODIA
           // own doing. The first pass has no map and keeps the old behaviour.
           if (rt_restricted)
           {
-            const double want = predicted_rt[sampled[cid / variants]];
+            // predicted_rt is indexed by SLOT, not by library index.
+            //
+            // cell_id(slot, variant) = slot * variants + variant, so
+            // cid / variants IS the slot already. Applying sampled[] to it maps
+            // slot -> library index a second time and indexes a
+            // sampled.size()-element vector with a value up to the library
+            // size: a heap over-read, and one that silently returned whatever
+            // followed the vector. The line below it, p.im[sampled[...]], DOES
+            // need the map because p.im is library-indexed -- copying its shape
+            // is what introduced this.
+            const double want = predicted_rt[cid / variants];
             if (std::isfinite(want) &&
                 std::abs(static_cast<double>(info[si].retention_time) - want) >
                   opt.rt_window_seconds)

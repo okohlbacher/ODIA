@@ -299,6 +299,11 @@ namespace ODIA
       /// The run's own iRT map, so the probe looks only where a precursor
       /// should elute: rt = irt_slope * iRT + irt_intercept, +/- rt_window.
       ///
+      /// NOTE: the first measurements taken through this path (the Astral
+      /// "control 98 -> 149 residuals" and "4,275 -> 1,895" figures) were
+      /// produced with an out-of-bounds index in the gate and are VOID. See the
+      /// fix commit; they must be re-taken.
+      ///
       /// Zero means no map, which is the FIRST pass -- there is none yet, and
       /// the brightest-cell apex stand-in is all that is available. From the
       /// second pass there is one, and using it matters: without it the probe
