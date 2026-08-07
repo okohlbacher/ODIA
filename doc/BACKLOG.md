@@ -1244,3 +1244,66 @@ different vendor) is on disk and unused.
 discriminant that also SELECTS candidates (Part 2), the model chooses the rows it
 is trained on and every internal metric agrees with itself. Hold out precursors,
 not rows, and judge on the external metric only.
+
+## Fine-tuning belongs inside the run's loop, not in the library on disk (2026-08-07)
+
+**Measured regression.** Library v4 scored **37,583** confident precursors in
+DIA-NN; v5 scored **35,556**. v4 BEAT DIA-NN's own library (37,247). The
+generation recipes are byte-identical except one path:
+
+    v4:  -rt_model .../rtfinetune/onnx/peptdeep_rt_dynamic.onnx
+    v5:  -rt_model .../rtfinetune/integrated/peptdeep_rt_dynamic.onnx
+
+The `integrated/` model's own `rt_provenance.json`:
+
+    "tuned_from": "search_diann/report.parquet",
+    "peptides": 500, "epochs": 40,
+    "warning": "This model is specific to the run it was tuned on and must not
+                be reused across runs or gradients."
+
+500 peptides at 40 epochs, and the file says not to reuse it. The script passed
+it anyway, and it cost 2,027 precursors -- 5.4%.
+
+A guard now warns when `-rt_model` has a provenance file carrying a warning.
+That is a plaster; the design below is the fix.
+
+### The intended architecture
+
+Library generation moves INSIDE the calibration loop, and the fine-tuned model
+is scoped to one run and never written anywhere another run can find it:
+
+1. generate the first library with the **stock** model;
+2. search, calibrate RT (and mass, and mobility);
+3. fine-tune the RT model **on this run's own confident identifications**;
+4. re-predict the library with the tuned model;
+5. re-calibrate;
+6. iterate 3-5 until identifications stop improving;
+7. discard the tuned model with the run.
+
+The distinction that matters: a model tuned on run A and used to build a library
+for run B imports A's gradient into B's predictions. Tuned on run A and used
+within run A it is legitimate refinement -- the model has only seen data from
+the run it is predicting for.
+
+### What this needs
+
+- Library generation callable mid-run, not only as `-stop_after library`. Today
+  it is a separate invocation writing a TSV.
+- Fine-tuning in-process, or as a subprocess the loop drives. Today it is the
+  standalone `rtfinetune/` pipeline (`prep.py` + training, ~413 s for 500
+  peptides / 40 epochs on one run).
+- 500 peptides / 40 epochs is almost certainly overfitting. Inside a loop with
+  the run's own identifications there are thousands available -- 1,018 anchors
+  at q<=0.05 on a 2,665-precursor subset, so a full library gives far more.
+  Tune the count and epochs against held-out identifications from the SAME run,
+  which is the check the standalone pipeline never had.
+- A convergence criterion that is not the identification count, which swings
+  ~10% between refits on fixed input.
+
+### The cross-run trap this closes
+
+`odia_v5.tsv` carries iRT from a model tuned on S08's DIA-NN results. Every
+recovery number measured on S08 with that library has partly seen the answers.
+It is not the reason the library underperforms -- it underperforms because the
+tuning was bad, not because it leaked -- but both are reasons the tuned model
+must not be a persisted artefact.

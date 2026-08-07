@@ -103,7 +103,13 @@ protected:
 
     registerInputFile_("rt_model", "<file>", "",
                        "PeptDeep retention-time model. Defaults to the one OpenMS "
-                       "downloads when built with WITH_ONNX=ON.", false);
+                       "downloads when built with WITH_ONNX=ON, which is the right "
+                       "choice for building a library: a model fine-tuned on one run "
+                       "must not predict for another. Doing so cost 2,027 confident "
+                       "precursors the last time (library v5 at 35,556 against v4's "
+                       "37,583, v4 having used the stock model). Per-run fine-tuning "
+                       "belongs inside that run's calibration loop, built from it and "
+                       "discarded with it.", false);
 
     registerIntOption_("missed_cleavages", "<n>", 1, "Maximum missed cleavages.", false, true);
     registerIntOption_("min_peptide_length", "<n>", 7, "Minimum peptide length.", false, true);
@@ -1208,6 +1214,42 @@ protected:
         // downloads under its own share directory, so derive it from the
         // environment or let the user say.
         std::string rt_model = getStringOption_("rt_model");
+        // A model fine-tuned on one run must not build a library for another.
+        //
+        // This is not hypothetical. Library v5 was generated with a model from
+        // rtfinetune/integrated/, tuned on 500 peptides for 40 epochs against
+        // one run's DIA-NN results, and it cost 2,027 confident precursors
+        // against v4 (35,556 vs 37,583) -- v4's model being the stock one. The
+        // tuned model shipped with its own warning in rt_provenance.json saying
+        // exactly this, and the generation script passed it anyway.
+        //
+        // So: if a provenance file sits beside the model and carries a warning,
+        // say it loudly. Fine-tuning belongs INSIDE a run's calibration loop,
+        // where the model is built from that run and discarded with it -- never
+        // persisted and reused, which is what turns a per-run refinement into a
+        // cross-run bias.
+        if (!rt_model.empty())
+        {
+          const auto prov = std::filesystem::path(rt_model).parent_path() /
+                            "rt_provenance.json";
+          if (std::filesystem::exists(prov))
+          {
+            std::ifstream in(prov);
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            if (text.find("\"warning\"") != std::string::npos)
+            {
+              writeLogWarn_(
+                "-rt_model " + rt_model + " has an rt_provenance.json carrying a "
+                "warning, which means it was fine-tuned on a specific run. Using it "
+                "to build a library for a DIFFERENT run cost 2,027 confident "
+                "precursors when it was last done (v5 35,556 against v4's 37,583). "
+                "Fine-tuning belongs inside a run's own calibration loop. Read " +
+                prov.string() + " before trusting this library.");
+            }
+          }
+        }
+
         if (rt_model.empty())
         {
           if (const char* prefix = std::getenv("ODIA_OPENMS"))
