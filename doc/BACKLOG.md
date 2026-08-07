@@ -1533,3 +1533,86 @@ once). DIA-NN's 110 include a substantial MS1 block.
 
 **Do not read a gain on `lib_targets` as progress on the real problem.** That
 is the ranking-vs-search confusion this document keeps having to restate.
+
+## The mass calibration gate is measured once, at the worst moment (2026-08-07)
+
+Adversarial review prompted by BOTH benchmark runs failing the gate.
+
+**1. It cannot change between rounds, by construction.** `mass_model_known_`
+(`src/OpenDIAlyzer.cpp:1823,1841`) latches after the first call. Pass 2 skips
+`calibrate()` and re-prints the cached `Model`. The peakedness numbers come off
+`Model`, so they are byte-identical across rounds -- Astral reported
+"6.90 vs 12.00" twice. The tell is the diagnostics parenthetical: round 1 prints
+"(from 3000 target and 5769 control cells over 24000 spectra, 79.73 s)" and
+round 2 prints nothing, because pass 2 hands `report()` a fresh empty
+`Diagnostics`. So the answer to "how do the residuals change between rounds" is
+**they do not, and cannot**.
+
+**2. The one measurement happens before the retention-time map exists.**
+`applyMassCalibration_` is called at `OpenDIAlyzer.cpp:432`, the map is fitted
+at `:772`. The run's own log says it: "the library is being spread evenly over
+the run, which will extract from approximately the wrong retention times." The
+mass probe therefore looks in the wrong place and mostly matches noise -- which
+is precisely what the S08 gate then reports as "residuals are FLAT ... that is
+what a mostly-noise sample looks like".
+
+`MassCalibration.h:95-97` documents the assumption: "`rt_trafo`. The reference
+locates its anchors in time through a fitted retention-time map. **There is none
+before the first pass**, which is what the apex selection above replaces." That
+was true when written and is now stale -- there IS a second pass, and
+`applyMobilityCalibration_` already defers to it ("DEFERRED -- it is measured at
+the peak groups this run scores"). The mobility arm was upgraded; the mass arm
+was not. `MassCalibration::Options` still has no RT-map field.
+
+**3. On Astral the gate fails on a statistic that carries no information.**
+`peakednessRatio` is count(central 0.2*window) / count(edge band), so its
+relative error is ~sqrt(1/c + 1/e). Astral produced **4,033 target residuals and
+98 control**:
+
+    target   6.90  over 4033   -> ~ +/- 0.74
+    control 12.00  over   98   -> ~ +/- 7 to 12  (e is 1-3 counts)
+
+The gate rule `decoy_peakedness >= peakedness` then compares 6.90 against a
+number whose error bar is larger than itself. That is a coin flip, not a test.
+5,769 control cells yielded 98 residuals because a 7 Th-shifted query rarely
+matches anything -- the null is undersampled 41x by construction.
+
+S08 is NOT this failure: 7,452 target and 2,645 control, both well sampled, and
+2.22 against 3.00 is a real flatness. On a 1.5% true-positive library that is
+the correct verdict -- but it is confounded with (2), so we do not yet know how
+much of the flatness is the library and how much is the wrong-RT probe.
+
+**Fix, in order:**
+1. Un-latch: re-measure in pass 2 once the map exists (mirror the mobility arm).
+2. Give `MassCalibration::Options` the iRT map and gate the probe's cells on it,
+   as `im_calib_rt_window` already does.
+3. Require a minimum control count before the `decoy_peakedness` rule may fire
+   at all; below it, fall back to the absolute `min_peakedness` test only.
+4. Then re-measure on both files. Expect target peakedness to RISE on both.
+
+## Both benchmarks, current HEAD (2026-08-07)
+
+    file    library           TP rate  type      at 1% FDR  wall    peak RSS
+    S08     v6_50k (ours)      1.5%    SEARCH        0      42:31   9,331 MB
+    Astral  astral_lib_own    ~100%    RANKING   4,275      35:17   3,148 MB
+
+**These are not comparable and must never be quoted side by side.**
+`astral_lib_own` holds 10,891 precursors against a DIA-NN confident set of
+11,112 -- 98% of the truth is in the library, so it is ~100% true positives and
+measures RANKING. `v6_50k` is 738 of 50,000, i.e. 1.5%, and measures SEARCH.
+
+**Astral: the bottleneck is EXTRACTION, not scoring.**
+  * 10,891 of the truth are in our library (98.0%) -- library coverage is fine.
+  * ODIA produced a candidate for **5,704 (52.4%)**. **5,187 precursors the
+    library carries got no candidate at all** -- genuine extraction loss.
+  * Of the 5,704 reachable, 4,275 (75%) are identified at 1% FDR, and **100% of
+    ODIA's 4,275 are in DIA-NN's set** -- zero false agreement. The scorer is
+    not the problem here; the extractor is.
+
+**S08: the bottleneck is discrimination.**
+  * Extraction reached 576 of 738 (78.0%) -- fine.
+  * Their best q: median 0.783, **0 at <=0.01 but 74 at <=0.05**. Not a total
+    collapse; the discriminant does rank some correctly and cannot certify them,
+    exactly as the feature-count finding predicts.
+  * Pass 1 identified nothing, so no RT map was fitted at all and pass 2 ran
+    without one -- the same wrong-RT condition as the mass gate above.
