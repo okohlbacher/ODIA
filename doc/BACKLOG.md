@@ -1987,3 +1987,42 @@ coincidences would have to arrive in the right ORDER.
    modest gain, not a fix for 0-versus-738.
 4. Re-run this probe on Astral with a SEARCH library before generalising -- the
    instrument-conditionality trap has now caught this project twice.
+
+### Co-elution is not an abundance artefact -- checked before building on it
+
+Both traces are intensity-based, abundant precursors give cleaner traces, and
+DIA-NN preferentially identifies abundant peptides. So the 13.7x could have been
+abundance wearing a shape costume. Stratifying by MS1 monoisotopic intensity
+into quintiles and re-measuring the top-decile-by-correlation enrichment WITHIN
+each:
+
+    quintile        n   base/1000   top decile by corr   enrichment
+       1 (dim)  10,000        5.2                  3.0        0.6x
+       2        10,000       10.7                 14.0        1.3x
+       3        10,000       13.4                 22.0        1.6x
+       4        10,000       18.2                 29.0        1.6x
+       5 (bright) 10,000     19.5                 36.0        1.8x
+
+    mean within-stratum 1.4x, against 1.5x unstratified
+
+**It survives.** Controlling for intensity barely moves it, so the correlation
+is carrying shape information and not brightness. The reverse check also holds:
+intensity within a correlation stratum gives 1.8x against 1.7x unstratified, so
+the two are largely independent.
+
+**Error bar on the headline.** The 13.7x is 14 true of 76 precursors at
+corr >= 0.8. Poisson error on 14 is about +/-3.7, so the enrichment is roughly
+13.7x +/- 3.6x -- comfortably above 1, and imprecise. The bulk effect (top
+decile, 1.4-1.5x) is the number to plan against; the far tail is real but thin.
+
+**A caveat about the benchmark itself, which applies to every feature.** The
+target is DIA-NN's confident set, so any feature that predicts "what DIA-NN
+finds" scores well -- and abundance predicts exactly that, for reasons that have
+nothing to do with whether an identification is correct. `ms1_max` is therefore
+a hazardous feature to add even though it measures 1.7x: it would improve
+agreement with the comparator without necessarily improving truth. Co-elution
+does not have this problem, because a precursor co-eluting with its own
+fragments is evidence about the identification itself.
+
+**Decision: add MS1_COELUTION only.** Not `ms1_max` (abundance proxy, and the
+benchmark rewards that spuriously), not `ms1_iso` (saturated at 99.8%).
