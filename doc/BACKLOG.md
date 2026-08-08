@@ -2167,3 +2167,44 @@ constant is simply the wrong model, and forcing one is worse than leaving the
 window uncentred. **That is the argument for the RT-blocked recalibration**, not
 against it: what these arms refute is the constant, which is the model the
 existing MassCalibration fits.
+
+### ...but on Astral the result INVERTS, and that is the real finding
+
+    file / library            coelution (ours)   openswath (reference)
+    S08 + lib_targets              1306               1368    (+62,  +4.7%)
+    Astral + astral_lib_own        4290               2626   (-1664, -38.8%)
+
+**The picker comparison is instrument-conditional, and a single-file conclusion
+would have been exactly wrong.** Had only S08 been run, the honest reading would
+have been "the reference picker is better, replace ours" -- and that would have
+cost 39% on the other instrument.
+
+The mechanism is consistent with what each picker is: OpenSWATH's sets
+boundaries by signal-to-noise on the summed trace, which suits S08's
+mobility-merged frames where the summed trace is comparatively clean; Astral's
+higher-resolution, sparser spectra give co-elution far more to work with, and an
+amplitude picker there fires on whatever is brightest in the window.
+
+**Keep `-picker coelution` as the default.** OpenSWATH's is retained as a
+selectable arm because it is the independent implementation doc/07 step 2
+requires and because its BOUNDARY rule is measurably better on one of the two
+files -- the fixed 10%-of-apex boundary in our co-elution path is the crudest
+part of it and is the next thing to replace, taking the idea without the
+amplitude detection.
+
+This is the third instrument-conditionality trap in two days: the doc/08
+prefilter's 1,800x came from non-mobility data and did not transfer; the
+"uncentred narrow window is the worse error" rule was measured on S08 and did
+not transfer to Astral. **Two files, always, before any picker or calibration
+conclusion is recorded.**
+
+### MS1 co-elution is worth far less on Astral
+
+    S08 + lib_targets      1046 -> 1306   (+260, +24.9%)
+    Astral + own library   4275 -> 4290   (+15,   +0.4%)
+
+Not yet explained, and worth one measurement rather than a story. The obvious
+candidates: Astral's bottleneck is availability (only 52.4% of covered
+precursors yield any candidate at all), so a scoring feature cannot reach the
+missing 47.6%; and the two runs differ in MS1 duty cycle. The S08 gain is the
+one that has been reproduced.
