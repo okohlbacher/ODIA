@@ -1007,7 +1007,9 @@ namespace ODIA
     const auto scored =
       options.classifier == "percolator"
         ? Scoring::scorePercolator(features, labels, group, params,
-                                   subScoreNames(), &engine_note)
+                                   subScoreNames(), &engine_note,
+                                   options.classifier_model_out,
+                                   options.classifier_model_in)
         : Scoring::scoreSemiSupervisedLDA(features, labels, group, params);
     // Reported through the same channel the picker census uses, so an engine
     // swap is visible in the run log rather than only in the numbers.

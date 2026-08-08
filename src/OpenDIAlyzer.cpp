@@ -407,6 +407,19 @@ protected:
     registerIntOption_("min_anchors", "<n>", 20,
                        "Below this many anchors the fit is not attempted and the run "
                        "says so rather than calibrating from noise.", false, true);
+    registerStringOption_("classifier_model_out", "<file>", "",
+                          "Train the discriminant on THIS run and write it here. Only with "
+                          "-classifier percolator. Use on a run where the semi-supervised loop "
+                          "ignites -- a library that is mostly present.", false, true);
+    registerStringOption_("classifier_model_in", "<file>", "",
+                          "Apply a frozen discriminant from this file instead of training. "
+                          "Only with -classifier percolator. This is static modelling, the "
+                          "documented remedy for a run whose true-positive rate is too low to "
+                          "bootstrap: on v6_50k (1.5% present) every engine certifies nothing "
+                          "at 1% FDR while the same discriminant ranks 232 of DIA-NN's 738 into "
+                          "its top 738. A discriminant over these sub-scores is a property of "
+                          "the instrument and the scoring code, not of which peptides happen to "
+                          "be in one sample.", false, true);
     registerDoubleOption_("apex_evidence", "<fraction>", 0.99,
                           "A scan position is a peak only if the reference fragment's smoothed "
                           "intensity there is at least this fraction of its maximum nearby. "
@@ -692,6 +705,41 @@ protected:
                               const std::string& out_chrom, const std::string& out)
   {
     const int passes = std::max(1, getIntOption_("passes"));
+
+    // An EXTERNAL iRT map must be worth as much as a fitted one.
+    //
+    // -irt_slope/-irt_intercept centred the extraction and stopped there: the
+    // library kept iRT units, `library_rt_is_run_seconds` stayed false, and
+    // RT_DELTA -- gated on exactly that flag -- was NaN for every row and then
+    // zeroed by the constant-column guard. Measured on v6_50k: supplying a map
+    // fitted from DIA-NN's own anchors (p50 residual 9.1 s) still left
+    // var_rt_delta at 0.0% non-zero, so the run discarded the one feature the
+    // map exists to enable.
+    //
+    // Converting the library up front makes the external path identical to the
+    // internal one, which rewrites irt in place and sets the flag after pass 1.
+    {
+      const double sl = getDoubleOption_("irt_slope");
+      const double ic = getDoubleOption_("irt_intercept");
+      if (sl != 0.0)
+      {
+        auto& irt = library.precursors().irt;
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < irt.size(); ++i)
+        {
+          if (!std::isfinite(irt[i])) { continue; }
+          irt[i] = static_cast<float>(sl * irt[i] + ic);
+          ++n;
+        }
+        external_irt_ = true;
+        scoring_rt_is_run_seconds_ = true;
+        writeLogInfo_("applied the supplied iRT map to " + std::to_string(n) +
+                      " precursors: the library now carries RUN SECONDS, so "
+                      "var_rt_delta is available. An external map is now worth "
+                      "what a fitted one is.");
+      }
+    }
+
     // Pass 2 has scored peak groups to measure the 1/K0 axis at, so `auto`
     // waits for them instead of guessing from a blind probe in pass 1.
     mobility_anchors_expected_ = passes > 1;
@@ -705,7 +753,7 @@ protected:
       if (out_chrom.empty())
       {
         ODIA::PeakGroupScorer::Result scored;
-        const auto rc = extractAndScore_(library, run, 0.0, false, scored);
+        const auto rc = extractAndScore_(library, run, 0.0, external_irt_, scored);
         if (rc != EXECUTION_OK) { return rc; }
         return writeScoreResult_(scored, out, library);
       }
@@ -977,6 +1025,8 @@ protected:
     options.openswath_gauss = getFlag_("openswath_gauss");
     options.openswath_peak_width = getDoubleOption_("openswath_peak_width");
     options.min_corr_score = getDoubleOption_("min_corr_score");
+    options.classifier_model_out = getStringOption_("classifier_model_out");
+    options.classifier_model_in = getStringOption_("classifier_model_in");
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
@@ -1004,6 +1054,8 @@ protected:
   /// Set before pass 2, when the library's irt has been rewritten to run
   /// seconds. RT_DELTA is only meaningful then.
   bool scoring_rt_is_run_seconds_ = false;
+  /// Guards the one-shot conversion of an externally supplied iRT map.
+  bool external_irt_ = false;
   std::size_t pass_offset_ = 0;
 
   /// Refit the retention-time map and the discriminant, alternately, until the

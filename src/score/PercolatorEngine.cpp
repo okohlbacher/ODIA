@@ -21,7 +21,9 @@ namespace ODIA
                                  const std::vector<long long>& group,
                                  const LDAParams& params,
                                  const std::vector<std::string>& feature_names,
-                                 std::string* diagnostic)
+                                 std::string* diagnostic,
+                                 const std::string& model_out,
+                                 const std::string& model_in)
     {
       ScoredGroups out;
       const std::size_t n = features.size();
@@ -85,7 +87,25 @@ namespace ODIA
       try
       {
         OpenMS::Percolator perc;
-        const OpenMS::RescoreOutput res = perc.rescore(in);
+        OpenMS::RescoreOutput res;
+        if (!model_in.empty())
+        {
+          // Apply a frozen model. No training, so the run does not need to
+          // contain enough confident positives to bootstrap from -- which is
+          // exactly the condition that fails at a 1.5% true-positive rate.
+          const OpenMS::PercolatorModel m = OpenMS::Percolator::loadModel(model_in);
+          res = perc.score(in, m);
+        }
+        else if (!model_out.empty())
+        {
+          const OpenMS::PercolatorModel m = perc.train(in);
+          OpenMS::Percolator::saveModel(m, model_out);
+          res = perc.score(in, m);
+        }
+        else
+        {
+          res = perc.rescore(in);
+        }
         if (res.scores.size() != n) { return out; }
         for (std::size_t i = 0; i < n; ++i)
         {
@@ -100,7 +120,10 @@ namespace ODIA
           for (std::size_t i = 0; i < n; ++i)
           { if (labels[i] == 1 && out.qvalue[i] <= 0.01) { ++called; } }
           std::ostringstream o;
-          o << "percolator: " << n << " rows over " << key_of.size()
+          if (!model_in.empty()) { o << "percolator [FROZEN MODEL " << model_in << "]: "; }
+          else if (!model_out.empty()) { o << "percolator [TRAINED -> " << model_out << "]: "; }
+          else { o << "percolator: "; }
+          o << n << " rows over " << key_of.size()
             << " cross-validation groups, " << m << " features, pi0 " << perc.getPi0()
             << ", " << called << " target rows at q<=0.01";
           *diagnostic = o.str();
