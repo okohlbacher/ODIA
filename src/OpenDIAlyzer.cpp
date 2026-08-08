@@ -373,7 +373,13 @@ protected:
                         "Write scored peak groups here (TSV).", false);
     setValidFormats_("out", {"tsv"}, false);
     registerStringOption_("classifier", "<name>", "gbt",
-                          "Discriminant for the semi-supervised scorer. 'gbt' and "
+                          "Discriminant for the semi-supervised scorer. 'percolator' is "
+                          "OpenMS 3.6's in-process Percolator -- a cross-validated linear SVM "
+                          "of the same mProphet lineage, and the algorithm mokapot "
+                          "reimplements in Python; there is no mokapot in OpenMS, and "
+                          "in-process Percolator is strictly better for a C++ tool than "
+                          "shelling out to one. It cannot represent feature interactions the "
+                          "way 'gbt' can, which is the point of comparing them. 'gbt' and "
                           "'xgboost' are the same learner -- second-order Newton leaf "
                           "values and XGBoost's split gain -- differing only in "
                           "configuration: 'xgboost' uses pyProphet 3.0.15's settings "
@@ -382,7 +388,7 @@ protected:
                           "sub-scores rather than fifteen. 'lda' is the linear "
                           "fallback and the only one the lower-is-better weight "
                           "constraint applies to.", false, true);
-    setValidStrings_("classifier", {"xgboost", "lda", "gbt", "nn"});
+    setValidStrings_("classifier", {"xgboost", "lda", "gbt", "nn", "percolator"});
     registerIntOption_("passes", "<n>", 2,
                        "1 extracts once with the given calibration. 2 extracts wide, "
                        "scores, fits the retention-time map from the confident "

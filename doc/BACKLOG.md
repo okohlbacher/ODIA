@@ -2269,3 +2269,75 @@ calibrants' own elution time, regresses delta-ppm on m/z (optionally weighted,
 optionally quadratic), and estimates the extraction window from the residuals.
 Its anchoring is the part ODIA's `MassCalibration` lacks, and the window
 estimate is the part nothing in ODIA has.
+
+## Percolator wired in-process; three engines compared (2026-08-08)
+
+**There is no mokapot in OpenMS -- checked the whole install.** What OpenMS 3.6
+ships instead is better for a C++ tool: `Percolator` with a domain-agnostic
+`RescoreInput` (features[n_rows][n_features], is_decoy, cv_group_keys) and a
+`RescoreOutput` of scores/q-values/PEPs. In process, no Python, no file
+interchange. mokapot is a Python reimplementation of the same semi-supervised
+SVM; independent research confirms it is pure Python with a PIN-TSV file
+interface and no C/C++ binding, so shelling out would be the only option there.
+
+S08 + `lib_targets`, one binary, only `-classifier` changed:
+
+    gbt (default, our hand-rolled histogram GBT)   1306
+    percolator (OpenMS, cross-validated SVM)       1278    -28, -2.1%
+    lda (ours)                                     1042   -264
+
+**Percolator lands within 2% of our GBT and beats our LDA by 236.** Both are
+linear, so that gap is implementation and cross-validation, not model class --
+which is a useful independent check on our own LDA. Our GBT still edges
+Percolator, consistent with a linear SVM being unable to represent the
+interactions a tree ensemble can.
+
+Percolator's own diagnostic on that run: 70,017 rows over 4,395
+cross-validation groups, 16 features, pi0 0.335. `cv_group_keys` carries the
+precursor grouping so a precursor's several candidate peak groups cannot be
+split across folds -- they share a chromatogram, so splitting would leak.
+
+### What the literature says about OUR failure, which is not the engine
+
+Independently researched and adversarially verified. The finding that matters:
+**mokapot's substantive difference from pyProphet is a PLUGGABLE LEARNER, not a
+different FDR method** -- and ODIA already hand-rolled that substitution as its
+GBT. Swapping engines was never going to fix the 1.5%-true-positive collapse,
+and the measurement above says so: three engines, all within one regime.
+
+The line that does speak to our regime is Noble/Keich/Kall:
+
+* **Semi-supervised post-processing is documented to lose power and become
+  unstable when confident positives are scarce.** That is our failure named in
+  the literature rather than inferred from our own runs.
+* **"Static modelling" is the stated remedy**: train once on a dataset where the
+  loop does ignite, freeze the model, apply it. **OpenMS's Percolator already
+  supports exactly this** -- `train(input)` returns a `PercolatorModel`,
+  `score(input, model)` applies it, `saveModel`/`loadModel` persist it. So the
+  remedy is reachable today with no new dependency.
+* **RESET** -- a model-agnostic decoy-splitting wrapper addressing
+  cross-validation label leakage -- can WRAP our existing LDA/GBT rather than
+  replace either.
+* Entrapment validation is the right check, and the same group sweeps ratios to
+  0.04-0.16% true peptides, BELOW our 1.5%. Our fixture now plants 1.5%.
+
+**Caveat carried from the research, not softened:** the surviving evidence base
+is DDA/PSM-level. Nothing verified addresses peptide-centric DIA library search
+at 1.5% library presence, so static modelling and RESET are well-motivated
+transfers, not demonstrated results. crema, Triqler, PeptideProphet,
+Oktoberfest/Prosit and transfer-learning rescorers produced no surviving claims
+at all.
+
+### The plug-and-play seam
+
+`PeakGroupScorer.cpp` now branches on `options.classifier` between
+`scoreSemiSupervisedLDA` and `scorePercolator`, which take the SAME
+(features, labels, group) and return the SAME `ScoredGroups`. A common function
+signature is the entire interface; a class hierarchy would add ceremony and make
+A/B harder. NaNs -- legal in our sub-scores, meaning "not measured" -- are
+replaced per column by that column's median before Percolator sees them, since
+a NaN would propagate silently through an SVM dot product.
+
+**Next: static modelling.** Train on `lib_targets` where the loop ignites, save
+the model, apply it to `v6_50k` where it does not. That is the one strategy the
+literature actually endorses for this regime, and it is now a few lines.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <odia/PeakGroupScorer.h>
+#include <odia/scoring/PercolatorEngine.h>
 
 #include <odia/scoring/gbt.h>
 #include <odia/scoring/lda.h>
@@ -960,7 +961,24 @@ namespace ODIA
       params.nn.n_threads = static_cast<int>(options.threads);
     }
 
-    const auto scored = Scoring::scoreSemiSupervisedLDA(features, labels, group, params);
+    // THE SCORING-ENGINE SEAM.
+    //
+    // Every engine takes the same (features, labels, group) and returns the
+    // same ScoredGroups, so swapping one is a branch here and nothing
+    // downstream can tell them apart. A common function signature is the whole
+    // interface; a class hierarchy would add ceremony and make A/B harder, not
+    // easier.
+    std::string engine_note;
+    const auto scored =
+      options.classifier == "percolator"
+        ? Scoring::scorePercolator(features, labels, group, params,
+                                   subScoreNames(), &engine_note)
+        : Scoring::scoreSemiSupervisedLDA(features, labels, group, params);
+    // Reported through the same channel the picker census uses, so an engine
+    // swap is visible in the run log rather than only in the numbers.
+    // Same channel the picker census uses, so an engine swap is visible in the
+    // run log rather than only in the resulting numbers.
+    if (!engine_note.empty()) { std::fprintf(stderr, "%s\n", engine_note.c_str()); }
     result.iterations_trained = scored.n_iterations_trained;
     result.iterations_skipped = scored.n_iterations_skipped;
     // A fit that never trained calibrates its q-values against an

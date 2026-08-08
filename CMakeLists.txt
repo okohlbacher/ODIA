@@ -100,6 +100,7 @@ set(ODIA_LIB_SOURCES
   src/extract/ChromatogramExtractor.cpp
   src/extract/Ms1Traces.cpp
   src/score/OpenSwathPicker.cpp
+  src/score/PercolatorEngine.cpp
   src/calibrate/MassRecalibration.cpp
   src/score/PeakGroupScorer.cpp
   src/calibrate/RtCalibration.cpp
