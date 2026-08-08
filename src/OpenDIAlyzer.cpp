@@ -407,6 +407,15 @@ protected:
     registerIntOption_("min_anchors", "<n>", 20,
                        "Below this many anchors the fit is not attempted and the run "
                        "says so rather than calibrating from noise.", false, true);
+    registerIntOption_("min_fragments_at_apex", "<n>", 3,
+                       "A candidate peak group is dropped unless at least this many of its "
+                       "fragments have signal at the apex. Coupled to -fragment_ppm in a way "
+                       "that is easy to miss: narrowing the mass window leaves fewer "
+                       "transitions carrying any signal, so precursors fall below this gate "
+                       "and yield no candidate at all. Measured on S08, 15 ppm against 6 ppm "
+                       "took precursors-with-no-candidate from 155 to 410 while scan positions "
+                       "evaluated fell 15%. Tune the two together or not at all.",
+                       false, true);
     registerIntOption_("max_candidates", "<n>", 3,
                        "Candidate peak groups kept per precursor. More than one on "
                        "purpose: keeping only the best hides the true peak whenever "
@@ -944,6 +953,8 @@ protected:
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
+    options.min_fragments_at_apex = static_cast<std::size_t>(
+      std::max(1, getIntOption_("min_fragments_at_apex")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     // Built once per run and owned by the tool; null until then, and null
     // forever on a run with no MS1, in which case MS1_COELUTION is NaN for every
