@@ -98,6 +98,7 @@ set(ODIA_LIB_SOURCES
   src/io/MobilityBands.cpp
   src/io/MzPeakSource.cpp
   src/extract/ChromatogramExtractor.cpp
+  src/extract/Ms1Traces.cpp
   src/score/PeakGroupScorer.cpp
   src/calibrate/RtCalibration.cpp
   src/calibrate/MassCalibration.cpp
@@ -155,7 +156,7 @@ foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_rt_calibration odia_mass_calibration odia_mobility_calibration
                odia_extract_axis
                odia_extract_cases odia_mobility_bands odia_tsv_writers
-               odia_prefilter_depth odia_ms1_probe odia_ms1_coelution)
+               odia_prefilter_depth odia_ms1_probe odia_ms1_coelution odia_mz_residuals)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})

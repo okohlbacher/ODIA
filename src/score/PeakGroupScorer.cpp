@@ -423,7 +423,7 @@ namespace ODIA
       "var_usable_fragments", "var_library_rmsd", "var_yseries_score",
       "var_fragment_coverage",
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
-      "var_rt_delta", "var_im_delta"};
+      "var_rt_delta", "var_im_delta", "var_ms1_coelution"};
     return names;
   }
 
@@ -668,6 +668,48 @@ namespace ODIA
                                            static_cast<double>((*options.observed_im)[i]));
       }
       else { g.sub_scores[IM_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
+
+      // MS1_COELUTION: does the PRECURSOR rise and fall with its fragments?
+      //
+      // Over the candidate's own cycles, pair each cycle's summed fragment
+      // intensity with the MS1 monoisotopic intensity at the nearest MS1 bin,
+      // and correlate. The MS1 grid is ~1.8 s on S08 against a ~0.4 s MS2
+      // cycle, so several cycles map to one bin -- that is a real resolution
+      // limit of the survey scan, not an approximation to be apologised for,
+      // and a 20-30 s peak still spans ~15 bins.
+      //
+      // NaN, not zero, when there is no MS1 or no signal: zero is a legitimate
+      // correlation (a precursor whose trace is flat where the fragments peak
+      // is EVIDENCE AGAINST), and collapsing the two would feed the classifier
+      // a placeholder dressed as a measurement.
+      {
+        double r = std::numeric_limits<double>::quiet_NaN();
+        if (options.ms1 != nullptr && !options.ms1->empty() &&
+            i < options.ms1->precursors() && hi > lo)
+        {
+          // `total` is already the per-cycle summed fragment intensity and
+          // [lo, hi] the candidate's own cycle bounds -- reuse both rather than
+          // recomputing a second, subtly different fragment sum.
+          std::vector<double> f, m;
+          f.reserve(hi - lo + 1);
+          m.reserve(hi - lo + 1);
+          for (std::size_t j = lo; j <= hi && j < total.size(); ++j)
+          {
+            const std::size_t b = options.ms1->binFor(chromatogram.retentionTime(
+              static_cast<std::uint32_t>(j)));
+            f.push_back(total[j]);
+            m.push_back(static_cast<double>(options.ms1->at(i, b)));
+          }
+          // Refuse a correlation that would be computed from a handful of
+          // points: over 3 or 4 cycles almost anything correlates, and the
+          // classifier cannot tell a well-supported 0.9 from a lucky one.
+          bool any = false;
+          for (const double v : m) { if (v > 0.0) { any = true; break; } }
+          if (any && f.size() >= 5) { const double c = pearson(f, m);
+                                      if (std::isfinite(c)) { r = c; } }
+        }
+        g.sub_scores[MS1_COELUTION] = r;
+      }
       // A candidate whose spectrum does not resemble the library is not this
       // peptide, wherever it eluted.
       //

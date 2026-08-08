@@ -2026,3 +2026,54 @@ fragments is evidence about the identification itself.
 
 **Decision: add MS1_COELUTION only.** Not `ms1_max` (abundance proxy, and the
 benchmark rewards that spuriously), not `ms1_iso` (saturated at 99.8%).
+
+## Picking or extraction? Both, and they are separable (2026-08-08)
+
+`test/tools/odia_mz_residuals.cpp` probes at +/-50 ppm and records the
+intensity-weighted signed m/z deviation per precursor, optionally restricted to
+a KNOWN apex. Run on S08 + `v6_50k`, anchored to DIA-NN's own retention times
+for its 670 reachable confident precursors (+/-30 s):
+
+    group                  n     median ppm    sd      |ppm| > 15
+    all true             670        -8.44    13.13        21.9%
+    true & PICKED        576        -8.21    13.27        21.9%
+    true & NOT PICKED     94        -9.38    11.94        22.3%
+
+**Two separate answers.**
+
+**1. The picking/not-picking split is NOT caused by m/z mis-calibration.** Picked
+and unpicked true precursors have the same residual distribution -- medians
+differ by 1.2 ppm against a 13 ppm spread, and the fraction outside the
+extraction window is identical (21.9% vs 22.3%). Whatever decides that a
+precursor yields no candidate, it is not that its fragments were extracted from
+the wrong place in m/z. **The loss is genuinely in the picker.**
+
+**2. Extraction IS mis-centred, by about -8 ppm, and it costs BOTH groups.** The
+window is +/-15 ppm centred on ZERO because the mass calibration gate fails on
+S08; the signal sits at -8.4. So the window effectively covers -6.6 to +23.4 ppm
+around the truth, and **21.9% of true precursors fall outside it even at their
+own apex**. That is a real, uniform loss, and it is exactly what the failing
+gate was supposed to prevent. It does not explain the split, but it is a
+first-order defect in its own right.
+
+**Method note, and it is the same trap as everything else.** The first run of
+this probe took the best co-occurrence over ALL 32,210 spectra with no RT
+restriction, and produced medians of -5.8 (picked) against -9.6 (unpicked) with
+sd 21.5 -- numbers that look like an answer and are not one. On a 1.5%-true
+library the unrestricted maximum is a chance event, so its residuals are noise;
+the tell was that DIA-NN's own true set showed sd 20.6 rather than the tight
+cluster a real identification must have. Anchoring to the known apex is what
+makes the measurement mean anything. Both panels are plotted in
+`scratchpad/mz_residuals.png`.
+
+**Caveat on the spread.** Median within-precursor fragment spread is 97 ppm at
+the true apex, i.e. nearly the full +/-50 probe -- so a per-precursor mean still
+mixes true fragments with wrong matches, and the sd of 13.1 overstates the
+instrument's real scatter. The MEDIAN offset over 670 precursors is robust; the
+width is not. A tighter probe, or a per-fragment rather than per-precursor
+statistic, would sharpen it.
+
+**Consequence:** fixing the mass calibration is worth doing and will help
+uniformly -- but it will not recover the 9,275 unpicked precursors. For those,
+the picker's own thresholds are the target: `min_corr_score` rejects 47% of scan
+positions outright and the presence gate another 28%.

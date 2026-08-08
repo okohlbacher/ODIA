@@ -1,0 +1,103 @@
+// Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <odia/Ms1Traces.h>
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+
+namespace ODIA
+{
+  std::size_t Ms1Traces::binFor(double rt) const
+  {
+    if (times_.empty()) { return 0; }
+    const auto it = std::lower_bound(times_.begin(), times_.end(), static_cast<float>(rt));
+    std::size_t b = static_cast<std::size_t>(it - times_.begin());
+    if (b >= times_.size()) { return times_.size() - 1; }
+    if (b > 0 && std::abs(times_[b - 1] - rt) < std::abs(times_[b] - rt)) { --b; }
+    return b;
+  }
+
+  std::string Ms1Traces::describe() const
+  {
+    std::ostringstream o;
+    if (empty()) { return "MS1 traces: none (the run carries no MS1)"; }
+    std::size_t live = 0;
+    for (std::size_t i = 0; i < precursors(); ++i)
+    {
+      for (std::size_t b = 0; b < bins_; ++b)
+      { if (values_[i * bins_ + b] > 0.0f) { ++live; break; } }
+    }
+    o.precision(1);
+    o << std::fixed << "MS1 traces: " << bins_ << " bins over " << precursors()
+      << " precursors, " << live << " with signal ("
+      << (precursors() ? 100.0 * live / precursors() : 0.0) << "%), "
+      << footprintBytes() / 1048576.0 << " MiB";
+    return o.str();
+  }
+
+  Ms1Traces Ms1Traces::build(const Library& library, SpectrumSource& source,
+                             double fragment_ppm, double im_window)
+  {
+    Ms1Traces out;
+    const auto& ms1 = source.ms1Spectra();
+    if (ms1.empty()) { return out; }
+
+    const auto& p = library.precursors();
+    const std::size_t np = library.precursorCount();
+    out.bins_ = ms1.size();
+    out.times_.reserve(ms1.size());
+    for (const auto& s : ms1) { out.times_.push_back(static_cast<float>(s.retention_time)); }
+    out.values_.assign(np * out.bins_, 0.0f);
+
+    // Search the sorted LIBRARY side and iterate the peaks: SpectrumSource
+    // documents that a peak array is not ascending in m/z (a mobility frame
+    // concatenates its TIMS scans), and a binary search over it "does not fail
+    // loudly -- it returns near-zero matches", which is indistinguishable from
+    // an ion that is not there.
+    struct Target { double mz; std::uint32_t slot; float im; };
+    std::vector<Target> idx;
+    idx.reserve(np);
+    for (std::size_t i = 0; i < np; ++i)
+    {
+      const double mz = fromFixed(p.mz[i]);
+      if (mz > 0.0) { idx.push_back({mz, static_cast<std::uint32_t>(i), p.im[i]}); }
+    }
+    std::sort(idx.begin(), idx.end(),
+              [](const Target& a, const Target& b) { return a.mz < b.mz; });
+
+    std::vector<SpectrumPeaks> block;
+    const std::size_t STEP = 64;
+    for (std::size_t b = 0; b < ms1.size(); b += STEP)
+    {
+      const std::size_t e = std::min(b + STEP, ms1.size());
+      source.ms1Peaks(b, e, block);
+      for (std::size_t s = 0; s < block.size(); ++s)
+      {
+        const auto& sp = block[s];
+        const bool gated = im_window > 0.0 && sp.ion_mobility.size() == sp.mz.size();
+        for (std::size_t k = 0; k < sp.mz.size(); ++k)
+        {
+          const double m = sp.mz[k], tol = m * fragment_ppm * 1e-6;
+          auto it = std::lower_bound(idx.begin(), idx.end(), m - tol,
+                                     [](const Target& a, double v) { return a.mz < v; });
+          for (; it != idx.end() && it->mz <= m + tol; ++it)
+          {
+            if (std::abs(it->mz - m) > it->mz * fragment_ppm * 1e-6) { continue; }
+            if (gated &&
+                !(std::abs(static_cast<double>(sp.ion_mobility[k]) -
+                           static_cast<double>(it->im)) <= im_window))
+            { continue; }
+            float& c = out.values_[it->slot * out.bins_ + (b + s)];
+            // Max, not sum: a mobility-merged frame holds the same ion in
+            // several scans, and summing would make the trace a function of how
+            // many scans it spans rather than of how much ion is present.
+            c = std::max(c, sp.intensity[k]);
+          }
+        }
+      }
+    }
+    return out;
+  }
+} // namespace ODIA

@@ -11,6 +11,7 @@
 #include <odia/ChromatogramExtractor.h>
 #include <odia/ChromatogramTsv.h>
 #include <odia/MassCalibration.h>
+#include <odia/Ms1Traces.h>
 #include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/RtCalibration.h>
@@ -412,6 +413,13 @@ protected:
                   "flag is the control arm for measuring what the band is worth.", true);
 
     registerFlag_("sort_library", "Sort precursors by m/z on load.", true);
+    registerFlag_("no_ms1",
+                  "Do not read MS1 or compute var_ms1_coelution. MS1/MS2 co-elution is the "
+                  "only sub-score that does not read MS2 fragment traces, and so the only one "
+                  "a co-eluting interferent cannot corrupt along with the rest; measured at "
+                  "13.7x enrichment in its top bin and 1.4-1.5x in bulk on S08 + v6_50k. Use "
+                  "this to A/B it or on a run whose MS1 is not worth the pass.",
+                  true);
   }
 
 
@@ -443,6 +451,30 @@ protected:
     ODIA::ChromatogramExtractor::Options options;
     options.precursor_stride = pass_stride_;
     options.precursor_offset = pass_offset_;
+    // MS1 traces, once per run, before the first extraction that will score.
+    //
+    // Built here rather than inside the extractor: the streaming extractor is
+    // organised around isolation windows and MS2 cycles, MS1 has neither, and
+    // its memory behaviour is the one part of this pipeline that is measured.
+    // See Ms1Traces for why co-elution is the only MS1 quantity worth carrying.
+    if (ms1_traces_.empty() && !getFlag_("no_ms1"))
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
+                                           options.precursor_im_window * 2.0);
+      const double secs = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - t0).count();
+      if (ms1_traces_.empty())
+      {
+        writeLogInfo_("MS1: the run carries no MS1 spectra, so var_ms1_coelution "
+                      "will be absent rather than zero");
+      }
+      else
+      {
+        writeLogInfo_(ms1_traces_.describe() + ", in " + std::to_string(secs) + " s");
+      }
+    }
+
     applyMassCalibration_(library, *source, options, rt_window_override);
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
@@ -869,6 +901,10 @@ protected:
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    // Built once per run and owned by the tool; null until then, and null
+    // forever on a run with no MS1, in which case MS1_COELUTION is NaN for every
+    // row and the constant-column guard drops it.
+    options.ms1 = ms1_traces_.empty() ? nullptr : &ms1_traces_;
     return options;
   }
 
@@ -1548,6 +1584,9 @@ private:
   /// -- worse -- a second measurement taken through a window the first one
   /// narrowed would be a feedback loop that can only shrink.
   ODIA::MassCalibration::Model mass_model_;
+  /// The run's MS1 precursor traces, built once before the first scoring pass.
+  ODIA::Ms1Traces ms1_traces_;
+
   bool mass_model_known_ = false;
 
   /// Whether the run's retention-time map has been fitted and written into the

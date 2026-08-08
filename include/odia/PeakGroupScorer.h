@@ -4,6 +4,7 @@
 #pragma once
 
 #include <odia/ChromatogramExtractor.h>
+#include <odia/Ms1Traces.h>
 #include <odia/Library.h>
 
 #include <cstddef>
@@ -123,6 +124,23 @@ namespace ODIA
       /// diaPASEF and simply absent elsewhere.
       IM_DELTA,
 
+      /// Pearson of the MS1 precursor trace against the MS2 fragment consensus
+      /// over the candidate's own cycles.
+      ///
+      /// The first sub-score here that does not read MS2 fragment traces. That
+      /// is the whole point: the other fifteen share a failure mode, because a
+      /// co-eluting interferent corrupts all of them at once. This asks whether
+      /// the PRECURSOR rises and falls with its fragments, which no amount of
+      /// fragment-side interference can fake.
+      ///
+      /// Measured on S08 + v6_50k before being added (doc/13): 13.7x enrichment
+      /// in the top bin, 1.4-1.5x in bulk, and it survives stratification by MS1
+      /// intensity so it is shape rather than brightness. NaN when the run
+      /// carries no MS1 or the precursor has no MS1 signal -- NaN, not zero,
+      /// because zero is a legitimate correlation and the two must not be
+      /// confused.
+      MS1_COELUTION,
+
       N_SUB_SCORES
     };
 
@@ -199,6 +217,15 @@ namespace ODIA
       ///
       /// Set false to get the old amplitude detector back.
       bool coelution_picking = true;
+
+      /// MS1 traces for MS1_COELUTION, or null when the run has no MS1.
+      ///
+      /// A real pointer to real data, not a plumbing point. doc/07 is explicit
+      /// that a sub-score computed from a placeholder is worse than an absent
+      /// one, and IM_DELTA was all-NaN for a week because its hook was added and
+      /// never connected. When this is null MS1_COELUTION is NaN for every row
+      /// and the constant-column guard drops it, which is the honest behaviour.
+      const Ms1Traces* ms1 = nullptr;
 
       /// Half-window, in cycles, for the pairwise correlation at each position.
       std::size_t corr_half_window = 4;
