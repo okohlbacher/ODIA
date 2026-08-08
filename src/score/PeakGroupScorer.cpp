@@ -139,6 +139,18 @@ namespace ODIA
     struct PickerRejects
     {
       std::size_t too_few_present = 0;   ///< <2 fragments in {k-1,k,k+1}
+      /// Precursors that never entered the correlation loop at all.
+      ///
+      /// `n < 2*S+4 || tc < 2` returns before anything is counted, so these were
+      /// invisible: they landed in `precursors_without_candidate` with no way to
+      /// tell them from a precursor the correlation test rejected. On Astral
+      /// 5,187 precursors yield no candidate while OpenSWATH features 100% of
+      /// the library, and the census could not say which stage lost them.
+      std::size_t too_few_cycles = 0;
+      std::size_t too_few_transitions = 0;
+      /// Entered the loop, computed correlations, and found no qualifying
+      /// position anywhere in the window.
+      std::size_t no_hit_anywhere = 0;
       std::size_t below_corr = 0;        ///< reference corr sum < min_corr_score
       std::size_t reference_zero = 0;    ///< smoothed reference not positive
       std::size_t not_local_max = 0;     ///< k is not the local maximum
@@ -288,7 +300,8 @@ namespace ODIA
       const std::uint32_t tc = c.transition_count;
       const std::size_t n = c.cycles;
       const std::size_t S = std::max<std::size_t>(1, half_window);
-      if (n < 2 * S + 4 || tc < 2) { return found; }
+      if (tc < 2) { ++rej.too_few_transitions; return found; }
+      if (n < 2 * S + 4) { ++rej.too_few_cycles; return found; }
 
       // Traces once, smoothed once. DIA-NN smooths the reference trace before
       // the local-maximum test (kernel 1/4-1/2-1/4); `smooth` here is the
@@ -366,7 +379,7 @@ namespace ODIA
           break;
         }
       }
-      if (hits.empty()) { return found; }
+      if (hits.empty()) { ++rej.no_hit_anywhere; return found; }
 
       // Keep by MARGIN from the best, not by rank.
       double best = 0.0;
@@ -1128,7 +1141,11 @@ namespace ODIA
         << r.not_local_max << " not a local maximum, "
         << r.below_apex_evidence << " below apex_evidence, "
         << r.outside_margin << " outside max_corr_diff; then "
-        << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex";
+        << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex"
+        << "\n  precursors that never reached the correlation loop: "
+        << r.too_few_transitions << " with <2 transitions, "
+        << r.too_few_cycles << " with too few cycles; "
+        << r.no_hit_anywhere << " entered it and found no qualifying position";
       std::fprintf(stderr, "%s\n", w.str().c_str());
     }
 
