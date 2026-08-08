@@ -2658,3 +2658,45 @@ Candidate 3 is not idle: it would mean the availability gap is partly a
 difference in what counts as a peak, not purely a deficit. Distinguishing it
 needs a per-precursor join of OSW's features against our all-zero list, checking
 whether OSW's q for those is good or marginal.
+
+## The m/z extraction window was 3.3x too NARROW (2026-08-08 night)
+
+**OpenSWATH's default `mz_extraction_window` is 50 ppm. ODIA's is 15
+(`fragment_ppm_uncalibrated`), or 10 once calibrated.** That asymmetry had never
+been compared, because every window sweep this project ran went NARROWER --
+4, 6, 10, 15 ppm -- and read the monotone response as "narrowing is bad" rather
+than as an arrow pointing the other way.
+
+Astral, same library, only `-fragment_ppm` changed:
+
+    window        IDs      all-zero traces
+    15 ppm      4,290           ~26,800      <- our default
+    30 ppm      4,499            23,203
+    50 ppm      4,969            15,550      <- OSW's default
+
+**+679 identifications (+15.8%) and 42% fewer all-zero traces.** The all-zero
+count falling with width is the mechanism made visible: those precursors were
+not absent, their fragment centroids simply fell outside a window we had set
+too tight.
+
+It also fits every other piece of evidence about the missing precursors: they
+are systematically HIGHER m/z (missing fraction rises smoothly 40% at 400 Th to
+64% at 950 Th, with no clustering at window boundaries, so not an assignment
+bug) and 5.3x DIMMER by DIA-NN's own quantity. A dim, high-m/z fragment is
+exactly the one whose centroid is least well determined.
+
+### Why this was missed for so long
+
+The `-fragment_ppm` sweeps were all bounded above by the default. Sweeping a
+parameter's plausible range downward, seeing monotone degradation, and
+concluding the current value is right is a mistake with a specific shape: it
+never tests whether the current value is itself the constraint. **Sweep across
+the reference implementation's value, not around your own.**
+
+Two related lessons already recorded this session -- `min_corr_score` flat
+because its distribution is bimodal, `-rt_window` inert because it is only the
+CAP in `min(cap, max(floor, factor*p95))` -- have the same root: a sweep that
+returns nothing informative usually means the experiment is wrong, not the
+parameter.
+
+75 and 100 ppm are running to find where it turns over.
