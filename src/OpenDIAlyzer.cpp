@@ -407,6 +407,15 @@ protected:
     registerIntOption_("min_anchors", "<n>", 20,
                        "Below this many anchors the fit is not attempted and the run "
                        "says so rather than calibrating from noise.", false, true);
+    registerDoubleOption_("apex_evidence", "<fraction>", 0.99,
+                          "A scan position is a peak only if the reference fragment's smoothed "
+                          "intensity there is at least this fraction of its maximum nearby. "
+                          "DIA-NN's PeakApexEvidence, and the second-largest picker filter "
+                          "after -min_corr_score: 36.9M rejections against 50.7M on a 107.6M "
+                          "scan-position S08 run. At 0.99 it demands the position be within 1% "
+                          "of the local maximum, which on a noisy trace is nearly exact "
+                          "equality.",
+                          false, true);
     registerIntOption_("min_fragments_at_apex", "<n>", 3,
                        "A candidate peak group is dropped unless at least this many of its "
                        "fragments have signal at the apex. Coupled to -fragment_ppm in a way "
@@ -973,6 +982,7 @@ protected:
       std::max(1, getIntOption_("max_candidates")));
     options.min_fragments_at_apex = static_cast<std::size_t>(
       std::max(1, getIntOption_("min_fragments_at_apex")));
+    options.apex_evidence = getDoubleOption_("apex_evidence");
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     // Built once per run and owned by the tool; null until then, and null
     // forever on a run with no MS1, in which case MS1_COELUTION is NaN for every
