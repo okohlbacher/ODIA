@@ -2455,3 +2455,52 @@ Two wrong explanations in two rounds, both arithmetic on a quantity I had not
 established the meaning of. **The per-fragment residual must be emitted
 directly rather than inferred from a group statistic.** That is a small change
 to code that already exists: keep the distribution, not its median.
+
+## The picker's thresholds are NOT the lever -- measured, closed (2026-08-08)
+
+"The picker rejects 47% of scan positions at min_corr_score" has been the top
+open item for days. Both of its dominant thresholds are now swept, and neither
+recovers anything. S08 + `lib_targets`, baseline 1306.
+
+    -min_corr_score   0.0   0.3   0.4   0.5*  0.6    8.0
+    identified       1306  1306  1306  1306  1306      0
+
+    -apex_evidence   0.99*  0.90   0.70
+    identified       1306   1230   1316
+    apex rejections  2.74M  1.99M  0.90M
+
+**min_corr_score does nothing between 0.0 and 0.6.** Not because the option is
+dead -- 8.0 collapses the run to zero and drives below_corr from 3.65M to
+4.11M, which is the falsification test that proves it live. It does nothing
+because the best fragment's summed pairwise correlation is **bimodal**: either
+negative (2.9M positions are rejected even at a 0.0 threshold, i.e. their best
+correlation is negative) or comfortably above 0.6. Almost nothing lies between,
+so the threshold sits in an empty region of the distribution.
+
+**So the 50.7M rejections are genuine non-peaks, not lost signal.** That number
+looked like a 47% loss waiting to be recovered and is nothing of the kind. The
+filter is doing exactly its job.
+
+**apex_evidence is nearly as inert and is non-monotone**: 0.99 -> 1306, 0.90 ->
+1230, 0.70 -> 1316. Loosening it by a third of its range buys +10, and the
+intermediate value LOSES 76, so it is interacting with candidate selection
+(max_candidates and the margin rule) rather than acting as a simple gate.
+Not worth changing a default on.
+
+**Consequence:** the picker's thresholds are at reasonable settings and tuning
+them is not a path to DIA-NN's 738. Combined with the window result -- the mass
+window is a sensitivity knob feeding the picker's fragment COUNTS, not a mass
+knob -- the whole extraction-side tuning surface is now measured and closed.
+
+What remains is the 1.5%-true-positive collapse, where GBT, LDA and Percolator
+all report zero, and where static modelling is the one literature-endorsed
+remedy still untried.
+
+### Method note
+
+Three parameter values giving bit-identical output should have been read as
+"the option is not reaching the code" and was, until a falsification test at an
+extreme value distinguished "dead option" from "flat region of a bimodal
+distribution". **Sweeping a plausible range cannot tell those apart; only a
+value that MUST change the outcome can.** Worth doing first, next time, and it
+costs one run.
