@@ -147,6 +147,11 @@ namespace ODIA
       /// 5,187 precursors yield no candidate while OpenSWATH features 100% of
       /// the library, and the census could not say which stage lost them.
       std::size_t too_few_cycles = 0;
+      /// Never got a usable chromatogram OUT OF THE EXTRACTOR at all. These are
+      /// extraction losses, not picking losses, and they were pooled with
+      /// picker rejects under `precursors_without_candidate`.
+      std::size_t no_points = 0;        ///< pointCount(0) < 3
+      std::size_t empty_trace = 0;      ///< extracted, but the summed trace is 0
       std::size_t too_few_transitions = 0;
       /// Entered the loop, computed correlations, and found no qualifying
       /// position anywhere in the window.
@@ -462,7 +467,7 @@ namespace ODIA
     if (tc == 0) { return; }
 
     const std::size_t points = chromatogram.pointCount(0);
-    if (points < 3) { ++result.precursors_without_candidate; return; }
+    if (points < 3) { ++rejects_.no_points; ++result.precursors_without_candidate; return; }
 
     // D8: each transition standardised against its own local noise before
     // summing, so no transition dominates by being loud and none is boosted
@@ -472,7 +477,8 @@ namespace ODIA
       ? noiseNormalisedTrace(chromatogram, points)
       : summedTrace(chromatogram, points);
     const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
-    if (window_total <= 0.0) { ++result.precursors_without_candidate; return; }
+    if (window_total <= 0.0)
+    { ++rejects_.empty_trace; ++result.precursors_without_candidate; return; }
 
     const std::size_t first_group = result.groups.size();
     // Three pickers now. OpenSWATH's is the independent implementation
@@ -1142,6 +1148,8 @@ namespace ODIA
         << r.below_apex_evidence << " below apex_evidence, "
         << r.outside_margin << " outside max_corr_diff; then "
         << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex"
+        << "\n  EXTRACTION losses (no usable chromatogram): "
+        << r.no_points << " with <3 points, " << r.empty_trace << " with an all-zero trace"
         << "\n  precursors that never reached the correlation loop: "
         << r.too_few_transitions << " with <2 transitions, "
         << r.too_few_cycles << " with too few cycles; "
