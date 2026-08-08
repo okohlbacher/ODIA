@@ -1924,3 +1924,66 @@ sub-score computed from a placeholder is worse than an absent one.
 MS2 extraction, so the two are comparable cycle for cycle, and measure
 MS1/MS2 co-elution correlation as a discriminator on `v6_50k` BEFORE wiring it
 into the scorer. Same gate as everything else tonight: one measurement first.
+
+## MS1/MS2 co-elution DISCRIMINATES: the first positive result (2026-08-08)
+
+`test/tools/odia_ms1_coelution.cpp` builds the MS1 monoisotopic trace and the
+MS2 top-6 fragment trace on one common time grid (the 1,343 MS1 acquisition
+times; MS2 frames accumulate into their nearest bin) and correlates them.
+Pearson over bins where EITHER trace is non-zero -- correlating over the whole
+gradient would be dominated by jointly-empty bins, which agree perfectly and
+mean nothing, and would reproduce the very saturation this probe exists to
+escape.
+
+S08 + `v6_50k` (SEARCH, 670 of 50,000 true, base 13.4/1000):
+
+    corr >=     kept    true   true/1000   enrichment   recall
+       0.8        76      14       184.2        13.7x     2.1%
+       0.6       258      28       108.5         8.1x     4.2%
+       0.4     2,042      62        30.4         2.3x     9.3%
+       0.2    11,918     185        15.5         1.2x    27.6%
+       0.0    42,925     605        14.1         1.1x    90.3%
+
+**A monotone gradient with a top bin 13.7x the base rate** -- which is exactly
+the success criterion `doc/08` set out ("a monotone gradient with a top bin far
+above the base rate"), reached by a SHAPE statistic after every PRESENCE
+statistic failed. Against the night's other six measurements (0.5x to 1.7x, all
+saturated or worse than random), this is the first thing that discriminates.
+
+### What it is NOT
+
+**It is not a prefilter.** Recall at the discriminating thresholds is tiny: corr
+>= 0.8 captures 14 of 670 true positives (2.1%), corr >= 0.6 captures 4.2%.
+Used as a gate it would discard 90%+ of what we are trying to find. `doc/08`'s
+filter role stays dead.
+
+**The bulk separation is modest.** Medians are +0.115 true against +0.102
+absent, and the standardised mean difference is 0.296 sd. The signal lives in
+the upper TAIL, not in the centre of the distribution. A classifier will get
+real but bounded value from it -- this is one informative feature, not a
+solution to a 6,500:1 likelihood-ratio requirement.
+
+### What it is
+
+**A discriminating sub-score, and the first genuinely orthogonal one.** Every
+existing sub-score reads MS2 fragment traces, so a co-eluting interferent
+corrupts all fifteen together; this asks whether the PRECURSOR rises and falls
+with them, which is a different measurement with an independent failure mode.
+That is the orthogonality argument stated properly, and it is now measured
+rather than asserted.
+
+It also confirms the night's structural finding: presence saturates because it
+is an extreme-value statistic over thousands of draws; shape does not, because
+coincidences would have to arrive in the right ORDER.
+
+### Next
+
+1. Extract MS1 traces inside the extractor on the SAME RT/mobility windows as
+   MS2, so the two are comparable cycle for cycle rather than through a
+   nearest-bin approximation.
+2. Add `MS1_COELUTION` as a sub-score. Do NOT add `ms1_iso` or `ms1_max` --
+   saturated and an abundance proxy respectively.
+3. Re-measure on `v6_50k` end to end. The honest expectation is a real but
+   modest gain, not a fix for 0-versus-738.
+4. Re-run this probe on Astral with a SEARCH library before generalising -- the
+   instrument-conditionality trap has now caught this project twice.
