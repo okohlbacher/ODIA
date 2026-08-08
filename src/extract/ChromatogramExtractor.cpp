@@ -851,6 +851,15 @@ namespace ODIA
                            std::chrono::steady_clock::now() - t_sink).count();
 
       blocks.give(live[slot].base, std::size_t(a.valid) * cycles);
+      // The residual planes are pool blocks too, and resetting the slot without
+      // giving them back leaks two per emitted precursor. Mild on a 2,665-
+      // precursor benchmark (3.55 -> 3.87 GiB) because the pool retains them;
+      // at the 4.26 M design scale it would be the whole live set again, twice.
+      if (live[slot].ppm_num != nullptr)
+      {
+        blocks.give(live[slot].ppm_num, std::size_t(a.valid) * cycles);
+        blocks.give(live[slot].ppm_den, std::size_t(a.valid) * cycles);
+      }
       live[slot] = LiveSlot{};
       --live_now;
     };

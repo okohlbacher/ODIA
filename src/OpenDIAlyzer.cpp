@@ -495,8 +495,12 @@ protected:
     if (ms1_traces_.empty() && !getFlag_("no_ms1"))
     {
       const auto t0 = std::chrono::steady_clock::now();
+      // The SAME half-width the MS2 extraction uses. It was doubled on the
+      // assumption that MS1 needs more slack; nothing measured that, and the
+      // effect was to integrate peaks the MS2 side would have rejected, so the
+      // two traces being correlated were not sampling the same ion population.
       ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
-                                           options.precursor_im_window * 2.0);
+                                           options.precursor_im_window);
       const double secs = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t0).count();
       if (ms1_traces_.empty())

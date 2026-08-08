@@ -85,10 +85,17 @@ namespace ODIA
           for (; it != idx.end() && it->mz <= m + tol; ++it)
           {
             if (std::abs(it->mz - m) > it->mz * fragment_ppm * 1e-6) { continue; }
-            if (gated &&
-                !(std::abs(static_cast<double>(sp.ion_mobility[k]) -
-                           static_cast<double>(it->im)) <= im_window))
-            { continue; }
+            // Same rule as the MS2 match loop, deliberately: skip the gate when
+            // EITHER side is unknown, because absent information is not evidence
+            // of mismatch. Testing `abs(NaN - x) <= w` is false, so a precursor
+            // with no library 1/K0 had every MS1 peak rejected and came out with
+            // a NaN MS1_COELUTION -- while its MS2 side was extracted ungated.
+            if (gated && !std::isnan(static_cast<double>(it->im)))
+            {
+              const double d = std::abs(static_cast<double>(sp.ion_mobility[k]) -
+                                        static_cast<double>(it->im));
+              if (!(d <= im_window)) { continue; }
+            }
             float& c = out.values_[it->slot * out.bins_ + (b + s)];
             // Max, not sum: a mobility-merged frame holds the same ion in
             // several scans, and summing would make the trace a function of how
