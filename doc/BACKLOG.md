@@ -2699,4 +2699,19 @@ CAP in `min(cap, max(floor, factor*p95))` -- have the same root: a sweep that
 returns nothing informative usually means the experiment is wrong, not the
 parameter.
 
-75 and 100 ppm are running to find where it turns over.
+### The curve turns over exactly at OpenSWATH's default
+
+    ppm        15      30      50      75     100
+    IDs     4,290   4,499   4,969   4,382   3,967
+    all-0  26,800  23,203  15,550   7,341   2,436
+
+**50 ppm is the optimum, which is precisely OSW's `mz_extraction_window`
+default.** That two independent implementations land on the same number is
+worth more than either measurement alone.
+
+The all-zero count keeps falling monotonically all the way to 100 ppm, so wider
+windows DO keep finding real signal -- 2,436 all-zero at 100 ppm against 26,800
+at 15. Identifications nevertheless fall past 50 because the interference
+admitted costs more than the signal recovered. The two curves separating like
+that is the clean statement of the trade: availability and specificity are
+genuinely opposed here, and 50 ppm is where they balance on this instrument.
