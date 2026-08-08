@@ -227,9 +227,12 @@ namespace ODIA
 
     const float* rt = nullptr;            ///< `cycles` retention times, seconds
     const float* points = nullptr;        ///< base of the intensity storage
-    /// Per-point m/z deviation in ppm of the peak that won that cell, or null
-    /// when Options::collect_mass_residuals was off. Same indexing as `points`.
-    const float* ppm = nullptr;
+    /// Intensity-weighted m/z deviation per point: sum(intensity*ppm) and
+    /// sum(intensity). Divide to get the weighted mean; a zero denominator
+    /// means no peak matched that cell. Null when collect_mass_residuals was
+    /// off. Same indexing as `points`.
+    const float* ppm_num = nullptr;
+    const float* ppm_den = nullptr;
     const std::uint64_t* offset = nullptr;///< transition_count offsets into it
     const std::uint32_t* count = nullptr; ///< transition_count point counts
 

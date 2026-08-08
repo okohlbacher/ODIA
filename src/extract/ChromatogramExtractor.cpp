@@ -166,21 +166,29 @@ namespace ODIA
     struct LiveSlot
     {
       float* base = nullptr;
-      /// The m/z deviation, in ppm, of the peak that WON each cell.
+      /// Intensity-weighted m/z deviation per cell: sum(intensity * ppm) in
+      /// `ppm_num` and sum(intensity) in `ppm_den`, reduced where it is read.
       ///
-      /// One parallel plane, not two. The scoped design was
-      /// sum(intensity*ppm) and sum(intensity) reduced at emit, which is exact
-      /// for Aggregate::Sum -- but the default is Aggregate::Max, where the
-      /// stored intensity is one peak's and a weighted mean over contributors
-      /// would describe a quantity nothing else in the pipeline uses. Recording
-      /// the winning peak's ppm is exact under Max, costs one array rather than
-      /// two, and is race-free for the same reason `base` is: a thread owns a
-      /// spectrum, and a spectrum owns a distinct cycle.
+      /// TWO planes, after a wrong shortcut. The first version stored a single
+      /// plane holding "the deviation of the peak that won the cell", justified
+      /// as exact under Aggregate::Max -- but **Max is not the default**;
+      /// Options::aggregate defaults to Sum and so does the CLI. Under Sum every
+      /// peak "wins", so that plane held the LAST matching peak in spectrum
+      /// order, which is arbitrary: peak arrays are not sorted, so it was
+      /// neither the brightest nor the nearest. Found by external review.
+      ///
+      /// The weighted form is correct under both modes and is the right
+      /// quantity regardless: a bright fragment's centroid is better determined
+      /// than a dim one's, and on DIA data the dim end is where interference
+      /// lives.
+      ///
+      /// Race-free for the same reason `base` is: a thread owns a spectrum, and
+      /// a spectrum owns a distinct cycle, so no two threads touch one cell.
       ///
       /// Null unless Options::collect_mass_residuals. Live blocks are the
-      /// extractor's dominant memory term (peak RSS 9.3 GiB on S08), so this is
-      /// opt-in rather than always-on.
-      float* ppm = nullptr;
+      /// extractor's dominant memory term, so this is opt-in.
+      float* ppm_num = nullptr;
+      float* ppm_den = nullptr;
       std::uint32_t lo = 0, hi = 0;
     };
 
@@ -776,7 +784,11 @@ namespace ODIA
       const Assignment& a = assignments[slot];
       const std::size_t cells = std::size_t(a.valid) * (a.hi - a.lo);
       live[slot].base = blocks.take(cells);
-      if (options.collect_mass_residuals) { live[slot].ppm = blocks.take(cells); }
+      if (options.collect_mass_residuals)
+      {
+        live[slot].ppm_num = blocks.take(cells);
+        live[slot].ppm_den = blocks.take(cells);
+      }
       live[slot].lo = a.lo;
       live[slot].hi = a.hi;
       live_peak = std::max(live_peak, ++live_now);
@@ -828,7 +840,8 @@ namespace ODIA
       trace.cycles = cycles;
       trace.rt = axes[a.window].data() + a.lo;
       trace.points = live[slot].base;
-      trace.ppm = live[slot].ppm;
+      trace.ppm_num = live[slot].ppm_num;
+      trace.ppm_den = live[slot].ppm_den;
       trace.offset = off_scratch.data();
       trace.count = count_scratch.data();
 
@@ -1096,15 +1109,20 @@ namespace ODIA
                   // Maximum, not sum: two peaks inside one tolerance are the same
                   // ion split by centroiding far more often than they are two ions.
                   if (at == 0.0f && intensity > 0.0f) { ++local_nonzero; }
-                  const bool wins = sum_peaks ? true : (intensity > at);
                   if (sum_peaks) { at += intensity; }
                   else if (intensity > at) { at = intensity; }
                   // The deviation was already computed to test the match above;
                   // it has been discarded here since the extractor was written.
-                  if (s.ppm != nullptr && wins)
+                  // Accumulated for EVERY contributing peak, not just a winner:
+                  // under Sum aggregation there is no winner, and picking one
+                  // by arrival order is picking at random.
+                  if (s.ppm_num != nullptr && intensity > 0.0f)
                   {
-                    s.ppm[std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo)] =
-                      static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
+                    const std::size_t at_i =
+                      std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
+                    s.ppm_num[at_i] +=
+                      intensity * static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
+                    s.ppm_den[at_i] += intensity;
                   }
                 }
               }

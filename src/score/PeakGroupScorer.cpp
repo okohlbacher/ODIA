@@ -705,20 +705,22 @@ namespace ODIA
       // at -3 ppm" and reject correct identifications for being well
       // calibrated. It exists to fit a recalibration, and is read only for
       // groups the FDR has already accepted.
-      if (chromatogram.ppm != nullptr && hi > lo)
+      if (chromatogram.ppm_num != nullptr && chromatogram.ppm_den != nullptr && hi > lo)
       {
         std::vector<double> dev;
         dev.reserve((hi - lo + 1) * tc);
         for (std::uint32_t k = 0; k < tc; ++k)
         {
           const std::uint32_t n = chromatogram.pointCount(k);
-          const float* pv = chromatogram.ppm + (chromatogram.trace(k) - chromatogram.points);
+          const std::ptrdiff_t off = chromatogram.trace(k) - chromatogram.points;
+          const float* num = chromatogram.ppm_num + off;
+          const float* den = chromatogram.ppm_den + off;
           for (std::size_t j = lo; j <= hi && j < n; ++j)
           {
-            // Exactly zero means no peak won that cell. A real deviation of
-            // 0.000 ppm is possible and indistinguishable, which costs one
-            // sample in ~10^6 and is not worth a second plane to disambiguate.
-            if (pv[j] != 0.0f) { dev.push_back(pv[j]); }
+            // A zero denominator is the unambiguous "no peak matched here" --
+            // which the single-plane version could not distinguish from a real
+            // deviation of exactly 0.000 ppm.
+            if (den[j] > 0.0f) { dev.push_back(num[j] / den[j]); }
           }
         }
         if (!dev.empty())
