@@ -2504,3 +2504,52 @@ extreme value distinguished "dead option" from "flat region of a bimodal
 distribution". **Sweeping a plausible range cannot tell those apart; only a
 value that MUST change the outcome can.** Worth doing first, next time, and it
 costs one run.
+
+## Window narrowing tested on the SEARCH benchmark: still worse (2026-08-08)
+
+The previous window conclusion was drawn entirely from ~100%-present libraries,
+where "fewer candidates" trivially means "lost true positives". The objection is
+correct and important: **empty traces are EXPECTED on a realistic library**, and
+narrowing is supposed to buy CLEAN traces rather than more of them. So the test
+was re-run where it belongs, on S08 + `v6_50k` (1.5% present, DIA-NN finds 738),
+scored by precision rather than by count:
+
+    window   candidates   DIA-NN reachable   top-738 true   precision
+    15 ppm      40,694        576 (78.0%)        232          31.4%
+     6 ppm      31,134        448 (60.7%)        176          23.8%
+     4 ppm      24,849        349 (47.3%)         94          12.7%
+
+**Narrowing loses reachability AND precision.** The hypothesis that a narrow
+window would trade quantity for cleanliness is not supported: it loses both. So
+the earlier conclusion survives, but it now rests on the right benchmark and the
+right metric instead of on a count from a library where every precursor is real.
+
+### The gap to DIA-NN is not what "0 identifications" suggests
+
+At 15 ppm, ranked by dscore, **ODIA's top 738 contains 232 of DIA-NN's 738 --
+31.4% precision against a 1.5% base rate, a 21x enrichment.** The discriminant
+is working. What fails is the q-value: it certifies none of them at 1% FDR.
+
+That reframes the headline. "ODIA 0, DIA-NN 738" reads as no signal; the truth
+is roughly one third of DIA-NN's precision at DIA-NN's own operating point, with
+an FDR that cannot certify it. **The remaining work is calibration of the
+q-values, not discovery of signal** -- which is exactly what static modelling
+addresses and what three interchangeable engines (GBT, LDA, Percolator) could
+not.
+
+## OpenSWATH reference numbers, first run ever (2026-08-08)
+
+`OpenSwathWorkflow` had never been run in this project. It now has.
+
+* Astral + `astral_lib_own`: **54,289 features over all 10,891 precursors** --
+  a feature for **100%** of the library, against ODIA's 52.4%.
+* **Not FDR-controlled**: OpenSwathWorkflow emits features, pyprophet assigns
+  q-values, and pyprophet is installed on no node. Do not quote it as
+  "identifications at 1% FDR".
+* Its TSV reader needs OpenSWATH column names; ours are DIA-NN's. Converter at
+  `shared/to_osw_tsv.py`, runner at `shared/osw_run.sh`.
+
+**The 100% versus 52.4% availability gap is the largest single deficit this
+project has measured**, and it is on the extraction/picking side where the
+tuning surface was just shown to be exhausted -- so it is structural, not a
+threshold.
