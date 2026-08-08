@@ -457,6 +457,13 @@ protected:
                   "q<=0.01, by the whole discriminant. Costs one extra float plane per live "
                   "block, so it is off by default.",
                   true);
+    registerDoubleOption_("ms1_im_scale", "<factor>", 2.0,
+                          "MS1 mobility half-width, as a multiple of -precursor_im_window. "
+                          "MS1 ions are not mobility-selected by an isolation window, so the "
+                          "precursor's MS1 mobility spread is wider than its fragments'. "
+                          "Measured on S08/lib_targets: 2.0 gives 1306, 1.0 gives 1230. Set 0 "
+                          "to disable the MS1 mobility gate entirely.",
+                          false, true);
     registerFlag_("no_ms1",
                   "Do not read MS1 or compute var_ms1_coelution. MS1/MS2 co-elution is the "
                   "only sub-score that does not read MS2 fragment traces, and so the only one "
@@ -504,12 +511,23 @@ protected:
     if (ms1_traces_.empty() && !getFlag_("no_ms1"))
     {
       const auto t0 = std::chrono::steady_clock::now();
-      // The SAME half-width the MS2 extraction uses. It was doubled on the
-      // assumption that MS1 needs more slack; nothing measured that, and the
-      // effect was to integrate peaks the MS2 side would have rejected, so the
-      // two traces being correlated were not sampling the same ion population.
+      // Width RELATIVE to the MS2 window, because the right ratio is an
+      // empirical question and both of my confident answers were wrong.
+      //
+      // It shipped at 2x on an unmeasured assumption. I then set it to 1x on a
+      // consistency argument -- the two traces being correlated should sample
+      // one ion population -- and that cost 76 identifications on
+      // S08/lib_targets (1306 -> 1230). The consistency argument is sound about
+      // what the correlation MEANS and wrong about what it is worth; MS1 ions
+      // are not mobility-selected by an isolation window, so the precursor's
+      // MS1 mobility spread is genuinely wider than its fragments'.
+      //
+      // The NaN handling is NOT part of this knob and stays fixed: a precursor
+      // with no library 1/K0 is ungated, matching MS2, rather than having every
+      // peak rejected.
       ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
-                                           options.precursor_im_window);
+                                           options.precursor_im_window *
+                                             getDoubleOption_("ms1_im_scale"));
       const double secs = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t0).count();
       if (ms1_traces_.empty())
