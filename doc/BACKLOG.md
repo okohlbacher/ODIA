@@ -2605,3 +2605,56 @@ DIA-NN's 670 anchors (slope 7.774, intercept 732.7, p50 residual 9.1 s), and
 applying a frozen Percolator model trained on `lib_targets`. Training on
 `lib_targets` itself already beats every other engine there: **1,356** against
 GBT's 1,306 and rescore's 1,278.
+
+## The Astral deficit is EXTRACTION, and it is not the RT window (2026-08-08 night)
+
+Counters added this round split `precursors_without_candidate` into its three
+real causes for the first time. It had pooled extraction failures with picker
+rejections, which is why the deficit read as a picking gap for two rounds.
+
+Astral, 21,782 precursors (10,891 target + decoys):
+
+    EXTRACTION losses:  0 with <3 points, 16,910 with an ALL-ZERO trace
+    never reached the picker: 0 too-few-transitions, 0 too-few-cycles
+    entered the picker and found nothing: 0
+
+**Every precursor is assigned an isolation window and given cycles. The
+chromatogram is allocated and no peak ever matches.** `no_points = 0` proves the
+window assignment is not the problem; the fragments are simply not found in the
+spectra searched.
+
+### It is not the retention-time window
+
+    baseline (p95-derived window)   4,290 IDs
+    -rt_window_min 300              3,968 IDs   27,593 all-zero
+    -passes 1                       1,248 IDs   16,910 all-zero
+
+Widening the pass-2 window makes it WORSE. Two passes halve the all-zero count
+against one (16,910 -> 9,890), so the RT map does help -- but the residue is not
+recovered by looking in a wider window.
+
+**Also: `-rt_window` is only the CAP.** `pass2_window = min(cap, max(floor,
+p95_factor * p95))`, so 300/600/1200 s gave bit-identical output. The binding
+knob is `-rt_window_min`. That is the second time this session a sweep returned
+identical results because the option was not the one that binds -- the first was
+`min_corr_score`, flat because its distribution is bimodal. **Identical output
+across a sweep means "find out why" before it means "this does not matter".**
+
+### What is left
+
+The missing precursors have a window, have cycles, and have no matching peaks.
+Since m/z coverage is fine (library 380-980 Th on an Astral run) and the mass
+residual is ~1.6 ppm per fragment for the ones that DO match, the candidates are:
+
+1. The isolation window a precursor is ASSIGNED to does not contain its true
+   precursor m/z, so the right spectra are never searched.
+2. The fragments genuinely are not there at the RT we look, i.e. the RT map is
+   wrong for these specific precursors rather than globally.
+3. OpenSWATH is finding a peak in noise where we correctly find nothing -- in
+   which case its 8,765 at q<=0.01 would rest on peaks we would refuse. Its
+   picker emits from any chromatogram; ours requires co-elution.
+
+Candidate 3 is not idle: it would mean the availability gap is partly a
+difference in what counts as a peak, not purely a deficit. Distinguishing it
+needs a per-precursor join of OSW's features against our all-zero list, checking
+whether OSW's q for those is good or marginal.
