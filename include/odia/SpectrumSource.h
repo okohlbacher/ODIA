@@ -129,6 +129,31 @@ namespace ODIA
     /// run's actual window scheme and its method routinely differ.
     virtual const std::vector<IsolationWindow>& windows() const = 0;
 
+    /// The run's MS1 (survey) spectra, ascending in retention time.
+    ///
+    /// A SEPARATE index rather than entries merged into `spectra()`. Every
+    /// consumer of `spectra()` assumes an entry has an isolation window and is
+    /// something to extract fragments from; an MS1 entry is neither, and
+    /// merging them would make every such consumer wrong at once.
+    ///
+    /// Empty by default so a source that has no MS1, or has not implemented it,
+    /// answers honestly rather than failing to link. S08 carries 1,343 MS1
+    /// against 16,105 MS2 -- a ~1.8 s duty cycle, so these are usable
+    /// chromatographic traces and not merely a survey.
+    virtual const std::vector<SpectrumInfo>& ms1Spectra() const
+    {
+      static const std::vector<SpectrumInfo> none;
+      return none;
+    }
+
+    /// Peaks for MS1 spectra [begin, end) of `ms1Spectra()`, in that indexing.
+    virtual void ms1Peaks(std::size_t begin, std::size_t end,
+                          std::vector<SpectrumPeaks>& out)
+    {
+      (void)begin; (void)end;
+      out.clear();
+    }
+
     /// Peaks for spectra [begin, end), in order. @p out is resized to the
     /// range. Requesting a range rather than a spectrum is the point.
     virtual void peaks(std::size_t begin, std::size_t end,

@@ -1861,3 +1861,66 @@ off by default. Both flags stay in the tree
 (`-mass_calibration_remeasure`, `-mass_calibration_offset_only`); neither is
 default. Revisit only after the prefilter gives pass 1 something to fit an RT
 map from, which is the precondition the whole subsystem was found to lack.
+
+## MS1 measured before building it, and the night's synthesis (2026-08-08)
+
+`MzPeakSource` now keeps a SEPARATE MS1 index (`ms1Spectra()`, `ms1Peaks()`),
+which is item 1 of the MS1 plan and the precondition for everything else. S08:
+1,343 MS1 spectra reachable. 61/61 tests still pass.
+
+`test/tools/odia_ms1_probe.cpp` then measured the premise before the subsystem,
+S08 + `v6_50k` (SEARCH, 1.5% true positives, base 13.4/1000), mobility-gated at
++/-0.05:
+
+    MS1 isotope depth (M, M+1, M+2 together)
+      iso   targets   true/1000   enrichment
+        3    49,916        13.4        1.0x     <- 99.8% saturated
+       <3        84         0.0        0.0x
+
+    MS1 monoisotopic intensity
+      true median 4,844   absent median 3,056   ratio 1.6x
+      top decile by intensity: 22.6/1000            1.7x
+
+**Isotope presence saturates exactly as fragment depth did.** Intensity is the
+first statistic all night to beat the base rate -- 1.7x -- and it is weak, and
+it is probably confounded: DIA-NN identifies ABUNDANT peptides preferentially,
+and MS1 intensity measures abundance, so this may re-measure abundance rather
+than correctness. It is not evidence that MS1 discriminates a correct
+identification from a wrong one.
+
+### The synthesis: presence saturates, shape discriminates
+
+Five statistics were measured tonight on the search benchmark:
+
+    fragment depth (whole frame)              1.0x  saturated
+    fragment depth (mobility-sliced)          1.0x  saturated
+    qualifying_spectra                        0.5x  worse than random
+    total_matches                             0.5x  worse than random
+    MS1 isotope depth                         1.0x  saturated
+    MS1 monoisotopic intensity                1.7x  weak, likely confounded
+
+**Every "does this exist somewhere in the run" statistic is worthless here, and
+the reason is structural.** Each is a maximum or a count over ~10^3-10^4
+spectra, so it is an extreme-value statistic over thousands of draws: with 15
+ppm tolerance and mobility-merged frames, coincidence is near-certain and the
+answer is yes for everything. Increasing selectivity per draw does not fix it;
+the draw count does.
+
+This explains, retrospectively, the one large win this project has had. Replacing
+the amplitude peak-picker with CO-ELUTION detection fixed RT, FDR, recovery and
+memory at once. Co-elution is not a presence question -- it asks whether the
+fragments rise and fall TOGETHER, which is a shape over time and cannot be
+satisfied by an accumulation of unrelated coincidences.
+
+**So the MS1 feature worth building is the one this probe did NOT test:
+correlation of the MS1 precursor trace against the MS2 fragment consensus.**
+That is a shape comparison, it is genuinely orthogonal (a different measurement
+with an independent failure mode), and it is the only MS1 quantity with a reason
+to work. `ms1_iso` and `ms1_max` should not be added as sub-scores -- one is
+saturated and the other is an abundance proxy, and doc/07 is explicit that a
+sub-score computed from a placeholder is worse than an absent one.
+
+**Revised next step:** extract MS1 traces on the same RT/mobility windows as the
+MS2 extraction, so the two are comparable cycle for cycle, and measure
+MS1/MS2 co-elution correlation as a discriminator on `v6_50k` BEFORE wiring it
+into the scorer. Same gate as everything else tonight: one measurement first.

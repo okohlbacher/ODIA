@@ -55,6 +55,16 @@ namespace ODIA
       for (std::size_t i = 0; i < spectra_.size(); ++i)
       {
         const auto s = spectra_[i];
+        if (s.ms_level() == 1)
+        {
+          // Kept in a SEPARATE index. See SpectrumSource::ms1Spectra.
+          SpectrumInfo m1;
+          m1.index = i;
+          m1.ms_level = 1;
+          m1.retention_time = s.retention_time().value_or(0.0);
+          ms1_info_.push_back(m1);
+          continue;
+        }
         if (s.ms_level() != 2) { continue; }
 
         SpectrumInfo info;
@@ -196,6 +206,36 @@ namespace ODIA
     }
 
     const std::vector<SpectrumInfo>& spectra() const override { return info_; }
+    const std::vector<SpectrumInfo>& ms1Spectra() const override { return ms1_info_; }
+
+    void ms1Peaks(std::size_t begin, std::size_t end,
+                  std::vector<SpectrumPeaks>& out) override
+    {
+      if (begin > end || end > ms1_info_.size())
+      {
+        throw std::out_of_range("ms1Peaks(): range outside the run");
+      }
+      out.assign(end - begin, SpectrumPeaks{});
+      // No de-duplication needed here, unlike peaks(): MS1 frames are not
+      // co-packed across isolation windows, so one entry is one physical
+      // spectrum and the request list is already distinct.
+      std::vector<std::size_t> want;
+      want.reserve(end - begin);
+      for (std::size_t i = begin; i < end; ++i) { want.push_back(ms1_info_[i].index); }
+      auto batch = spectra_.get_spectra_batch(want);
+      for (std::size_t k = 0; k < out.size(); ++k)
+      {
+        if (k >= batch.size()) { continue; }
+        auto& dst = out[k];
+        const auto& mz = batch[k].mz();
+        const auto& intensity = batch[k].intensity();
+        const std::size_t n = std::min(mz.size(), intensity.size());
+        dst.mz.assign(mz.begin(), mz.begin() + n);
+        dst.intensity.assign(intensity.begin(), intensity.begin() + n);
+        const auto& im = batch[k].ion_mobility_array();
+        if (im.size() >= n) { dst.ion_mobility.assign(im.begin(), im.begin() + n); }
+      }
+    }
     const std::vector<IsolationWindow>& windows() const override { return windows_; }
 
     void peaks(std::size_t begin, std::size_t end,
@@ -288,6 +328,7 @@ namespace ODIA
 
   private:
     std::string filename_;
+    std::vector<SpectrumInfo> ms1_info_;
     MzPeak::Index index_;
     MzPeak::Spectra spectra_;
     std::vector<SpectrumInfo> info_;
