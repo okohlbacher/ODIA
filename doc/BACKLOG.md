@@ -2401,3 +2401,57 @@ not.
 open problems are the picker (47% of scan positions rejected at
 `min_corr_score`, 9,890 Astral precursors yielding no candidate) and the
 1.5%-true-positive collapse -- neither of which is a mass problem.
+
+## The extraction window is a SENSITIVITY knob, not a mass knob (2026-08-08)
+
+Sweeping the fragment window at each instrument's own measured offset:
+
+    window     S08 + lib_targets      Astral + own library
+     4-5 ppm            0                     2,598
+     6-8 ppm          853                     3,690
+      10 ppm        1,054                       ---
+      15 ppm        1,306  (baseline)         4,290  (baseline)
+
+**Monotone on both instruments: narrowing always loses.** And mass accuracy does
+not explain it. Per-fragment sigma is about 1.6 ppm (see the correction below),
+so 10 ppm is ~6 sigma and should cost nothing. It costs 252.
+
+The picker census says what actually happens, 15 ppm against 6 ppm on S08:
+
+    scan positions evaluated      7,361,409  ->  6,246,070   (-15%)
+    precursors yielding NO candidate     155  ->        410   (2.6x)
+
+Narrowing does not reject worse peaks; it leaves fewer TRANSITIONS carrying any
+signal, so precursors fall below the picker's `>=2 fragments present` and the
+scorer's `min_fragments_at_apex >= 3` and never produce a candidate at all.
+
+**So the window is not a mass-selectivity parameter in ODIA. It is feeding the
+picker's fragment-count gates**, and a wide window is compensating for how
+easily those gates starve. That is worth knowing before anyone tunes either:
+the window and the count thresholds are one coupled system, and moving the
+window alone moves sensitivity, not accuracy.
+
+It also refutes the derived-window plan outright. DIA-NN and OpenSWATH size the
+window from residual quantiles because for them it IS a mass parameter. Copying
+that here would narrow the window to ~5 ppm on a correct reading of the
+residuals and cost 40-70% of identifications.
+
+### Two corrections to my own analysis, in one day
+
+**(a) `Mass.Ppm` is a group median, not a fragment measurement.** It is the
+median over a peak group's matched (fragment x cycle) cells, so its spread is
+sigma/sqrt(N_eff) and NOT the per-fragment accuracy. Reporting "the instruments
+are accurate to ~1 ppm" from it was reporting the precision of an average as the
+precision of a measurement.
+
+**(b) The first correction over-corrected.** `Mass.Ppm.N` has a median of 1,453,
+and I read that as 1,453 independent fragments, giving sigma_fragment ~18 ppm.
+But a precursor carries ~12 transitions; 1,453 counts CELLS, and cells of one
+fragment across cycles share a calibration and are not independent. Effective
+sqrt(N) is ~3.5, not 38, so sigma_fragment is about **1.6 ppm** -- which is
+still small, and still does not explain the sweep.
+
+Two wrong explanations in two rounds, both arithmetic on a quantity I had not
+established the meaning of. **The per-fragment residual must be emitted
+directly rather than inferred from a group statistic.** That is a small change
+to code that already exists: keep the distribution, not its median.
