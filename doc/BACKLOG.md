@@ -2553,3 +2553,55 @@ not.
 project has measured**, and it is on the extraction/picking side where the
 tuning surface was just shown to be exhausted -- so it is structural, not a
 threshold.
+
+## Three-way reference at last: ODIA 4,290 | OpenSWATH 8,765 | DIA-NN 11,112
+
+Astral, all three FDR-controlled at q <= 0.01. OpenSWATH had never been run in
+this project; it now has, with pyprophet, and it is **twice ODIA**.
+
+Four obstacles, all of which will recur and none of which is about ODIA:
+1. OSW's TSV reader wants its own column names (`shared/to_osw_tsv.py`).
+2. **Our libraries carry no decoys** -- ODIA generates them internally, so
+   pyprophet refuses with "0 decoy and 10891 target groups". Fix:
+   `OpenSwathDecoyGenerator -method shuffle`, 130,691 -> 261,370 transitions.
+   Every earlier "OpenSWATH" figure quoted in this document was therefore
+   unscoreable and should never have been offered as a comparison.
+3. pyprophet 2.3.4 needs `pypdf<5`.
+4. pyprophet 2.3.4 against modern numpy/pandas/scipy needs three patches:
+   read-only array copies in `find_top_ranked`, `pandas<3`, and
+   `rankdata(...).astype(int)`.
+
+## Why S08 finds nothing: a self-reinforcing initialisation failure
+
+Not the scorer, not the picker, not the window, not the mass model -- all of
+which were tested at length and cleared. The ranking is FINE:
+
+    top-N   targets  decoys  q=(D+1)/T   DIA-NN true   precision
+       50        48       2     0.062          41        85.4%
+      100        94       6     0.074          80        85.1%
+      738       511     227     0.446         212        41.5%
+
+**85% precision in the top 100.** What blocks certification is that a decoy sits
+at rank 2 and six sit in the top 100, so q floors at 0.062 -- and Kall's +1
+correction means even ZERO decoys needs >=100 clean targets before q can reach
+0.01 at all.
+
+**The mechanism is circular.** On `v6_50k` three of sixteen sub-scores are
+IDENTICALLY ZERO -- `var_rt_delta`, `var_ms1_coelution`, `var_im_delta` -- while
+on `lib_targets` the first two are 100% populated. Pass 1 has no retention-time
+map, so it spreads the library evenly and extracts at approximately the wrong
+times; the MS1 signal sits at the true elution time and the MS2 candidate does
+not, so they never overlap and MS1_COELUTION is undefined. RT_DELTA likewise.
+The scorer then runs on 13 features, missing the RT feature AND the only
+orthogonal one, identifies nothing, and **no RT map is ever fitted**, so pass 2
+never happens.
+
+That also explains why swapping GBT for LDA for Percolator changed nothing: all
+three were handed the same 13-feature input, and no learner recovers a feature
+that is identically zero.
+
+Two experiments are running: seeding pass 1 with an external iRT map fitted from
+DIA-NN's 670 anchors (slope 7.774, intercept 732.7, p50 residual 9.1 s), and
+applying a frozen Percolator model trained on `lib_targets`. Training on
+`lib_targets` itself already beats every other engine there: **1,356** against
+GBT's 1,306 and rescore's 1,278.
