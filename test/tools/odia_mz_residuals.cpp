@@ -103,7 +103,13 @@ int main(int argc, char** argv)
     // residuals are taken THERE -- at a random spectrum they would be noise.
     struct Best { std::uint8_t n = 0; float total = 0.0f;
                   double wsum = 0.0, wtot = 0.0;      // intensity-weighted ppm
-                  double lo = 0.0, hi = 0.0; };
+                  double lo = 0.0, hi = 0.0;
+                  float rt = 0.0f;
+                  // Per-FRAGMENT residuals at the winning cell. A per-precursor
+                  // mean cannot show a surface in (RT, m/z), and it hides the
+                  // contamination: at +/-50 ppm the within-precursor spread is
+                  // ~97 ppm, i.e. most matches are not the fragment.
+                  std::vector<float> f_mz, f_ppm, f_int; };
     std::vector<Best> best(NP);
 
     struct Target { double mz; std::uint32_t slot; float im; };
@@ -113,7 +119,8 @@ int main(int argc, char** argv)
     std::vector<std::uint8_t> cnt;
     std::vector<float> tot;
     std::vector<double> ws, wt, mn, mx;
-    std::vector<std::uint32_t> touched;
+    std::vector<std::uint32_t> touched, touched_prev;
+    std::vector<std::vector<float>> fmz(NP), fppm(NP), fint(NP);
     ODIA::SpectrumPeaks sp;
 
     for (std::size_t si = 0; si < info.size(); ++si)
@@ -155,6 +162,8 @@ int main(int argc, char** argv)
       if (sp.mz.empty()) { continue; }
       const bool g = imw > 0.0 && sp.ion_mobility.size() == sp.mz.size();
 
+      for (const std::uint32_t s : touched_prev) { fmz[s].clear(); fppm[s].clear(); fint[s].clear(); }
+      touched_prev.clear();
       cnt.assign(NP, 0); tot.assign(NP, 0.0f);
       ws.assign(NP, 0.0); wt.assign(NP, 0.0);
       mn.assign(NP, 1e9); mx.assign(NP, -1e9);
@@ -176,7 +185,10 @@ int main(int argc, char** argv)
             if (!std::isfinite(anchor_rt[s])) { continue; }
             if (std::abs(in.retention_time - anchor_rt[s]) > rt_win) { continue; }
           }
-          if (cnt[s] == 0) { touched.push_back(s); }
+          if (cnt[s] == 0) { touched.push_back(s); touched_prev.push_back(s); }
+          fmz[s].push_back(static_cast<float>(it->mz));
+          fppm[s].push_back(static_cast<float>(d));
+          fint[s].push_back(sp.intensity[k]);
           if (cnt[s] < TOP_N) { ++cnt[s]; }
           tot[s] += sp.intensity[k];
           ws[s] += d * sp.intensity[k]; wt[s] += sp.intensity[k];
@@ -187,7 +199,9 @@ int main(int argc, char** argv)
       {
         if (cnt[s] > best[s].n || (cnt[s] == best[s].n && tot[s] > best[s].total))
         {
-          best[s] = {cnt[s], tot[s], ws[s], wt[s], mn[s], mx[s]};
+          best[s] = {cnt[s], tot[s], ws[s], wt[s], mn[s], mx[s],
+                     static_cast<float>(in.retention_time),
+                     fmz[s], fppm[s], fint[s]};
         }
       }
       if (si % 1000 == 0) { std::fprintf(stderr, "  %zu/%zu\r", si, info.size()); }
@@ -196,19 +210,22 @@ int main(int argc, char** argv)
 
     std::FILE* out = std::fopen(argv[3], "w");
     if (!out) { return 1; }
-    std::fprintf(out, "Precursor.Id\tDecoy\tn_matched\tmean_ppm\tspread_ppm\ttotal_intensity\n");
+    std::fprintf(out, "Precursor.Id\tDecoy\tn_matched\trt\tfrag_mz\tppm\tintensity\n");
     for (std::size_t i = 0; i < NP; ++i)
     {
       const auto& b = best[i];
-      const double mean = b.wtot > 0.0 ? b.wsum / b.wtot : 0.0;
-      const double spread = b.n > 1 ? (b.hi - b.lo) : 0.0;
+      if (b.f_ppm.empty()) { continue; }
       const auto sq = lib.strings().get(p.modified_sequence[i]);
-      std::fprintf(out, "%.*s%u\t%u\t%u\t%.3f\t%.3f\t%.1f\n",
-                   static_cast<int>(sq.size()), sq.data(),
-                   static_cast<unsigned>(p.charge[i]),
-                   static_cast<unsigned>(p.decoy[i]),
-                   static_cast<unsigned>(b.n), mean, spread,
-                   static_cast<double>(b.total));
+      for (std::size_t k = 0; k < b.f_ppm.size(); ++k)
+      {
+        std::fprintf(out, "%.*s%u\t%u\t%u\t%.2f\t%.4f\t%.3f\t%.1f\n",
+                     static_cast<int>(sq.size()), sq.data(),
+                     static_cast<unsigned>(p.charge[i]),
+                     static_cast<unsigned>(p.decoy[i]),
+                     static_cast<unsigned>(b.n),
+                     static_cast<double>(b.rt), static_cast<double>(b.f_mz[k]),
+                     static_cast<double>(b.f_ppm[k]), static_cast<double>(b.f_int[k]));
+      }
     }
     std::fclose(out);
     std::fprintf(stderr, "wrote %s\n", argv[3]);

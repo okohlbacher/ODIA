@@ -2208,3 +2208,64 @@ candidates: Astral's bottleneck is availability (only 52.4% of covered
 precursors yield any candidate at all), so a scoring feature cannot reach the
 missing 47.6%; and the two runs differ in MS1 duty cycle. The S08 gain is the
 one that has been reproduced.
+
+## The m/z residual is not measurable with a standalone probe (2026-08-08)
+
+Attempting "iterate recalibration strategies until the residuals are centred and
+flat" stopped at step zero: **the residual cannot currently be measured well
+enough to tell whether any strategy centres it.**
+
+Per-fragment residuals, S08 + `v6_50k`, restricted to DIA-NN's TRUE precursors,
+at their own apex, requiring >=4 co-occurring fragments, +/-20 ppm probe --
+against the same thing 300 s away, where the peptide cannot be:
+
+    estimator        at apex     RT-shifted control
+    median            -6.94            -3.96
+    MODE              -7.64           -13.90
+
+**The control's mode is MORE extreme than the apex's.** Apex-minus-control by
+cell is incoherent -- +0.6 to +8.4 ppm across RT octiles, -2.0 to +4.2 across
+m/z octiles, no monotone structure in either. The probe yields 64,513 control
+matches against 100,080 real ones, so roughly two thirds of what it measures is
+chance, and both the median and the mode are dominated by that rather than by
+fragments.
+
+**So every m/z offset this project has quoted is unmeasured**, including the
+-8.4 ppm and its "control-corrected" -3.5 ppm successor. That is consistent with
+what the runs already said: pinning -3.5 cost 142 identifications and pinning
+-8.4 cost 87-90, because both were fitted to the probe rather than to the
+instrument.
+
+**Why a standalone probe cannot work here.** It asks "is there a peak within
+X ppm of this theoretical mass, somewhere near this time" -- and on a
+mostly-absent library at DIA resolution the answer is yes by coincidence.
+Tightening the window does not fix it; it biases the estimate toward zero by
+clipping the true tail while still admitting chance matches near the centre.
+This is the same extreme-value trap that made fragment depth, MS1 isotope depth,
+`qualifying_spectra` and `total_matches` all saturate.
+
+**The instrument that would work already exists and is thrown away.**
+`ChromatogramExtractor.cpp:1068-1082` computes the deviation of every matched
+peak and discards it. Those matches are constrained by co-elution and, for a
+scored peak group at q<=0.01, by the whole discriminant -- so they are true
+fragments in a way no standalone probe's matches are. Recording ppm per match,
+and reading it only for confident peak groups, gives a residual whose
+contamination is bounded by the FDR rather than by the search space.
+
+**Next, in order:**
+1. Instrument the extractor to carry per-match ppm (backlog item, already
+   scoped: two parallel `[row][cycle]` blocks, sum(intensity*ppm) and
+   sum(intensity), reduced at emit; a per-transition scalar would race).
+2. Read residuals from peak groups at q<=0.01 and re-run this diagnostic. Only
+   then is "centred and flat" observable.
+3. THEN compare strategies -- constant, linear in log m/z (OpenSWATH's
+   `weighted_regression`), quadratic (its `quadratic_regression_delta_ppm`),
+   RT-blocked constant, RT-blocked linear (`MassRecalibration`, built and unit
+   tested) -- and derive the extraction WINDOW from the residual quantiles,
+   which both DIA-NN and OpenSWATH do and ODIA does not.
+
+`SwathMapMassCorrection` is the reference for step 3: it extracts at the
+calibrants' own elution time, regresses delta-ppm on m/z (optionally weighted,
+optionally quadratic), and estimates the extraction window from the residuals.
+Its anchoring is the part ODIA's `MassCalibration` lacks, and the window
+estimate is the part nothing in ODIA has.
