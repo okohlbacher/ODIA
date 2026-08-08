@@ -299,6 +299,11 @@ namespace ODIA
       float left_rt = 0.0f;
       float right_rt = 0.0f;
       float apex_intensity = 0.0f;
+      /// Median m/z deviation, ppm, over this group's matched fragment peaks,
+      /// and how many contributed. NaN/0 when the extractor did not collect it.
+      /// Deliberately NOT a sub-score -- see where it is filled.
+      float mass_ppm = std::numeric_limits<float>::quiet_NaN();
+      std::uint16_t mass_ppm_n = 0;
       std::vector<double> sub_scores;
 
       double dscore = 0.0;

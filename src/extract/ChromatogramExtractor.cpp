@@ -166,6 +166,21 @@ namespace ODIA
     struct LiveSlot
     {
       float* base = nullptr;
+      /// The m/z deviation, in ppm, of the peak that WON each cell.
+      ///
+      /// One parallel plane, not two. The scoped design was
+      /// sum(intensity*ppm) and sum(intensity) reduced at emit, which is exact
+      /// for Aggregate::Sum -- but the default is Aggregate::Max, where the
+      /// stored intensity is one peak's and a weighted mean over contributors
+      /// would describe a quantity nothing else in the pipeline uses. Recording
+      /// the winning peak's ppm is exact under Max, costs one array rather than
+      /// two, and is race-free for the same reason `base` is: a thread owns a
+      /// spectrum, and a spectrum owns a distinct cycle.
+      ///
+      /// Null unless Options::collect_mass_residuals. Live blocks are the
+      /// extractor's dominant memory term (peak RSS 9.3 GiB on S08), so this is
+      /// opt-in rather than always-on.
+      float* ppm = nullptr;
       std::uint32_t lo = 0, hi = 0;
     };
 
@@ -759,7 +774,9 @@ namespace ODIA
     std::vector<std::uint32_t> count_scratch;
     const auto activate = [&](std::uint32_t slot) {
       const Assignment& a = assignments[slot];
-      live[slot].base = blocks.take(std::size_t(a.valid) * (a.hi - a.lo));
+      const std::size_t cells = std::size_t(a.valid) * (a.hi - a.lo);
+      live[slot].base = blocks.take(cells);
+      if (options.collect_mass_residuals) { live[slot].ppm = blocks.take(cells); }
       live[slot].lo = a.lo;
       live[slot].hi = a.hi;
       live_peak = std::max(live_peak, ++live_now);
@@ -811,6 +828,7 @@ namespace ODIA
       trace.cycles = cycles;
       trace.rt = axes[a.window].data() + a.lo;
       trace.points = live[slot].base;
+      trace.ppm = live[slot].ppm;
       trace.offset = off_scratch.data();
       trace.count = count_scratch.data();
 
@@ -1078,8 +1096,16 @@ namespace ODIA
                   // Maximum, not sum: two peaks inside one tolerance are the same
                   // ion split by centroiding far more often than they are two ions.
                   if (at == 0.0f && intensity > 0.0f) { ++local_nonzero; }
+                  const bool wins = sum_peaks ? true : (intensity > at);
                   if (sum_peaks) { at += intensity; }
                   else if (intensity > at) { at = intensity; }
+                  // The deviation was already computed to test the match above;
+                  // it has been discarded here since the extractor was written.
+                  if (s.ppm != nullptr && wins)
+                  {
+                    s.ppm[std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo)] =
+                      static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
+                  }
                 }
               }
             }

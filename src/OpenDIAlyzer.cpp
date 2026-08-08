@@ -437,6 +437,17 @@ protected:
                           "S08's peaks are ~20-30 s.", false, true);
     registerFlag_("openswath_gauss",
                   "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
+    registerFlag_("collect_mass_residuals",
+                  "Keep the m/z deviation of every matched peak and report it per peak group "
+                  "as Mass.Ppm. The deviation is computed anyway to test the match and has "
+                  "always been discarded. This is the only way to measure the run's real "
+                  "fragment mass error: a standalone probe asks whether SOME peak lies within "
+                  "tolerance near a time, and on a mostly-absent library the answer is yes by "
+                  "coincidence -- an RT-shifted control produced a LARGER apparent offset than "
+                  "the true apex. Matches kept here are constrained by co-elution and, at "
+                  "q<=0.01, by the whole discriminant. Costs one extra float plane per live "
+                  "block, so it is off by default.",
+                  true);
     registerFlag_("no_ms1",
                   "Do not read MS1 or compute var_ms1_coelution. MS1/MS2 co-elution is the "
                   "only sub-score that does not read MS2 fragment traces, and so the only one "
@@ -506,6 +517,7 @@ protected:
       std::max(0, getIntOption_("max_precursors")));
     options.use_ion_mobility = !getFlag_("no_ion_mobility");
     options.precursor_im_window = getDoubleOption_("precursor_im_window");
+    options.collect_mass_residuals = getFlag_("collect_mass_residuals");
     options.aggregate = getStringOption_("aggregate") == "max"
                           ? ODIA::ChromatogramExtractor::Options::Aggregate::Max
                           : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
@@ -1185,7 +1197,7 @@ protected:
     std::ofstream out(path);
     if (!out) { throw std::runtime_error("cannot open " + path); }
     out << "Precursor.Id\tDecoy\tRT\tLeft.RT\tRight.RT\tApex.Intensity"
-           "\tDScore\tQValue\tPEP";
+           "\tDScore\tQValue\tPEP\tMass.Ppm\tMass.Ppm.N";
     for (const auto& n : ODIA::PeakGroupScorer::subScoreNames()) { out << '\t' << n; }
     out << '\n';
 
@@ -1196,7 +1208,8 @@ protected:
       out << seq << static_cast<int>(p.charge[g.precursor]) << '\t'
           << static_cast<int>(g.decoy) << '\t' << g.apex_rt << '\t' << g.left_rt
           << '\t' << g.right_rt << '\t' << g.apex_intensity << '\t' << g.dscore
-          << '\t' << g.qvalue << '\t' << g.pep;
+          << '\t' << g.qvalue << '\t' << g.pep
+          << '\t' << g.mass_ppm << '\t' << g.mass_ppm_n;
       for (const auto v : g.sub_scores) { out << '\t' << v; }
       out << '\n';
     }

@@ -227,6 +227,9 @@ namespace ODIA
 
     const float* rt = nullptr;            ///< `cycles` retention times, seconds
     const float* points = nullptr;        ///< base of the intensity storage
+    /// Per-point m/z deviation in ppm of the peak that won that cell, or null
+    /// when Options::collect_mass_residuals was off. Same indexing as `points`.
+    const float* ppm = nullptr;
     const std::uint64_t* offset = nullptr;///< transition_count offsets into it
     const std::uint32_t* count = nullptr; ///< transition_count point counts
 
@@ -486,6 +489,21 @@ namespace ODIA
       /// not have, and at 0.025 the calibration's gate fails outright on S08
       /// (peakedness 4.41 against a control at 4.60). See that field.
       double precursor_im_window = 0.025;
+
+      /// Keep the m/z deviation of every matched peak, for mass recalibration.
+      ///
+      /// The deviation is computed anyway, to test the match, and has always
+      /// been thrown away. Keeping it is the only way to measure the run's real
+      /// fragment mass error: a standalone probe asks "is there a peak within X
+      /// ppm somewhere near this time", and on a mostly-absent library the
+      /// answer is yes by coincidence -- measured 2026-08-08, an RT-shifted
+      /// control produced a LARGER apparent offset than the true apex did.
+      /// Matches recorded here are constrained by co-elution and, once scored
+      /// at q<=0.01, by the whole discriminant, so their contamination is
+      /// bounded by the FDR rather than by the search space.
+      ///
+      /// Costs one extra float plane per live block, so it is off by default.
+      bool collect_mass_residuals = false;
 
       /// Per-run recalibration of the library's 1/K0, or null for none.
       ///

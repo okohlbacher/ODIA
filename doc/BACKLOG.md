@@ -2341,3 +2341,63 @@ a NaN would propagate silently through an SVM dot product.
 **Next: static modelling.** Train on `lib_targets` where the loop ignites, save
 the model, apply it to `v6_50k` where it does not. That is the one strategy the
 literature actually endorses for this regime, and it is now a few lines.
+
+## The residuals are ALREADY centred and flat: -0.36 ppm, IQR 1.07 (2026-08-08)
+
+`-collect_mass_residuals` keeps the m/z deviation the extractor computes to test
+each match and has always discarded, records it per peak group as `Mass.Ppm`,
+and is read only for groups the FDR has already accepted. S08 + `lib_targets`:
+
+    group                       n        median ppm   IQR
+    confident targets q<=0.01   4,743      -0.356     1.07
+    decoys (built-in null)     47,617      -0.556     1.10
+
+    flat in RT (octiles):   -0.19 -0.29 -0.32 -0.34 -0.43 -0.33 -0.54 -0.31
+    flat in fragment count: -0.21 -0.43 -0.36 -0.45 -0.31 -0.47 -0.36 -0.27
+
+**S08's fragment mass calibration is essentially perfect. There is nothing to
+recalibrate**, and the loop's target -- "centred on zero and flat in RT and
+m/z" -- is already met by the instrument. Total spread across RT octiles is
+0.35 ppm, against an extraction window of 15,000 ppm-thousandths.
+
+**This retroactively explains four earlier results.** The mass calibration gate
+refusing to fire on S08 was correct: there is no offset to fit. Pinning -8.4 ppm
+cost 87-90 identifications and pinning -3.5 cost 142 because the true offset is
+-0.36, so both were 10x and 24x over-corrections. And the unanchored probe's
+-8.44 ppm was never the instrument -- its RT-shifted control said so, and this
+says so independently and with a hundredth of the error bar.
+
+Identifications are unchanged at 1306 with the flag on, and peak RSS is 3.73
+GiB, so the instrumentation is free in results and cheap in memory (one float
+plane per live block, opt-in).
+
+### The caveat that bounds this
+
+**It measures matches that SUCCEEDED.** A fragment whose true m/z fell outside
+the +/-15 ppm window records nothing, so this cannot by itself prove no fragment
+is lost to miscalibration -- it is conditioned on being matched. What makes the
+conclusion safe is the independent measurement from 2026-08-08: picked and
+unpicked precursors have the SAME residual distribution (medians -8.21 vs -9.38
+on the contaminated probe, identical fractions outside the window). Two
+measurements with different selection effects agreeing that extraction is not
+mis-centred is worth more than either alone.
+
+Also note the decoys sit at -0.556 with the same IQR, which is at first sight
+odd -- a shuffled sequence's fragments should match noise. They do not, because
+a decoy peak group only survives the picker when real co-eluting peaks were
+matched; both populations are therefore measuring the same instrument. That is a
+consistency check, not a contamination.
+
+### Consequence for MassRecalibration
+
+`MassRecalibration` (RT-blocked, linear in log m/z, anchor-fitted, 10 unit
+tests) is correct and **not needed on S08**. Keep it: it is the right model for
+an instrument that DOES drift, it is unit-tested against a planted drift, and
+the cost of having it is zero while the cost of rediscovering the need would be
+another night. Wire it only if a run's `Mass.Ppm` shows structure this one does
+not.
+
+**Do not spend further effort on recalibration strategies for this data.** The
+open problems are the picker (47% of scan positions rejected at
+`min_corr_score`, 9,890 Astral precursors yielding no candidate) and the
+1.5%-true-positive collapse -- neither of which is a mass problem.

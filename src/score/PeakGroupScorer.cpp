@@ -697,6 +697,39 @@ namespace ODIA
       }
       else { g.sub_scores[IM_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
 
+      // The peak group's own fragment mass deviation, when the extractor kept it.
+      //
+      // Recorded on the group rather than turned into a sub-score: a mass
+      // deviation is a property of the INSTRUMENT, and feeding it to the
+      // discriminant would let the classifier learn "this run's fragments sit
+      // at -3 ppm" and reject correct identifications for being well
+      // calibrated. It exists to fit a recalibration, and is read only for
+      // groups the FDR has already accepted.
+      if (chromatogram.ppm != nullptr && hi > lo)
+      {
+        std::vector<double> dev;
+        dev.reserve((hi - lo + 1) * tc);
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          const std::uint32_t n = chromatogram.pointCount(k);
+          const float* pv = chromatogram.ppm + (chromatogram.trace(k) - chromatogram.points);
+          for (std::size_t j = lo; j <= hi && j < n; ++j)
+          {
+            // Exactly zero means no peak won that cell. A real deviation of
+            // 0.000 ppm is possible and indistinguishable, which costs one
+            // sample in ~10^6 and is not worth a second plane to disambiguate.
+            if (pv[j] != 0.0f) { dev.push_back(pv[j]); }
+          }
+        }
+        if (!dev.empty())
+        {
+          const std::size_t h = dev.size() / 2;
+          std::nth_element(dev.begin(), dev.begin() + h, dev.end());
+          g.mass_ppm = static_cast<float>(dev[h]);
+          g.mass_ppm_n = static_cast<std::uint16_t>(std::min<std::size_t>(dev.size(), 65535));
+        }
+      }
+
       // MS1_COELUTION: does the PRECURSOR rise and fall with its fragments?
       //
       // Over the candidate's own cycles, pair each cycle's summed fragment
