@@ -592,6 +592,12 @@ add_test(NAME mass_calibration_recovers_offset COMMAND odia_mass_calibration)
 # corrected by a fit that never saw them.
 add_test(NAME mobility_calibration_recovers_offset COMMAND odia_mobility_calibration)
 
+# The RT-blocked mass recalibration: does it recover a drift that is there, and
+# refuse one that is not? It caught the composite-clamp defect on its first run
+# -- the same defect MobilityCalibration had, repeated hours later in a sibling
+# class, which is exactly what a test for a new model is for.
+add_test(NAME mass_recalibration_recovers_drift COMMAND odia_mass_recalibration)
+
 # The two TSV writers, byte for byte against the std::ofstream form they
 # replace.
 #

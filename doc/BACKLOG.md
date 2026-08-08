@@ -2125,3 +2125,45 @@ its RT-shifted control.**
 Consequence: the mass calibration gate refusing to fire on S08 is closer to
 correct than it looked. There IS an offset, it is ~-3.5 ppm against a +/-15 ppm
 window, and it is worth roughly nothing compared to what a wrong one costs.
+
+## OpenSWATH's picker BEATS ours, and every pinned offset loses (2026-08-08)
+
+S08 + `lib_targets`, one binary, one config, only the picker changed:
+
+    -picker openswath (defaults)        1368     <- best
+    -picker coelution (default, ours)   1306
+    -picker amplitude (ours)            1281
+    -picker openswath -openswath_sn 0.1 -openswath_peak_width 25   1166
+
+**The reference implementation wins by +62 (+4.7%)**, at its own default
+settings, and my attempt to "tune" it for DIA (a lower signal-to-noise threshold
+and an explicit 25 s peak width) cost 202. This is the doc/07 step 2 cross-check
+that has been outstanding since the scoring plan was written, and the first time
+it has been run.
+
+That is uncomfortable, because the co-elution picker was this project's largest
+single win -- it replaced the amplitude picker and fixed RT, FDR, recovery and
+memory together. Both can be true: co-elution beat OUR amplitude picker (1306 vs
+1281 here, and far more decisively when it was introduced), and OpenSWATH's
+amplitude picker is better than ours because its boundaries come from
+signal-to-noise rather than a fixed 10% of apex height. **The lesson is about
+peak BOUNDARIES, not about detection.** Our fixed-fraction boundary is the
+crudest part of the co-elution path and is the obvious thing to replace.
+
+Caveat, stated because this document keeps having to: `lib_targets` is ~100%
+true positives, so this is a RANKING benchmark. It measures which picker gives
+the scorer better peaks among peptides that are present. It does not measure
+search. The Astral arms and the `v6_50k` arm are running.
+
+### Every pinned global offset loses
+
+    no offset                              1306
+    -fragment_ppm_offset -3.5              1164     -142
+    -fragment_ppm_offset -8.4, wide        1219     -87
+    -fragment_ppm_offset -8.4, narrow      1216     -90
+
+Even the RT-shifted-control-corrected -3.5 ppm makes it worse. A single global
+constant is simply the wrong model, and forcing one is worse than leaving the
+window uncentred. **That is the argument for the RT-blocked recalibration**, not
+against it: what these arms refute is the constant, which is the model the
+existing MassCalibration fits.
