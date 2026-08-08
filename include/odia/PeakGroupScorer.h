@@ -5,6 +5,7 @@
 
 #include <odia/ChromatogramExtractor.h>
 #include <odia/Ms1Traces.h>
+#include <odia/OpenSwathPicker.h>
 #include <odia/Library.h>
 
 #include <cstddef>
@@ -217,6 +218,24 @@ namespace ODIA
       ///
       /// Set false to get the old amplitude detector back.
       bool coelution_picking = true;
+
+      /// Use OpenSWATH's PeakPickerChromatogram instead of either ODIA picker.
+      ///
+      /// The independent implementation doc/07 step 2 has always required and
+      /// nobody has run. Overrides `coelution_picking` when set.
+      bool openswath_picking = false;
+
+      /// Signal-to-noise threshold for the OpenSWATH picker. Its default is 1.0;
+      /// OpenSwathWorkflow commonly runs it at 0.1 for DIA, where a "peak" sits
+      /// on far more background than in targeted MRM.
+      double openswath_sn = 1.0;
+
+      /// Gaussian smoothing rather than Savitzky-Golay in the OpenSWATH picker.
+      bool openswath_gauss = false;
+
+      /// Expected peak width in seconds for the OpenSWATH picker, or 0 to leave
+      /// its default. S08's peaks are ~20-30 s.
+      double openswath_peak_width = 0.0;
 
       /// MS1 traces for MS1_COELUTION, or null when the run has no MS1.
       ///

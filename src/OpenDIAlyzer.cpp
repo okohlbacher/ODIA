@@ -413,6 +413,24 @@ protected:
                   "flag is the control arm for measuring what the band is worth.", true);
 
     registerFlag_("sort_library", "Sort precursors by m/z on load.", true);
+    registerStringOption_("picker", "<mode>", "coelution",
+                          "Which transition finder to use. coelution: ODIA's port of DIA-NN's "
+                          "Searcher::peaks -- a position is a peak only where the fragments "
+                          "already correlate. amplitude: local maxima on the summed trace. "
+                          "openswath: OpenMS's PeakPickerChromatogram, the reference "
+                          "implementation, which picks by amplitude and sets boundaries by "
+                          "signal-to-noise, so co-elution enters only afterwards as a score.",
+                          false);
+    setValidStrings_("picker", {"coelution", "amplitude", "openswath"});
+    registerDoubleOption_("openswath_sn", "<ratio>", 1.0,
+                          "Signal-to-noise threshold for -picker openswath. OpenMS defaults to "
+                          "1.0; OpenSwathWorkflow commonly runs 0.1 on DIA, where a peak sits "
+                          "on far more background than in targeted MRM.", false, true);
+    registerDoubleOption_("openswath_peak_width", "<seconds>", 0.0,
+                          "Expected peak width for -picker openswath, or 0 for its default. "
+                          "S08's peaks are ~20-30 s.", false, true);
+    registerFlag_("openswath_gauss",
+                  "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
     registerFlag_("no_ms1",
                   "Do not read MS1 or compute var_ms1_coelution. MS1/MS2 co-elution is the "
                   "only sub-score that does not read MS2 fragment traces, and so the only one "
@@ -896,6 +914,10 @@ protected:
     options.classifier = getStringOption_("classifier");
     options.min_library_corr = getDoubleOption_("min_library_corr");
     options.coelution_picking = !getFlag_("amplitude_picking");
+    options.openswath_picking = getStringOption_("picker") == "openswath";
+    options.openswath_sn = getDoubleOption_("openswath_sn");
+    options.openswath_gauss = getFlag_("openswath_gauss");
+    options.openswath_peak_width = getDoubleOption_("openswath_peak_width");
     options.min_corr_score = getDoubleOption_("min_corr_score");
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(

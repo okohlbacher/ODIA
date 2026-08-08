@@ -2077,3 +2077,51 @@ statistic, would sharpen it.
 uniformly -- but it will not recover the 9,275 unpicked precursors. For those,
 the picker's own thresholds are the target: `min_corr_score` rejects 47% of scan
 positions outright and the presence gate another 28%.
+
+## MS1 co-elution is worth +25%, and the -8.4 ppm offset was mine (2026-08-08)
+
+### MS1_COELUTION, wired and measured end to end
+
+S08 + `lib_targets`, everything else identical, same binary:
+
+    -no_ms1        1046 at 1% FDR
+    default        1306 at 1% FDR      +260, +24.9%
+
+**Far larger than predicted.** The probe measured a 1.4-1.5x bulk enrichment and
+a 13.7x tail, and I wrote that the honest expectation was "a real but bounded
+gain". +25% on a single feature is not bounded in that sense. The explanation is
+that a classifier does not use a feature the way a threshold does: the tail
+enrichment is what a FILTER would get, while the discriminant can exploit the
+whole ordering, and this feature is the only one in the set whose errors are
+independent of the other fifteen.
+
+### The -8.4 ppm "instrument offset" was a probe artefact
+
+Pinning it made things worse, which is what prompted the check:
+
+    no offset                          1306
+    -fragment_ppm_offset -8.4, wide    1219    -87
+    -fragment_ppm_offset -8.4, narrow  1216    -90
+
+The control that settles it: run the SAME anchored residual probe at a
+retention time 300 s away, where the peptide cannot be.
+
+    at DIA-NN's true apex     n=670   median -8.44 ppm   sd 13.13
+    300 s away (control)      n=670   median -4.98 ppm   sd 14.96
+    difference                                -3.46 ppm
+
+**Most of the -8.44 is the probe, not the instrument.** Random matches inside a
++/-50 ppm window are not symmetric in ppm, so an unanchored median is biased
+negative regardless of what the instrument does. The real offset is the
+true-minus-control difference, about **-3.5 ppm** -- and pinning -8.4
+over-corrected by ~5 ppm, hence the loss.
+
+This is the third time this project has been caught by the same class of error:
+a statistic computed over a large search space looks like a measurement and is
+a property of the search. The fix each time is the same -- run the control that
+cannot contain the signal. **Any m/z offset quoted from now on must come with
+its RT-shifted control.**
+
+Consequence: the mass calibration gate refusing to fire on S08 is closer to
+correct than it looked. There IS an offset, it is ~-3.5 ppm against a +/-15 ppm
+window, and it is worth roughly nothing compared to what a wrong one costs.

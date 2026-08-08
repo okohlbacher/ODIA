@@ -461,7 +461,34 @@ namespace ODIA
     if (window_total <= 0.0) { ++result.precursors_without_candidate; return; }
 
     const std::size_t first_group = result.groups.size();
-    const auto candidates = options.coelution_picking
+    // Three pickers now. OpenSWATH's is the independent implementation
+    // doc/07 step 2 requires; it picks on the summed trace by amplitude and
+    // sets boundaries by signal-to-noise, so co-elution enters only later as a
+    // score -- the opposite ordering to findCandidatesByCorrelation.
+    std::vector<Candidate> openswath_candidates;
+    if (options.openswath_picking)
+    {
+      std::vector<float> rt(chromatogram.cycles);
+      for (std::uint32_t j = 0; j < chromatogram.cycles; ++j)
+      { rt[j] = chromatogram.retentionTime(j); }
+      for (const auto& c : pickOpenSwath(total, rt, options.openswath_sn,
+                                         options.openswath_gauss,
+                                         options.openswath_peak_width,
+                                         options.max_candidates))
+      {
+        Candidate cd;
+        cd.apex = c.apex; cd.left = c.left; cd.right = c.right;
+        cd.apex_value = c.apex_value;
+        // corr_sum stays 0: this picker never computes it, exactly as the
+        // amplitude picker does not. CORR_SUM is then a constant column and the
+        // constant-column guard drops it, which is the honest outcome -- a
+        // feature this picker cannot supply must not be faked.
+        openswath_candidates.push_back(cd);
+      }
+    }
+    const auto candidates = options.openswath_picking
+      ? openswath_candidates
+      : options.coelution_picking
       ? findCandidatesByCorrelation(chromatogram, rejects_, options.corr_half_window,
                                     options.min_corr_score, options.max_corr_diff,
                                     options.apex_evidence, options.smooth_half_width,

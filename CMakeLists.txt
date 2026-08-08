@@ -99,6 +99,7 @@ set(ODIA_LIB_SOURCES
   src/io/MzPeakSource.cpp
   src/extract/ChromatogramExtractor.cpp
   src/extract/Ms1Traces.cpp
+  src/score/OpenSwathPicker.cpp
   src/score/PeakGroupScorer.cpp
   src/calibrate/RtCalibration.cpp
   src/calibrate/MassCalibration.cpp
