@@ -2820,3 +2820,42 @@ behaviour rather than a failure mode.
 **Interim rule until detection exists: never quote a parameter as tuned without
 naming the file it was tuned on.** Three instrument-conditionality traps have
 already been recorded in this document.
+
+## 2026-08-09: candidate generation is not the deficit, measured from every side
+
+The loop's question was why OpenSWATH finds more candidates. It does not, and
+no change to candidate generation recovers the gap. Astral unless noted; S08 is
+`lib_targets`, baseline 1,306.
+
+    baseline                                   4,969   1,306
+    min_fragments_at_apex 1                    5,025   pending
+    apex_evidence 0.50                         4,971
+    max_candidates 50                          4,964
+    max_candidates 12 / 6 / 3 / 1 (S08)                1,307 / 1,245 / 1,274 / 1,141
+    OpenMS PeakPickerChromatogram              3,983   1,368
+      ... at its DIA default sn 0.1            3,936
+    amplitude picker                           3,848   1,281
+    union (co-elution + amplitude)             3,002       0
+    union + OpenMS picker at sn 0.1            3,817
+    DIA-NN's published min_corr/corr_diff 1.0  pending  1,185
+
+Read together: DEPTH is inert between 3 and 50. DENSITY is harmful. A different
+PICKER is neutral to harmful, and running OpenSWATH's at its own DIA S/N default
+changes nothing. Tightening the margin to DIA-NN's published values costs 121 on
+S08. The only gain all day came from REMOVING a gate that deleted rows over
+`FRAGMENT_COVERAGE`, a feature the classifier already had.
+
+Two hypotheses died here and should not be retried without new evidence:
+
+* **Candidate depth.** Decoys average 18.44 candidates per precursor against
+  targets' 8.95, because the margin rule is relative to each precursor's own
+  best and a weak precursor admits nearly every position. That asymmetry is
+  real, but it does not cost identifications: `max_candidates 1` equalises N and
+  measures WORSE (1,141), and depth 12 to 50 is flat.
+* **Picker fidelity.** `-openswath_sn 0.1`, kimi's lead from the OpenSwathWorkflow
+  default, moved 3,983 to 3,936.
+
+The bound that closes the question: 87.0% availability on 11,112 truth
+precursors caps the candidate-generation gain at ~1,445 against a 4,969 -> 8,765
+gap, so **>= ~4,700 are lost after candidates exist** -- in scoring, ranking or
+FDR. That is where the next phase goes.
