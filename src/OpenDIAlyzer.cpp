@@ -11,6 +11,7 @@
 #include <odia/ChromatogramExtractor.h>
 #include <odia/ChromatogramTsv.h>
 #include <odia/MassCalibration.h>
+#include <odia/MassWidth.h>
 #include <odia/Ms1Traces.h>
 #include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
@@ -476,9 +477,35 @@ protected:
                   "tolerance near a time, and on a mostly-absent library the answer is yes by "
                   "coincidence -- an RT-shifted control produced a LARGER apparent offset than "
                   "the true apex. Matches kept here are constrained by co-elution and, at "
-                  "q<=0.01, by the whole discriminant. Costs one extra float plane per live "
-                  "block, so it is off by default.",
+                  "q<=0.01, by the whole discriminant. Costs TWO extra float planes per live "
+                  "block -- an intensity-weighted sum and its denominator, because a single "
+                  "plane could not tell 'no peak matched' from 'matched at exactly 0.000 ppm' "
+                  "under the default Sum aggregation. The decode path, not the live blocks, is "
+                  "what sets this tool's memory floor, so the cost is real but not binding.",
                   true);
+    registerStringOption_("mass_width_from_ids", "<mode>", "measure",
+                          "Size pass 2's fragment window from pass 1's own identifications, "
+                          "instead of falling back to a constant when the mass calibration gate "
+                          "fails. 'off' does not measure it; 'measure' measures and logs it but "
+                          "keeps the constant; 'apply' uses it. Measuring is free -- pass 1 "
+                          "already extracts wide and already scores -- so the default measures, "
+                          "and applying is opt-in until it has been measured on both "
+                          "instruments. Implies -collect_mass_residuals unless 'off', so the "
+                          "default carries that option's two extra float planes; 'off' restores "
+                          "the smaller footprint.",
+                          false, true);
+    registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
+                          "Half-width, in robust sigmas of the per-fragment deviation, for "
+                          "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
+                          "distribution has heavier tails than that, which is why the result is "
+                          "also floored by -mass_width_min_ppm.", false, true);
+    registerDoubleOption_("mass_width_min_ppm", "<ppm>", 5.0,
+                          "Floor for -mass_width_from_ids apply. A pass 1 that identified only "
+                          "its cleanest precursors measures their scatter, not the run's.",
+                          false, true);
+    registerIntOption_("mass_width_min_groups", "<n>", 200,
+                       "Accepted precursors below which the measured width is not trusted.",
+                       false, true);
     registerDoubleOption_("ms1_im_scale", "<factor>", 2.0,
                           "MS1 mobility half-width, as a multiple of -precursor_im_window. "
                           "MS1 ions are not mobility-selected by an isolation window, so the "
@@ -570,7 +597,11 @@ protected:
       std::max(0, getIntOption_("max_precursors")));
     options.use_ion_mobility = !getFlag_("no_ion_mobility");
     options.precursor_im_window = getDoubleOption_("precursor_im_window");
-    options.collect_mass_residuals = getFlag_("collect_mass_residuals");
+    // The width measurement reads the ppm planes, so asking for it turns them
+    // on. Making the user pass two flags that only work together is a way of
+    // producing runs that silently measured nothing.
+    options.collect_mass_residuals = getFlag_("collect_mass_residuals") ||
+                                     getStringOption_("mass_width_from_ids") != "off";
     options.aggregate = getStringOption_("aggregate") == "max"
                           ? ODIA::ChromatogramExtractor::Options::Aggregate::Max
                           : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
@@ -803,6 +834,24 @@ protected:
                                        pass1_window > 0.0 ? pass1_window : 1.0e9,
                                        false, pass1);
       if (rc != EXECUTION_OK) { return rc; }
+    }
+
+    // The fragment window, measured rather than defaulted.
+    //
+    // Pass 1 has just extracted wide and scored, so the per-fragment deviations
+    // of everything the FDR accepted are sitting in `pass1` at no extra cost.
+    // That population is what `MassCalibration`'s standalone probe could never
+    // get: its matches are constrained by co-elution and by the whole
+    // discriminant, where a probe over a mostly-absent library measures
+    // coincidence. Measured always, applied only under -mass_width_from_ids
+    // apply -- the measurement and its application are different claims and the
+    // last time they were coupled a passing gate cost 56% of the run.
+    if (getStringOption_("mass_width_from_ids") != "off")
+    {
+      mass_width_ = ODIA::MassWidth::measure(
+        pass1, 0.01, extracted_ppm_, getDoubleOption_("mass_width_sigmas"),
+        static_cast<std::size_t>(std::max(1, getIntOption_("mass_width_min_groups"))));
+      writeLogInfo_(ODIA::MassWidth::report(mass_width_));
     }
 
     std::ostringstream p1;
@@ -1725,6 +1774,27 @@ private:
 
   bool mass_model_known_ = false;
 
+  /// The fragment window sized from pass 1's identifications, and the
+  /// half-width pass 1 was itself extracted through. See `MassWidth`.
+  ODIA::MassWidth::Estimate mass_width_;
+  double extracted_ppm_ = 0.0;
+
+  /// The measured half-width if it may be used, else `fallback`.
+  ///
+  /// Everything that could make the measurement inadmissible is checked in one
+  /// place: the mode has to be `apply`, the estimate has to exist, it must not
+  /// be censored by the window it was measured through, and it is floored --
+  /// pass 1 identifies its cleanest precursors first, so their scatter is a
+  /// lower bound on the run's, not an estimate of it.
+  double measuredWidthOr_(double fallback)
+  {
+    if (getStringOption_("mass_width_from_ids") != "apply") { return fallback; }
+    if (!mass_width_.valid || mass_width_.censored) { return fallback; }
+    if (!std::isfinite(mass_width_.width_ppm) || !(mass_width_.width_ppm > 0.0))
+    { return fallback; }
+    return std::max(mass_width_.width_ppm, getDoubleOption_("mass_width_min_ppm"));
+  }
+
   /// Whether the run's retention-time map has been fitted and written into the
   /// library's `irt`. Until it has, the mass probe has no way to know where a
   /// precursor should elute.
@@ -1999,6 +2069,18 @@ private:
                              ODIA::ChromatogramExtractor::Options& options,
                              double rt_window_seconds = 0.0)
   {
+    applyMassCalibrationImpl_(library, source, options, rt_window_seconds);
+    // Remembered so the width measurement knows the window its residuals were
+    // observed through, which is the only thing that makes its censoring test
+    // possible. Set here rather than in each branch of the implementation so a
+    // new early return cannot quietly leave it stale.
+    extracted_ppm_ = options.fragment_ppm;
+  }
+
+  void applyMassCalibrationImpl_(const ODIA::Library& library, ODIA::SpectrumSource& source,
+                                 ODIA::ChromatogramExtractor::Options& options,
+                                 double rt_window_seconds)
+  {
     const double configured = getDoubleOption_("fragment_ppm");
     const double pinned = getDoubleOption_("fragment_ppm_offset");
     const bool off = getStringOption_("mass_calibration") == "off";
@@ -2012,7 +2094,7 @@ private:
       // 0.78, because the window is centred on the wrong place. A pinned offset
       // is a centring the caller asserted, so it earns the narrow width.
       const double fallback = pinned != 0.0 ? options.fragment_ppm
-                                            : options.fragment_ppm_uncalibrated;
+                                            : measuredWidthOr_(options.fragment_ppm_uncalibrated);
       options.fragment_ppm = configured > 0.0 ? configured : fallback;
       std::ostringstream os;
       os << "fragment mass calibration: not measured ("
@@ -2101,6 +2183,21 @@ private:
 
     if (!mass_model_.fitted)
     {
+      // The measured centre is applied with the measured width or not at all.
+      // A width is the scatter ABOUT a centre, so narrowing to it while leaving
+      // the axis at zero is the exact error the header's presence table warns
+      // about -- it would keep the tail of the distribution rather than its peak.
+      const double from_ids = measuredWidthOr_(-1.0);
+      if (from_ids > 0.0)
+      {
+        options.fragment_ppm_offset = mass_width_.centre_ppm;
+        options.fragment_ppm = configured > 0.0 ? std::min(configured, from_ids) : from_ids;
+        writeLogInfo_("The mass calibration gate FAILED, but pass 1's own identifications "
+                      "measured the fragment error directly; extracting at +/-" +
+                      std::to_string(options.fragment_ppm) + " ppm centred on " +
+                      std::to_string(options.fragment_ppm_offset) + " ppm.");
+        return;
+      }
       options.fragment_ppm_offset = 0.0;
       options.fragment_ppm = configured > 0.0 ? configured : options.fragment_ppm_uncalibrated;
       writeLogWarn_("The mass calibration gate FAILED, so no offset is applied and the window "

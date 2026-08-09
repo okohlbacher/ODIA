@@ -314,6 +314,21 @@ namespace ODIA
       /// Deliberately NOT a sub-score -- see where it is filled.
       float mass_ppm = std::numeric_limits<float>::quiet_NaN();
       std::uint16_t mass_ppm_n = 0;
+
+      /// SCATTER of this group's PER-FRAGMENT deviations, ppm, as a robust
+      /// sigma (MAD x 1.4826) about the group's own median. NaN until at least
+      /// `MassWidth::min_fragments` fragments contributed.
+      ///
+      /// This is the quantity a window width must be sized from, and it is NOT
+      /// the spread of `mass_ppm` across groups. `mass_ppm` is a median over
+      /// (fragment x cycle) cells, so its own precision is sigma/sqrt(N_eff) --
+      /// sizing a window from how tightly group medians cluster would give a
+      /// number several times too narrow and would look, wrongly, like a very
+      /// well calibrated instrument. What has to fit inside the window is one
+      /// FRAGMENT's deviation, so one fragment is the unit measured here.
+      float mass_ppm_spread = std::numeric_limits<float>::quiet_NaN();
+      /// How many fragments contributed to `mass_ppm_spread`.
+      std::uint8_t mass_ppm_frags = 0;
       std::vector<double> sub_scores;
 
       double dscore = 0.0;

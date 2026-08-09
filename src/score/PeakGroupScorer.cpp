@@ -726,20 +726,33 @@ namespace ODIA
       // groups the FDR has already accepted.
       if (chromatogram.ppm_num != nullptr && chromatogram.ppm_den != nullptr && hi > lo)
       {
-        std::vector<double> dev;
+        std::vector<double> dev, per_fragment, cell;
         dev.reserve((hi - lo + 1) * tc);
+        per_fragment.reserve(tc);
         for (std::uint32_t k = 0; k < tc; ++k)
         {
           const std::uint32_t n = chromatogram.pointCount(k);
           const std::ptrdiff_t off = chromatogram.trace(k) - chromatogram.points;
           const float* num = chromatogram.ppm_num + off;
           const float* den = chromatogram.ppm_den + off;
+          cell.clear();
           for (std::size_t j = lo; j <= hi && j < n; ++j)
           {
             // A zero denominator is the unambiguous "no peak matched here" --
             // which the single-plane version could not distinguish from a real
             // deviation of exactly 0.000 ppm.
-            if (den[j] > 0.0f) { dev.push_back(num[j] / den[j]); }
+            if (den[j] > 0.0f) { cell.push_back(num[j] / den[j]); }
+          }
+          dev.insert(dev.end(), cell.begin(), cell.end());
+          // One number per FRAGMENT: the median over the cycles it was seen in.
+          // Averaging within a fragment is legitimate -- those cells measure the
+          // same ion at the same m/z -- whereas averaging ACROSS fragments is
+          // what would hide the scatter the window has to accommodate.
+          if (!cell.empty())
+          {
+            const std::size_t c = cell.size() / 2;
+            std::nth_element(cell.begin(), cell.begin() + c, cell.end());
+            per_fragment.push_back(cell[c]);
           }
         }
         if (!dev.empty())
@@ -748,6 +761,22 @@ namespace ODIA
           std::nth_element(dev.begin(), dev.begin() + h, dev.end());
           g.mass_ppm = static_cast<float>(dev[h]);
           g.mass_ppm_n = static_cast<std::uint16_t>(std::min<std::size_t>(dev.size(), 65535));
+        }
+        if (per_fragment.size() >= 3)
+        {
+          const std::size_t c = per_fragment.size() / 2;
+          std::nth_element(per_fragment.begin(), per_fragment.begin() + c, per_fragment.end());
+          const double centre = per_fragment[c];
+          std::vector<double> abs_dev;
+          abs_dev.reserve(per_fragment.size());
+          for (const double v : per_fragment) { abs_dev.push_back(std::abs(v - centre)); }
+          const std::size_t m = abs_dev.size() / 2;
+          std::nth_element(abs_dev.begin(), abs_dev.begin() + m, abs_dev.end());
+          // 1.4826 makes the MAD an estimate of sigma for a Gaussian, so the
+          // width the driver derives from it can be stated in sigmas.
+          g.mass_ppm_spread = static_cast<float>(1.4826 * abs_dev[m]);
+          g.mass_ppm_frags = static_cast<std::uint8_t>(
+            std::min<std::size_t>(per_fragment.size(), 255));
         }
       }
 

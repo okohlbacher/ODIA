@@ -598,6 +598,12 @@ add_test(NAME mobility_calibration_recovers_offset COMMAND odia_mobility_calibra
 # class, which is exactly what a test for a new model is for.
 add_test(NAME mass_recalibration_recovers_drift COMMAND odia_mass_recalibration)
 
+# Sizing the fragment window from the run's own identifications. Guards the two
+# ways this estimator can lie: measuring the precision of a group median rather
+# than the scatter of a fragment, and reading a distribution that was truncated
+# by the window it was observed through.
+add_test(NAME mass_width_from_identifications COMMAND odia_mass_width)
+
 # The two TSV writers, byte for byte against the std::ofstream form they
 # replace.
 #
