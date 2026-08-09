@@ -3034,3 +3034,34 @@ first thing to settle before claiming parity either way.
 
 Astral stands at robust sigma 34.22 against the bar of 26.09
 (`doc/14-irt-acceptance.md`). Not yet there.
+
+## 2026-08-09 21:10: the exposed loop knobs do not ignite the SEARCH benchmark
+
+v6_50k, all three arms, all zero:
+
+    default                                                0
+    train_fdr_initial 0.35, train_fdr 0.10, 6 iterations    0
+    train_fdr_initial 0.35, use_pi0                         0
+
+Kimi's Phase 1-2 finding #2 was right that LDAParams/NNParams/GBTParams were
+reachable only by recompiling and worth exposing -- they are real, measurable
+knobs now -- and wrong about the effect. Relaxing the semi-supervised loop does
+not make it bootstrap on a 1.5%-prior library.
+
+That should have been my prior, because the empirical-FDR table already said it:
+the longest prefix at <=1% EMPIRICAL FDR on this benchmark is **2 precursors**.
+There is nothing to certify, so no threshold or iteration count can certify it.
+Only a better discriminant moves this.
+
+Kimi's finding #4 (charge-3 fragments) is dead: every library on disk is 0.0%
+charge >= 3, DIA-NN's included, against the claimed 35.6%.
+
+Kimi's finding #1 (the decoy null) is partly wrong and partly open. Wrong: it
+claims decoys keep the target's fragments; `LibraryGenerator.cpp:775-790`
+recomputes every fragment from the decoy sequence, and records why -- shifting
+b/y ions left 15.3% of decoy fragment m/z not matching the sequence stored
+beside them, which is the asymmetric criterion an FDR must never have. Open: a
+two-residue mutation still shares the target's retention time, mobility and
+intensity pattern, and on the SEARCH benchmark false targets outscore decoys
+(p99 3.468 against 2.063). `-decoys pseudoreverse` already exists, so the test
+is a flag rather than new code, and is running.
