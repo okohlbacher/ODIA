@@ -20,14 +20,19 @@ namespace ODIA::Calibration
   /// Robust by construction, because the anchors are dirty by construction:
   /// they are first-pass peak groups found in windows narrower than the RT
   /// error, so residuals of thousands of seconds are guaranteed in the set.
-  /// Binned medians, then Cleveland's bisquare-reweighted LOESS, then PAVA
-  /// isotonic regression. The last is not cosmetic -- elution order is
+  /// Binned medians, optionally Cleveland's bisquare-reweighted LOESS, then
+  /// PAVA isotonic regression. The last is not cosmetic -- elution order is
   /// physics, and a non-monotone RT map is always wrong however well it fits.
+  ///
+  /// "Optionally" is load-bearing and was not said here before: LOESS is gated
+  /// on `loess_span > 0`, every production call site passed 0, so the middle
+  /// step has never run. `-rt_loess_span` exists to measure what it is worth.
   ///
   /// @param anchors (library RT, observed RT) pairs.
   /// @param p95_resid if non-null, receives the 95th percentile residual.
-  /// @param loess_span 0 lets the fit choose; the floor of ~15 neighbours
-  ///        means the effective span grows as the anchor count shrinks.
+  /// @param loess_span 0 uses BINNED MEDIANS ALONE -- it does not "let the fit
+  ///        choose", which is what this comment claimed while every production
+  ///        call site passed 0. LOESS runs only for span > 0 and >= 50 anchors.
   OpenMS::TransformationDescription fit(std::vector<std::pair<double, double>> anchors,
                                         double* p95_resid = nullptr,
                                         double loess_span = 0.0);

@@ -322,6 +322,16 @@ protected:
                        "lets equal-sized pass-1 subsets with different members be "
                        "compared, separating how many anchors from which anchors.",
                        false, true);
+    registerDoubleOption_("rt_loess_span", "<fraction>", 0.0,
+                          "LOESS span for the retention-time map, as a fraction of the anchors. "
+                          "0 uses binned medians alone. "
+                          "\n\nNOTE: 0 has ALWAYS been what production passed, so the LOESS the "
+                          "header describes has never run -- RtCalibration.h says '0 lets the fit "
+                          "choose' and RtCalibration.cpp says 'loess_span <= 0 selects the "
+                          "historical binned-median path'. The header was wrong and this option "
+                          "is how the difference gets measured instead of assumed. LOESS also "
+                          "needs at least 50 anchors; below that it is skipped whatever is set.",
+                          false, true);
     registerDoubleOption_("rt_window_p95_factor", "<x>", 2.0,
                           "Pass 2 extracts over this many times the fitted map's p95 "
                           "residual, instead of the flat -rt_window. Points per "
@@ -885,9 +895,16 @@ protected:
            << "extracting all of them costs memory proportional to the library";
         writeLogInfo_(st.str());
       }
+      // external_irt_, NOT false. When -irt_slope/-irt_intercept were supplied
+      // the library's irt was already converted to run seconds above, and
+      // extractInto_ reads this flag to decide whether to apply that map --
+      // so passing false applied it a SECOND time. On S08 with the stored v6
+      // map that is 7.77 * (run seconds) + 733, i.e. ~24,000 s for a 5,400 s
+      // gradient: pass 1 extracted from beyond the end of the run and every
+      // anchor it could have found was unreachable.
       const auto rc = extractAndScore_(library, run,
                                        pass1_window > 0.0 ? pass1_window : 1.0e9,
-                                       false, pass1);
+                                       external_irt_, pass1);
       if (rc != EXECUTION_OK) { return rc; }
     }
 
@@ -999,7 +1016,8 @@ protected:
     }
 
     double p95 = 0.0;
-    const auto trafo = ODIA::Calibration::fit(anchors, &p95, 0.0);
+    const double loess_span = getDoubleOption_("rt_loess_span");
+    const auto trafo = ODIA::Calibration::fit(anchors, &p95, loess_span);
 
     // p95 above is IN-SAMPLE: it is the residual on the very anchors the map
     // was fitted to, so it cannot see overfitting. That is not hypothetical --
@@ -1020,7 +1038,8 @@ protected:
         (i % 5 == 4 ? held : fit_set).push_back(anchors[i]);
       }
       double dummy = 0.0;
-      const auto probe = ODIA::Calibration::fit(fit_set, &dummy, 0.0);
+      // Same span as the real fit, or the probe measures a different model.
+      const auto probe = ODIA::Calibration::fit(fit_set, &dummy, loess_span);
       std::vector<double> resid;
       resid.reserve(held.size());
       for (const auto& a : held)
@@ -1349,7 +1368,8 @@ protected:
       if (static_cast<int>(anchors.size()) < min_anchors) { break; }
 
       double p95 = 0.0;
-      const auto trafo = ODIA::Calibration::fit(anchors, &p95, 0.0);
+      const auto trafo = ODIA::Calibration::fit(anchors, &p95,
+                                                getDoubleOption_("rt_loess_span"));
       // Applied to the ORIGINAL iRT every round, never to the previous round's
       // output: composing maps would drift, and each fit is a map from library
       // units to run seconds, not a correction to the last one.
@@ -1414,6 +1434,11 @@ protected:
   {
     auto options = scoringOptions_();
     options.disabled_sub_scores = ablatedSubScores_();
+    // Without this RT_DELTA is NaN and the constant-column guard drops
+    // var_rt_delta, so every -out_chrom path silently discarded the one feature
+    // the retention-time map exists to enable. extractAndScore_ has always set
+    // it; this path never did.
+    options.library_rt_is_run_seconds = scoring_rt_is_run_seconds_;
 
     const auto t = std::chrono::steady_clock::now();
     ODIA::PeakGroupScorer::Result scored;
@@ -1584,7 +1609,7 @@ protected:
     if (stop_after != "library" && stop_after != "extract" && stop_after != "calib" &&
         stop_after != "score")
     {
-      writeLogError_("Implemented stages are 'library', 'extract' and 'score'.");
+      writeLogError_("Implemented stages are 'library', 'extract', 'calib' and 'score'.");
       return ILLEGAL_PARAMETERS;
     }
     if ((stop_after == "extract" || stop_after == "calib" || stop_after == "score") &&
