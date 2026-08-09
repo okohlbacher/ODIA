@@ -18,6 +18,15 @@ import csv, subprocess, sys
 import numpy as np, pyarrow.parquet as pq
 
 anchors_path, lib_path, report_path, onnx_path, predictor = sys.argv[1:6]
+# Optional 7th argument: the parquet the MODEL was trained on. Its sequences
+# must leave the test set too.
+#
+# This is not optional once bootstrapping starts. Round 1 trains on the anchors,
+# so excluding anchor sequences is enough. Round 2 trains on the SEARCH's own
+# 6,382 identifications, which overlap DIA-NN's confident set almost entirely --
+# so a test set filtered only against the anchors is one the model has largely
+# seen, and the number it produces is leakage, not generalisation.
+trained_on = sys.argv[6] if len(sys.argv) > 6 else ""
 
 def strip_mods(s):
     out, depth = [], 0
@@ -56,6 +65,10 @@ with open(anchors_path) as f:
         anch.append((strip_mods(r['Modified.Sequence']), float(r['Library.iRT']),
                      float(r['Observed.RT'])))
 seen = {a[0] for a in anch}
+if trained_on:
+    tt = pq.read_table(trained_on, columns=["Modified.Sequence"]).to_pydict()
+    seen |= {strip_mods(x) for x in tt["Modified.Sequence"]}
+    print(f"excluding {len(seen)} training sequences (anchors + {trained_on})")
 
 pred = {}
 with open(lib_path) as f:
