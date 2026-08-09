@@ -537,6 +537,21 @@ protected:
                           "ablation within ONE binary: comparing two builds also compares "
                           "everything else that changed between them, which is how a feature "
                           "gets credited with somebody else's gain.", false, true);
+    registerFlag_("repredict_irt",
+                  "Re-predict the SUPPLIED library's iRT with -rt_model, instead of using the "
+                  "values the library file carries. "
+                  "\n\nThis is the link that was missing between the RT fine-tuner and a real "
+                  "search. -rt_model has only ever been consumed when ODIA GENERATES a library "
+                  "from FASTA, so a model fine-tuned on a run's own identifications could not be "
+                  "applied to a search of that run against a supplied TSV -- which is every "
+                  "benchmark we have. "
+                  "\n\nMeasured on Astral, held out by stripped sequence with the recipe chosen "
+                  "on a separate validation split: the library's own iRT through our map gives "
+                  "SD 40.03 s, and a model tuned on 5,867 of this run's identifications for 200 "
+                  "epochs gives 27.70 s. DIA-NN's own residual on this file is 29.29 s. "
+                  "\n\nThe model must be tuned on THIS run. Reusing one across runs cost 2,027 "
+                  "precursors when it happened, and the sidecar says so; -rt_model already warns "
+                  "when a provenance file carries that warning.", true);
     registerStringOption_("mass_features", "<mode>", "auto",
                           "Whether var_mass_accuracy and var_mass_spread reach the classifier. "
                           "auto: only when the fragment mass calibration gate FAILED. "
@@ -1956,6 +1971,45 @@ protected:
     }
     const auto load_ms = std::chrono::duration<double, std::milli>(
                            std::chrono::steady_clock::now() - t0).count();
+
+    // Re-predict the supplied library's iRT with a (fine-tuned) model.
+    //
+    // BEFORE the sort and before any calibration, because everything
+    // downstream -- the anchors, the map, the pass-2 windows -- reads irt, and
+    // changing it underneath a fitted map would compose two unrelated axes.
+    if (getFlag_("repredict_irt"))
+    {
+      const std::string rt_model = getStringOption_("rt_model");
+      if (rt_model.empty())
+      {
+        writeLogError_("-repredict_irt needs -rt_model; there is nothing to predict with.");
+        return ILLEGAL_PARAMETERS;
+      }
+      try
+      {
+        const auto t_rt = std::chrono::steady_clock::now();
+        const std::size_t missing = ODIA::LibraryGenerator::predictRetentionTimes(
+          library, rt_model, true,
+          static_cast<unsigned>(std::max(0, getIntOption_("threads"))));
+        std::ostringstream os;
+        os << "re-predicted iRT for the supplied library with " << rt_model << " in "
+           << std::chrono::duration<double>(std::chrono::steady_clock::now() - t_rt).count()
+           << " s";
+        if (missing)
+        {
+          // NaN, not a made-up number: predictRetentionTimes leaves them NaN and
+          // the extractor skips a precursor with no retention time rather than
+          // extracting from an invented one.
+          os << "; " << missing << " precursors could not be predicted and keep a NaN iRT";
+        }
+        writeLogInfo_(os.str());
+      }
+      catch (const std::exception& e)
+      {
+        writeLogError_(std::string("-repredict_irt failed: ") + e.what());
+        return INTERNAL_ERROR;
+      }
+    }
 
     if (sort_library) { library.sortByPrecursorMz(); }
     library.shrinkToFit();

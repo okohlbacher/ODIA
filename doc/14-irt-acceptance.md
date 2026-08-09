@@ -210,3 +210,37 @@ One split-brain to remember: the fine-tune runs on `data` (GPU) but the ONNX
 exporter needs the OpenMS source tree, which is on ibminode05's node-local
 scratch. The `.pth` lands on ceph and is visible from both, so the export is a
 separate step on the other node until the exporter is reachable from one place.
+
+## 2026-08-09 19:25: fine-tuning wired end to end, and what the SD was really measuring
+
+`-repredict_irt` re-predicts a SUPPLIED library's iRT with `-rt_model` before
+the sort and before any calibration. That was the missing link: `-rt_model` had
+only ever been consumed when ODIA generates a library from FASTA, so a model
+fine-tuned on a run's own identifications could not be applied to a search of
+that run against a supplied TSV -- which is every benchmark we have. 21,782
+Astral precursors re-predicted in 0.5 s.
+
+Measured in a real search, on the same 2,694 anchors:
+
+    library iRT   robust sigma 34.42 s   p50|e| 23.24   p95|e| 106.53   SD 125.98   max 1583
+    tuned iRT     robust sigma  9.73 s   p50|e|  6.57   p95|e|  65.58   SD 122.76   max 1604
+
+**The bulk improves 3.5x and the SD does not move.** That is the whole answer to
+a question that has been confusing this document all afternoon: the SD was never
+measuring the retention-time model. It was measuring ANCHOR CONTAMINATION -- a
+max|e| of 1,600 s is a misidentification, not an RT error, and no model can fix
+it. The robust sigma was measuring the model, and by that measure the tuned
+prediction is 9.73 s against DIA-NN's 26.09.
+
+So the SD <= 30 s bar splits into two claims that should never have been one:
+
+* **RT model quality**: met, comfortably. Held out by stripped sequence with the
+  recipe chosen on a separate validation split, 27.70 s against DIA-NN's
+  29.29 s; in-run robust sigma 9.73 s.
+* **SD on ODIA's own anchors**: NOT met, at 122.76 s, and it is an FDR problem.
+  Tightening `-anchor_q` from 0.05 to 0.001 took SD from 95.62 to 36.85 earlier
+  today without touching the RT model at all.
+
+The practical consequence is immediate: p95 falls from 106.6 s to 67.0 s, which
+halves the pass-2 extraction window -- the memory lever, and the interference
+lever, that doc/06 said a better RT buys.
