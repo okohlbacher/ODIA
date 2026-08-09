@@ -454,6 +454,10 @@ namespace ODIA
       /// make the fit depend on it too.
       Result finish();
 
+      /// Sub-scores decided after extraction; see `Sink::disableSubScores`.
+      void disableSubScores(std::vector<int> indices)
+      { options_.disabled_sub_scores = std::move(indices); }
+
     private:
       const Library* library_;
       Options options_;
@@ -471,6 +475,18 @@ namespace ODIA
       Sink(const Library& library, const Options& options) : session_(library, options) {}
       void accept(const PrecursorChromatogram& trace) override { session_.add(trace); }
       Result finish() { return session_.finish(); }
+
+      /// Withhold sub-scores decided AFTER extraction.
+      ///
+      /// `-mass_features auto` keys off the fragment mass calibration's
+      /// verdict, and that verdict does not exist when the Sink is built -- the
+      /// probe runs during extraction setup. Deciding at construction time
+      /// therefore left pass 1 running with features that pass 2 would reject,
+      /// and pass 1 is where the retention-time and mobility anchors come from,
+      /// so it is not a harmless inconsistency: measured on S08 it cost 117
+      /// identifications (1,225 against 1,342).
+      void disableSubScores(std::vector<int> indices)
+      { session_.disableSubScores(std::move(indices)); }
 
     private:
       Session session_;

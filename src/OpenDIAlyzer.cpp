@@ -1104,54 +1104,55 @@ protected:
     return runScoring_(library, chromatograms, out);
   }
 
+  /// Every sub-score withheld from the classifier: `-ablate` plus whatever
+  /// `-mass_features` decides.
+  ///
+  /// Evaluated late, because the mass-feature arm depends on the fragment mass
+  /// calibration's verdict and that does not exist until extraction has set up.
+  std::vector<int> ablatedSubScores_()
+  {
+    std::vector<int> out;
+    const auto& names = ODIA::PeakGroupScorer::subScoreNames();
+    const auto index_of = [&](const std::string& n) {
+      const auto it = std::find(names.begin(), names.end(), n);
+      return it == names.end() ? -1 : static_cast<int>(std::distance(names.begin(), it));
+    };
+
+    std::stringstream ss(getStringOption_("ablate"));
+    std::string name;
+    while (std::getline(ss, name, ','))
+    {
+      name.erase(0, name.find_first_not_of(" \t"));
+      const auto end = name.find_last_not_of(" \t");
+      if (end != std::string::npos) { name.erase(end + 1); }
+      if (name.empty()) { continue; }
+      const int i = index_of(name);
+      // Fatal, not ignored. An ablation arm that silently ablated nothing would
+      // report the baseline and be read as "the feature is worthless".
+      if (i < 0) { throw std::invalid_argument("-ablate: no sub-score is called '" + name + "'"); }
+      out.push_back(i);
+    }
+
+    const std::string mode = getStringOption_("mass_features");
+    const bool mass_on = mode == "on" ||
+                         (mode == "auto" && (!mass_model_known_ || !mass_model_.fitted));
+    if (!mass_on)
+    {
+      for (const char* n : {"var_mass_accuracy", "var_mass_spread"})
+      {
+        const int i = index_of(n);
+        if (i >= 0) { out.push_back(i); }
+      }
+    }
+    return out;
+  }
+
   ODIA::PeakGroupScorer::Options scoringOptions_()
   {
     ODIA::PeakGroupScorer::Options options;
     options.classifier = getStringOption_("classifier");
     options.min_library_corr = getDoubleOption_("min_library_corr");
     options.coelution_picking = !getFlag_("amplitude_picking");
-    {
-      const std::string spec = getStringOption_("ablate");
-      const auto& names = ODIA::PeakGroupScorer::subScoreNames();
-      std::stringstream ss(spec);
-      std::string name;
-      while (std::getline(ss, name, ','))
-      {
-        name.erase(0, name.find_first_not_of(" \t"));
-        const auto end = name.find_last_not_of(" \t");
-        if (end != std::string::npos) { name.erase(end + 1); }
-        if (name.empty()) { continue; }
-        const auto it = std::find(names.begin(), names.end(), name);
-        // Fatal, not ignored. An ablation arm that silently ablated nothing
-        // would report the baseline and be read as "the feature is worthless".
-        if (it == names.end())
-        { throw std::invalid_argument("-ablate: no sub-score is called '" + name + "'"); }
-        options.disabled_sub_scores.push_back(
-          static_cast<int>(std::distance(names.begin(), it)));
-      }
-    }
-
-    // The mass features, on only where the extraction has not already spent
-    // the mass information. See the option's own comment for the measurement.
-    {
-      const std::string mode = getStringOption_("mass_features");
-      const bool on = mode == "on" ||
-                      (mode == "auto" && (!mass_model_known_ || !mass_model_.fitted));
-      if (!on)
-      {
-        const auto& names = ODIA::PeakGroupScorer::subScoreNames();
-        for (const char* n : {"var_mass_accuracy", "var_mass_spread"})
-        {
-          const auto it = std::find(names.begin(), names.end(), n);
-          if (it != names.end())
-          {
-            options.disabled_sub_scores.push_back(
-              static_cast<int>(std::distance(names.begin(), it)));
-          }
-        }
-      }
-    }
-
     const std::string picker = getStringOption_("picker");
     options.union_picking = picker == "union" || picker == "union_openswath";
     options.openswath_picking = picker == "openswath" || picker == "union_openswath";
@@ -1221,6 +1222,9 @@ protected:
 
     auto options = scoringOptions_();
     options.library_rt_is_run_seconds = true;
+    // The refine loop refits the same matrix, so it must withhold the same
+    // columns the search did or it would refit against a different feature set.
+    options.disabled_sub_scores = ablatedSubScores_();
 
     std::size_t best_ids = scored.identified_at_1pct;
     int stagnant = 0;
@@ -1288,6 +1292,10 @@ protected:
     const auto rc = extractInto_(library, run, sink, rt_window_override,
                                  library_rt_is_run_seconds);
     if (rc != EXECUTION_OK) { return rc; }
+    // Only now does the fragment mass calibration's verdict exist -- the probe
+    // runs during extraction setup, after the Sink was built. Deciding earlier
+    // ran pass 1 with features pass 2 rejects, and pass 1 supplies the anchors.
+    sink.disableSubScores(ablatedSubScores_());
     try
     {
       scored = sink.finish();
@@ -1308,7 +1316,8 @@ protected:
                         const ODIA::Chromatograms& chromatograms,
                         const std::string& out)
   {
-    const auto options = scoringOptions_();
+    auto options = scoringOptions_();
+    options.disabled_sub_scores = ablatedSubScores_();
 
     const auto t = std::chrono::steady_clock::now();
     ODIA::PeakGroupScorer::Result scored;
