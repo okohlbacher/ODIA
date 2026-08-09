@@ -3113,3 +3113,33 @@ failure, and manufacturing work from it would be worse than reporting it. But it
 also says these reviewers are near the limit of what they can find from the
 source alone: the real defects today came from MEASUREMENT -- the empirical-FDR
 table, the leak guard, the resolved-device print -- not from reading code.
+
+## 2026-08-09 22:30: pseudo-reverse decoys cost identifications, and we cannot yet say whether that is a correction
+
+Astral, `-match_decoy_n`, same binary:
+
+    decoys          base      + fine-tuned RT
+    mutate         6,382          6,836
+    pseudo_reverse 6,221          6,708
+
+Pseudo-reverse costs 161 and 128 respectively -- about 2.5%. The direction is
+what kimi's hypothesis predicts: a pseudo-reverse decoy is a HARDER null than a
+two-residue mutation, so it scores higher, the 1% threshold moves up, and fewer
+targets clear it.
+
+**But fewer identifications is not evidence of a better FDR.** It is equally
+consistent with pseudo-reverse being over-conservative. Astral cannot decide it:
+its library is pre-selected to DIA-NN's hits, so it contains no false positives
+to count. v6_50k reports 0 for both, so it cannot decide it either.
+
+**What would decide it: entrapment on real data.** Spike a known-absent
+population -- peptides from an organism not in the sample -- into the library at
+a known ratio, run both decoy methods, and compare the false-discovery
+proportion among the entrapment hits against the claimed q. The method whose FDP
+matches its claim is the correct one. `test/tools/odia_entrapment.cpp` does this
+synthetically and cannot see decoy GENERATION at all, which is exactly the part
+in question.
+
+Until then `mutate` stays the default, on the grounds that it is what DIA-NN
+does and the alternative has no evidence behind it beyond scoring higher --
+which is what an over-conservative null also does.
