@@ -2967,3 +2967,35 @@ DECOY NULL and makes q conservative.
 distribution, leaving target scoring untouched.** Deterministic, non-circular
 (subsample in canonical order, not by dscore), and it should move Astral toward
 the 9,563 it has already ranked correctly.
+
+## 2026-08-09 15:30: var_im_delta is a dead column, and the fix is now obvious
+
+Every run today drops it: "dropping N sub-score(s) carrying no information:
+... var_im_delta ..." appears in BOTH passes on BOTH files. `Options::observed_im`
+(`include/odia/PeakGroupScorer.h:343`) was added as a plumbing point and has
+never been filled, so `IM_DELTA` is NaN for every row and the constant-column
+guard removes it. One of nineteen sub-scores is a slot pretending to carry
+information.
+
+**Why it is worth filling rather than deleting.** Ion mobility is a SEPARATE
+PHYSICAL AXIS, not another statistic over the same twelve fragment traces. The
+project's measured design rule is that orthogonality is the lever and count is
+not -- 4 to 110 correlated features gave 0 identifications alike, while
+`MS1_COELUTION`, the one feature reading a different channel, was worth +17.6%
+on S08, and the fragment mass sub-scores were worth +704 on Astral for the same
+reason. Mobility is the third such channel and it is already measured.
+
+**The design, which is now known exactly because the mass work built it.**
+`MobilityCalibration::Anchor` already carries `im_observed` per precursor, but
+only for precursors identified in pass 1 -- far too few, and selected, which is
+the trap that cost half the Astral run this morning. So do it the way
+`collect_mass_residuals` does it: two extra float planes in `LiveSlot`,
+Sum(intensity x 1/K0) and Sum(intensity), reduced at `emit()` to an
+intensity-weighted observed 1/K0 PER CANDIDATE. Then `IM_DELTA` is
+|observed - library| for every peak group, not just the identified ones.
+
+Note what it cannot do: Astral has no ion mobility, so this is S08/diaPASEF
+value only, and the larger gap is on Astral. Worth doing, not worth doing first.
+
+Until it is filled, `var_im_delta` should be understood as absent rather than
+uninformative -- the two look identical in the log and are not the same claim.
