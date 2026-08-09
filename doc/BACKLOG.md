@@ -2999,3 +2999,38 @@ value only, and the larger gap is on Astral. Worth doing, not worth doing first.
 
 Until it is filled, `var_im_delta` should be understood as absent rather than
 uninformative -- the two look identical in the log and are not the same claim.
+
+## 2026-08-09 15:50: iRT calibration, iteration 1 measured
+
+Through the new `-stop_after calib`. Post-calibration residual over pass 1's
+anchors; DIA-NN's comparable figure is `RT - Predicted.RT` at q <= 0.01.
+
+    S08  anchor_q 0.05      n 1012  median -0.45  SD 71.23  robust 30.60  p95 103.53  max 1052.69
+    S08  LOESS span 0.15    n 1012  median -1.57  SD 71.47  robust 30.94  p95 104.39  max 1062.38
+    S08  LOESS span 0.30    n 1012  median -1.84  SD 74.34  robust 31.50  p95 119.71  max 1061.13
+    S08  anchor_q 0.01      n  417  median -3.78  SD 41.36  robust 28.59  p95  91.63  max  243.72
+    Ast  anchor_q 0.05      n 2469  median  0.35  SD 95.62  robust 34.22  p95  85.64  max 1586.51
+    Ast  LOESS span 0.30    n 2469  median  0.67  SD 95.67  robust 34.45  p95  85.03  max 1585.69
+
+    DIA-NN Astral, our library, q<=0.01
+                            n 10891 median -2.51  SD 29.29  robust 26.09  p95  59.35  max  129.14
+
+**LOESS is INERT.** +0.3 to +0.9 s on robust sigma on both files -- nothing, or
+slightly worse. So codex's finding that it had never run was a real
+documentation defect and NOT a performance defect, and the header's claim that
+it is part of the fit was wrong in a way that cost nothing. `-rt_loess_span`
+stays, defaulting to 0, because the negative is worth being able to re-take.
+
+**Anchor quality is the live lever.** 0.05 -> 0.01 on S08 takes SD from 71.23 to
+41.36 and max|e| from 1052 s to 244 s while robust sigma moves only 30.60 ->
+28.59. That shape is diagnostic: the BULK of the map is fine and the tail is
+misidentified anchors, not a bad fit.
+
+**Which means the statistic is not yet comparable to DIA-NN's.** Ours is over
+ANCHORS (peak groups pass 1 accepted at anchor_q); theirs is over CONFIDENT
+IDENTIFICATIONS at q <= 0.01. Even at matched q the populations differ, because
+an anchor is a peak group and an identification is a precursor. This is the
+first thing to settle before claiming parity either way.
+
+Astral stands at robust sigma 34.22 against the bar of 26.09
+(`doc/14-irt-acceptance.md`). Not yet there.
