@@ -124,8 +124,11 @@ protected:
     registerStringOption_("stop_after", "<stage>", "",
                           "End the run after this stage and write its output. The "
                           "default runs to the end: 'library' when no -in is given, "
-                          "'score' when one is.", false);
-    setValidStrings_("stop_after", {"", "library", "extract", "score"});
+                          "'score' when one is. 'calib' runs pass 1, fits the "
+                          "retention-time map, reports its residuals and stops -- the "
+                          "calibration is the thing being measured, so pass 2 would only "
+                          "cost time.", false);
+    setValidStrings_("stop_after", {"", "library", "extract", "calib", "score"});
 
     // No setValidFormats_ here on purpose. OpenMS has no mzPeak entry in
     // FileTypes, so declaring one makes TOPPBase try to identify the file and
@@ -1044,6 +1047,19 @@ protected:
         << " anchors; p95 residual " << p95 << " s";
     writeLogInfo_(fit.str());
 
+    // What the calibration actually achieved, before and after, on the same
+    // anchors. Reported always -- the p95 above says how tight the fit is but
+    // not how much of the error it REMOVED, and those are different questions.
+    //
+    // Both a standard deviation and a robust sigma, deliberately. The residual
+    // distribution is heavy-tailed by construction (pass 1's anchors come from
+    // windows narrower than the RT error, so gross outliers are guaranteed),
+    // and an SD over that is dominated by the tail rather than describing the
+    // bulk. Quoting only the SD would understate the calibration; quoting only
+    // the robust figure would hide the tail that sets the pass-2 window. The
+    // gap between them IS the diagnostic.
+    reportRtResiduals_(anchors, trafo);
+
     // Applied to the ORIGINAL values, for the reason above.
     //
     // After this the library's `irt` holds RUN SECONDS, not normalised iRT,
@@ -1057,6 +1073,17 @@ protected:
       {
         irt[i] = static_cast<float>(trafo.apply(static_cast<double>(original_irt[i])));
       }
+    }
+
+    // -stop_after calib: the calibration IS the deliverable here, and pass 2
+    // would cost a full extraction to tell us nothing more about it. Placed
+    // after the library's irt has been rewritten, so a caller that also asked
+    // for -out_lib gets the CALIBRATED library rather than the original.
+    if (getStringOption_("stop_after") == "calib")
+    {
+      writeLogInfo_("-stop_after calib: the retention-time map is fitted and its "
+                    "residuals are reported above; not running pass 2");
+      return EXECUTION_OK;
     }
 
     // Pass 2's window comes from the fit's OWN residual, not from a constant.
@@ -1113,6 +1140,63 @@ protected:
     const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, pass2_window, true);
     if (rc != EXECUTION_OK) { return rc; }
     return runScoring_(library, chromatograms, out);
+  }
+
+
+  /// Residuals of the fitted retention-time map, before and against it.
+  ///
+  /// `anchors` are (library iRT, observed apex RT). "before" is the library
+  /// value against the observation on whatever axis the library arrived in;
+  /// it is only meaningful when the library is already in run seconds (an
+  /// -irt_slope/-irt_intercept calibration, or a previous run's map), so it is
+  /// labelled as raw rather than presented as a like-for-like improvement.
+  void reportRtResiduals_(const std::vector<std::pair<double, double>>& anchors,
+                          const OpenMS::TransformationDescription& trafo)
+  {
+    if (anchors.empty()) { return; }
+    std::vector<double> before, after;
+    before.reserve(anchors.size());
+    after.reserve(anchors.size());
+    for (const auto& a : anchors)
+    {
+      before.push_back(a.second - a.first);
+      after.push_back(a.second - trafo.apply(a.first));
+    }
+    const auto describe = [](std::vector<double> v, const char* label) {
+      const std::size_t n = v.size();
+      double mean = 0.0;
+      for (const double x : v) { mean += x; }
+      mean /= static_cast<double>(n);
+      double ss = 0.0;
+      for (const double x : v) { ss += (x - mean) * (x - mean); }
+      const double sd = n > 1 ? std::sqrt(ss / static_cast<double>(n - 1)) : 0.0;
+      std::vector<double> s = v;
+      std::sort(s.begin(), s.end());
+      const double median = s[n / 2];
+      std::vector<double> ad;
+      ad.reserve(n);
+      for (const double x : s) { ad.push_back(std::fabs(x - median)); }
+      std::sort(ad.begin(), ad.end());
+      // 1.4826 x MAD is the Gaussian-consistent sigma; on a heavy-tailed sample
+      // it describes the bulk where the SD describes the tail.
+      const double robust = 1.4826 * ad[n / 2];
+      std::vector<double> abs_v;
+      abs_v.reserve(n);
+      for (const double x : s) { abs_v.push_back(std::fabs(x)); }
+      std::sort(abs_v.begin(), abs_v.end());
+      std::ostringstream os;
+      os.setf(std::ios::fixed);
+      os.precision(2);
+      os << "  " << label << ": n " << n << ", median " << median
+         << " s, SD " << sd << " s, robust sigma " << robust
+         << " s, p50|e| " << abs_v[n / 2] << " s, p95|e| "
+         << abs_v[static_cast<std::size_t>(0.95 * (n - 1))] << " s, max|e| "
+         << abs_v.back() << " s";
+      return os.str();
+    };
+    writeLogInfo_("retention-time residuals on the anchors:");
+    writeLogInfo_(describe(before, "raw   (library value vs observed)"));
+    writeLogInfo_(describe(after,  "mapped(calibrated  vs observed)"));
   }
 
   /// Every sub-score withheld from the classifier: `-ablate` plus whatever
@@ -1497,12 +1581,14 @@ protected:
 
     // Checked before any work is done. Doing it afterwards meant a run that
     // built and wrote a library still exited 6.
-    if (stop_after != "library" && stop_after != "extract" && stop_after != "score")
+    if (stop_after != "library" && stop_after != "extract" && stop_after != "calib" &&
+        stop_after != "score")
     {
       writeLogError_("Implemented stages are 'library', 'extract' and 'score'.");
       return ILLEGAL_PARAMETERS;
     }
-    if ((stop_after == "extract" || stop_after == "score") && in_run.empty())
+    if ((stop_after == "extract" || stop_after == "calib" || stop_after == "score") &&
+        in_run.empty())
     {
       writeLogError_("-stop_after " + stop_after +
                      " needs a run to work on: give -in <file>.");
@@ -1834,7 +1920,12 @@ protected:
         if (rc != EXECUTION_OK) { return rc; }
       }
     }
-    if (stop_after == "score")
+    // "calib" enters the same workflow and returns from inside it once the
+    // retention-time map is fitted. Listing it here is not optional: an
+    // unrecognised stage falls through every branch and the tool exits 0 having
+    // built the library and nothing else -- which is what the first three
+    // -stop_after calib runs did, in 0.27 s, reporting success.
+    if (stop_after == "score" || stop_after == "calib")
     {
       const auto rc = runScoreWorkflow_(library, in_run, out_chrom,
                                         getStringOption_("out"));
