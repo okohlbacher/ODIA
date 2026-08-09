@@ -2839,7 +2839,9 @@ no change to candidate generation recovers the gap. Astral unless noted; S08 is
     union + OpenMS picker at sn 0.1            3,817
     DIA-NN's published min_corr/corr_diff 1.0  pending  1,185
 
-Read together: DEPTH is inert between 3 and 50. DENSITY is harmful. A different
+Read together: DEPTH is inert between 12 and 50 -- NOT below. Depth 1 costs
+1,306 -> 1,141, a 12.6% loss, and depth 3 costs 32. Alternatives are needed;
+what is inert is piling on more of them. DENSITY is harmful. A different
 PICKER is neutral to harmful, and running OpenSWATH's at its own DIA S/N default
 changes nothing. Tightening the margin to DIA-NN's published values costs 121 on
 S08. The only gain all day came from REMOVING a gate that deleted rows over
@@ -2857,5 +2859,10 @@ Two hypotheses died here and should not be retried without new evidence:
 
 The bound that closes the question: 87.0% availability on 11,112 truth
 precursors caps the candidate-generation gain at ~1,445 against a 4,969 -> 8,765
-gap, so **>= ~4,700 are lost after candidates exist** -- in scoring, ranking or
-FDR. That is where the next phase goes.
+gap. Stated carefully, because the loose version of this went into a commit
+message: **the ODIA-to-OpenSWATH deficit is 3,796**, and that is the number two
+comparable pipelines differ by. The ~4,700 residual is against DIA-NN's 11,112,
+which exceeds the 10,891-entry library, so the units do not obviously line up
+and it should not be quoted as a count of recoverable precursors. Either way the
+deficit is after candidates exist -- in scoring, ranking or FDR -- and that is
+where the next phase goes.

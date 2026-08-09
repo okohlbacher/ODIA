@@ -548,7 +548,8 @@ namespace ODIA
       "var_usable_fragments", "var_library_rmsd", "var_yseries_score",
       "var_fragment_coverage",
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
-      "var_rt_delta", "var_im_delta", "var_ms1_coelution"};
+      "var_rt_delta", "var_im_delta", "var_ms1_coelution",
+      "var_mass_accuracy", "var_mass_spread"};
     return names;
   }
 
@@ -897,6 +898,16 @@ namespace ODIA
         }
       }
 
+      // MASS_SPREAD is final here: a within-group scatter needs no context.
+      // MASS_ACCURACY holds the RAW deviation for now and is re-centred against
+      // the run's median in finish(), once every group has been seen.
+      g.sub_scores[MASS_SPREAD] = std::isfinite(g.mass_ppm_spread)
+        ? -static_cast<double>(g.mass_ppm_spread)
+        : std::numeric_limits<double>::quiet_NaN();
+      g.sub_scores[MASS_ACCURACY] = std::isfinite(g.mass_ppm)
+        ? static_cast<double>(g.mass_ppm)
+        : std::numeric_limits<double>::quiet_NaN();
+
       // MS1_COELUTION: does the PRECURSOR rise and fall with its fragments?
       //
       // Over the candidate's own cycles, pair each cycle's summed fragment
@@ -1237,6 +1248,41 @@ namespace ODIA
         {
           for (auto& g : result.groups) { g.sub_scores[PEAK_WIDTH_RATIO] /= median; }
         }
+      }
+    }
+
+    // MASS_ACCURACY, for the same reason and by the same route: a deviation of
+    // -3 ppm means nothing until you know where this run sits.
+    //
+    // Centred on the median over ALL candidates, not over the accepted ones.
+    // That is deliberate and it is this morning's lesson: a statistic pooled
+    // over q<=0.01 groups describes the precursors that were already easy, and
+    // sizing anything from it cost half the run when I tried it for the m/z
+    // window. Here the centre only has to be robust, and the median over every
+    // candidate -- most of which are wrong -- is a fine estimator of the
+    // INSTRUMENT's offset precisely because it does not care which are right.
+    {
+      std::vector<double> dev;
+      dev.reserve(result.groups.size());
+      for (const auto& g : result.groups)
+      {
+        const double d = g.sub_scores[MASS_ACCURACY];
+        if (std::isfinite(d)) { dev.push_back(d); }
+      }
+      if (!dev.empty())
+      {
+        std::nth_element(dev.begin(), dev.begin() + dev.size() / 2, dev.end());
+        const double centre = dev[dev.size() / 2];
+        for (auto& g : result.groups)
+        {
+          double& s = g.sub_scores[MASS_ACCURACY];
+          // Negated so larger is better, like every other column.
+          if (std::isfinite(s)) { s = -std::abs(s - centre); }
+        }
+        std::fprintf(stderr,
+                     "fragment mass accuracy as a sub-score: %zu of %zu candidates "
+                     "carried a deviation, centred on %.3f ppm\n",
+                     dev.size(), result.groups.size(), centre);
       }
     }
 

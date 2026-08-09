@@ -430,9 +430,18 @@ protected:
                           "of the local maximum, which on a noisy trace is nearly exact "
                           "equality.",
                           false, true);
-    registerIntOption_("min_fragments_at_apex", "<n>", 3,
+    registerIntOption_("min_fragments_at_apex", "<n>", 1,
                        "A candidate peak group is dropped unless at least this many of its "
-                       "fragments have signal at the apex. Coupled to -fragment_ppm in a way "
+                       "fragments have signal at the apex. "
+                       "\n\nDEFAULT LOWERED 3 -> 1 on 2026-08-09, measured on both files: "
+                       "Astral 4,969 -> 5,025 and S08 1,306 -> 1,342 (at 2 it is 1,340, so the "
+                       "curve is flat and 3 was simply too strict). The reason it costs nothing "
+                       "to relax is that `var_fragment_coverage` IS at_apex/tc -- the classifier "
+                       "already has the quantity this gate thresholds on, so the gate was "
+                       "DELETING ROWS over a feature that could have ranked them. 1 keeps it as "
+                       "a validity check (a group needs some signal at its own apex) and gives "
+                       "the discrimination back to the discriminant. "
+                       "\n\nCoupled to -fragment_ppm in a way "
                        "that is easy to miss: narrowing the mass window leaves fewer "
                        "transitions carrying any signal, so precursors fall below this gate "
                        "and yield no candidate at all. Measured on S08, 15 ppm against 6 ppm "

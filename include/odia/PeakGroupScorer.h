@@ -142,6 +142,36 @@ namespace ODIA
       /// confused.
       MS1_COELUTION,
 
+      // --- added 2026-08-09. Both reviewers, independently, named fragment
+      // mass accuracy as the highest-value score ODIA does not have, and both
+      // pointed at the same reason: an extracted chromatogram records intensity
+      // inside a mass window over time and throws away WHERE in that window the
+      // peak sat. An interferent can co-elute perfectly, correlate perfectly
+      // and be systematically displaced in m/z, and no chromatogram-shape
+      // statistic can see that. It is also the cheapest orthogonal channel
+      // available: both quantities are already computed and stored on the
+      // group, they were simply never offered to the classifier.
+
+      /// Negated |deviation - the run's own centre|, ppm. Larger is better.
+      ///
+      /// CENTRED ON THE RUN, which is what makes it safe. The objection that
+      /// kept this out of the feature vector was real: fed raw, the classifier
+      /// would learn "this run's fragments sit at -3 ppm" and penalise
+      /// correctly calibrated identifications. Centring on the run's own median
+      /// removes exactly that, and what is left is the per-group departure from
+      /// the instrument's systematic error -- a property of the GROUP.
+      MASS_ACCURACY,
+
+      /// Negated scatter of the group's per-fragment deviations, ppm. Larger is
+      /// better.
+      ///
+      /// The stronger of the two, and calibration-free by construction: it is a
+      /// spread WITHIN one group, so no centring can affect it and no run-level
+      /// offset can leak in. A real peptide's fragments are one molecule
+      /// measured through one calibration and sit together; interference is
+      /// unrelated species whose errors scatter.
+      MASS_SPREAD,
+
       N_SUB_SCORES
     };
 
