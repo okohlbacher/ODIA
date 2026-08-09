@@ -1119,6 +1119,7 @@ namespace ODIA
     // both deliberately absent, see the SubScore comments. So the constraint
     // transfers in principle and covers different columns.
     params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD};
+    params.match_decoy_candidate_counts = options.match_decoy_candidate_counts;
 
     // Seed the semi-supervised loop on CORR_SUM alone.
     //

@@ -535,6 +535,17 @@ protected:
                           "has not run yet, so auto leaves them ON; pass 2 is where the decision "
                           "is real.", false, true);
     setValidStrings_("mass_features", {"auto", "on", "off"});
+    registerFlag_("match_decoy_n",
+                  "Draw each decoy's best score from as many candidates as a TARGET has, "
+                  "instead of from all of its own. Target-decoy competition assumes the two "
+                  "classes are exchangeable and they are not: the picker keeps candidates within "
+                  "-max_corr_diff of a precursor's OWN best, so a precursor with no real peak "
+                  "admits nearly every position. Measured on Astral, targets carry 10.98 "
+                  "candidates per precursor and decoys 20.99, so a q-value compares best-of-11 "
+                  "against best-of-21 over 9,453 decoy precursors -- and ODIA's own FDR then "
+                  "refused 3,834 Astral precursors that are all in DIA-NN's truth set. Caps are "
+                  "quantile-matched to the target distribution and applied in canonical order, "
+                  "never by score.", true);
     registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
                           "Half-width, in robust sigmas of the per-fragment deviation, for "
                           "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
@@ -1165,6 +1176,7 @@ protected:
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
+    options.match_decoy_candidate_counts = getFlag_("match_decoy_n");
     options.min_fragments_at_apex = static_cast<std::size_t>(
       std::max(1, getIntOption_("min_fragments_at_apex")));
     options.apex_evidence = getDoubleOption_("apex_evidence");

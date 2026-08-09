@@ -352,6 +352,10 @@ namespace ODIA
       /// would be silently imputed somewhere and the arm would claim to have
       /// ablated something it did not.
       std::vector<int> disabled_sub_scores;
+
+      /// Draw each decoy's best score from as many candidates as a target has.
+      /// See `Scoring::LDAParams::match_decoy_candidate_counts`.
+      bool match_decoy_candidate_counts = false;
     };
 
     struct PeakGroup

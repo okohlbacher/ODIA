@@ -100,6 +100,32 @@ struct LDAParams
   bool use_pi0 = false;     ///< Storey pi0 correction. false = HONEST/conservative (true 1% FDR,
                             ///< fewer IDs); true = pyprophet/DIA-NN parity (more IDs, but a nominal
                             ///< 1% is ~2% actual — matches their calibration, incl. its optimism).
+
+  /// Draw each decoy's best score from as many candidates as a TARGET has,
+  /// rather than from all of its own.
+  ///
+  /// Target-decoy competition assumes the two classes are exchangeable under
+  /// the null. They are not here, and the gap is large: measured on Astral,
+  /// targets carry 10.98 candidates per precursor (median 6) and decoys 20.99
+  /// (median 24), because the picker's margin rule keeps candidates within
+  /// `max_corr_diff` of a precursor's OWN best -- so a precursor with no real
+  /// peak admits nearly every position and one with a strong peak admits few.
+  ///
+  /// A q-value then compares best-of-11 against best-of-21, over 9,453 decoy
+  /// precursors. The maximum of that many best-of-21 draws reached 5.997
+  /// against a target p99 of 6.517, which is what set the 1% threshold: ODIA
+  /// ranked 9,563 Astral precursors that are ALL in DIA-NN's truth set and its
+  /// own FDR refused 3,834 of them.
+  ///
+  /// The cap per decoy group is quantile-matched to the target count
+  /// distribution, so the two classes end up drawing from the same
+  /// distribution of N. Targets are untouched.
+  ///
+  /// Which candidates are kept is decided in CANONICAL ORDER (precursor, apex
+  /// RT, apex intensity), never by score. Keeping a decoy's top-K by dscore
+  /// would subsample exactly the rows that make the null hard and would
+  /// manufacture identifications rather than measure them.
+  bool match_decoy_candidate_counts = false;
   bool top_decoys_only = true;  ///< Train the negative class on each decoy precursor's BEST peak
                             ///< group only, not on all of its candidate peak groups. See the note at
                             ///< the negative-class construction: the positive class is top-peaks-only
@@ -1003,13 +1029,48 @@ inline ScoredGroups scoreSemiSupervisedLDA(
   result.n_iterations_trained = n_trained;
   result.n_iterations_skipped = n_skipped;
 
+  // How many candidates each group may draw its best from. Targets always use
+  // all of theirs; decoys are quantile-matched to the target distribution when
+  // asked. See `match_decoy_candidate_counts`.
+  std::vector<std::size_t> draw_from(group_count);
+  for (std::size_t g = 0; g < group_count; ++g) { draw_from[g] = group_rows[g].size(); }
+  if (params.match_decoy_candidate_counts)
+  {
+    std::vector<std::size_t> target_n;
+    std::vector<std::size_t> decoys;
+    for (std::size_t g = 0; g < group_count; ++g)
+    {
+      if (group_label[g] == 1) { target_n.push_back(group_rows[g].size()); }
+      else { decoys.push_back(g); }
+    }
+    if (!target_n.empty() && !decoys.empty())
+    {
+      std::sort(target_n.begin(), target_n.end());
+      // Both sides sorted by count, then matched by rank: the k-th smallest
+      // decoy takes the k-th smallest target's count. That maps the whole
+      // distribution rather than just its mean, and it is a function of the
+      // data alone, so the run stays deterministic.
+      std::stable_sort(decoys.begin(), decoys.end(),
+                       [&](std::size_t a, std::size_t b)
+                       { return group_rows[a].size() < group_rows[b].size(); });
+      for (std::size_t i = 0; i < decoys.size(); ++i)
+      {
+        const std::size_t q = i * target_n.size() / decoys.size();
+        draw_from[decoys[i]] = std::min(target_n[q], group_rows[decoys[i]].size());
+        if (draw_from[decoys[i]] == 0) { draw_from[decoys[i]] = 1; }
+      }
+    }
+  }
+
   std::vector<lda_detail::RankedGroup> final_ranked;
   final_ranked.reserve(group_count);
   for (std::size_t g = 0; g < group_count; ++g)
   {
     std::size_t best_row = group_rows[g].front();
-    for (const std::size_t row : group_rows[g])
+    const std::size_t take = std::min(draw_from[g], group_rows[g].size());
+    for (std::size_t k = 0; k < take; ++k)
     {
+      const std::size_t row = group_rows[g][k];
       if (result.dscore[row] > result.dscore[best_row]) { best_row = row; }
     }
     final_ranked.push_back(

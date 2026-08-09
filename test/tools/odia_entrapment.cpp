@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
@@ -175,6 +176,101 @@ int main()
   check(any_scored, "at least one separation produced identifications at all -- a "
                     "scorer that reports nothing has a trivially perfect FDP and "
                     "must not be allowed to pass by silence");
+
+  // ---- the candidate-count asymmetry, and the null that corrects it -------
+  //
+  // Everything above plants ONE candidate per group, so `match_decoy_candidate_counts`
+  // is a no-op and the suite passing says nothing about it. On real data the
+  // classes are nowhere near symmetric: measured on Astral, targets carry 10.98
+  // candidates per precursor (median 6) and decoys 20.99 (median 24), because
+  // the picker keeps candidates within `max_corr_diff` of a precursor's OWN
+  // best -- a precursor with no real peak admits nearly every position.
+  //
+  // A q-value then compares best-of-11 against best-of-21 and comes out
+  // CONSERVATIVE. This fixture reproduces that and asserts both halves of the
+  // fix: matching the null must recover identifications, AND it must not buy
+  // them by inflating the false-discovery proportion. The second half is the
+  // one that matters -- the change can only ever make the FDR more liberal, and
+  // the Astral benchmark cannot see a false positive, so this is the only place
+  // the claim can be falsified.
+  {
+    std::printf("\n--- asymmetric candidate counts (targets ~11, decoys ~21) ---\n");
+    const std::size_t n_true = 1500, n_entrap = 1500, n_decoy = 3000;
+    const double ratio = static_cast<double>(n_entrap) / static_cast<double>(n_true);
+    // Separation 6, not the 3 the symmetric cases use. Every group here carries
+    // ~11-21 NOISE candidates as well, so a group's score is a maximum over
+    // that many draws and the signal has to clear the best of them. At 3 both
+    // arms reported nothing and both new checks passed vacuously -- which is
+    // the exact failure this fixture warns about two blocks up, so it is
+    // guarded explicitly below rather than trusted.
+    const double separation = 6.0;
+
+    std::mt19937 rng(0xA5717Du);
+    std::normal_distribution<double> noise(0.0, 1.0);
+    // Candidate counts drawn per group. Only the FIRST row of a real target
+    // carries the signal; every other row of every group is noise, which is
+    // what a wrong peak is.
+    std::poisson_distribution<int> tar_n(11), dec_n(21);
+
+    Planted p;
+    long long g = 0;
+    const auto add_group = [&](int count, double shift, int label, char entrap) {
+      for (int i = 0; i < std::max(1, count); ++i)
+      {
+        const double common = (i == 0 ? shift : 0.0) + noise(rng);
+        std::vector<double> row;
+        row.reserve(4);
+        for (int k = 0; k < 4; ++k) { row.push_back(common * 0.7 + noise(rng) * 0.6); }
+        p.features.push_back(std::move(row));
+        p.labels.push_back(label);
+        p.group.push_back(g);
+        p.is_entrapment.push_back(entrap);
+      }
+      ++g;
+    };
+    for (std::size_t i = 0; i < n_true; ++i)   { add_group(tar_n(rng), separation, 1, 0); }
+    for (std::size_t i = 0; i < n_entrap; ++i) { add_group(tar_n(rng), 0.0, 1, 1); }
+    for (std::size_t i = 0; i < n_decoy; ++i)  { add_group(dec_n(rng), 0.0, 0, 0); }
+
+    std::size_t reported[2] = {0, 0};
+    double observed[2] = {0.0, 0.0};
+    for (int matched = 0; matched < 2; ++matched)
+    {
+      ODIA::Scoring::LDAParams params;
+      params.classifier = ODIA::Scoring::LDAParams::Classifier::GBT;
+      params.match_decoy_candidate_counts = (matched == 1);
+      const auto scored =
+        ODIA::Scoring::scoreSemiSupervisedLDA(p.features, p.labels, p.group, params);
+
+      // One count per GROUP, not per row: a group has many rows and reporting
+      // rows would multiply every precursor by its candidate count.
+      std::map<long long, char> hit;
+      for (std::size_t i = 0; i < p.labels.size(); ++i)
+      {
+        if (p.labels[i] == 1 && scored.qvalue[i] <= 0.01) { hit[p.group[i]] = 1; }
+      }
+      reported[matched] = hit.size();
+      observed[matched] = fdp(p, scored, 0.01, ratio);
+      std::printf("  match_decoy_n=%d: %zu groups reported, FDP %.4f (claimed 0.01)\n",
+                  matched, reported[matched], observed[matched]);
+    }
+
+    // Nothing may pass by silence. Both new checks below are satisfied by a
+    // scorer that reports zero, so the fixture has to prove it is in a regime
+    // where the question is even being asked.
+    check(reported[0] > 0,
+          "the unmatched arm reports SOMETHING, so the comparison below is not "
+          "two zeroes agreeing with each other");
+
+    // The point of the change: an unmatched null is conservative.
+    check(reported[1] >= reported[0],
+          "matching the decoy candidate count does not LOSE identifications");
+    // And the check that can actually falsify it. Same 3x bar as above.
+    check(observed[1] <= 0.03,
+          "with the null matched, FDP at q<=0.01 is still within 3x of the claim -- "
+          "the change may only remove conservatism, never buy identifications with "
+          "false ones");
+  }
 
   // ---- the regime that actually matters -----------------------------------
   //
