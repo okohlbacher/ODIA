@@ -463,7 +463,8 @@ protected:
                           "a number rather than used as a threshold. union_openswath: the same "
                           "hybrid with OpenMS's picker supplying the second set.",
                           false);
-    setValidStrings_("picker", {"coelution", "amplitude", "openswath"});
+    setValidStrings_("picker",
+                     {"coelution", "amplitude", "openswath", "union", "union_openswath"});
     registerDoubleOption_("openswath_sn", "<ratio>", 1.0,
                           "Signal-to-noise threshold for -picker openswath. OpenMS defaults to "
                           "1.0; OpenSwathWorkflow commonly runs 0.1 on DIA, where a peak sits "
@@ -498,6 +499,7 @@ protected:
                           "default carries that option's two extra float planes; 'off' restores "
                           "the smaller footprint.",
                           false, true);
+    setValidStrings_("mass_width_from_ids", {"off", "measure", "apply"});
     registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
                           "Half-width, in robust sigmas of the per-fragment deviation, for "
                           "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
