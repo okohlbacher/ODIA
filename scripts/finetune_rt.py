@@ -183,6 +183,16 @@ def main():
                          "2000 buys 85%% in 78 s, and the full set costs 17 min "
                          "for the rest. Default 2000.")
     ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--curve", type=int, default=0, metavar="STEP",
+                    help="Train in STEP-epoch increments and record the held-out "
+                         "residual after each, to <output>/curve.tsv. The whole "
+                         "point of a curve is to see where it stops improving and "
+                         "whether it turns back up; a single end-point number "
+                         "cannot show either.")
+    ap.add_argument("--device", default="gpu", choices=("gpu", "cpu"),
+                    help="peptdeep device. 'gpu' falls back to CPU SILENTLY when "
+                         "torch is a CPU-only build, which is how this ran on CPU "
+                         "for a whole afternoon, so the resolved device is printed.")
     ap.add_argument("--q-value", type=float, default=0.01)
     ap.add_argument("--method", choices=("direct", "residual"), default="direct",
                     help="direct retrains on normalised RT; residual calibrates "
@@ -229,7 +239,16 @@ def main():
     if not hi > lo:
         raise SystemExit("every identification has the same retention time")
 
-    mgr = ModelManager(mask_modloss=False)
+    import torch as _torch
+    _cuda = _torch.cuda.is_available()
+    print(f"torch {_torch.__version__}; cuda available {_cuda}; "
+          f"device requested {args.device}; RESOLVED {'cuda' if (_cuda and args.device == 'gpu') else 'cpu'}"
+          + ("" if _cuda or args.device == "cpu" else
+             "  <-- CPU-ONLY TORCH: install a CUDA build to use the H100s"),
+          flush=True)
+    if _cuda:
+        print(f"  gpu: {_torch.cuda.get_device_name(0)} x{_torch.cuda.device_count()}", flush=True)
+    mgr = ModelManager(mask_modloss=False, device=args.device)
     mgr.load_installed_models()
     if args.base_model:
         mgr.rt_model.load(args.base_model)
@@ -259,7 +278,40 @@ def main():
                            knots_y=[float(y) for y in iso.y_thresholds_],
                            residual_min=rlo, residual_max=rhi)
 
-    mgr.train_rt_model(train_df)
+    if args.curve > 0 and args.evaluate:
+        # Train in increments, measuring the held-out residual at each. Same
+        # scoring as the final evaluation below, so the curve's last point and
+        # the reported number are the same quantity.
+        import time as _time
+        truth_c = df["rt"].values
+        def _sd_at():
+            pr = mgr.rt_model.predict(df.copy())["rt_pred"].values
+            p, t = pr[~held], truth_c[~held]
+            A = np.vstack([p, np.ones_like(p)]).T
+            m, c = np.linalg.lstsq(A, t, rcond=None)[0]
+            return (float(np.std(truth_c[held] - (m * pr[held] + c))),
+                    float(np.std(t - (m * p + c))))
+        curve_path = os.path.join(args.output, "curve.tsv")
+        os.makedirs(args.output, exist_ok=True)
+        with open(curve_path, "w") as cf:
+            cf.write("epoch\theld_out_sd_min\ttrain_sd_min\tseconds\n")
+            done, t0 = 0, _time.time()
+            te, tr = _sd_at()
+            cf.write(f"0\t{te:.5f}\t{tr:.5f}\t0.0\n"); cf.flush()
+            print(f"  epoch    0  held-out {te*60:7.2f} s  train {tr*60:7.2f} s", flush=True)
+            mgr.epoch_to_train_rt_ccs = args.curve
+            while done < args.epochs:
+                step = min(args.curve, args.epochs - done)
+                mgr.epoch_to_train_rt_ccs = step
+                mgr.train_rt_model(train_df)
+                done += step
+                te, tr = _sd_at()
+                cf.write(f"{done}\t{te:.5f}\t{tr:.5f}\t{_time.time()-t0:.1f}\n"); cf.flush()
+                print(f"  epoch {done:4d}  held-out {te*60:7.2f} s  train {tr*60:7.2f} s",
+                      flush=True)
+        print(f"wrote {curve_path}", flush=True)
+    else:
+        mgr.train_rt_model(train_df)
 
     os.makedirs(args.output, exist_ok=True)
     pth = os.path.join(args.output, "rt.pth")

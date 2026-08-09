@@ -42,6 +42,8 @@ echo "==> fine-tuning on ${ids}"
 "${env_py}" "${here}/finetune_rt.py" "${ids}" "${out}" --max-peptides "${n}" \
   --epochs "${ODIA_RT_EPOCHS:-40}" \
   --q-value "${ODIA_RT_QVALUE:-0.01}" \
+  ${ODIA_RT_CURVE:+--curve "${ODIA_RT_CURVE}"} \
+  --device "${ODIA_RT_DEVICE:-gpu}" \
   --method "${ODIA_RT_METHOD:-direct}" --evaluate
 
 echo "==> exporting to ONNX"

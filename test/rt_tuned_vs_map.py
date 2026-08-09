@@ -14,7 +14,7 @@ SEQUENCE is absent from those anchors.
 
 Usage: rt_tuned_vs_map.py <anchors.tsv> <library.tsv> <report.parquet> <rt.onnx>
 """
-import csv, subprocess, sys
+import csv, subprocess, sys, zlib
 import numpy as np, pyarrow.parquet as pq
 
 anchors_path, lib_path, report_path, onnx_path, predictor = sys.argv[1:6]
@@ -84,7 +84,20 @@ for i in range(t.num_rows):
     s, c = d['Stripped.Sequence'][i], int(d['Precursor.Charge'][i])
     if s in seen: continue
     if (s, c) in pred: test.append((s, pred[(s, c)], float(d['RT'][i])*60.0))
-print(f"train anchors {len(anch)}   held out {len(test)} (sequences disjoint)")
+# THREE-WAY, not two. The held-out set stops being held out the moment a
+# hyper-parameter is chosen on it, and that is exactly what happened: 40 versus
+# 100 epochs was selected by comparing 31.14 against 28.30 on THESE rows, then
+# 28.30 was reported. That is validation-set model selection and it biases the
+# number optimistically.
+#
+# So the evaluation set is split again by stripped sequence: VALIDATION is where
+# recipes may be compared, TEST is reported and must be looked at once. Both are
+# printed every run, because a validation number quoted as a test number is the
+# same error in a new costume.
+val  = [r for r in test if (zlib.crc32(r[0].encode()) & 0xFFFFFFFF) % 2 == 0]
+tst  = [r for r in test if (zlib.crc32(r[0].encode()) & 0xFFFFFFFF) % 2 == 1]
+print(f"train anchors {len(anch)}   evaluation {len(test)} "
+      f"-> validation {len(val)} / TEST {len(tst)} (split by sequence)")
 
 def monotone(xs, ys, knots=120):
     o = np.argsort(xs); xs, ys = np.asarray(xs)[o], np.asarray(ys)[o]
@@ -93,12 +106,18 @@ def monotone(xs, ys, knots=120):
         xs[idx], np.maximum.accumulate([np.median(ys[max(0,i-w):i+w+1]) for i in idx]))
 
 sd = lambda r: float(np.std(r, ddof=1))
-ytr = np.array([a[2] for a in anch]); yte = np.array([r[2] for r in test])
-
-xtr = np.array([a[1] for a in anch]); xte = np.array([r[1] for r in test])
+ytr = np.array([a[2] for a in anch])
+xtr = np.array([a[1] for a in anch])
 m = monotone(xtr, ytr)
-print(f"  library iRT -> monotone map   held-out SD {sd(yte - m(xte)):7.2f} s")
-
-ptr = predict([a[0] for a in anch]); pte = predict([r[0] for r in test])
+ptr = predict([a[0] for a in anch])
 mt = monotone(ptr, ytr)
-print(f"  TUNED iRT   -> monotone map   held-out SD {sd(yte - mt(pte)):7.2f} s")
+
+for name, rows in (("validation", val), ("TEST", tst)):
+    if len(rows) < 100:
+        print(f"  {name}: only {len(rows)} rows -- too few to mean anything, not reported")
+        continue
+    y = np.array([r[2] for r in rows])
+    xb = np.array([r[1] for r in rows])
+    xt = predict([r[0] for r in rows])
+    print(f"  {name:10s} library iRT -> map  SD {sd(y - m(xb)):7.2f} s"
+          f"   |  TUNED -> map  SD {sd(y - mt(xt)):7.2f} s   (n={len(rows)})")
