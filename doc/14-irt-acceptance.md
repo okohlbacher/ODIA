@@ -167,3 +167,46 @@ the peptides it already found.
 
 That is the single most dangerous interaction in this feature and it is why the
 module has to report both numbers rather than one.
+
+## The training curve, 500 epochs (2026-08-09)
+
+`--curve 25` on 5,867 Astral identifications. peptdeep's own held-out split.
+
+    epoch     held-out (min)   train (min)   seconds
+        0        0.974           1.033           0
+       25        0.490           0.452         125
+       50        0.447           0.358         246
+      100        0.427           0.281         478
+      150        0.416           0.238         713
+      200        0.413           0.208         958
+      250        0.411           0.186        1203
+      375        0.406           0.148        1820
+      500        0.405           0.123        2431
+
+**Most of the gain is in the first 50 epochs** (0.974 -> 0.447). From 250 to 500
+the held-out residual improves by 0.006 min -- 0.36 s for 250 epochs of compute
+-- while train falls from 0.186 to 0.123. The train/held-out ratio reaches 3.3x.
+
+So the model overfits steadily and the held-out residual never degrades; it just
+stops improving. **150 to 250 epochs is the operating range**: past that is pure
+compute, and below 50 leaves most of the gain on the table.
+
+That the held-out curve is flat rather than U-shaped matters for the production
+configuration: with only 15% held out for validation, early stopping has a wide
+and forgiving target rather than a sharp optimum to miss.
+
+## GPU
+
+Fine-tuning ran on CPU all afternoon. torch was `2.5.1+cpu` and
+`ModelManager(device='gpu')` falls back silently; the environment also lived on
+ibminode05, which has no GPU, while `data` carries two H100s.
+
+A CUDA environment now exists at `/scratch/kohlbach/odia/rtft_gpu` on `data`
+(torch 2.6.0+cu124). **200 epochs in 41.7 s against 481.9 s for 100 epochs on
+CPU -- about 23x per epoch.** `finetune_rt.py` now prints the RESOLVED device, so
+a silent fallback cannot recur.
+
+One split-brain to remember: the fine-tune runs on `data` (GPU) but the ONNX
+exporter needs the OpenMS source tree, which is on ibminode05's node-local
+scratch. The `.pth` lands on ceph and is visible from both, so the export is a
+separate step on the other node until the exporter is reachable from one place.
