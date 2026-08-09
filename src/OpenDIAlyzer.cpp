@@ -537,6 +537,23 @@ protected:
                           "ablation within ONE binary: comparing two builds also compares "
                           "everything else that changed between them, which is how a feature "
                           "gets credited with somebody else's gain.", false, true);
+    registerDoubleOption_("train_fdr_initial", "<q>", 0.15,
+                          "FDR for the semi-supervised loop's FIRST training-set selection. "
+                          "Deliberately lenient: the first pass is seeded by one feature, so a "
+                          "strict cut selects too few positives to fit anything and the model "
+                          "never bootstraps. pyprophet uses 0.15 for the same reason. Raise it "
+                          "on a low-prior library where the loop reports 0.", false, true);
+    registerDoubleOption_("train_fdr", "<q>", 0.05,
+                          "FDR for the loop's later iterations, once a real discriminant exists.",
+                          false, true);
+    registerIntOption_("classifier_iterations", "<n>", 3,
+                       "Semi-supervised iterations.", false, true);
+    registerFlag_("use_pi0",
+                  "Storey pi0 correction in the q-value. OFF is the honest/conservative setting "
+                  "-- a nominal 1% is a true 1%. ON matches pyprophet and DIA-NN, which report "
+                  "more identifications at a nominal 1% that is nearer 2% in truth. It is "
+                  "exposed because parity with their NUMBERS and parity with their CALIBRATION "
+                  "are different goals and the choice should be visible.", true);
     registerFlag_("repredict_irt",
                   "Re-predict the SUPPLIED library's iRT with -rt_model, instead of using the "
                   "values the library file carries. "
@@ -1330,6 +1347,10 @@ protected:
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
     options.match_decoy_candidate_counts = getFlag_("match_decoy_n");
+    options.train_fdr_initial = getDoubleOption_("train_fdr_initial");
+    options.train_fdr = getDoubleOption_("train_fdr");
+    options.classifier_iterations = getIntOption_("classifier_iterations");
+    options.use_pi0 = getFlag_("use_pi0");
     options.min_fragments_at_apex = static_cast<std::size_t>(
       std::max(1, getIntOption_("min_fragments_at_apex")));
     options.apex_evidence = getDoubleOption_("apex_evidence");

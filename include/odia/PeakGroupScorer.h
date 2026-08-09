@@ -356,6 +356,13 @@ namespace ODIA
       /// Draw each decoy's best score from as many candidates as a target has.
       /// See `Scoring::LDAParams::match_decoy_candidate_counts`.
       bool match_decoy_candidate_counts = false;
+
+      /// Semi-supervised loop knobs, previously reachable only by recompiling.
+      /// 0 / negative means "leave the LDAParams default alone".
+      double train_fdr_initial = 0.0;
+      double train_fdr = 0.0;
+      int classifier_iterations = 0;
+      bool use_pi0 = false;
     };
 
     struct PeakGroup
