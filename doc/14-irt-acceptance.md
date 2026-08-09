@@ -133,3 +133,37 @@ against fine-tuned 0.449, a factor of 0.73), the same factor applied to the
 0.553 min ridge here would put a peptdeep fine-tune near 0.40 min = 24 s --
 under the 30 s bar. That is an extrapolation across datasets and must be
 measured, not quoted.
+
+## Production configuration is NOT the measurement configuration
+
+Stated by the project owner 2026-08-09 and worth separating carefully, because
+the two configurations answer different questions and the numbers are not
+interchangeable.
+
+**Measurement (what the 28.84 s means).** Train on one set of stripped
+sequences, evaluate on a disjoint set, choose the recipe on a third. That
+estimates the residual for a peptide the model has NEVER SEEN. It is the honest
+generalisation number and it is what this document's bar is written against.
+
+**Production (what a real run should do).** Train on the FULL set of confident
+identifications, hold out ~15% for validation only -- epoch selection, early
+stopping -- then apply the model to ALL precursors. The goal there is not to
+estimate generalisation; it is to minimise the deviation on this run's data, and
+holding data out of training purely to preserve a clean estimate would be paying
+identifications for a statistic.
+
+**The consequence that must not be missed.** After production fine-tuning, the
+identified precursors have a residual near the TRAINING error and everything
+else has a residual near the GENERALISATION error, and the training error is
+much lower -- the curve shows 0.186 min train against 0.411 held-out at epoch
+250, a factor of 2.2.
+
+The pass-2 extraction window is sized from the p95 of the ANCHORS, which after
+fine-tuning are exactly the trained-on population. So a naive wiring would size
+the window from the optimistic in-sample residual and under-size it for the
+library majority the model has never seen. The window must be sized from the
+HELD-OUT residual, not the anchors', or fine-tuning will narrow the search onto
+the peptides it already found.
+
+That is the single most dangerous interaction in this feature and it is why the
+module has to report both numbers rather than one.
