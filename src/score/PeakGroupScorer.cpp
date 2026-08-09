@@ -421,6 +421,97 @@ namespace ODIA
       return found;
     }
 
+    /// The best fragment's summed correlation to the others at position `k`,
+    /// with NO gate applied. This is the same quantity
+    /// `findCandidatesByCorrelation` thresholds on, computed for a position
+    /// somebody else chose.
+    double bestCorrSumAt(const std::vector<std::vector<double>>& tr, std::size_t k,
+                         std::size_t S, std::size_t n)
+    {
+      const std::size_t tc = tr.size();
+      if (tc < 2 || k < S || k + S + 1 > n) { return 0.0; }
+      const std::size_t lo = k - S, hi = k + S + 1;
+      std::vector<double> score(tc, 0.0), a, b;
+      for (std::size_t i = 0; i < tc; ++i)
+      {
+        a.assign(tr[i].begin() + lo, tr[i].begin() + hi);
+        for (std::size_t j = i + 1; j < tc; ++j)
+        {
+          b.assign(tr[j].begin() + lo, tr[j].begin() + hi);
+          const double r = pearson(a, b);
+          if (std::isfinite(r)) { score[i] += r; score[j] += r; }
+        }
+      }
+      return *std::max_element(score.begin(), score.end());
+    }
+
+    /// Co-elution as a FEATURE rather than a GATE: the hybrid.
+    ///
+    /// The two pickers disagree about what a candidate is. DIA-NN's asks
+    /// whether the fragments rise and fall together and refuses the position if
+    /// they do not; OpenSWATH's asks only whether there is a peak in the summed
+    /// trace and leaves co-elution to the scores. A gate cannot be undone by a
+    /// classifier and a feature can, so the gate is only correct if it is never
+    /// wrong -- and it is a fixed threshold on an unnormalised sum, which is
+    /// not the kind of thing that is never wrong.
+    ///
+    /// So take BOTH candidate sets, and give every candidate the co-elution
+    /// evidence as a number. An amplitude candidate the gate would have thrown
+    /// away now arrives with a low `corr_sum`, and the semi-supervised
+    /// classifier and the FDR decide what that is worth. This also repairs the
+    /// comparison: run with either alternative picker alone, `var_corr_sum` and
+    /// `var_candidate_margin` are constant columns and are dropped, so those
+    /// arms were scoring with 15 features against the co-elution arm's 17.
+    ///
+    /// Ordered by `corr_sum`, so when the cap bites it is the positions with
+    /// the least co-elution evidence that are dropped -- the union can only add
+    /// candidates the gate refused, never displace ones it accepted.
+    std::vector<Candidate> unionCandidates(const PrecursorChromatogram& c,
+                                           std::vector<Candidate> found,
+                                           const std::vector<Candidate>& amplitude,
+                                           std::size_t half_window,
+                                           std::size_t max_candidates)
+    {
+      const std::uint32_t tc = c.transition_count;
+      const std::size_t n = c.cycles;
+      const std::size_t S = std::max<std::size_t>(1, half_window);
+      if (tc < 2 || n < 2 * S + 4) { return found; }
+
+      std::vector<std::vector<double>> tr(tc);
+      for (std::uint32_t k = 0; k < tc; ++k)
+      {
+        const std::uint32_t m = c.pointCount(k);
+        const float* pk = m ? c.trace(k) : nullptr;
+        tr[k].assign(n, 0.0);
+        for (std::uint32_t j = 0; j < m && j < n; ++j) { tr[k][j] = pk[j]; }
+      }
+
+      // Two apexes within S/3 cycles are the same peak seen by two detectors --
+      // the neighbourhood the co-elution picker's own local-maximum test uses.
+      // Admitting both would let one peak occupy two of the capped slots and
+      // would give the classifier a duplicate row to compete against itself.
+      const std::size_t near = std::max<std::size_t>(S / 3, 1);
+      for (const auto& a : amplitude)
+      {
+        bool dup = false;
+        for (const auto& g : found)
+        {
+          const std::size_t d = g.apex > a.apex ? g.apex - a.apex : a.apex - g.apex;
+          if (d <= near) { dup = true; break; }
+        }
+        if (dup) { continue; }
+        Candidate cd = a;
+        cd.corr_sum = bestCorrSumAt(tr, cd.apex, S, n);
+        found.push_back(cd);
+      }
+
+      std::stable_sort(found.begin(), found.end(),
+                       [](const Candidate& x, const Candidate& y)
+                       { return x.corr_sum > y.corr_sum; });
+      if (found.size() > max_candidates) { found.resize(max_candidates); }
+      return found;
+    }
+
     double dotProduct(std::vector<double> a, std::vector<double> b)
     {
       const std::size_t n = std::min(a.size(), b.size());
@@ -506,15 +597,26 @@ namespace ODIA
         openswath_candidates.push_back(cd);
       }
     }
-    const auto candidates = options.openswath_picking
+    const auto amplitude_candidates = [&] {
+      return findCandidates(smooth(total, options.smooth_half_width),
+                            options.max_candidates, options.boundary_fraction);
+    };
+    const auto coelution_candidates = [&] {
+      return findCandidatesByCorrelation(chromatogram, rejects_, options.corr_half_window,
+                                         options.min_corr_score, options.max_corr_diff,
+                                         options.apex_evidence, options.smooth_half_width,
+                                         options.boundary_fraction, options.max_candidates);
+    };
+    const auto candidates = options.union_picking
+      ? unionCandidates(chromatogram, coelution_candidates(),
+                        options.openswath_picking ? openswath_candidates
+                                                  : amplitude_candidates(),
+                        options.corr_half_window, options.max_candidates)
+      : options.openswath_picking
       ? openswath_candidates
       : options.coelution_picking
-      ? findCandidatesByCorrelation(chromatogram, rejects_, options.corr_half_window,
-                                    options.min_corr_score, options.max_corr_diff,
-                                    options.apex_evidence, options.smooth_half_width,
-                                    options.boundary_fraction, options.max_candidates)
-      : findCandidates(smooth(total, options.smooth_half_width),
-                       options.max_candidates, options.boundary_fraction);
+      ? coelution_candidates()
+      : amplitude_candidates();
     if (candidates.empty()) { ++result.precursors_without_candidate; return; }
 
     // Library intensities, in the transition order the chromatograms use.

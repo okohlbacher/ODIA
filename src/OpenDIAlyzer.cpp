@@ -457,7 +457,11 @@ protected:
                           "already correlate. amplitude: local maxima on the summed trace. "
                           "openswath: OpenMS's PeakPickerChromatogram, the reference "
                           "implementation, which picks by amplitude and sets boundaries by "
-                          "signal-to-noise, so co-elution enters only afterwards as a score.",
+                          "signal-to-noise, so co-elution enters only afterwards as a score. "
+                          "union: both -- the co-elution candidates plus the amplitude ones the "
+                          "gate refused, with the co-elution sum attached to every candidate as "
+                          "a number rather than used as a threshold. union_openswath: the same "
+                          "hybrid with OpenMS's picker supplying the second set.",
                           false);
     setValidStrings_("picker", {"coelution", "amplitude", "openswath"});
     registerDoubleOption_("openswath_sn", "<ratio>", 1.0,
@@ -1069,7 +1073,9 @@ protected:
     options.classifier = getStringOption_("classifier");
     options.min_library_corr = getDoubleOption_("min_library_corr");
     options.coelution_picking = !getFlag_("amplitude_picking");
-    options.openswath_picking = getStringOption_("picker") == "openswath";
+    const std::string picker = getStringOption_("picker");
+    options.union_picking = picker == "union" || picker == "union_openswath";
+    options.openswath_picking = picker == "openswath" || picker == "union_openswath";
     options.openswath_sn = getDoubleOption_("openswath_sn");
     options.openswath_gauss = getFlag_("openswath_gauss");
     options.openswath_peak_width = getDoubleOption_("openswath_peak_width");

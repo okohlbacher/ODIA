@@ -158,6 +158,39 @@ int main()
           "fragment is not a co-elution, whatever its height");
   }
 
+  // The union: co-elution stops being a gate and becomes a number.
+  //
+  // The property that makes the hybrid safe is that it cannot LOSE the gate's
+  // answer -- it only adds positions the gate refused, and orders by the
+  // co-elution sum so the cap drops those first. So on this fixture the union
+  // must still rank the peptide above the nine-times-louder spike, while the
+  // spike is now present as a candidate the classifier is allowed to see and
+  // reject, rather than one the picker decided for it.
+  {
+    ODIA::PeakGroupScorer::Options o;
+    o.coelution_picking = true;
+    o.union_picking = true;
+    o.max_candidates = 5;
+    o.min_fragments_at_apex = 1;
+    const auto r = ODIA::PeakGroupScorer::score(lib, run, o);
+    const double apex = bestApex(r);
+    std::printf("union picker: best apex at cycle %.0f, %zu candidates\n",
+                apex, r.groups.size());
+    check(std::fabs(apex - double(REAL_APEX)) <= 2.0,
+          "the union still ranks the peptide first: adding candidates does not "
+          "displace the one the gate was right about");
+
+    bool spike_present = false;
+    for (const auto& g : r.groups)
+    {
+      if (std::fabs(double(g.apex_rt) - double(SPIKE_APEX)) <= 2.0) { spike_present = true; }
+    }
+    check(spike_present,
+          "and the spike the gate refused IS now a candidate -- that is the whole "
+          "difference, and what lets the classifier rather than a fixed threshold "
+          "decide what a single loud fragment is worth");
+  }
+
   if (failures == 0) { std::printf("all picker cases passed\n"); }
   return failures == 0 ? 0 : 1;
 }

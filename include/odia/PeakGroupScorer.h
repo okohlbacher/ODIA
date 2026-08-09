@@ -225,6 +225,17 @@ namespace ODIA
       /// nobody has run. Overrides `coelution_picking` when set.
       bool openswath_picking = false;
 
+      /// Take the UNION of the co-elution candidates and the amplitude ones
+      /// (or the OpenSWATH ones, when `openswath_picking` is also set), and
+      /// give every candidate its co-elution sum as a number.
+      ///
+      /// The point is to stop using co-elution as a GATE. A gate cannot be
+      /// undone by a classifier, so it has to be right every time; a feature
+      /// only has to be informative. This also fixes the picker comparison,
+      /// where running either alternative alone left `var_corr_sum` and
+      /// `var_candidate_margin` constant and therefore dropped.
+      bool union_picking = false;
+
       /// Signal-to-noise threshold for the OpenSWATH picker. Its default is 1.0;
       /// OpenSwathWorkflow commonly runs it at 0.1 for DIA, where a "peak" sits
       /// on far more background than in targeted MRM.
