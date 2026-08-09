@@ -65,3 +65,46 @@ probe beside it is what can see overfitting, and both must be quoted.
 When Astral meets the bar above and S08 has improved, on a build that passes
 ctest, with the three reviewers finding no further defect in the wiring. After
 that the calibration is not to be touched without a measured reason.
+
+## 2026-08-09 16:20: the SD <= 30 s bar is NOT reachable by calibration
+
+`test/rt_calibration_residuals.py` already existed and answers the question the
+whole thread was circling. It starts from the LIBRARY's iRT -- the only honest
+source for "what did we predict before seeing the run" -- fits a calibration on
+one set of stripped sequences and evaluates on another, so the number is not the
+calibration's own flexibility.
+
+Astral, 10,891 precursors at 1% FDR, 8,723 train / 2,168 held out:
+
+    calibration              set          n        SD        p95    (minutes)
+    linear                   in-sample  8,723    0.702      1.398
+    linear                   held out   2,168    0.704      1.379
+    monotone (LOESS-like)    in-sample  8,723    0.625      1.233
+    monotone (LOESS-like)    held out   2,168    0.644      1.269
+
+**0.644 min = 38.6 s is the CEILING for any monotone post-hoc calibration on
+this library and run.** ODIA's map is a monotone post-hoc calibration. It cannot
+beat 38.6 s held-out however it is fitted, so the SD <= 30 s bar is unreachable
+by anything in the calibration path -- LOESS spans, anchor thresholds, bin
+counts, isotonic tweaks. Those can close the gap from our current 95.6 s (in
+sample, contaminated anchors) down towards 38.6 s and no further.
+
+**And it corrects the DIA-NN comparison.** DIA-NN's reported `RT -
+Predicted.RT` SD is 29.29 s, which is BELOW the ceiling a monotone map of the
+library iRT can achieve. That is only possible because `Predicted.RT` is
+DIA-NN's RUN-REFINED prediction, not a monotone function of the library value.
+So the earlier statement "our map is 34.22 against DIA-NN's 26.09" compared a
+calibration against a retrained model. The right reading is that DIA-NN is doing
+something our architecture does not do at all.
+
+**Therefore fine-tuning is not an optimisation, it is the only path to the bar.**
+doc/06 measured exactly this: held-out 0.701 -> 0.449 min (42.1 -> 26.9 s) from
+500 peptides in 31 s, 0.395 min (23.7 s) from 2,000. Those numbers straddle the
+30 s bar where no calibration can approach it.
+
+Caveat to check before quoting the ceiling as final: `astral_lib_own.tsv` was
+derived from a DIA-NN run on this same file, so its iRT column may already carry
+run information, which would make 38.6 s optimistic rather than pessimistic.
+
+S08 cannot be measured this way yet: the v6 report yields 738 usable rows
+against the script's 1,000-row floor.
