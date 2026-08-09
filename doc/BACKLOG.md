@@ -2715,3 +2715,36 @@ at 15. Identifications nevertheless fall past 50 because the interference
 admitted costs more than the signal recovered. The two curves separating like
 that is the clean statement of the trade: availability and specificity are
 genuinely opposed here, and 50 ppm is where they balance on this instrument.
+
+## Ledger after the width fix: the bottleneck MOVED to scoring (2026-08-09)
+
+Verified at the new default (50 ppm when the mass gate fails):
+Astral 4,290 -> **4,969**, S08 unchanged at 1,306. Exactly as predicted.
+
+    phase                    now      before      OSW
+    library targets       10,891      10,891   10,891
+    candidate emitted      9,479       5,704   10,891
+    at q<=0.01             4,969       4,290    8,765
+
+**Availability went 52.4% -> 87.0%.** The extraction deficit that dominated this
+whole investigation is largely closed: 1,412 precursors still get no candidate,
+against 5,187 before.
+
+**But identifications rose only 679 on 3,775 new candidates.** The conversion
+rate from candidate to identification is now the deficit:
+
+    ODIA   4,969 / 9,479  = 52.4%
+    OSW    8,765 / 10,891 = 80.5%
+
+At OSW's conversion rate our current candidates would yield ~7,630. **That is
+the headroom, and it is in scoring and FDR, not extraction.**
+
+This is the ledger doing its job: fix the largest stage, re-measure, and the
+constraint relocates. It also retro-justifies the earlier work that went
+nowhere -- the scoring engines were interchangeable and the picker thresholds
+inert *while availability was the binding constraint*. They are worth revisiting
+now that it is not.
+
+Next: MS1_COELUTION was worth +17.6% on S08 but only +0.4% on Astral -- measured
+when Astral availability was 52%. With 87% it has far more to work with, so that
+A/B is worth re-taking before anything else.
