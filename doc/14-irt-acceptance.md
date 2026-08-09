@@ -108,3 +108,28 @@ run information, which would make 38.6 s optimistic rather than pessimistic.
 
 S08 cannot be measured this way yet: the v6 report yields 738 usable rows
 against the script's 1,000-row floor.
+
+## 2026-08-09 16:45: sequence information DOES beat the ceiling (measured locally)
+
+`test/rt_sequence_gain.py`. Astral, 10,891 paired precursors, 8,723 train /
+2,168 held out, split by stripped sequence:
+
+    monotone map of library iRT only            held-out SD  38.55 s
+    ridge(AA composition + calibrated iRT) l=1  held-out SD  33.19 s
+                                          l=10  held-out SD  33.26 s
+                                          l=100 held-out SD  35.62 s
+
+The monotone figure reproduces `rt_calibration_residuals.py`'s 38.6 s from an
+independent implementation, which is the cross-check that makes the rest
+trustworthy.
+
+**A 24-feature ridge with no neural network breaks the ceiling by 5.4 s.** So
+the residual left after the best monotone map is not noise -- it carries
+sequence-dependent structure, which is precisely the claim doc/06 makes for
+retraining and the reason a calibration cannot get there.
+
+Scaling from doc/06's own comparison on S08 (AA-composition ridge 0.616 min
+against fine-tuned 0.449, a factor of 0.73), the same factor applied to the
+0.553 min ridge here would put a peptdeep fine-tune near 0.40 min = 24 s --
+under the 30 s bar. That is an extrapolation across datasets and must be
+measured, not quoted.
