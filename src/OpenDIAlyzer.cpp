@@ -515,6 +515,26 @@ protected:
                           "ablation within ONE binary: comparing two builds also compares "
                           "everything else that changed between them, which is how a feature "
                           "gets credited with somebody else's gain.", false, true);
+    registerStringOption_("mass_features", "<mode>", "auto",
+                          "Whether var_mass_accuracy and var_mass_spread reach the classifier. "
+                          "auto: only when the fragment mass calibration gate FAILED. "
+                          "\n\nMeasured 2026-08-09, and the two files disagree completely. "
+                          "Astral, where the gate fails and the window is 50 ppm and uncentred: "
+                          "5,025 -> 5,729, the largest single gain measured on that file. S08, "
+                          "where the gate passes and the window is 10 ppm centred on -9.35 with "
+                          "a per-fragment sigma of 1.10: 1,342 -> 1,168, and leave-one-out says "
+                          "both are harmful there (spread alone 1,315, accuracy alone 1,285). "
+                          "\n\nThat is not a contradiction, it is the rule: A FEATURE IS WORTH "
+                          "WHAT THE EXTRACTION HAS NOT ALREADY SPENT. A centred 10 ppm window "
+                          "has already used the mass information as a filter, so the residual is "
+                          "noise for a classifier to overfit; a 50 ppm uncentred window has "
+                          "spent none of it, and mass deviation is then the one thing separating "
+                          "a real fragment from something that merely co-elutes. "
+                          "\n\nThe gate's own verdict is therefore the right switch, and it is "
+                          "measured from the data rather than set per file. In pass 1 the gate "
+                          "has not run yet, so auto leaves them ON; pass 2 is where the decision "
+                          "is real.", false, true);
+    setValidStrings_("mass_features", {"auto", "on", "off"});
     registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
                           "Half-width, in robust sigmas of the per-fragment deviation, for "
                           "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
@@ -1108,6 +1128,27 @@ protected:
         { throw std::invalid_argument("-ablate: no sub-score is called '" + name + "'"); }
         options.disabled_sub_scores.push_back(
           static_cast<int>(std::distance(names.begin(), it)));
+      }
+    }
+
+    // The mass features, on only where the extraction has not already spent
+    // the mass information. See the option's own comment for the measurement.
+    {
+      const std::string mode = getStringOption_("mass_features");
+      const bool on = mode == "on" ||
+                      (mode == "auto" && (!mass_model_known_ || !mass_model_.fitted));
+      if (!on)
+      {
+        const auto& names = ODIA::PeakGroupScorer::subScoreNames();
+        for (const char* n : {"var_mass_accuracy", "var_mass_spread"})
+        {
+          const auto it = std::find(names.begin(), names.end(), n);
+          if (it != names.end())
+          {
+            options.disabled_sub_scores.push_back(
+              static_cast<int>(std::distance(names.begin(), it)));
+          }
+        }
       }
     }
 

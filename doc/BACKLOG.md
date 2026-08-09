@@ -2866,3 +2866,39 @@ which exceeds the 10,891-entry library, so the units do not obviously line up
 and it should not be quoted as a count of recoverable precursors. Either way the
 deficit is after candidates exist -- in scoring, ranking or FDR -- and that is
 where the next phase goes.
+
+## 2026-08-09: fragment mass accuracy, and the rule it establishes
+
+Both reviewers independently named it as the highest-value score ODIA lacked,
+and both gave the same mechanism: an extracted chromatogram records intensity
+inside a mass window over time and discards WHERE in the window the peak sat, so
+an interferent can co-elute perfectly, correlate perfectly, and be
+systematically displaced in m/z with nothing chromatographic able to see it.
+
+Two sub-scores, both already computed for the width measurement:
+`var_mass_spread` (within-group scatter of per-fragment deviations,
+calibration-free) and `var_mass_accuracy` (|deviation - the run's median|).
+
+    Astral   5,025 -> 5,729   (+704, largest single gain measured on this file)
+    S08      1,342 -> 1,168   (-174)
+
+Leave-one-out on S08, one binary, via the new `-ablate`:
+
+    both ablated      1,342     (reproduces the pre-feature number exactly)
+    spread only       1,315
+    accuracy only     1,285
+    both active       1,168
+
+**A FEATURE IS WORTH WHAT THE EXTRACTION HAS NOT ALREADY SPENT.** S08's gate
+passes, so its window is +/-10 ppm centred on -9.35 with a per-fragment sigma of
+1.10 -- the mass information has already been used as a filter and what remains
+is noise the classifier overfits. Astral's gate fails, so its window is 50 ppm
+and uncentred, none of the mass information has been spent, and the deviation is
+the strongest thing available.
+
+So `-mass_features auto` switches on the gate's own verdict, which is measured
+from the data rather than set per file. This is the first working instance of
+the per-file auto-detection in the 2026-08-08 backlog entry, and note what made
+it work: the switch is an OBSERVABLE STATE OF THE PIPELINE, not a statistic
+pooled over accepted identifications. The latter is what cost half the Astral
+run when I tried it for the window width earlier the same day.
