@@ -3065,3 +3065,51 @@ two-residue mutation still shares the target's retention time, mobility and
 intensity pattern, and on the SEARCH benchmark false targets outscore decoys
 (p99 3.468 against 2.063). `-decoys pseudoreverse` already exists, so the test
 is a flag rather than new code, and is running.
+
+## 2026-08-09 22:05: Phase 1-2 review triage — nothing survived
+
+Seven findings across kimi and vibe (codex could not run: missing
+codex-code-mode-host). Every one checked. None produced an actionable defect.
+
+**kimi #4, charge-3 fragments — DEAD.** Claimed DIA-NN's library carries 35.6%
+charge-3 fragments for 3+ precursors against our 25.8%. Every library on disk is
+**0.0%** charge >= 3: `astral_lib_own`, `astral_lib_diann`, `v6_50k`,
+`lib_targets`. Three minutes to check; days to have "fixed".
+
+**kimi #2, hidden loop knobs — REAL but INERT.** LDAParams/NNParams/GBTParams
+were reachable only by recompiling, which is worth fixing on principle and now
+is (`-train_fdr_initial`, `-train_fdr`, `-classifier_iterations`, `-use_pi0`).
+The predicted effect did not appear: v6_50k reports 0 at default, at
+train_fdr_initial 0.35 / train_fdr 0.10 / 6 iterations, and with use_pi0.
+
+**kimi #1, the decoy null — HALF WRONG, half under test.** Wrong that decoys
+keep the target's fragments: `LibraryGenerator.cpp:775-790` recomputes every
+fragment from the decoy sequence, and records that shifting b/y ions left 15.3%
+of decoy fragment m/z not matching the sequence beside them. The empirical
+asymmetry (false targets p99 3.468 against decoys 2.063) stands and
+`-decoys pseudo_reverse` is measuring it.
+
+**vibe F1, the double co-elution gate — ALREADY FIXED.** Its own confirming
+experiment ("lower min_fragments_at_apex to 1") is what was done this morning:
+Astral 4,969 -> 5,025, S08 1,306 -> 1,342. It also quotes 5,187 precursors
+without a candidate, which is the pre-50-ppm figure.
+
+**vibe F2, decoy capping by canonical order — MECHANISM WRONG.** It argues the
+cap should take the top K by dscore instead, because canonical order may drop a
+decoy's best candidates. That is backwards: taking the top K by score makes
+best-of-K identical to best-of-all, which defeats the entire change. Canonical
+order is a subset chosen INDEPENDENTLY of score, which is exactly what makes
+best-of-K comparable between the classes. And the direction is measured the
+other way in `odia_entrapment`: with matching on, FDP is 0.0020 against a
+claimed 0.01 -- conservative, not anti-conservative.
+
+**vibe F3, the censoring guard not enforced — WRONG.** It cites a
+`fragmentPpm()` at OpenDIAlyzer.cpp:2102-2106 that does not exist. The guard is
+at `OpenDIAlyzer.cpp:2124`:
+`if (!mass_width_.valid || mass_width_.censored) { return fallback; }`.
+
+**What to take from this.** A review round that finds nothing is a result, not a
+failure, and manufacturing work from it would be worse than reporting it. But it
+also says these reviewers are near the limit of what they can find from the
+source alone: the real defects today came from MEASUREMENT -- the empirical-FDR
+table, the leak guard, the resolved-device print -- not from reading code.
