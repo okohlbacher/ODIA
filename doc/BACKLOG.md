@@ -2748,3 +2748,75 @@ now that it is not.
 Next: MS1_COELUTION was worth +17.6% on S08 but only +0.4% on Astral -- measured
 when Astral availability was 52%. With 87% it has far more to work with, so that
 A/B is worth re-taking before anything else.
+
+## Per-file parameters must be DETECTED, not defaulted (2026-08-09)
+
+The two benchmark files want opposite extraction widths, and the difference is
+not marginal:
+
+    file     gate     50 ppm            10-15 ppm
+    Astral   FAILS    4,969  (best)     4,290
+    S08      PASSES   0 (collapses)     1,306  (best, calibrated ~10)
+
+A single global default cannot serve both. Shipping 50 would destroy S08;
+shipping 15 costs Astral 679 identifications. **The width is a property of the
+run -- instrument, spectral density, whether frames are mobility-merged -- and
+has to be measured per file.**
+
+### What already exists, and why it is not enough
+
+`MassCalibration` IS this mechanism: probe the run, measure the fragment mass
+error, narrow the window to fit. When it works it is better than any constant --
+S08 calibrated (~10 ppm) gives 1,306 against 922 for a hand-set 15 ppm.
+
+It fails on Astral, and the fallback was the whole problem: a failed gate meant
+"use 15 ppm", i.e. a moderately narrow window chosen for no reason. Fixed today
+to 50 ppm on the principle that not knowing the error argues for a WIDE window,
+not a middling one. But that is still a constant, just a better-chosen one.
+
+### The design that would actually detect it
+
+We now have the missing ingredient. `-collect_mass_residuals` keeps the m/z
+deviation of every matched peak and reports it per peak group, read only for
+groups the FDR has accepted -- so its contamination is bounded by the FDR rather
+than by the search space, which is what every standalone probe failed at. That
+gives a trustworthy per-run error distribution.
+
+The loop writes itself:
+
+    pass 1  extract WIDE (50 ppm), score, keep q<=0.01 groups
+    then    take the per-fragment residual distribution from those groups
+            width = a quantile of |ppm| (say 99th), floored and capped
+    pass 2  extract at that width
+
+This is what DIA-NN and OpenSWATH both do in spirit, and it removes the gate
+from the critical path entirely: instead of a fragile peakedness test deciding
+whether we are allowed to calibrate, the identifications themselves supply the
+measurement. A run with no identifications stays wide, which is the correct
+behaviour rather than a failure mode.
+
+**Two things to be careful about, both already burnt once here.**
+
+1. `Mass.Ppm` as currently reported is a MEDIAN over a group's (fragment x cycle)
+   cells, so its spread is sigma/sqrt(N_eff) and NOT the per-fragment accuracy.
+   Sizing a window from it would give something absurdly narrow. The width must
+   come from the per-FRAGMENT distribution, which means emitting the
+   distribution rather than its median.
+2. Any quantile must be validated against an RT-shifted control, because a
+   residual measured over a large search space is a property of the search. That
+   discipline has already caught a -8.44 ppm "offset" that was -4.98 in the
+   control.
+
+### Also per-file, and not yet detected
+
+* `precursor_im_window` -- meaningless on Astral (no mobility), load-bearing on
+  S08.
+* `min_fragments_at_apex` and `apex_evidence` -- swept as inert on S08 while
+  availability was the constraint; unmeasured on Astral at 87% availability.
+* The mass gate's own thresholds. It passes on S08 and fails on Astral, and
+  which of those is "correct" was never established -- Astral's residual may be
+  genuinely unmeasurable, or the gate may be mis-tuned for high-resolution data.
+
+**Interim rule until detection exists: never quote a parameter as tuned without
+naming the file it was tuned on.** Three instrument-conditionality traps have
+already been recorded in this document.
