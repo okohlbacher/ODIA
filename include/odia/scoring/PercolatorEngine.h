@@ -52,12 +52,30 @@ namespace ODIA
     /// `cv_group_keys` carries the precursor grouping, so the several candidate
     /// peak groups of one precursor cannot be split across folds -- which would
     /// leak, since they share a chromatogram.
+    /// @param model_out  if non-empty, TRAIN on this data and save the model here
+    /// @param model_in   if non-empty, do not train: load this model and apply it
+    ///
+    /// STATIC MODELLING, which is the point of the two paths.
+    ///
+    /// A semi-supervised scorer needs confident positives to bootstrap, and at a
+    /// 1.5% true-positive rate it does not have them: GBT, LDA and Percolator
+    /// all report zero on `v6_50k` while the SAME discriminant, ranked, puts 232
+    /// of DIA-NN's 738 in its top 738 (31.4% precision against a 1.5% base
+    /// rate). The signal is there and the q-values cannot certify it.
+    ///
+    /// The Noble/Keich/Kall remedy is to stop asking the hard run to train
+    /// itself: fit the model where the loop DOES ignite, freeze it, and apply
+    /// it. That is not a trick -- a discriminant over these sub-scores is a
+    /// property of the instrument and the scoring code, not of which peptides
+    /// happen to be in one sample.
     ScoredGroups scorePercolator(const std::vector<std::vector<double>>& features,
                                  const std::vector<int>& labels,
                                  const std::vector<long long>& group,
                                  const LDAParams& params,
                                  const std::vector<std::string>& feature_names,
-                                 std::string* diagnostic = nullptr);
+                                 std::string* diagnostic = nullptr,
+                                 const std::string& model_out = "",
+                                 const std::string& model_in = "");
 
   } // namespace Scoring
 } // namespace ODIA

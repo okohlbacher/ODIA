@@ -394,7 +394,33 @@ namespace ODIA
       /// fragments where an uncentred +/-15 keeps 0.78, so a run whose gate
       /// fails is strictly better off wide -- and a run that silently narrowed
       /// anyway would look like a calibration working.
-      double fragment_ppm_uncalibrated = 15.0;
+      /// The width used when the mass calibration gate FAILS.
+      ///
+      /// Raised 15 -> 50 because 15 was the wrong direction. A failed gate means
+      /// the run's mass error could NOT be measured, and the safe response to not
+      /// knowing is a wide window, not a moderately narrow one. 15 ppm was narrow
+      /// enough to lose real fragments while too wide to be a real tolerance.
+      ///
+      /// Measured on Astral, where the gate fails, sweeping -fragment_ppm:
+      ///
+      ///     ppm        15      30      50      75     100
+      ///     IDs     4,290   4,499   4,969   4,382   3,967
+      ///     all-0  26,800  23,203  15,550   7,341   2,436
+      ///
+      /// The optimum is 50, which is exactly OpenSWATH's `mz_extraction_window`
+      /// default. All-zero traces fall monotonically to 100 ppm, so wider windows
+      /// keep finding real signal; identifications turn over at 50 because past
+      /// that the interference admitted costs more than the signal recovered.
+      ///
+      /// THIS IS NOT A GLOBAL WIDENING. On S08, where the gate PASSES, the
+      /// calibrated width (~10 ppm) is used and is far better: 1,306 identifications
+      /// against 922 with calibration off at 15 ppm, and 50 ppm with calibration
+      /// off collapses the run to zero. A diaPASEF frame is a merged stack of TIMS
+      /// scans, so a wide m/z window admits vastly more interference there than in
+      /// Astral's cleaner spectra. The two instruments want opposite widths, which
+      /// is precisely why this value must apply ONLY when the gate could not
+      /// measure the run.
+      double fragment_ppm_uncalibrated = 50.0;
 
       /// Systematic fragment mass offset, ppm, added to the theoretical m/z
       /// before matching. 0 means uncalibrated.

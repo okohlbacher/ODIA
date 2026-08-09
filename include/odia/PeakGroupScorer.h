@@ -237,6 +237,16 @@ namespace ODIA
       /// its default. S08's peaks are ~20-30 s.
       double openswath_peak_width = 0.0;
 
+      /// Save the trained discriminant here, or load a frozen one from here.
+      ///
+      /// Static modelling: at a 1.5% true-positive rate the semi-supervised loop
+      /// has no confident positives to bootstrap from and certifies nothing,
+      /// while the same discriminant RANKS 232 of DIA-NN's 738 into its top 738.
+      /// Training where the loop ignites and applying the frozen model where it
+      /// does not is the documented remedy.
+      std::string classifier_model_out;
+      std::string classifier_model_in;
+
       /// MS1 traces for MS1_COELUTION, or null when the run has no MS1.
       ///
       /// A real pointer to real data, not a plumbing point. doc/07 is explicit
