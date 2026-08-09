@@ -322,6 +322,15 @@ protected:
                        "lets equal-sized pass-1 subsets with different members be "
                        "compared, separating how many anchors from which anchors.",
                        false, true);
+    registerOutputFile_("out_anchors", "<file>", "",
+                        "Write pass 1's retention-time anchors here as a TSV: precursor, "
+                        "modified sequence, charge, library iRT, observed apex RT, dscore and "
+                        "q-value. These are the (sequence, observed RT) pairs a retention-time "
+                        "model would be fine-tuned on, and nothing could emit them before -- so "
+                        "any experiment on per-run RT refinement had to reconstruct them from a "
+                        "different search. Written before the map is applied, so the iRT column "
+                        "is the LIBRARY value.", false, true);
+    setValidFormats_("out_anchors", {"tsv"}, false);
     registerDoubleOption_("rt_loess_span", "<fraction>", 0.0,
                           "LOESS span for the retention-time map, as a fraction of the anchors. "
                           "0 uses binned medians alone. "
@@ -965,6 +974,32 @@ protected:
           anchors.emplace_back(static_cast<double>(original_irt[i]),
                                static_cast<double>(best[i]->apex_rt));
         }
+      }
+
+      // The anchors themselves, for anything that wants to LEARN from them
+      // rather than fit a monotone map through them. Written here because
+      // `best` -- which carries the sequence's precursor index -- lives only in
+      // this scope, and a (library iRT, observed RT) pair without the sequence
+      // is useless to a retention-time model.
+      const std::string anchor_path = getStringOption_("out_anchors");
+      if (!anchor_path.empty())
+      {
+        const auto& pr = library.precursors();
+        std::ofstream os(anchor_path);
+        os << "Precursor.Id\tModified.Sequence\tPrecursor.Charge\tLibrary.iRT"
+              "\tObserved.RT\tDScore\tQValue\n";
+        std::size_t written = 0;
+        for (std::size_t i = 0; i < best.size(); ++i)
+        {
+          if (best[i] == nullptr || !std::isfinite(original_irt[i])) { continue; }
+          const auto seq = library.strings().get(pr.modified_sequence[i]);
+          os << seq << '_' << static_cast<int>(pr.charge[i]) << '\t'
+             << seq << '\t' << static_cast<int>(pr.charge[i]) << '\t'
+             << original_irt[i] << '\t' << best[i]->apex_rt << '\t'
+             << best[i]->dscore << '\t' << best[i]->qvalue << '\n';
+          ++written;
+        }
+        writeLogInfo_("wrote " + std::to_string(written) + " anchors to " + anchor_path);
       }
     }
 

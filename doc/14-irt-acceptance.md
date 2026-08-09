@@ -31,6 +31,17 @@ gives:
 
 So the bar on Astral is **robust sigma <= 26.09 s and p95|e| <= 59.35 s**.
 
+**REVISED 2026-08-09 16:00, by the project owner: the bar is SD <= 30 s.**
+That is a different statistic from the one above and a deliberately easier one
+-- SD is the tail, and ours is inflated by anchor contamination rather than by a
+bad map. It is also close to DIA-NN's own Astral SD of 29.29 s, so "at least as
+good as DIA-NN" survives the change. Current state against it:
+
+    S08 anchor_q 0.05   SD 71.23     S08 anchor_q 0.01   SD 41.36
+    Astral anchor_q 0.05 SD 95.62    DIA-NN Astral       SD 29.29
+
+Both files fail it today, and by a wide margin on Astral.
+
 **S08 is secondary and the comparison is NOT exact.** The available DIA-NN
 reference is its v6_50k run: 738 identifications, SD 17.36 s, robust sigma
 13.62 s, p95|e| 34.58 s. But only 39 of `lib_targets`' 2,665 precursors appear
