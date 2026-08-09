@@ -57,6 +57,16 @@ print(f"recorded onnx sha256 {d['onnx_sha256'][:16]}... in {path}")
 PYEOF
 fi
 
-echo "==> ODIA reads it, and refits the iRT line from the standards:"
-"${ODIA_BUILD:-${ODIA_SCRATCH}/build/odia}/odia_irt_calibration" \
-  "${out}/peptdeep_rt_dynamic.onnx" "${here}/../data/irt_standards.tsv" | head -4
+# ${ODIA_SCRATCH}/build, not ${ODIA_SCRATCH}/build/odia -- the extra path
+# component was stale and made this exit 127 AFTER a successful fine-tune and
+# export, so the run looked failed when the model was already on disk.
+# Non-fatal on purpose: this step is a sanity print, and losing it must not
+# discard a model that took real compute to produce.
+irt_probe="${ODIA_BUILD:-${ODIA_SCRATCH}/build}/odia_irt_calibration"
+if [[ -x "${irt_probe}" ]]; then
+  echo "==> ODIA reads it, and refits the iRT line from the standards:"
+  "${irt_probe}" "${out}/peptdeep_rt_dynamic.onnx" \
+    "${here}/../data/irt_standards.tsv" | head -4
+else
+  echo "note: no odia_irt_calibration at ${irt_probe}; skipping the read-back check." >&2
+fi
