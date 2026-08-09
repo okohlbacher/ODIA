@@ -244,3 +244,28 @@ So the SD <= 30 s bar splits into two claims that should never have been one:
 The practical consequence is immediate: p95 falls from 106.6 s to 67.0 s, which
 halves the pass-2 extraction window -- the memory lever, and the interference
 lever, that doc/06 said a better RT buys.
+
+## The end-to-end result: +454 identifications AND a halved window
+
+Astral, `-match_decoy_n`, same binary, the only difference being
+`-repredict_irt -rt_model <tuned>`:
+
+    base    6,382 identifications   pass-2 window 213.2 s
+    tuned   6,836 identifications   pass-2 window 134.1 s
+
+**+454 (+7.1%) and the window falls by 37%.** doc/06 recorded that a perfect RT
+column measured -108 precursors on S08 and concluded a better RT "buys a
+narrower window, not identifications". On Astral it bought both, and the two are
+the same mechanism: a narrower window admits less interference, and less
+interference is what lets a real peak win its own competition.
+
+That prior is not wrong, it is from another file and another regime -- S08 is
+diaPASEF with a merged mobility stack where the window matters differently. It
+should be re-taken there rather than assumed to transfer, which is exactly the
+mistake it warns about.
+
+Astral progression for the day: 4,290 -> 4,969 (m/z window) -> 5,025 (apex gate)
+-> 5,729 (mass sub-scores) -> 6,382 (decoy-null match) -> **6,836** (RT
+fine-tuning). Against OpenSWATH 8,765 and DIA-NN 11,112: 78% of OSW.
+
+Still recall against a ~100%-true library, not FDR-controlled discovery.
