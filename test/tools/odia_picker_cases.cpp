@@ -191,6 +191,26 @@ int main()
           "decide what a single loud fragment is worth");
   }
 
+  // The cap. This is the case the fixture above cannot reach: it produces two
+  // candidates against a cap of five, so truncation never runs, and the first
+  // version of the union shipped with a displacement bug the test declared
+  // impossible. With max_candidates 1 the union has exactly one slot, and the
+  // co-elution candidate must own it -- an added candidate may never take a
+  // slot from an accepted one, whatever its ungated corr_sum.
+  {
+    ODIA::PeakGroupScorer::Options o;
+    o.coelution_picking = true;
+    o.union_picking = true;
+    o.max_candidates = 1;
+    o.min_fragments_at_apex = 1;
+    const auto r = ODIA::PeakGroupScorer::score(lib, run, o);
+    const double apex = bestApex(r);
+    std::printf("union picker at cap 1: best apex at cycle %.0f\n", apex);
+    check(std::fabs(apex - double(REAL_APEX)) <= 2.0,
+          "at a cap of one the co-elution candidate keeps the slot: added "
+          "candidates fill remaining room, they never displace");
+  }
+
   if (failures == 0) { std::printf("all picker cases passed\n"); }
   return failures == 0 ? 0 : 1;
 }

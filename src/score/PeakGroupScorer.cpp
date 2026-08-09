@@ -491,6 +491,7 @@ namespace ODIA
       // Admitting both would let one peak occupy two of the capped slots and
       // would give the classifier a duplicate row to compete against itself.
       const std::size_t near = std::max<std::size_t>(S / 3, 1);
+      std::vector<Candidate> added;
       for (const auto& a : amplitude)
       {
         bool dup = false;
@@ -502,13 +503,27 @@ namespace ODIA
         if (dup) { continue; }
         Candidate cd = a;
         cd.corr_sum = bestCorrSumAt(tr, cd.apex, S, n);
-        found.push_back(cd);
+        added.push_back(cd);
       }
 
-      std::stable_sort(found.begin(), found.end(),
+      // THE ADDED ONES FILL REMAINING SLOTS; THEY NEVER DISPLACE.
+      //
+      // The first version sorted the whole union by corr_sum and truncated,
+      // which was wrong and measurably so: an amplitude candidate's corr_sum is
+      // computed ungated and can exceed that of a co-elution candidate the
+      // detector accepted, so once the co-elution set reached the cap the union
+      // both ADDED weak candidates and DROPPED accepted ones -- strictly the
+      // worst of the two designs. On S08 that took 1,306 identifications to 818.
+      //
+      // The fixture missed it because it produces two candidates against a cap
+      // of five, so the truncation never ran.
+      if (found.size() >= max_candidates) { return found; }
+      std::stable_sort(added.begin(), added.end(),
                        [](const Candidate& x, const Candidate& y)
                        { return x.corr_sum > y.corr_sum; });
-      if (found.size() > max_candidates) { found.resize(max_candidates); }
+      const std::size_t room = max_candidates - found.size();
+      if (added.size() > room) { added.resize(room); }
+      found.insert(found.end(), added.begin(), added.end());
       return found;
     }
 
