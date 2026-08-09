@@ -311,3 +311,29 @@ presumably reduced while the archive retains the full ion-mobility data, and the
 archive additionally embeds the Bruker `.m` method directory (75 of its 85
 members are vendor files). The other two runs compress to roughly half of mzML,
 as expected.
+
+
+## Kerberos: renew every 3 hours, or lose the cluster mid-run
+
+All access to the compute nodes is Kerberos, not SSH keys. There is no key and
+no user keytab, so an expired ticket means no builds and no benchmarks until a
+human types a password.
+
+**`kinit -R` only works BEFORE the ticket expires.** Once it has lapsed it fails
+with "Ticket expired while renewing credentials" even though `klist` still shows
+a renew-until date days away -- the renewable WINDOW is long, the ticket's own
+lifetime is not. Measured 2026-08-09: a ticket taken at 16:43 expired at 16:23
+the next day and killed a benchmark loop mid-iteration.
+
+So renew on a schedule rather than on demand:
+
+    KRB5CCNAME=FILE:/home/kohlbach/.krb5cc kinit -R
+
+every 3 hours while work is in flight. The lifetime is ~24 h and the renewable
+window ~6 days, so a 3-hour cadence has a wide margin and costs nothing.
+
+Detached jobs already running are NOT killed by expiry -- they keep their
+credentials and their output lands normally. What is lost is the ability to
+start, inspect or collect anything until a fresh `kinit` is done by hand:
+
+    KRB5CCNAME=FILE:/home/kohlbach/.krb5cc kinit -r 7d kohlbach@CS.UNI-TUEBINGEN.DE
