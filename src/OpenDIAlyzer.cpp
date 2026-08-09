@@ -509,6 +509,12 @@ protected:
                           "the smaller footprint.",
                           false, true);
     setValidStrings_("mass_width_from_ids", {"off", "measure", "apply"});
+    registerStringOption_("ablate", "<names>", "",
+                          "Comma-separated sub-scores to withhold from the classifier, by the "
+                          "name they carry in the output (e.g. var_mass_spread). Leave-one-out "
+                          "ablation within ONE binary: comparing two builds also compares "
+                          "everything else that changed between them, which is how a feature "
+                          "gets credited with somebody else's gain.", false, true);
     registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
                           "Half-width, in robust sigmas of the per-fragment deviation, for "
                           "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
@@ -1084,6 +1090,27 @@ protected:
     options.classifier = getStringOption_("classifier");
     options.min_library_corr = getDoubleOption_("min_library_corr");
     options.coelution_picking = !getFlag_("amplitude_picking");
+    {
+      const std::string spec = getStringOption_("ablate");
+      const auto& names = ODIA::PeakGroupScorer::subScoreNames();
+      std::stringstream ss(spec);
+      std::string name;
+      while (std::getline(ss, name, ','))
+      {
+        name.erase(0, name.find_first_not_of(" \t"));
+        const auto end = name.find_last_not_of(" \t");
+        if (end != std::string::npos) { name.erase(end + 1); }
+        if (name.empty()) { continue; }
+        const auto it = std::find(names.begin(), names.end(), name);
+        // Fatal, not ignored. An ablation arm that silently ablated nothing
+        // would report the baseline and be read as "the feature is worthless".
+        if (it == names.end())
+        { throw std::invalid_argument("-ablate: no sub-score is called '" + name + "'"); }
+        options.disabled_sub_scores.push_back(
+          static_cast<int>(std::distance(names.begin(), it)));
+      }
+    }
+
     const std::string picker = getStringOption_("picker");
     options.union_picking = picker == "union" || picker == "union_openswath";
     options.openswath_picking = picker == "openswath" || picker == "union_openswath";

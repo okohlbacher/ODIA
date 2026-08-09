@@ -341,6 +341,17 @@ namespace ODIA
       /// Observed 1/K0 per precursor, indexed as the library is, or empty.
       /// Supplied by the caller because the scorer never sees spectra.
       const std::vector<float>* observed_im = nullptr;
+
+      /// Sub-score indices to withhold from the classifier, by name on the
+      /// command line. Ablation, which the project has needed for a while and
+      /// faked twice by comparing different binaries -- a comparison that also
+      /// changes whatever else moved between them.
+      ///
+      /// Implemented by flattening the column to a constant, so the existing
+      /// constant-column guard drops it and SAYS SO in the log. A NaN column
+      /// would be silently imputed somewhere and the arm would claim to have
+      /// ablated something it did not.
+      std::vector<int> disabled_sub_scores;
     };
 
     struct PeakGroup

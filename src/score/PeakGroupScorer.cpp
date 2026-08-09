@@ -1286,6 +1286,16 @@ namespace ODIA
       }
     }
 
+    // Ablation, last, so it survives every normalisation above rather than
+    // being recomputed by one of them.
+    for (const int idx : options.disabled_sub_scores)
+    {
+      if (idx < 0 || idx >= static_cast<int>(N_SUB_SCORES)) { continue; }
+      for (auto& g : result.groups) { g.sub_scores[idx] = 0.0; }
+      std::fprintf(stderr, "ablated sub-score %s (flattened to a constant)\n",
+                   subScoreNames()[static_cast<std::size_t>(idx)].c_str());
+    }
+
     // Peak groups arrive in whatever order the extractor finished their
     // precursors, which is retention-time order rather than library order. Put
     // them back in library order before anything downstream sees them: the rows
