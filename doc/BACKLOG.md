@@ -2902,3 +2902,68 @@ the per-file auto-detection in the 2026-08-08 backlog entry, and note what made
 it work: the switch is an OBSERVABLE STATE OF THE PIPELINE, not a statistic
 pooled over accepted identifications. The latter is what cost half the Astral
 run when I tried it for the window width earlier the same day.
+
+## 2026-08-09 13:30: the q-values are conservative, and the decoy null is why
+
+Codex asked for one table: rank the targets by dscore, join the truth labels,
+and print empirical FDR beside reported q. It separates three explanations that
+had been indistinguishable. Scripts in `scripts/analysis/`.
+
+### SEARCH (S08 + v6_50k, 738 true of 50,000) -- the 0 is HONEST
+
+    rank   cum_true   emp_FDR   reported_q
+      50         40     0.200       0.180
+     100         62     0.380       0.322
+     200         84     0.580       0.493
+     738        113     0.847       0.701
+
+Longest prefix at <=1% EMPIRICAL FDR: **2 precursors.** So reporting 0 at 1% is
+not an FDR artefact -- there is genuinely nothing to certify. Reported q TRACKS
+empirical FDR, slightly optimistic. The previous framing ("the discriminant
+works and the q-values do not certify it") was half wrong: the discriminant
+enriches 21x and the q-values are approximately right. **The discriminant is too
+weak at a 1.5% prior**, and that is the whole of it.
+
+Second finding, from the same table:
+
+    decoy         p50 -0.802  p99 2.063  max 12.767
+    FALSE TARGET  p50 -0.106  p99 3.468  max 15.044
+    true target   p50  0.377  p99 14.452 max 15.405
+
+**False targets outscore decoys.** The decoy null is easier than the real
+negative class, which is exactly why reported q runs optimistic.
+
+### Astral -- and here the SAME defect runs the other way
+
+Every one of the 9,563 target precursors ODIA ranks is in DIA-NN's truth set.
+There are NO false targets: `astral_lib_own.tsv` is pre-selected to what DIA-NN
+found, so precision is 100% by construction and empirical FDR is 0.0000 at every
+rank. **The Astral number is recall, not FDR-controlled discovery**, and any
+statement of it must say so.
+
+What that exposes: reported q <= 0.01 keeps 5,729 of those 9,563 -- so our own
+FDR REFUSES 3,834 precursors that are all, in fact, true. The q-values are badly
+CONSERVATIVE here. OpenSWATH reports 8,765 on this file; we rank 9,563 true
+precursors and then decline to call them.
+
+The mechanism is measured and it is the candidate asymmetry, now confirmed on
+both files:
+
+    Astral  target 10.98 candidates/precursor (median 6)   best-dscore p99 6.517
+            decoy  20.99 candidates/precursor (median 24)  best-dscore p99 2.898, max 5.997
+
+A decoy contributes the best of ~21 draws and a target the best of ~11, over
+9,453 decoy precursors. The maximum of that many best-of-21 draws is what sets
+the 1% threshold, and it reaches 5.997 against a target p99 of 6.517. Unequal N
+breaks the exchangeability that target-decoy competition assumes.
+
+Note this REVERSES the earlier dismissal. `max_candidates 1` equalises N and
+measured worse (1,306 -> 1,141), and I concluded the asymmetry was harmless.
+That experiment conflated two things: it equalised the null AND took the right
+peak away from targets. The asymmetry does not hurt RANKING; it inflates the
+DECOY NULL and makes q conservative.
+
+**Next: build the null from decoys subsampled to the target candidate-count
+distribution, leaving target scoring untouched.** Deterministic, non-circular
+(subsample in canonical order, not by dscore), and it should move Astral toward
+the 9,563 it has already ranked correctly.
