@@ -34,7 +34,14 @@ env_py="${ODIA_FINETUNE_PYTHON:-/scratch/kohlbach/odia/rtfinetune/env/bin/python
 # reported nothing, and the one defensive feature that stops a user inheriting
 # our verdict from a different instrument was off for everybody.
 echo "==> fine-tuning on ${ids}"
+# Neither --epochs nor --q-value was passed, so both looked like knobs and were
+# silently ignored. ODIA_RT_EPOCHS=80 ran the default 40 and duplicated its own
+# control; and an arm fed a q<=0.05 selection of 7,173 precursors was filtered
+# back to 5,867 by finetune_rt.py's own --q-value default, so it duplicated the
+# q<=0.01 arm and reported it as a data-size result. Both plumbed through.
 "${env_py}" "${here}/finetune_rt.py" "${ids}" "${out}" --max-peptides "${n}" \
+  --epochs "${ODIA_RT_EPOCHS:-40}" \
+  --q-value "${ODIA_RT_QVALUE:-0.01}" \
   --method "${ODIA_RT_METHOD:-direct}" --evaluate
 
 echo "==> exporting to ONNX"
