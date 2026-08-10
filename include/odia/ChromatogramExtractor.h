@@ -233,6 +233,21 @@ namespace ODIA
     /// off. Same indexing as `points`.
     const float* ppm_num = nullptr;
     const float* ppm_den = nullptr;
+    /// Intensity-weighted observed 1/K0 per point: sum(intensity * im) and
+    /// sum(intensity). Divide to get the weighted mean; a zero denominator
+    /// means no peak matched that cell. Null when collect_im_residuals was off.
+    ///
+    /// This is what makes IM_DELTA computable at all -- nothing else in the
+    /// pipeline measures the OBSERVED mobility of a precursor. `MobilityAnchor`
+    /// carries only {precursor, rt, decoy}, so the feature has been all-NaN on
+    /// every run since it was added.
+    ///
+    /// And it is per-FRAGMENT, which is the point: a fragment whose observed
+    /// 1/K0 disagrees with its precursor's is not that precursor's fragment.
+    /// On diaPASEF a frame merges TIMS scans, so co-eluting interference that
+    /// is inseparable in m/z and RT is often cleanly separable here.
+    const float* im_num = nullptr;
+    const float* im_den = nullptr;
     const std::uint64_t* offset = nullptr;///< transition_count offsets into it
     const std::uint32_t* count = nullptr; ///< transition_count point counts
 
@@ -533,6 +548,11 @@ namespace ODIA
       ///
       /// Costs one extra float plane per live block, so it is off by default.
       bool collect_mass_residuals = false;
+
+      /// Keep the intensity-weighted observed 1/K0 planes. Costs two more float
+      /// planes per live chromatogram, the same as the mass residuals. Silently
+      /// inert on a run with no ion mobility.
+      bool collect_im_residuals = false;
 
       /// Per-run recalibration of the library's 1/K0, or null for none.
       ///

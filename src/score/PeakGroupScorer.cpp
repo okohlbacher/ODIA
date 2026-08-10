@@ -834,12 +834,42 @@ namespace ODIA
       // wherever either side lacks mobility -- an absent measurement is not a
       // zero deviation, and a placeholder here would be a feature the
       // classifier weights as evidence.
-      if (options.observed_im != nullptr && i < options.observed_im->size() &&
-          i < p.im.size() && std::isfinite(p.im[i]) &&
-          std::isfinite((*options.observed_im)[i]))
+      // The run's OBSERVED 1/K0 for this candidate, from the extractor's
+      // intensity-weighted mobility planes.
+      //
+      // Until now this read `options.observed_im`, which the tool never
+      // assigned, so IM_DELTA was all-NaN on EVERY run and the constant-column
+      // guard dropped it every time. Nothing in the pipeline measured observed
+      // mobility per precursor: `MobilityAnchor` carries only {precursor, rt,
+      // decoy}, and the mobility calibration's probe keeps its residuals to
+      // itself. The planes are that missing measurement.
+      double im_obs = std::numeric_limits<double>::quiet_NaN();
+      if (chromatogram.im_num != nullptr && chromatogram.im_den != nullptr && hi > lo)
       {
-        g.sub_scores[IM_DELTA] = std::fabs(static_cast<double>(p.im[i]) -
-                                           static_cast<double>((*options.observed_im)[i]));
+        double num = 0.0, den = 0.0;
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          const std::uint32_t n = chromatogram.pointCount(k);
+          const std::ptrdiff_t off = chromatogram.trace(k) - chromatogram.points;
+          const float* inum = chromatogram.im_num + off;
+          const float* iden = chromatogram.im_den + off;
+          for (std::size_t j = lo; j <= hi && j < n; ++j)
+          {
+            if (iden[j] > 0.0f) { num += inum[j]; den += iden[j]; }
+          }
+        }
+        if (den > 0.0) { im_obs = num / den; }
+      }
+      // The external vector still wins when a caller supplies one, so the
+      // existing plumbing point is not silently ignored.
+      if (options.observed_im != nullptr && i < options.observed_im->size() &&
+          std::isfinite((*options.observed_im)[i]))
+      { im_obs = static_cast<double>((*options.observed_im)[i]); }
+
+      g.observed_im = static_cast<float>(im_obs);
+      if (i < p.im.size() && std::isfinite(p.im[i]) && std::isfinite(im_obs))
+      {
+        g.sub_scores[IM_DELTA] = std::fabs(static_cast<double>(p.im[i]) - im_obs);
       }
       else { g.sub_scores[IM_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
 

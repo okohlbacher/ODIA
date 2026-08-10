@@ -533,6 +533,16 @@ protected:
                   "under the default Sum aggregation. The decode path, not the live blocks, is "
                   "what sets this tool's memory floor, so the cost is real but not binding.",
                   true);
+    registerStringOption_("im_features", "<mode>", "auto",
+                          "Measure the run's OBSERVED 1/K0 per candidate from intensity-"
+                          "weighted mobility planes, and feed var_im_delta from it. Until "
+                          "this existed the feature was all-NaN on every run and was dropped "
+                          "as carrying no information -- nothing in the pipeline measured "
+                          "observed mobility per precursor. 'auto' collects wherever the run "
+                          "has ion mobility and is inert where it does not; 'off' restores "
+                          "the previous behaviour.",
+                          false);
+    setValidStrings_("im_features", {"auto", "off"});
     registerStringOption_("mass_anchors", "<mode>", "off",
                           "Harvest one fragment mass residual per contributing fragment of "
                           "every retained candidate, so a mass model can be fitted from "
@@ -847,6 +857,11 @@ protected:
     options.collect_mass_residuals = getFlag_("collect_mass_residuals") ||
                                      getStringOption_("mass_width_from_ids") != "off" ||
                                      getStringOption_("mass_anchors") != "off";
+    // The mobility planes are what make IM_DELTA computable at all -- it has
+    // been all-NaN on every run since it was added, because nothing measured
+    // observed 1/K0 per precursor. Inert on a run without mobility, so the
+    // default is on: an absent feature costs more than two float planes.
+    options.collect_im_residuals = getStringOption_("im_features") != "off";
     options.aggregate = getStringOption_("aggregate") == "max"
                           ? ODIA::ChromatogramExtractor::Options::Aggregate::Max
                           : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;

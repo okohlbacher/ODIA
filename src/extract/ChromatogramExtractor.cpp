@@ -189,6 +189,11 @@ namespace ODIA
       /// extractor's dominant memory term, so this is opt-in.
       float* ppm_num = nullptr;
       float* ppm_den = nullptr;
+      /// The same construction for ION MOBILITY. Per-(row, cycle) for the same
+      /// reason: the match loop is threaded over spectra and is race-free only
+      /// because each spectrum owns a distinct cycle.
+      float* im_num = nullptr;
+      float* im_den = nullptr;
       std::uint32_t lo = 0, hi = 0;
     };
 
@@ -789,6 +794,11 @@ namespace ODIA
         live[slot].ppm_num = blocks.take(cells);
         live[slot].ppm_den = blocks.take(cells);
       }
+      if (options.collect_im_residuals)
+      {
+        live[slot].im_num = blocks.take(cells);
+        live[slot].im_den = blocks.take(cells);
+      }
       live[slot].lo = a.lo;
       live[slot].hi = a.hi;
       live_peak = std::max(live_peak, ++live_now);
@@ -842,6 +852,8 @@ namespace ODIA
       trace.points = live[slot].base;
       trace.ppm_num = live[slot].ppm_num;
       trace.ppm_den = live[slot].ppm_den;
+      trace.im_num = live[slot].im_num;
+      trace.im_den = live[slot].im_den;
       trace.offset = off_scratch.data();
       trace.count = count_scratch.data();
 
@@ -859,6 +871,11 @@ namespace ODIA
       {
         blocks.give(live[slot].ppm_num, std::size_t(a.valid) * cycles);
         blocks.give(live[slot].ppm_den, std::size_t(a.valid) * cycles);
+      }
+      if (live[slot].im_num != nullptr)
+      {
+        blocks.give(live[slot].im_num, std::size_t(a.valid) * cycles);
+        blocks.give(live[slot].im_den, std::size_t(a.valid) * cycles);
       }
       live[slot] = LiveSlot{};
       --live_now;
@@ -1132,6 +1149,16 @@ namespace ODIA
                     s.ppm_num[at_i] +=
                       intensity * static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
                     s.ppm_den[at_i] += intensity;
+                  }
+                  // The OBSERVED 1/K0 of whatever produced this peak. NaN
+                  // mobility is skipped rather than accumulated as zero: a
+                  // missing measurement is not a mobility of nothing.
+                  if (s.im_num != nullptr && intensity > 0.0f && !std::isnan(peak_im))
+                  {
+                    const std::size_t at_i =
+                      std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
+                    s.im_num[at_i] += intensity * static_cast<float>(peak_im);
+                    s.im_den[at_i] += intensity;
                   }
                 }
               }

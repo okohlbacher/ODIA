@@ -430,6 +430,10 @@ namespace ODIA
       /// well calibrated instrument. What has to fit inside the window is one
       /// FRAGMENT's deviation, so one fragment is the unit measured here.
       float mass_ppm_spread = std::numeric_limits<float>::quiet_NaN();
+
+      /// The run's OBSERVED 1/K0 for this group, intensity-weighted over the
+      /// candidate's cycles. NaN on a run with no ion mobility.
+      float observed_im = std::numeric_limits<float>::quiet_NaN();
       /// How many fragments contributed to `mass_ppm_spread`.
       std::uint8_t mass_ppm_frags = 0;
       std::vector<double> sub_scores;
