@@ -19,6 +19,7 @@
 #include <odia/RtRefiner.h>
 
 #include <array>
+#include <limits>
 
 #include <fstream>
 #include <unordered_map>
@@ -1243,6 +1244,20 @@ protected:
       const std::string model_in = getStringOption_("rt_refine_model_in");
       std::size_t best_ids = pass1.identified_at_1pct;
       ODIA::RtRefiner kept;
+      // A FIXED evaluation set, frozen at round 1.
+      //
+      // The anchor set grows every round -- 1,183 -> 1,408 on S08 -- so a p99
+      // measured on the current anchors is measured on a different population
+      // each time and cannot be compared across rounds. Round 2's "before" p50
+      // came out WORSE than round 1's "after" for exactly this reason, which
+      // reads as a regression and is a change of denominator.
+      //
+      // Freezing the evaluation set makes the round-to-round numbers mean
+      // something. It is still an anchor population and still self-referenced;
+      // that limitation is reported separately and is not fixable from inside
+      // the loop.
+      std::vector<std::pair<double, double>> eval_set;
+      double best_p99 = std::numeric_limits<double>::infinity();
 
       for (int round = 1; round <= rounds; ++round)
       {
@@ -1270,6 +1285,7 @@ protected:
           lib_irt.push_back(static_cast<double>(original_irt[i]));
         }
         if (a_r.size() < 250) { break; }
+        if (eval_set.empty()) { eval_set = a_r; }
 
         double p95_r = 0.0;
         const auto map_r = ODIA::Calibration::fit(a_r, &p95_r, loess_span, rt_interp);
@@ -1368,8 +1384,25 @@ protected:
           };
           return std::array<double, 4>{at(0.50), at(0.95), at(0.99), a.back()};
         };
-        const auto q_before = quantiles(a_r, map_r);
-        const auto q_after = quantiles(refit_pts, map_ref);
+        // Both maps scored on the SAME frozen set, in the axis each expects.
+        const auto q_before = quantiles(eval_set, map_r);
+        std::vector<std::pair<double, double>> eval_ref;
+        eval_ref.reserve(eval_set.size());
+        if (getStringOption_("rt_refine") == "map_only") { eval_ref = eval_set; }
+        else
+        {
+          // The refined axis for the evaluation rows: apply the same correction
+          // the library got, so the two maps are compared on one population.
+          ODIA::Library& lib_ref = library;
+          for (std::size_t i = 0, k = 0; i < lib_ref.precursorCount() && k < eval_set.size(); ++i)
+          {
+            if (!std::isfinite(original_irt[i])) { continue; }
+            if (std::fabs(static_cast<double>(original_irt[i]) - eval_set[k].first) < 1e-9)
+            { eval_ref.emplace_back(static_cast<double>(refined[i]), eval_set[k].second); ++k; }
+          }
+          if (eval_ref.size() != eval_set.size()) { eval_ref = refit_pts; }
+        }
+        const auto q_after = quantiles(eval_ref, map_ref);
 
         std::ostringstream ro;
         ro.setf(std::ios::fixed);
@@ -1389,15 +1422,20 @@ protected:
         // p99, not p95 and not the SD. p95 leaves one precursor in twenty
         // outside the window, and an SD is a property of the bulk that says
         // nothing about the tail a window has to cover.
-        if (!(q_after[2] < q_before[2]))
+        // ACROSS rounds, on the frozen set. Within a round, `map_only` changes
+        // nothing by construction and a within-round test rejects it at round 1
+        // -- which is exactly what happened, and why its iteration never ran.
+        // Its gain is between rounds: better anchors, better map.
+        if (!(q_after[2] < best_p99))
         {
           library.precursors().irt = original_irt;
           if (!refined_irt_.empty()) { library.precursors().irt = refined_irt_; }
           writeLogInfo_("rt refine: round " + std::to_string(round) +
-                        " did not narrow the window needed for 99% coverage; "
-                        "keeping the previous axis");
+                        " did not narrow the window needed for 99% coverage on the frozen "
+                        "evaluation set; keeping the previous axis");
           break;
         }
+        best_p99 = q_after[2];
         best_ids = pass1.identified_at_1pct;
         refined_irt_ = refined;
         trafo = map_ref;
