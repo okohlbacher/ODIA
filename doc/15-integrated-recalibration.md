@@ -1,23 +1,32 @@
 # Integrated recalibration: MS1 + MS2 mass, then RT
 
-Status: DESIGN v3, not implemented. Written 2026-08-10, after RT recalibration
+Status: DESIGN v5, not implemented. Written 2026-08-10, after RT recalibration
 was frozen (`rt-calibration-frozen-2026-08-10`).
 
-v1 was reviewed adversarially by Kimi 0.34.0, Codex 0.147.0 and Vibe 2.24.0; all
-three rejected it. v2 answered them. v3 then folded in a literature and
-source-code survey of how the field actually does this (§11), which overturned
-the *architecture* rather than the details: the iteration is replaced by an
-additive model with RT, intensity and ion mobility as covariates.
+**Read §9, §12 and §13 first. They are the demotion logs, and they are the
+content.** Each version of this document was mostly wrong, and what killed each
+one is more useful than what it proposed.
 
-§9 records what was cut and why; the deletions are the useful part.
+- **v1** — reviewed by Kimi 0.34.0, Codex 0.147.0 and Vibe 2.24.0. All three
+  rejected it; six proposals cut (§9).
+- **v2** — answered them.
+- **v3** — rewrote the architecture after a web survey (§11): the mass↔RT
+  iteration became an additive covariate model.
+- **v4** — round-2 review demoted every part of v3 that v3 was pleased with,
+  including its own headline (§12).
+- **v5** — the research vault was ingested, `diann.cpp` 1.7.x was read, and
+  **three of §11's survey findings turned out to be wrong** (§13).
 
 Written *before* measurement, in the discipline of `14-irt-acceptance.md`.
 
-**The headline change in v3:** on timsTOF, the ion-mobility term explains **52%
-of modelled mass-error variance** (Prianichnikov et al., MCP 2020, 19(6)
-1058-1069). S08 is timsTOF. ODIA's mass model has **no IM term**. That is almost
-certainly the largest single miss in this whole area, and it is not something any
-amount of iteration would have found.
+**A withdrawn headline, kept visible on purpose.** v3 opened by claiming the
+ion-mobility term was "almost certainly the largest single miss", on the strength
+of *52% of modelled mass-error variance on timsTOF* (Prianichnikov et al., MCP
+2020, 19(6) 1058-1069). **That claim is withdrawn** — §12.1. It is a share of
+MaxQuant's *modelled* part, measured on **DDA precursors**, and 1/K0 is not a
+fragment property at all. Propagated through ODIA's own S08 numbers it predicts
+**~0.02 ppm** on total scatter. An IM term may still be worth having; it is now a
+measurement with a permutation null, not a headline.
 
 ---
 
@@ -801,3 +810,101 @@ piecewise-linear; making `f2(RT)` earn inclusion per instrument; the separate MS
 window; using the m/z-shifted control rather than decoys as the null; and the
 confirmatory extraction as the falsification point — provided its comparison is
 broadened per §12.5.
+
+---
+
+## 13. v5 corrections — the reference implementation was readable all along
+
+Added after the research vault was ingested (2026-08-10). `diann.cpp` 1.7.x @ `cff0408` was
+present in the reference directory, under CC BY 4.0, and had been sitting unread while §11's
+survey inferred the same facts from public documentation. **Three of §11's findings are wrong.**
+Read as documentation only; cite Demichev et al., *Nat Methods* 17:41–44 (2020).
+
+### 13.1 The actual function
+
+`predicted_mz` (`diann.cpp:6685`) and `predicted_mz_ms1` (`:6697`):
+
+```
+    corrected_mz = mz
+                 + t[0] * mz^2                        <- ONE global quadratic term
+                 + interp_RT( t[1+2i] + t[2+2i]*mz )  <- per-RT-bin intercept and slope in m/z
+```
+
+RT enters by **linear interpolation between adjacent bin centres**, weighted by distance, clamped
+outside the outermost centres. The correction is in **absolute m/z** (`return s + mz`), so in ppm
+the shape is `t0*mz + b + a/mz` — a different family from both the log basis and a linear-in-ppm
+basis.
+
+Note what this does to §2 and §12.3: the reference implementation makes the **curvature global and
+the offset/slope RT-local**, and interpolates them **linearly**. v1 proposed akima across block
+centres — *more* flexible than the reference. v2/v3 deleted RT dependence altogether — *less*. The
+reference sits between, and it defaults to a single bin (below), so out of the box it is exactly
+what ODIA already does.
+
+### 13.2 §11 finding 4 is REFUTED — MS1 and MS2 get separate models
+
+`MassCorrection` and `MassCorrectionMs1` are **separate coefficient vectors**, with separate bin
+counts (`MassCalBins` / `MassCalBinsMs1`), separate centres, and a separate application site
+(`:6774`). Two independent models, unconditionally.
+
+The verifier panel specifically refuted (0-3) the inference that DIA-NN fits separate MS1/MS2
+models, on the correct grounds that differing tolerances do not prove differing error functions.
+The reasoning was sound and the conclusion was wrong: **absence of evidence was scored as evidence
+of absence.**
+
+**Consequence for §4:** demoting the separate MS1 model to "an experiment" rested on a false
+premise. Restore it to the default. The MS1 *window* was already unconditional and stays so.
+
+### 13.3 §11 finding 6 is REFUTED — the bootstrap ratio is 5×, not 7–75×
+
+`CalibrationMassAccuracy = 100 ppm` (`:217`) against `GlobalMassAccuracy = 20 ppm` (`:218`) and
+`GlobalMassAccuracyMs1 = 20 ppm` (`:219`). **5×.** The 7–25× figures come from DIA-NN **2.x**
+README defaults (4–15 ppm search windows) — a different program. MaxQuant's "74×" divides a
+*window* by a *MAD*, which are not the same kind of quantity.
+
+**Consequence for §5:** ODIA's existing 50 ppm bootstrap against a 10 ppm window is **also 5×**,
+i.e. already matching the reference. **The proposal to widen to 100 ppm is withdrawn** — it loses
+its justification, and §12.6 had already shown it was inert anyway while `gate_ppm` stays at 30.
+
+### 13.4 §11 finding 3 is PARTLY REFUTED — DIA-NN does iterate
+
+Calibration in 1.7.x is **interleaved with the search over 12 iterations**, each feature declaring
+the earliest iteration at which it may be used and at which it may be fitted. So "no verified
+source iterates mass calibration against RT" is false as stated.
+
+**What survives is narrower and still supports §6:** no source documents a *convergence criterion*
+for such a loop. DIA-NN runs a fixed 12 and stops. ODIA's problem — when to stop — remains
+unsolved by prior art.
+
+### 13.5 One finding the source strengthens rather than refutes
+
+`MassCalBinsMax` defaults to **1** (`:162`) — **RT binning is off by default**. That is convergent
+with ODIA's own S08 measurement (`rt drift −0.11 ppm at t = 0.26, i.e. none`) and with §2's
+decision to make `f2(RT)` earn inclusion per instrument. Two independent programs concluding the
+same thing about the same axis is the strongest evidence in this document.
+
+### 13.6 The divergence this project is choosing deliberately
+
+After fitting, DIA-NN runs a **grid search over mass accuracy, stepping ×1.2, maximising
+identifications at 10% FDR**. That is a fourth window-sizing option beyond k·σ, p99 and coverage —
+and it optimises **exactly the quantity this project forbids as an objective**.
+
+This is a deliberate divergence, not an oversight. The reason is Wen et al. 2025 (no DIA tool
+consistently controls peptide-level FDR; DIA-NN's true precursor FDP > 2.3% at a nominal 1%), so
+maximising nominal IDs is not evidence of a better window. **But it should be recorded that the
+reference implementation disagrees with us here**, and that our position costs us the one
+window-sizing rule that is known to work in practice.
+
+### 13.7 The process failure, and the guard
+
+Three wrong claims propagated through a design document and **two adversarial review rounds**
+without either reviewer catching them — because both reviewers were handed the design and not the
+evidence, while the evidence sat in the reference directory.
+
+**Guard, now implemented:** `scripts/review_with_vault.sh` injects vault context into every
+reviewer prompt — absolute paths for Kimi (which has a shell but runs in a worktree the vault is
+absent from) and pasted note text for Codex (which has no working shell on this box). Verified
+end-to-end: both reviewers independently recovered §13.1–13.3 from the vault with citations.
+
+Still open: `MassCalSplit` versus `MassCalCenter`, how the RT bins are placed (equal-count vs
+equal-width), and which anchors feed the fit, are all **unread** in the source.

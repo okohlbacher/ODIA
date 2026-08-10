@@ -337,3 +337,32 @@ credentials and their output lands normally. What is lost is the ability to
 start, inspect or collect anything until a fresh `kinit` is done by hand:
 
     KRB5CCNAME=FILE:/home/kohlbach/.krb5cc kinit -r 7d kohlbach@CS.UNI-TUEBINGEN.DE
+
+## The research vault
+
+`/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/vault` — 76 notes, Obsidian. **Deliberately outside this
+repository** (sibling, not subdirectory) because it carries competitor critique and is not
+distributable with the source. There is therefore no `.gitignore` entry to forget; do not
+`git add` it.
+
+Seeded 2026-08-10 from the reference-runs handoff at
+`/ceph/ibmi/abi/dont-backup/kohlbach/odia/reference/` (which also holds DIA-NN and OpenSWATH
+reference identifications, and `diann.cpp` 1.7.x under CC BY 4.0 — read as *documentation only*,
+cite Demichev et al., Nat Methods 17:41-44 (2020)).
+
+**The trap:** the "ODIA" described in the seeded notes is the *previous attempt*, not this
+repository — it vendored a modified OpenMS and wrapped `MRMFeatureFinderScoring`. Read
+`vault/00-MOC/Vault provenance and the two-codebase caveat.md` before trusting any note that says
+ODIA. Claims about DIA-NN, OpenSWATH, the literature and measurement discipline transfer intact.
+
+**Reviews must be given the vault.** On 2026-08-10 three factually wrong claims about DIA-NN's
+mass calibration survived two adversarial review rounds because both reviewers were handed the
+design and not the evidence, while `diann.cpp` sat unread in the reference directory. Use:
+
+```
+scripts/review_with_vault.sh -b BRIEF.md -t "topic words" [-s path/to/source ...]
+```
+
+It gives Kimi absolute paths (it has a shell, but runs in a throwaway worktree the vault is absent
+from) and Codex the pasted note text (codex 0.147.0 here cannot run shell commands at all). It
+freezes the scope, isolates Kimi, and verifies afterwards that Kimi did not write to the tree.
