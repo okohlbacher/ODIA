@@ -549,7 +549,7 @@ namespace ODIA
       "var_fragment_coverage",
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
       "var_rt_delta", "var_im_delta", "var_ms1_coelution",
-      "var_mass_accuracy", "var_mass_spread"};
+      "var_mass_accuracy", "var_mass_spread", "var_im_spread"};
     return names;
   }
 
@@ -859,6 +859,41 @@ namespace ODIA
           }
         }
         if (den > 0.0) { im_obs = num / den; }
+
+        // Per-FRAGMENT observed mobility, and its scatter across the group.
+        // Same construction as mass_ppm_spread: one number per fragment (the
+        // intensity-weighted mean over the cycles it was seen in), then a MAD
+        // across fragments. Averaging within a fragment is legitimate -- those
+        // cells measure one ion -- whereas averaging across fragments is what
+        // would hide the very disagreement being looked for.
+        std::vector<double> per_fragment_im;
+        per_fragment_im.reserve(tc);
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          const std::uint32_t n = chromatogram.pointCount(k);
+          const std::ptrdiff_t off = chromatogram.trace(k) - chromatogram.points;
+          const float* inum = chromatogram.im_num + off;
+          const float* iden = chromatogram.im_den + off;
+          double fn = 0.0, fd = 0.0;
+          for (std::size_t j = lo; j <= hi && j < n; ++j)
+          { if (iden[j] > 0.0f) { fn += inum[j]; fd += iden[j]; } }
+          if (fd > 0.0) { per_fragment_im.push_back(fn / fd); }
+        }
+        if (per_fragment_im.size() >= 3)
+        {
+          const std::size_t c = per_fragment_im.size() / 2;
+          std::nth_element(per_fragment_im.begin(), per_fragment_im.begin() + c,
+                           per_fragment_im.end());
+          const double centre = per_fragment_im[c];
+          std::vector<double> ad;
+          ad.reserve(per_fragment_im.size());
+          for (const double v : per_fragment_im) { ad.push_back(std::abs(v - centre)); }
+          const std::size_t m = ad.size() / 2;
+          std::nth_element(ad.begin(), ad.begin() + m, ad.end());
+          g.im_spread = static_cast<float>(1.4826 * ad[m]);
+          g.im_frags = static_cast<std::uint8_t>(
+            std::min<std::size_t>(per_fragment_im.size(), 255));
+        }
       }
       // The external vector still wins when a caller supplies one, so the
       // existing plumbing point is not silently ignored.
@@ -984,6 +1019,10 @@ namespace ODIA
       // MASS_SPREAD is final here: a within-group scatter needs no context.
       // MASS_ACCURACY holds the RAW deviation for now and is re-centred against
       // the run's median in finish(), once every group has been seen.
+      // Lower is better, so negate -- same convention as MASS_SPREAD.
+      g.sub_scores[IM_SPREAD] = std::isfinite(g.im_spread)
+        ? -static_cast<double>(g.im_spread)
+        : std::numeric_limits<double>::quiet_NaN();
       g.sub_scores[MASS_SPREAD] = std::isfinite(g.mass_ppm_spread)
         ? -static_cast<double>(g.mass_ppm_spread)
         : std::numeric_limits<double>::quiet_NaN();

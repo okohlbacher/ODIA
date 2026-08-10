@@ -173,6 +173,28 @@ namespace ODIA
       /// unrelated species whose errors scatter.
       MASS_SPREAD,
 
+      // --- added 2026-08-10. The mobility analogue of MASS_SPREAD, and the
+      // first sub-score that can separate interference m/z and RT cannot.
+
+      /// Scatter of this group's PER-FRAGMENT observed 1/K0, as a robust sigma.
+      ///
+      /// A precursor's fragments are produced from ONE ion packet and therefore
+      /// share its mobility. A co-eluting interferent is a different packet at a
+      /// different 1/K0, so a group whose fragments disagree about mobility is a
+      /// mixture -- and on diaPASEF that is detectable even when the species are
+      /// inseparable in m/z and in retention time, because a frame merges TIMS
+      /// scans that the raw data still resolves.
+      ///
+      /// Distinct from IM_DELTA, which asks whether the group sits where the
+      /// LIBRARY predicted. This asks whether the group is internally
+      /// consistent, which needs no prediction and so cannot be wrong for the
+      /// library's reasons.
+      ///
+      /// NaN on a run without ion mobility, and until at least
+      /// `min_im_fragments` fragments carried one -- NaN rather than zero,
+      /// because zero scatter is what a perfect group looks like.
+      IM_SPREAD,
+
       N_SUB_SCORES
     };
 
@@ -434,6 +456,10 @@ namespace ODIA
       /// The run's OBSERVED 1/K0 for this group, intensity-weighted over the
       /// candidate's cycles. NaN on a run with no ion mobility.
       float observed_im = std::numeric_limits<float>::quiet_NaN();
+      /// Robust sigma (MAD x 1.4826) of this group's per-fragment observed
+      /// 1/K0, and how many fragments carried one.
+      float im_spread = std::numeric_limits<float>::quiet_NaN();
+      std::uint8_t im_frags = 0;
       /// How many fragments contributed to `mass_ppm_spread`.
       std::uint8_t mass_ppm_frags = 0;
       std::vector<double> sub_scores;
