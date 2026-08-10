@@ -4,6 +4,7 @@
 #pragma once
 
 #include <odia/ChromatogramExtractor.h>
+#include <odia/MassCalibration.h>
 #include <odia/Ms1Traces.h>
 #include <odia/OpenSwathPicker.h>
 #include <odia/Library.h>
@@ -255,6 +256,45 @@ namespace ODIA
       /// nobody has run. Overrides `coelution_picking` when set.
       bool openswath_picking = false;
 
+      /// Keep one `MassResidual` per contributing fragment of every retained
+      /// candidate, so a mass model can be fitted from IDENTIFICATIONS rather
+      /// than from `MassCalibration::collect`'s own probe.
+      ///
+      /// Costs nothing extra to compute: the per-fragment medians are already
+      /// derived here to make `mass_ppm_spread`, and were being discarded. It
+      /// costs memory, hence `max_mass_anchors`.
+      bool collect_mass_anchors = false;
+
+      /// Ceiling on retained anchors. ~24 B each, so the default is ~192 MB
+      /// against a decode floor measured in gigabytes. Hitting it truncates the
+      /// sample in RUN ORDER, which is a retention-time bias, so the count of
+      /// what was dropped is reported.
+      std::size_t max_mass_anchors = 8000000;
+
+      /// The mass correction the EXTRACTOR already applied, so the harvest can
+      /// take it back out. Same four coefficients as
+      /// `ChromatogramExtractor::Options`, and they must be the same values.
+      ///
+      /// This matters more than it looks. The extractor shifts each
+      /// transition's target m/z by the correction in force
+      /// (`ChromatogramExtractor.cpp:905-916`) and then records the deviation
+      /// against the SHIFTED target. So a harvested residual is what is left
+      /// AFTER the current model, not the run's raw mass error: on S08 the
+      /// harvested deviations centre on -0.26 ppm while the instrument's actual
+      /// offset is about -9.4.
+      ///
+      /// Fitting a model from those without correcting for it produces an
+      /// INCREMENT to the model in force, and scoring the model in force
+      /// against them charges it twice for a correction it already made -- it
+      /// would have looked catastrophically worse than doing nothing. Taking
+      /// the correction back out here makes `MassResidual::ppm` mean the same
+      /// thing regardless of what was in force, which is the only definition a
+      /// calibration input can safely have.
+      double applied_ppm_offset = 0.0;
+      double applied_ppm_log_slope = 0.0;
+      double applied_ppm_slope_per_1000 = 0.0;
+      double applied_ppm_ref_mz = 0.0;
+
       /// Take the UNION of the co-elution candidates and the amplitude ones
       /// (or the OpenSWATH ones, when `openswath_picking` is also set), and
       /// give every candidate its co-elution sum as a number.
@@ -400,9 +440,35 @@ namespace ODIA
       bool decoy = false;
     };
 
+    /// One accepted fragment's mass residual, tagged with the group it came
+    /// from so the FDR can filter it afterwards.
+    ///
+    /// The tag is necessary because a residual is produced while scoring, and
+    /// whether its group is worth fitting from is only known after `finish()`.
+    /// Fitting a calibration from every candidate would fit it from the
+    /// interference too.
+    struct MassAnchor
+    {
+      MassResidual residual;
+      std::uint32_t group = 0;   ///< index into Result::groups
+    };
+
     struct Result
     {
       std::vector<PeakGroup> groups;
+
+      /// Per-fragment mass residuals, when `collect_mass_anchors` was on.
+      ///
+      /// One entry per (retained candidate x contributing fragment), NOT per
+      /// accepted group -- acceptance is decided after these are produced. Use
+      /// `acceptedMassResiduals` to reduce them.
+      std::vector<MassAnchor> mass_anchors;
+
+      /// Residuals discarded because `max_mass_anchors` was reached. Non-zero
+      /// here means the sample is truncated at an arbitrary point in the run,
+      /// i.e. biased towards early retention times -- it is reported rather
+      /// than silently absorbed for exactly that reason.
+      std::size_t mass_anchors_dropped = 0;
 
       /// Precursors that produced no candidate at all -- no non-zero point in
       /// the window. Reported rather than silently absent.
@@ -437,6 +503,22 @@ namespace ODIA
       std::size_t candidates_below_library_corr = 0;
     };
 
+    /// Reduce harvested anchors to those from groups the FDR accepted.
+    ///
+    /// Separate from the harvest because acceptance is not known when a
+    /// residual is produced, and because the threshold is a caller's decision:
+    /// a calibration fitted at 1% and one fitted at 5% are different
+    /// experiments, and doc/15 section 12.5 records that the lenient choice was
+    /// measured to be the worse one.
+    ///
+    /// Decoy groups are returned too, with `MassResidual::decoy` set, because
+    /// they are the null a mixture fit needs -- but note doc/15 section 3.3:
+    /// pseudo-reverse decoys are NOT the right null for the interference
+    /// component. Use the m/z-shifted control for that.
+    static std::vector<MassResidual> acceptedMassResiduals(const Result& result,
+                                                           double q_threshold,
+                                                           bool include_decoys = false);
+
     /// Scoring one precursor at a time.
     ///
     /// The candidate search and every sub-score are per precursor already --
@@ -468,6 +550,14 @@ namespace ODIA
       /// Sub-scores decided after extraction; see `Sink::disableSubScores`.
       void disableSubScores(std::vector<int> indices)
       { options_.disabled_sub_scores = std::move(indices); }
+      void setAppliedMassCorrection(double offset, double log_slope,
+                                    double slope_per_1000, double ref_mz)
+      {
+        options_.applied_ppm_offset = offset;
+        options_.applied_ppm_log_slope = log_slope;
+        options_.applied_ppm_slope_per_1000 = slope_per_1000;
+        options_.applied_ppm_ref_mz = ref_mz;
+      }
 
     private:
       const Library* library_;
@@ -486,6 +576,16 @@ namespace ODIA
       Sink(const Library& library, const Options& options) : session_(library, options) {}
       void accept(const PrecursorChromatogram& trace) override { session_.add(trace); }
       Result finish() { return session_.finish(); }
+
+      /// Tell the harvest what mass correction the extractor is applying.
+      ///
+      /// Called after the Sink is built for the same reason `disableSubScores`
+      /// is: the mass probe runs during extraction setup, so the coefficients do
+      /// not exist at construction time. Must be called before the first
+      /// `accept()`, which is where the harvest reads them.
+      void setAppliedMassCorrection(double offset, double log_slope,
+                                    double slope_per_1000, double ref_mz)
+      { session_.setAppliedMassCorrection(offset, log_slope, slope_per_1000, ref_mz); }
 
       /// Withhold sub-scores decided AFTER extraction.
       ///

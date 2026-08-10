@@ -533,6 +533,23 @@ protected:
                   "under the default Sum aggregation. The decode path, not the live blocks, is "
                   "what sets this tool's memory floor, so the cost is real but not binding.",
                   true);
+    registerStringOption_("mass_anchors", "<mode>", "off",
+                          "Harvest one fragment mass residual per contributing fragment of "
+                          "every retained candidate, so a mass model can be fitted from "
+                          "IDENTIFICATIONS rather than from the probe that runs before pass 1. "
+                          "'measure' collects them and reports what a model fitted from them "
+                          "looks like, without applying it -- which is the whole experiment: "
+                          "the probe's model is what is in force today, and whether "
+                          "ID-derived anchors beat it on HELD-OUT fragments is unmeasured. "
+                          "Implies -collect_mass_residuals, since the per-fragment deviations "
+                          "are what it reads. See doc/15.",
+                          false);
+    setValidStrings_("mass_anchors", {"off", "measure"});
+    registerIntOption_("max_mass_anchors", "<n>", 8000000,
+                       "Ceiling on harvested anchors, ~24 B each. Hitting it truncates the "
+                       "sample in RUN ORDER, which is a retention-time bias, so the number "
+                       "dropped is reported rather than absorbed.",
+                       false);
     registerStringOption_("mass_width_from_ids", "<mode>", "measure",
                           "Size pass 2's fragment window from pass 1's own identifications, "
                           "instead of falling back to a constant when the mass calibration gate "
@@ -788,6 +805,19 @@ protected:
     }
 
     applyMassCalibration_(library, *source, options, rt_window_override);
+    // The harvest records deviations against the target the extractor actually
+    // searched, which is the corrected one. Hand it the correction so it can
+    // report against the uncorrected theoretical instead -- otherwise a model
+    // fitted from the anchors is an increment to this one, and this one gets
+    // charged twice when the two are compared. Safe to do here and nowhere
+    // earlier: the coefficients were unknown when the Sink was built.
+    if (auto* pgs = dynamic_cast<ODIA::PeakGroupScorer::Sink*>(&sink))
+    {
+      pgs->setAppliedMassCorrection(options.fragment_ppm_offset,
+                                    options.fragment_ppm_log_slope,
+                                    options.fragment_ppm_slope_per_1000,
+                                    options.fragment_ppm_ref_mz);
+    }
     options.rt_window_seconds = rt_window_override != 0.0 ? rt_window_override
                                                           : getDoubleOption_("rt_window");
     options.max_precursors = static_cast<std::size_t>(
@@ -798,7 +828,8 @@ protected:
     // on. Making the user pass two flags that only work together is a way of
     // producing runs that silently measured nothing.
     options.collect_mass_residuals = getFlag_("collect_mass_residuals") ||
-                                     getStringOption_("mass_width_from_ids") != "off";
+                                     getStringOption_("mass_width_from_ids") != "off" ||
+                                     getStringOption_("mass_anchors") != "off";
     options.aggregate = getStringOption_("aggregate") == "max"
                           ? ODIA::ChromatogramExtractor::Options::Aggregate::Max
                           : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
@@ -1057,6 +1088,14 @@ protected:
         static_cast<std::size_t>(std::max(1, getIntOption_("mass_width_min_groups"))));
       writeLogInfo_(ODIA::MassWidth::report(mass_width_));
     }
+
+
+    // The step-1 experiment of doc/15: are anchors taken from IDENTIFICATIONS a
+    // better basis for the mass model than the probe that runs before pass 1?
+    // Measured, never applied -- the probe's model is what is in force, and
+    // this reports what would change if it were replaced.
+    if (getStringOption_("mass_anchors") != "off")
+    { reportMassAnchors_(pass1, library); }
 
     std::ostringstream p1;
     p1 << "pass 1: " << pass1.groups.size() << " peak groups, "
@@ -1708,10 +1747,115 @@ protected:
     return out;
   }
 
+
+  /// Fit the mass model from FDR-accepted identifications and score it on
+  /// fragments it never saw, against the probe that is in force today.
+  ///
+  /// Split by STRIPPED SEQUENCE, not by fragment and not by precursor. Twelve
+  /// fragments of one precursor share an apex, a mobility and whatever
+  /// interference sits under them, and the same peptide at two charges shares
+  /// its chemistry -- a fragment-level split would put near-copies on both
+  /// sides and report a held-out number that is really an in-sample one.
+  void reportMassAnchors_(const ODIA::PeakGroupScorer::Result& pass1,
+                          const ODIA::Library& library)
+  {
+    if (pass1.mass_anchors.empty())
+    {
+      writeLogInfo_("mass anchors: none harvested -- either nothing was accepted or "
+                    "the extractor did not collect per-fragment deviations");
+      return;
+    }
+    if (pass1.mass_anchors_dropped != 0)
+    {
+      writeLogWarn_("mass anchors: " + std::to_string(pass1.mass_anchors_dropped) +
+                    " residuals dropped at the -max_mass_anchors ceiling. The kept "
+                    "sample is truncated in RUN ORDER, so it is biased towards early "
+                    "retention times; raise the ceiling before trusting the numbers.");
+    }
+
+    const auto& pr = library.precursors();
+    const double q = 0.01;   // 1%, not 5% -- doc/15 section 12.5
+
+    std::vector<ODIA::MassResidual> train, test;
+    train.reserve(pass1.mass_anchors.size());
+    for (const auto& a : pass1.mass_anchors)
+    {
+      if (a.group >= pass1.groups.size()) { continue; }
+      const auto& g = pass1.groups[a.group];
+      if (g.decoy || !(g.qvalue <= q)) { continue; }
+      if (g.precursor >= pr.modified_sequence.size()) { continue; }
+
+      // Strip modifications so a peptide cannot appear on both sides wearing a
+      // different mass. FNV-1a over the stripped residues, same hash the RT
+      // refiner splits on, so the two stages agree about what a held-out
+      // peptide is.
+      const auto seq = library.strings().get(pr.modified_sequence[g.precursor]);
+      std::uint32_t h = 2166136261u;
+      for (const char c : seq)
+      {
+        if (c < 'A' || c > 'Z') { continue; }
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 16777619u;
+      }
+      ((h % 100u) < 15u ? test : train).push_back(a.residual);
+    }
+
+    std::ostringstream os;
+    os << "mass anchors: " << pass1.mass_anchors.size() << " harvested, "
+       << train.size() << " train / " << test.size() << " held out by stripped sequence "
+       << "from groups at q<=" << q;
+    writeLogInfo_(os.str());
+
+    if (train.size() < 200 || test.size() < 200)
+    {
+      writeLogInfo_("mass anchors: too few to fit and score (need 200 each side) -- "
+                    "reporting nothing rather than a number from a handful of peptides");
+      return;
+    }
+
+    // Defaults deliberately: the question is whether a DIFFERENT ANCHOR SOURCE
+    // beats the probe, so every other knob has to stay where the probe had it.
+    const ODIA::MassCalibration::Options fo;
+    const auto id_model = ODIA::MassCalibration::fit(train, fo, nullptr);
+
+    // Four corrections scored on the SAME held-out fragments. `none` is the
+    // denominator; `constant` is what a scalar offset achieves, and is the bar
+    // any shape has to clear; `probe` is what is in force today.
+    const double none_ppm = ODIA::MassCalibration::systematicResidualPpm(
+      test, [](double) { return 0.0; });
+    const double id_ppm = id_model.fitted
+      ? ODIA::MassCalibration::systematicResidualPpm(
+          test, [&](double mz) { return id_model.ppmAt(mz); })
+      : std::numeric_limits<double>::quiet_NaN();
+    const double id_const = id_model.fitted
+      ? ODIA::MassCalibration::systematicResidualPpm(
+          test, [&](double) { return id_model.intercept_ppm; })
+      : std::numeric_limits<double>::quiet_NaN();
+    const double probe_ppm = (mass_model_known_ && mass_model_.fitted)
+      ? ODIA::MassCalibration::systematicResidualPpm(
+          test, [&](double mz) { return mass_model_.ppmAt(mz); })
+      : std::numeric_limits<double>::quiet_NaN();
+
+    std::ostringstream r;
+    r.setf(std::ios::fixed); r.precision(3);
+    r << "mass anchors, HELD-OUT systematic residual (weighted RMS of per-m/z-bin "
+         "modes, ppm -- lower is better):"
+      << "\n  no correction        " << none_ppm
+      << "\n  ID-fitted constant   " << id_const
+      << "\n  ID-fitted " << id_model.form << "  " << id_ppm
+      << "\n  probe (in force)     " << probe_ppm
+      << "\n  ID model: " << (id_model.fitted ? id_model.form : std::string("REFUSED"))
+      << ", " << id_model.reason;
+    writeLogInfo_(r.str());
+  }
+
   ODIA::PeakGroupScorer::Options scoringOptions_()
   {
     ODIA::PeakGroupScorer::Options options;
     options.classifier = getStringOption_("classifier");
+    options.collect_mass_anchors = getStringOption_("mass_anchors") != "off";
+    options.max_mass_anchors = static_cast<std::size_t>(
+      std::max(0, getIntOption_("max_mass_anchors")));
     options.min_library_corr = getDoubleOption_("min_library_corr");
     options.coelution_picking = !getFlag_("amplitude_picking");
     const std::string picker = getStringOption_("picker");

@@ -587,6 +587,7 @@ namespace ODIA
     if (window_total <= 0.0)
     { ++rejects_.empty_trace; ++result.precursors_without_candidate; return; }
 
+    std::vector<MassAnchor> staged_anchors;
     const std::size_t first_group = result.groups.size();
     // Three pickers now. OpenSWATH's is the independent implementation
     // doc/07 step 2 requires; it picks on the summed trace by amplitude and
@@ -847,6 +848,7 @@ namespace ODIA
         std::vector<double> dev, per_fragment, cell;
         dev.reserve((hi - lo + 1) * tc);
         per_fragment.reserve(tc);
+        staged_anchors.clear();
         for (std::uint32_t k = 0; k < tc; ++k)
         {
           const std::uint32_t n = chromatogram.pointCount(k);
@@ -871,6 +873,48 @@ namespace ODIA
             const std::size_t c = cell.size() / 2;
             std::nth_element(cell.begin(), cell.begin() + c, cell.end());
             per_fragment.push_back(cell[c]);
+
+            // The same median, kept WITH the m/z it belongs to. `per_fragment`
+            // above collapses to a scatter; a calibration has to be fitted
+            // against the axis it varies on, and that axis is destroyed the
+            // moment the fragment identity is dropped.
+            //
+            // Staged, not committed: this candidate can still be rejected below
+            // (min_library_corr), and an anchor pointing at a group that was
+            // never pushed would index the wrong group after finish().
+            if (options.collect_mass_anchors)
+            {
+              const double fmz = fromFixed(t.product_mz[tb + k]);
+              if (fmz > 0.0)
+              {
+                // Undo the correction the extractor applied to this
+                // transition's target, so the residual is against the
+                // UNCORRECTED theoretical m/z. See `applied_ppm_offset`.
+                double applied = options.applied_ppm_offset;
+                if (options.applied_ppm_log_slope != 0.0 && options.applied_ppm_ref_mz > 0.0)
+                { applied += options.applied_ppm_log_slope * std::log(fmz / options.applied_ppm_ref_mz); }
+                if (options.applied_ppm_slope_per_1000 != 0.0)
+                { applied += options.applied_ppm_slope_per_1000 * (fmz - options.applied_ppm_ref_mz) / 1000.0; }
+
+                MassAnchor a;
+                a.residual.mz = static_cast<float>(fmz);
+                a.residual.rt = g.apex_rt;
+                // First order: the exact inverse carries a cross term of
+                // r*applied/1e6, which at 10 ppm each is 1e-4 ppm.
+                a.residual.ppm = static_cast<float>(cell[c] + applied);
+                // The OBSERVED apex intensity of this fragment, not the library
+                // intensity: an intensity-dependent mass error is a property of
+                // how many ions arrived, and the library's number is a
+                // prediction about a different run.
+                a.residual.intensity = n ? chromatogram.trace(k)[
+                  std::min<std::size_t>(cand.apex, n - 1)] : 0.0f;
+                // The precursor's mobility. A fragment has none of its own.
+                a.residual.im = (i < p.im.size()) ? p.im[i]
+                                : std::numeric_limits<float>::quiet_NaN();
+                a.residual.decoy = false;   // set from the group at commit
+                staged_anchors.push_back(a);
+              }
+            }
           }
         }
         if (!dev.empty())
@@ -981,6 +1025,24 @@ namespace ODIA
       {
         ++result.candidates_below_library_corr;
         continue;
+      }
+      // Commit this candidate's staged mass anchors, now that it is certain to
+      // become a group and its index is known. `decoy` is taken from the group
+      // rather than the fragment: a residual's status is the status of the
+      // sequence it was matched against.
+      if (options.collect_mass_anchors && !staged_anchors.empty())
+      {
+        const std::uint32_t gi = static_cast<std::uint32_t>(result.groups.size());
+        const bool is_decoy = g.decoy;
+        for (MassAnchor& a : staged_anchors)
+        {
+          if (result.mass_anchors.size() >= options.max_mass_anchors)
+          { ++result.mass_anchors_dropped; continue; }
+          a.group = gi;
+          a.residual.decoy = is_decoy;
+          result.mass_anchors.push_back(a);
+        }
+        staged_anchors.clear();
       }
       result.groups.push_back(std::move(g));
     }
@@ -1396,6 +1458,24 @@ namespace ODIA
       session.add(trace);
     }
     return session.finish();
+  }
+
+
+  std::vector<MassResidual> PeakGroupScorer::acceptedMassResiduals(const Result& result,
+                                                                   double q_threshold,
+                                                                   bool include_decoys)
+  {
+    std::vector<MassResidual> out;
+    out.reserve(result.mass_anchors.size() / 2 + 1);
+    for (const MassAnchor& a : result.mass_anchors)
+    {
+      if (a.group >= result.groups.size()) { continue; }   // cannot happen; not worth trusting
+      const PeakGroup& g = result.groups[a.group];
+      if (g.decoy && !include_decoys) { continue; }
+      if (!(g.qvalue <= q_threshold)) { continue; }
+      out.push_back(a.residual);
+    }
+    return out;
   }
 
 } // namespace ODIA

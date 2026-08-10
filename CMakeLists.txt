@@ -161,7 +161,7 @@ foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_extract_axis
                odia_extract_cases odia_mobility_bands odia_tsv_writers
                odia_prefilter_depth odia_ms1_probe odia_ms1_coelution odia_mz_residuals odia_mass_recalibration
-               odia_mass_width odia_rt_refiner)
+               odia_mass_width odia_rt_refiner odia_mass_anchors)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})

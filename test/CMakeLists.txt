@@ -604,6 +604,14 @@ add_test(NAME mass_recalibration_recovers_drift COMMAND odia_mass_recalibration)
 # by the window it was observed through.
 add_test(NAME mass_width_from_identifications COMMAND odia_mass_width)
 
+# Scoring a mass model on fragments it was NOT fitted from. `fit` reports its
+# systematic residual against its own sample, which measures description rather
+# than prediction; doc/15 step 1 asks whether identification-derived anchors
+# beat the probe, and only a held-out number can answer that. The wrong-shape
+# case is the one that matters: a model fitted to the opposite trend must come
+# out worse than its own constant.
+add_test(NAME mass_anchors_heldout COMMAND odia_mass_anchors)
+
 # The per-run retention-time refiner. Every case is a failure it has actually
 # had on real data: an unbounded correction that took S08 to zero, contaminated
 # anchors a squared loss chased, and a model file whose weight count did not

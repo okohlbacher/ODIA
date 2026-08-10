@@ -144,7 +144,9 @@
 #include <odia/SpectrumSource.h>
 
 #include <cmath>
+#include <functional>
 #include <cstddef>
+#include <limits>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -164,6 +166,16 @@ namespace ODIA
     float rt = 0.0f;          ///< retention time of the spectrum, seconds
     float ppm = 0.0f;         ///< (observed - theoretical) / theoretical * 1e6
     float intensity = 0.0f;   ///< of the matched peak
+    /// The PRECURSOR's 1/K0, not the fragment's -- a fragment has no mobility
+    /// of its own, it inherits the packet it was produced in. NaN when the run
+    /// has no mobility or the precursor has no library value.
+    ///
+    /// Carried because MaxQuant's mass model has an ion-mobility term worth
+    /// 52% of its modelled variance on timsTOF (Prianichnikov et al., MCP 2020)
+    /// -- but that is a DDA PRECURSOR result, and whether it transfers to DIA
+    /// fragments is exactly what this field exists to let us measure. It is not
+    /// fitted anywhere yet, deliberately. See doc/15 sections 12.1 and 13.
+    float im = std::numeric_limits<float>::quiet_NaN();
     bool decoy = false;       ///< from an m/z-shifted control cell
   };
 
@@ -531,6 +543,24 @@ namespace ODIA
                                              Diagnostics* diagnostics = nullptr);
 
     /// Fit a model to residuals from anywhere -- a run, or a synthetic sample.
+    /// Weighted RMS of the per-m/z-bin modes left behind by @p correction, ppm.
+    ///
+    /// This is the statistic the basis choice turns on -- on S08, 1.71 ppm
+    /// about a constant against 0.54 about the log fit, while total per-hit
+    /// scatter moved only 4.66 -> 4.19 and looked like a wash.
+    ///
+    /// Exposed because `fit` computes it against its OWN sample, which measures
+    /// how well a model describes the data it was fitted from. Scoring a model
+    /// on residuals it never saw is a different question and the one that
+    /// matters here: a model fitted from identifications is fitted from a
+    /// selected sample, and the only honest check is held-out. See doc/15
+    /// section 6.2.
+    ///
+    /// Returns 0.0 when there are too few residuals to bin (the same floor
+    /// `fit` uses: 8 bins of at least 40).
+    static double systematicResidualPpm(const std::vector<MassResidual>& residuals,
+                                        const std::function<double(double)>& correction);
+
     static Model fit(const std::vector<MassResidual>& residuals, const Options& options,
                      Diagnostics* diagnostics = nullptr);
 

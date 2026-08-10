@@ -1116,4 +1116,65 @@ namespace ODIA
     return o.str();
   }
 
+
+  double MassCalibration::systematicResidualPpm(
+    const std::vector<MassResidual>& residuals,
+    const std::function<double(double)>& correction)
+  {
+    // Corrected residuals, targets only: a control cell's deviation is uniform
+    // by construction and would drag every bin mode towards the window centre.
+    std::vector<std::pair<double, double>> by_mz;
+    std::vector<double> sorted;
+    by_mz.reserve(residuals.size());
+    sorted.reserve(residuals.size());
+    for (const MassResidual& r : residuals)
+    {
+      if (r.decoy || !(r.mz > 0.0) || !std::isfinite(r.ppm)) { continue; }
+      const double c = r.ppm - correction(static_cast<double>(r.mz));
+      by_mz.emplace_back(static_cast<double>(r.mz), c);
+      sorted.push_back(c);
+    }
+    if (sorted.size() < 40) { return 0.0; }
+
+    // Location and scale of what is left, so the core can be cut the same way
+    // `fit` cuts it. Using the model's own residuals rather than the raw ones
+    // is the point: a correction that shifts the population must be judged on
+    // where it put it.
+    std::sort(sorted.begin(), sorted.end());
+    const double gate_w = 30.0;
+    const double mode0 = refineLocation(sorted, halfSampleMode(sorted), gate_w);
+    std::vector<double> dev;
+    dev.reserve(sorted.size());
+    for (const double v : sorted) { dev.push_back(std::abs(v - mode0)); }
+    // Sorted, because the scale estimator reads quantiles of it. `fit` does the
+    // same two lines up from its own call; leaving it out here returned a scale
+    // of zero and made the whole statistic silently 0.0, which reads as "no
+    // systematic error" -- the most dangerous possible way for this to fail.
+    std::sort(dev.begin(), dev.end());
+    const double sigma = backgroundCorrectedScale(dev, gate_w);
+    if (!(sigma > 0.0)) { return 0.0; }
+
+    std::vector<std::pair<double, double>> core;
+    core.reserve(by_mz.size());
+    for (const auto& kv : by_mz)
+    {
+      if (std::abs(kv.second - mode0) <= 4.0 * sigma) { core.push_back(kv); }
+    }
+    const auto bins = binBy(core, 8, 40);
+    if (bins.empty()) { return 0.0; }
+
+    // Weighted about ZERO, not about a refitted constant: the question is how
+    // much systematic error the correction LEFT, and a model that leaves a
+    // uniform offset has left systematic error even though the modes agree
+    // with each other.
+    double sw = 0.0, swr = 0.0;
+    for (const auto& b : bins)
+    {
+      const double e = b.stderr_ppm > 0.0 ? b.stderr_ppm : 1.0;
+      const double w = 1.0 / (e * e);
+      sw += w; swr += w * b.location * b.location;
+    }
+    return sw > 0.0 ? std::sqrt(swr / sw) : 0.0;
+  }
+
 } // namespace ODIA
