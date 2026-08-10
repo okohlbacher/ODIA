@@ -533,6 +533,19 @@ protected:
                   "under the default Sum aggregation. The decode path, not the live blocks, is "
                   "what sets this tool's memory floor, so the cost is real but not binding.",
                   true);
+    registerStringOption_("entrapment_prefix", "<text>", "",
+                          "Protein-name prefix marking ENTRAPMENT precursors in the library: "
+                          "real peptides known to be absent from the sample, so every one "
+                          "reported is a genuine false positive. Given this, the run reports "
+                          "the false discovery PROPORTION beside its own q-values.\n\n"
+                          "This is the check target-decoy cannot perform on itself. Decoys "
+                          "are CONSTRUCTED, so a classifier can learn what construction looks "
+                          "like rather than what a wrong answer looks like; entrapment "
+                          "peptides carry no construction signature. Wen et al. (Nat Methods "
+                          "22:1454, 2025) measure no DIA tool controlling peptide-level FDR, "
+                          "with DIA-NN's true precursor FDP above 2.3% at a nominal 1%, so a "
+                          "reported q-value is not evidence until this has been run.",
+                          false);
     registerStringOption_("im_features", "<mode>", "auto",
                           "Measure the run's OBSERVED 1/K0 per candidate from intensity-"
                           "weighted mobility planes, and feed var_im_delta from it. Until "
@@ -603,7 +616,11 @@ protected:
                   "are different goals and the choice should be visible.", true);
     registerStringOption_("rt_refine", "<mode>", "auto",
                           "Refine retention-time prediction from THIS RUN's own identifications, "
-                          "in process. auto: fit after pass 1 and apply if it helps on held-out "
+                          "in process. auto: KEEP them wherever the extractor collected "
+                          "per-fragment deviations. It used to ablate them when the mass "
+                          "calibration succeeded; that cost 430 identifications on Astral and "
+                          "117 on S08, because a CENTRED residual is what makes the feature "
+                          "discriminating rather than what makes it redundant. old auto: "
                           "sequences; off: do not. "
                           "\n\nThe map is a monotone function of the library's iRT and cannot beat "
                           "the ordering it is given -- measured on Astral, the best monotone "
@@ -1128,6 +1145,7 @@ protected:
     // this reports what would change if it were replaced.
     if (getStringOption_("mass_anchors") != "off")
     { reportMassAnchors_(pass1, library); }
+    reportEntrapment_(pass1, library);
 
     std::ostringstream p1;
     p1 << "pass 1: " << pass1.groups.size() << " peak groups, "
@@ -1766,8 +1784,22 @@ protected:
     }
 
     const std::string mode = getStringOption_("mass_features");
-    const bool mass_on = mode == "on" ||
-                         (mode == "auto" && (!mass_model_known_ || !mass_model_.fitted));
+    // 'auto' USED TO ablate the mass sub-scores whenever the calibration
+    // succeeded, on the reasoning that a centred residual carries less
+    // information. Measured on both files, that reasoning is backwards:
+    //
+    //   Astral, calibrated, +/-50.3 ppm   ablated 1,553   kept 1,983   (+430)
+    //   S08                                                            (+117)
+    //
+    // 430 identifications is 28% of the calibrated total, and it was being
+    // spent to remove a feature for being well behaved. A centred residual is
+    // exactly what makes MASS_ACCURACY discriminating: real fragments sit at
+    // zero and interference does not. Uncentred, both are scattered.
+    //
+    // So 'auto' now keeps them wherever the planes exist. It still turns them
+    // OFF when the extractor collected no residuals, because a column of NaN is
+    // worse than an absent one.
+    const bool mass_on = mode == "on" || mode == "auto";
     if (!mass_on)
     {
       for (const char* n : {"var_mass_accuracy", "var_mass_spread"})
@@ -1913,6 +1945,79 @@ protected:
       << "\n  ID model: " << (id_model.fitted ? id_model.form : std::string("REFUSED"))
       << ", " << id_model.reason;
     writeLogInfo_(r.str());
+  }
+
+
+  /// The false discovery PROPORTION, from entrapment precursors.
+  ///
+  /// Every identification this project has produced is a NOMINAL q-value.
+  /// Target-decoy cannot check itself: decoys are constructed, so a classifier
+  /// can learn what construction looks like rather than what a wrong answer
+  /// looks like. Entrapment peptides are real peptides absent from the sample,
+  /// so each one reported is a genuine false positive and none carries a
+  /// construction signature.
+  ///
+  ///     FDP = entrapment_hits / (entrapment_hits + target_hits) * (1/r)
+  ///
+  /// with r the entrapment-to-target ratio in the library. The 1/r corrects for
+  /// entrapment being a fraction of the search space: a false identification
+  /// lands on an entrapment sequence only r/(1+r) of the time.
+  void reportEntrapment_(const ODIA::PeakGroupScorer::Result& scored,
+                         const ODIA::Library& library)
+  {
+    const std::string prefix = getStringOption_("entrapment_prefix");
+    if (prefix.empty()) { return; }
+
+    const auto& p = library.precursors();
+    std::size_t lib_entrap = 0, lib_target = 0;
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      if (p.decoy[i]) { continue; }
+      const auto name = library.strings().get(p.protein_group[i]);
+      (name.rfind(prefix, 0) == 0 ? lib_entrap : lib_target)++;
+    }
+    if (lib_entrap == 0)
+    {
+      writeLogWarn_("-entrapment_prefix '" + prefix + "' matched NO library precursor. "
+                    "The FDP would be a constant zero, which is not a measurement -- "
+                    "check the prefix against the library's protein names.");
+      return;
+    }
+    const double r = static_cast<double>(lib_entrap) / static_cast<double>(lib_target);
+
+    // One row per precursor, best by q, so a precursor with several candidates
+    // is counted once. Counting rows would inflate both arms unequally.
+    std::unordered_map<std::uint32_t, double> best;
+    for (const auto& g : scored.groups)
+    {
+      if (g.decoy) { continue; }
+      auto it = best.find(g.precursor);
+      if (it == best.end() || g.qvalue < it->second) { best[g.precursor] = g.qvalue; }
+    }
+
+    std::ostringstream os;
+    os.setf(std::ios::fixed); os.precision(3);
+    os << "entrapment: " << lib_entrap << " entrapment / " << lib_target
+       << " target precursors in the library (r = " << r << ")";
+    writeLogInfo_(os.str());
+    os.str("");
+    os << "entrapment FDP against the nominal q-value:";
+    for (const double q : {0.001, 0.01, 0.05})
+    {
+      std::size_t e = 0, t = 0;
+      for (const auto& kv : best)
+      {
+        if (kv.second > q) { continue; }
+        const auto name = library.strings().get(p.protein_group[kv.first]);
+        (name.rfind(prefix, 0) == 0 ? e : t)++;
+      }
+      const double fdp = (e + t) > 0
+        ? static_cast<double>(e) / static_cast<double>(e + t) / r : 0.0;
+      os << "\n  q <= " << q << "   " << t << " target + " << e
+         << " entrapment   FDP " << 100.0 * fdp << "%"
+         << (fdp > 2.0 * q ? "   <-- MORE THAN TWICE THE NOMINAL RATE" : "");
+    }
+    writeLogInfo_(os.str());
   }
 
   ODIA::PeakGroupScorer::Options scoringOptions_()
