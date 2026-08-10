@@ -1385,11 +1385,37 @@ namespace ODIA
     //
     // apex_intensity substitutes for "feature id": we have no stable per-feature
     // identifier, and it breaks ties that apex RT alone leaves.
-    std::stable_sort(result.groups.begin(), result.groups.end(),
-                     [](const PeakGroup& a, const PeakGroup& b) {
+    //
+    // Sorted through an index PERMUTATION rather than in place, because
+    // `MassAnchor::group` indexes into this vector. Sorting the groups directly
+    // left every harvested anchor pointing at whatever group moved into its old
+    // slot -- so an anchor from an accepted target could be read with a decoy's
+    // flag and a rejected group's q-value. Silent, and it invalidated a whole
+    // measurement before it was caught.
+    std::vector<std::uint32_t> order(result.groups.size());
+    std::iota(order.begin(), order.end(), 0u);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](std::uint32_t ia, std::uint32_t ib) {
+                       const PeakGroup& a = result.groups[ia];
+                       const PeakGroup& b = result.groups[ib];
                        if (a.precursor != b.precursor) { return a.precursor < b.precursor; }
                        if (a.apex_rt != b.apex_rt) { return a.apex_rt < b.apex_rt; }
                        return a.apex_intensity < b.apex_intensity; });
+
+    if (!result.mass_anchors.empty())
+    {
+      std::vector<std::uint32_t> moved_to(order.size());
+      for (std::size_t n = 0; n < order.size(); ++n) { moved_to[order[n]] = static_cast<std::uint32_t>(n); }
+      for (MassAnchor& a : result.mass_anchors)
+      { if (a.group < moved_to.size()) { a.group = moved_to[a.group]; } }
+    }
+
+    {
+      std::vector<PeakGroup> reordered;
+      reordered.reserve(result.groups.size());
+      for (const std::uint32_t o : order) { reordered.push_back(std::move(result.groups[o])); }
+      result.groups.swap(reordered);
+    }
 
     for (const auto& g : result.groups)
     {

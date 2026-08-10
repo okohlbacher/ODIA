@@ -15,6 +15,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
+#include <cstdint>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -169,6 +172,54 @@ int main()
     check(std::isnan(r.im), "MassResidual::im defaults to NaN, not 0");
     r.im = 1.25f;
     check(r.im == 1.25f, "and carries a value when set");
+  }
+
+  // --- anchors survive the reordering finish() does --------------------
+  {
+    // finish() stable-sorts groups from extraction order into library order.
+    // MassAnchor::group indexes that vector, so the sort must be applied
+    // through a permutation and the anchors remapped. This models the
+    // permutation directly: it is the invariant, independent of how the sort
+    // is spelled. Two bugs of this exact family have already shipped here --
+    // a staging buffer whose lifetime did not match its guard, and this.
+    struct G { std::uint32_t precursor; float apex_rt; bool decoy; };
+    std::vector<G> groups = {                       // extraction (RT) order
+      {7, 10.0f, true }, {2, 20.0f, false}, {7, 30.0f, false}, {2, 40.0f, true }};
+    std::vector<std::uint32_t> anchor_group = {0, 1, 2, 3};
+
+    std::vector<std::uint32_t> order(groups.size());
+    std::iota(order.begin(), order.end(), 0u);
+    std::stable_sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+      if (groups[a].precursor != groups[b].precursor)
+      { return groups[a].precursor < groups[b].precursor; }
+      return groups[a].apex_rt < groups[b].apex_rt; });
+
+    std::vector<std::uint32_t> moved_to(order.size());
+    for (std::size_t n = 0; n < order.size(); ++n) { moved_to[order[n]] = std::uint32_t(n); }
+
+    std::vector<G> before = groups;
+    std::vector<G> reordered;
+    for (const std::uint32_t o : order) { reordered.push_back(groups[o]); }
+    for (std::uint32_t& g : anchor_group) { g = moved_to[g]; }
+
+    check(reordered[0].precursor == 2 && reordered[3].precursor == 7,
+          "the sort really does move groups (otherwise this proves nothing)");
+    bool intact = true;
+    for (std::size_t i = 0; i < anchor_group.size(); ++i)
+    {
+      const G& was = before[i];
+      const G& now = reordered[anchor_group[i]];
+      if (was.precursor != now.precursor || was.apex_rt != now.apex_rt ||
+          was.decoy != now.decoy)
+      { intact = false; }
+    }
+    check(intact, "every anchor still points at the group it was harvested from");
+
+    // And the failure it is guarding against: without the remap, anchor 0 --
+    // harvested from a decoy -- would read group 0 of the sorted vector, which
+    // is a target.
+    check(before[0].decoy && !reordered[0].decoy,
+          "without the remap, a decoy's anchor would be read as a target");
   }
 
   std::printf("%s\n", failures == 0 ? "ALL PASSED" : "FAILURES");

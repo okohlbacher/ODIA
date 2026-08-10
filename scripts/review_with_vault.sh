@@ -48,10 +48,23 @@ python3 "$REPO/scripts/vault_context.py" --vault "$VAULT" --topic "$TOPIC" --pas
 
 hdr() { printf 'Review ONLY. Do not modify any file. HEAD is %s; %s uncommitted path(s).\n\n' "$SHA" "$DIRTY"; }
 
-# --- kimi: paths, and an isolated worktree because it cannot be made read-only. ---
-{ hdr; cat "$CTX_PATHS"; echo; cat "$BRIEF"; } > "$OUT/brief_kimi.md"
 WT="$OUT/wt-kimi"
-git -C "$REPO" worktree add -q --detach "$WT" HEAD || { echo "worktree failed" >&2; exit 1; }
+git -C "$REPO" worktree prune
+git -C "$REPO" worktree add -q --detach "$WT" HEAD ||
+  { echo "worktree failed; try: git -C $REPO worktree prune" >&2; exit 1; }
+
+# --- kimi: paths, and an isolated worktree because it cannot be made read-only. ---
+{ hdr; cat "$CTX_PATHS"; echo
+  if ((${#SRCS[@]})); then
+    echo "Sources under review (read them; these are the ones that matter):"
+    # Paths into the WORKTREE, not $REPO. Pointing a reviewer at the live tree
+    # while telling it "HEAD is <sha>" breaks the scope freeze: kimi read an
+    # uncommitted fix there and correctly reported it as "missing from HEAD" --
+    # a true statement about a tree it was never meant to see.
+    for f in "${SRCS[@]}"; do echo "  $WT/$f"; done
+    echo
+  fi
+  cat "$BRIEF"; } > "$OUT/brief_kimi.md"
 ( cd "$WT" && kimi -p "$(cat "$OUT/brief_kimi.md")" </dev/null ) >"$OUT/kimi.md" 2>&1 &
 KPID=$!   # kimi 0.34.0 writes its ANSWER to stderr; 2>&1 is deliberate, not sloppy.
 
@@ -64,8 +77,11 @@ KPID=$!   # kimi 0.34.0 writes its ANSWER to stderr; 2>&1 is deliberate, not slo
   echo; cat "$BRIEF"
   echo; echo "You have NO working shell. Review from the pasted text only."
 } > "$OUT/brief_codex.md"
-codex exec -s read-only --skip-git-repo-check --color never \
-      "$(cat "$OUT/brief_codex.md")" </dev/null 2>"$OUT/codex.log" >"$OUT/codex.md" &
+# Prompt on STDIN, not argv. A single argument is capped well below ARG_MAX
+# (2 MB here) and pasting three source files blew past it with "Argument list
+# too long" -- which the script then reported as a completed review of 0 bytes.
+codex exec -s read-only --skip-git-repo-check --color never - \
+      <"$OUT/brief_codex.md" 2>"$OUT/codex.log" >"$OUT/codex.md" &
 CPID=$!
 
 echo "kimi pid $KPID, codex pid $CPID -> $OUT"
@@ -81,5 +97,9 @@ git -C "$REPO" worktree remove --force "$WT" 2>/dev/null
 grep -qi "code-mode host\|could not read the required files" "$OUT/codex.md" 2>/dev/null &&
   echo "!! codex reviewed NOTHING (code-mode host missing) -- add more -s sources" >&2
 
+for who in kimi codex; do
+  n=$(wc -c <"$OUT/$who.md")
+  (( n < 2000 )) && echo "!! $who returned only $n bytes -- treat as FAILED, not as 'no findings'" >&2
+done
 printf 'kimi  rc=%s %s bytes -> %s\n' "$KRC" "$(wc -c <"$OUT/kimi.md")"  "$OUT/kimi.md"
 printf 'codex rc=%s %s bytes -> %s\n' "$CRC" "$(wc -c <"$OUT/codex.md")" "$OUT/codex.md"
