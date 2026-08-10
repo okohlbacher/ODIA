@@ -279,28 +279,39 @@ namespace ODIA
       /// these real fragments"; `accept_ratio` tests that directly.
       double min_peakedness = 3.0;
 
-      /// ACCEPTANCE: how much systematic error the correction LEAVES, ppm.
+      /// ACCEPTANCE: the FRACTION of the centred systematic error the
+      /// correction must remove, measured about zero on the probe's residuals.
       ///
-      /// The weighted RMS of the per-m/z-bin modes about ZERO, after the model
-      /// is applied. This replaces the peakedness gates, and it is the absolute
-      /// residual rather than a ratio for a reason that was measured: a RATIO
-      /// accepts pure noise. Re-centring any blob moves its bin modes toward
-      /// zero, so a uniform sample "improved" 21.11 -> 8.83 ppm (ratio 0.42)
-      /// and would have had a 29.83 ppm constant applied to it.
+      /// Two wrong versions preceded this one and both are worth recording.
       ///
-      /// What separates a real calibration from noise is not that the residual
-      /// fell but that what remains is small:
+      /// A pure ratio at 0.50 accepted PURE NOISE: re-centring any distribution
+      /// moves its bin modes toward zero, so a uniform sample "improved"
+      /// 21.11 -> 8.83 ppm (ratio 0.42) and would have had a 29.83 ppm constant
+      /// applied. The bar was simply too loose, not the statistic wrong.
       ///
-      ///     synthetic, model recoverable   0.03 - 0.26 ppm
-      ///     S08 (real)                     0.18 ppm
-      ///     Astral (real)                  0.21 ppm
-      ///     pure uniform noise             8.83 ppm
+      /// An ABSOLUTE bar at 1.0 ppm then rejected S08, whose model is known
+      /// good. It was calibrated on residuals left over ID-ANCHOR populations
+      /// (0.18-0.21 ppm) and over synthetic fixtures (0.03-0.26), but it is
+      /// applied to the PROBE's residuals, which are noisier by construction --
+      /// S08's probe leaves 2.03 ppm there while the same model leaves 0.55 ppm
+      /// on held-out identifications. A threshold in ppm cannot be transplanted
+      /// between populations; a fraction can.
       ///
-      /// A factor of 34 between the worst real case and the noise case, so the
-      /// bar is not finely tuned. It is a bin-MODE residual, whose precision is
-      /// sigma/sqrt(n) per bin, so it reflects model misfit rather than
-      /// per-fragment scatter and does not need to scale with the instrument.
-      double accept_after_ppm = 1.0;
+      ///     Astral probe    1.394 -> 0.198   ratio 0.142
+      ///     S08 probe      12.040 -> 2.027   ratio 0.168
+      ///     fixtures                         ratio 0.003 - 0.025
+      ///     pure noise     21.105 -> 8.833   ratio 0.419
+      ///
+      /// 0.25 sits 1.7x below the noise case and 1.5x above the worst real one.
+      /// That is a narrower margin than the project usually accepts and it is
+      /// set on two real runs, so it should be re-checked on a third instrument
+      /// before it is trusted as general.
+      double accept_ratio = 0.25;
+
+      /// ...and an absolute backstop, so a model that removes 80% of an
+      /// enormous error and leaves a still-enormous one cannot pass on the
+      /// ratio alone.
+      double accept_after_ppm = 5.0;
 
       /// Minimum control residuals before the "control is as peaked as the
       /// data" rule may fire at all.
@@ -354,7 +365,42 @@ namespace ODIA
       double rt_window_seconds = 0.0;
 
       /// Window = k x robust sigma of the CORRECTED residuals.
-      double sigma_multiple = 3.0;
+      /// Window = this many robust sigmas of the CORRECTED residual.
+      ///
+      /// 3 -> 8 on 2026-08-10, from a k = 1..10 sweep on both benchmark files
+      /// with the offset and shape held fixed and only the width varying
+      /// (-mass_calibration_offset_only, otherwise every arm clamps to the
+      /// model's own width and the sweep measures nothing):
+      ///
+      ///     k      1    2    3    4    5    6    7    8    9   10
+      ///     S08  226  665  721  832  817  809  787  842  743  775
+      ///     Ast    0  318  617  866 1069 1125 1172 1148 1194 1222
+      ///
+      /// S08 plateaus from k=4; Astral never turns over. k=8 maximises the
+      /// worst case across the two (93.9% of each file's own maximum).
+      ///
+      /// TWO THINGS MAKE THIS PROVISIONAL, BOTH MEASURED:
+      ///
+      /// (a) It is a REGRESSION ON ASTRAL against what ships today. The gate
+      ///     currently fails there, the window stays at the uncalibrated 50 ppm,
+      ///     and that yields 2,078 identifications -- more than every arm in the
+      ///     sweep. Astral's optimum is out near 50 ppm (k~25) and the sweep
+      ///     simply did not reach it.
+      ///
+      /// (b) The sigma this multiplies is NOT the sigma the sweep was scaled on.
+      ///     The sweep used the robust sigma of FDR-accepted fragments: 2.087
+      ///     ppm on S08, 2.012 on Astral -- near-identical. `sigma_after` here is
+      ///     the probe's, measured through a 50 ppm search on a brightness-cut,
+      ///     mobility-gated population: 4.19 ppm on S08 and 0.96 on Astral, a
+      ///     factor of FOUR apart on runs whose true precision agrees to 4%.
+      ///     So one multiple times this sigma cannot mean the same thing on two
+      ///     instruments, and k here is not the k of the sweep.
+      ///
+      /// The honest fix for (b) is to size the window from identifications
+      /// (`MassWidth`, -mass_width_from_ids) where the sigma is comparable
+      /// across runs, not from the probe. That path exists and its `apply` mode
+      /// was measured harmful at 3 sigma -- which this sweep now explains.
+      double sigma_multiple = 8.0;
 
       /// Never infer a window below this, whatever the fit says.
       double floor_ppm = 2.0;

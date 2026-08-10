@@ -706,16 +706,18 @@ namespace ODIA
                               [&](double mz) { return m.ppmAt(mz); });
       m.centred_before_ppm = before;
       m.centred_after_ppm  = after;
-      const bool measurable = std::isfinite(before) && std::isfinite(after);
-      if (!measurable || after > opt.accept_after_ppm)
+      const bool measurable =
+        std::isfinite(before) && std::isfinite(after) && before > 0.0;
+      const double ratio = measurable ? after / before : 1.0;
+      if (!measurable || ratio > opt.accept_ratio || after > opt.accept_after_ppm)
       {
-        char buf[320];
+        char buf[360];
         std::snprintf(buf, sizeof buf,
-                      "the correction leaves too much systematic error "
-                      "(centred residual %.3f -> %.3f ppm; needs <= %.2f ppm). A ratio "
-                      "would have passed this: re-centring any distribution moves its bin "
-                      "modes toward zero, including a uniform one",
-                      before, after, opt.accept_after_ppm);
+                      "the correction removes too little of the centred systematic error "
+                      "(%.3f -> %.3f ppm, ratio %.3f; needs ratio <= %.2f and <= %.1f ppm). "
+                      "Re-centring alone moves bin modes toward zero, so a large absolute "
+                      "fall is not by itself evidence",
+                      before, after, ratio, opt.accept_ratio, opt.accept_after_ppm);
         m.reason = buf;
         m.fitted = false;
         m.window_ppm = -1.0;
@@ -723,7 +725,8 @@ namespace ODIA
       }
       char buf[220];
       std::snprintf(buf, sizeof buf,
-                    " The centred residual falls %.3f -> %.3f ppm.", before, after);
+                    " The centred residual falls %.3f -> %.3f ppm (ratio %.3f).",
+                    before, after, after / before);
       m.reason += buf;
     }
 

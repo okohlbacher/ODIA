@@ -908,3 +908,90 @@ end-to-end: both reviewers independently recovered §13.1–13.3 from the vault 
 
 Still open: `MassCalSplit` versus `MassCalCenter`, how the RT bins are placed (equal-count vs
 equal-width), and which anchors feed the fit, are all **unread** in the source.
+
+---
+
+## 14. The window sweep, and what it settled — 2026-08-10
+
+Step 1 and its follow-ups produced one clear result, one refuted diagnosis, and
+one open question that is larger than the phase that found it.
+
+### 14.1 Shape gating is gone
+
+The mass calibration used to be gated on the SHAPE of its residuals — an
+absolute peakedness bar, and a comparison against the m/z-shifted control. Both
+are proxies for "are these real fragments"; the residual of the CENTRED
+distribution answers it directly. Acceptance is now `after/before <= 0.25` with
+a 5 ppm backstop.
+
+The proxy was measurably wrong. On Astral the control produced 98 residuals to
+the target's 4,033, so its peakedness came out 12.00 from an edge count of one
+to three — 12.00 ± 7 to ±12 against a target statistic of 6.90 ± 0.74. The gate
+failed the run on that. Meanwhile the same probe measured a match RATE of 1.344
+per target cell against 0.0170 per control cell: a **79× enrichment, 558 sigma**
+under the null. Astral's evidence that its matches are real is nine times
+stronger than S08's, and Astral is the run that failed.
+
+**Astral now calibrates**: offset −1.2705 ppm, confirmed independently by the
+ID-anchor median (−1.202) and by the historical `min_control_residuals = 400`
+experiment (−1.27). Three routes, same number.
+
+### 14.2 The collapse was the WIDTH, and specifically the wrong sigma
+
+Calibrated Astral, narrowed to the model's own 2.89 ppm: pass 1 fell from
+**12,211 target groups to 665**. The offset was right and the run still died.
+
+The mechanism is that 2.89 ppm is `3 x 0.96`, and 0.96 ppm is the PROBE's sigma
+— measured through a 50 ppm search on a brightness-cut, mobility-gated
+population. The run's real per-fragment sigma, from FDR-accepted fragments, is
+**2.012 ppm**. On S08 the same two estimators give **4.19** and **2.087**.
+
+So the probe's sigma differs by a factor of FOUR between two runs whose true
+precision agrees to 4%. **One multiple times that sigma cannot mean the same
+thing on two instruments.** That is the defect, not narrowing as such.
+
+### 14.3 The sweep
+
+k = 1..10 multiples of each run's own ID-derived sigma, offset and shape applied
+in every arm, only the width varying (`-mass_calibration_offset_only` — without
+it every arm clamps to the model's width and the sweep measures nothing):
+
+```
+    k        1    2    3    4    5    6    7    8    9   10
+    S08    226  665  721  832  817  809  787  842  743  775
+    Astral   0  318  617  866 1069 1125 1172 1148 1194 1222
+```
+
+S08 plateaus from k=4 (743-842, ±6% noise). **Astral never turns over.** k=8
+maximises the worst case across the two at 93.9%, and is now the default
+(`-mass_sigma_multiple`).
+
+Purity moves the other way throughout, measured three ways:
+- per-fragment sigma inflates 0.96 → 1.95 ppm (S08) as the window widens 10x;
+- decoy groups outnumber target groups from k=3 on S08;
+- fragment-level purity 99.3% at ±2 ppm falls to 89.1% at ±50 (Astral).
+
+But narrowing buys little of it: ±10 → ±2 on Astral gains 1.9 points of purity
+and costs 28% of the evidence. Interference was never the dominant term.
+
+### 14.4 THE OPEN QUESTION, which is bigger than this phase
+
+**On Astral the uncalibrated 50 ppm fallback still beats every calibrated arm
+in the sweep: 2,078 identifications against 1,222 at k=10.**
+
+So k=8 is a REGRESSION on Astral against what ships today, and the default is
+provisional on that basis. Astral's optimum lies out near 50 ppm (k≈25), which
+is what `ChromatogramExtractor.h`'s own sweep already found (IDs 4,290 / 4,499 /
+4,969 / 4,382 / 3,967 at 15 / 30 / 50 / 75 / 100 ppm).
+
+Two readings, and they are not distinguishable from identification counts:
+
+1. Astral genuinely needs a wide window — its true fragment component is
+   heavy-tailed, and the deconvolution puts 99.9% coverage at ±30 ppm.
+2. The extra identifications at 50 ppm are **false**, admitted by a wide window
+   and passed by a classifier that cannot tell. Wen et al. 2025 put DIA-NN's
+   true precursor FDP above 2.3% at a nominal 1%, and this project has
+   explicitly refused identification count as a calibration objective.
+
+**Entrapment settles this and nothing else does.** Until it is run, the window
+default is being chosen by the metric this project disowned.

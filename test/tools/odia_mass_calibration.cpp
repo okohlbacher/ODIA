@@ -144,8 +144,14 @@ namespace
       check(std::abs(m.sigma_after - 2.0) < 0.5,
             "sigma recovered within 0.5 ppm of the planted 2.0 (got " +
               std::to_string(m.sigma_after) + ")");
-      check(m.window_ppm > 0.0 && m.window_ppm < 10.0,
-            "the window is sized from sigma, not from the search width (got " +
+      // Against the OPTION, not a hard number. This check previously asserted
+      // "< 10 ppm", which encoded sigma_multiple = 3; raising the default to 8
+      // (measured -- see MassCalibration.h) broke a test that was really
+      // asserting the default rather than the property.
+      check(m.window_ppm > 0.0 &&
+              std::abs(m.window_ppm - opt.sigma_multiple * m.sigma_after) < 0.01 &&
+              m.window_ppm < opt.search_ppm,
+            "the window is sigma_multiple x sigma, and inside the search width (got " +
               std::to_string(m.window_ppm) + ")");
       // A mean over the same sample is the thing the mode replaces; showing it
       // is what makes "use a robust estimator" a measurement rather than a

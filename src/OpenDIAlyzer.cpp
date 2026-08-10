@@ -714,6 +714,17 @@ protected:
                   "on Astral and +122 on S08, and the entrapment fixture measures it CONSERVATIVE "
                   "-- FDP 0.0020 against a claimed 0.01 -- so leaving it opt-in meant every "
                   "default run paid for an asymmetry we know how to remove.", true);
+    registerDoubleOption_("mass_sigma_multiple", "<n>", 8.0,
+                          "Fragment window as this many robust sigmas of the corrected "
+                          "residual, when the mass calibration fits one. Swept 1-10 on both "
+                          "benchmark files: S08 plateaus from 4, Astral never turns over, 8 "
+                          "maximises the worst case. PROVISIONAL -- on Astral the "
+                          "uncalibrated 50 ppm fallback still beats every swept width "
+                          "(2,078 identifications against 1,222 at k=10), and the sigma this "
+                          "multiplies is the probe's, which differs 4x between the two files "
+                          "where the true per-fragment sigma differs by 4%. See "
+                          "MassCalibration.h.",
+                          false);
     registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
                           "Half-width, in robust sigmas of the per-fragment deviation, for "
                           "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
@@ -3069,6 +3080,7 @@ private:
         std::max(1, getIntOption_("mz_calib_precursors")));
       mzc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("mz_calib_cycles")));
       mzc.use_ion_mobility = !getFlag_("no_ion_mobility");
+      mzc.sigma_multiple = getDoubleOption_("mass_sigma_multiple");
       if (remeasure_with_map)
       {
         // The map has already been written INTO the library's irt, so those
