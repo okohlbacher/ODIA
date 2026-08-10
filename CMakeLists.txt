@@ -104,6 +104,7 @@ set(ODIA_LIB_SOURCES
   src/calibrate/MassRecalibration.cpp
   src/score/PeakGroupScorer.cpp
   src/calibrate/RtCalibration.cpp
+  src/calibrate/RtRefiner.cpp
   src/calibrate/MassCalibration.cpp
   src/calibrate/MobilityCalibration.cpp
   src/io/ChromatogramTsv.cpp

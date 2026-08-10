@@ -1,0 +1,113 @@
+// Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+#pragma once
+
+#include <odia/Library.h>
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace ODIA
+{
+
+  /// Per-run retention-time refinement, learned IN PROCESS from the run's own
+  /// identifications.
+  ///
+  /// WHY THIS EXISTS. The retention-time map is a monotone function of the
+  /// library's iRT, and a monotone function cannot beat the ordering it is
+  /// given. Measured on Astral by fitting on one set of stripped sequences and
+  /// evaluating on another, the best monotone calibration reaches SD 38.6 s and
+  /// no amount of LOESS span, anchor threshold or bin count goes below it.
+  /// DIA-NN's own residual on the same file is 29.29 s, which is BELOW that
+  /// ceiling -- possible only because its prediction is run-refined rather than
+  /// a monotone map of the library value.
+  ///
+  /// So the residual left after the best possible calibration is elution-ORDER
+  /// error, and only something that reads the SEQUENCE can touch it. That is
+  /// this class.
+  ///
+  /// WHY IT IS NOT THE PEPTDEEP FINE-TUNER. Fine-tuning peptdeep on the run
+  /// reaches 27.70 s and is better -- but it needs torch, a separate python
+  /// environment, a GPU node, and an ONNX export step on a third machine,
+  /// none of which belong inside a search. `-repredict_irt -rt_model` remains
+  /// for that path. This one has no dependency at all and runs by default,
+  /// because a refinement nobody enables is a refinement nobody gets.
+  ///
+  /// WHAT IT LEARNS. Ridge regression on amino-acid composition, peptide
+  /// length, precursor charge and the CALIBRATED iRT, predicting observed
+  /// retention time. Composition is the cheap half of what a sequence model
+  /// knows; measured on Astral it takes the held-out residual from 38.55 s to
+  /// 33.19 s, against peptdeep's 27.70. A gradient-boosted regressor would sit
+  /// between the two and is the obvious next step -- `Scoring::GBT` is a
+  /// classifier today and would need a squared-loss path.
+  class RtRefiner
+  {
+  public:
+    struct Options
+    {
+      /// L2 penalty. 1.0 measured best of {0.3, 1, 3, 10, 30, 100} on Astral,
+      /// and the curve is flat between 0.3 and 3.
+      double ridge = 1.0;
+
+      /// Fraction of TRAINING SEQUENCES held out to report a residual on.
+      ///
+      /// 0.15 as the project owner specified: production trains on everything
+      /// it has because the goal is minimising deviation on THIS run, not
+      /// preserving a clean estimate, and holding data out purely to protect a
+      /// statistic would be paying identifications for it. The 15% exists to
+      /// report an honest number and to refuse the model when it does not help.
+      double holdout = 0.15;
+
+      /// Anchors below which no refinement is attempted. A model fitted on a
+      /// handful of peptides will predict their neighbours and nothing else.
+      std::size_t min_anchors = 250;
+    };
+
+    struct Report
+    {
+      bool fitted = false;
+      std::size_t anchors = 0;      ///< rows used
+      std::size_t train = 0;
+      std::size_t held_out = 0;
+      double sd_before = 0.0;       ///< held-out SD of (observed - calibrated iRT), seconds
+      double sd_after = 0.0;        ///< held-out SD after refinement, seconds
+      std::string note;
+    };
+
+    /// Fit from (stripped sequence, charge, calibrated iRT in run seconds,
+    /// observed apex RT in run seconds).
+    ///
+    /// The split is by STRIPPED SEQUENCE, so a peptide's charge states never
+    /// straddle it: 2+ and 3+ of one peptide elute together, and splitting
+    /// between them leaks the answer into the held-out set.
+    Report fit(const std::vector<std::string>& sequences,
+               const std::vector<int>& charges,
+               const std::vector<double>& calibrated_irt,
+               const std::vector<double>& observed_rt,
+               const Options& options);
+
+    /// Same, with the defaults. A defaulted `Options{}` argument cannot be
+    /// written here: the member initialisers are not complete until the
+    /// enclosing class is, so an overload is the portable spelling.
+    Report fit(const std::vector<std::string>& sequences,
+               const std::vector<int>& charges,
+               const std::vector<double>& calibrated_irt,
+               const std::vector<double>& observed_rt);
+
+    /// Rewrite the library's `irt` in place with the refined prediction.
+    ///
+    /// A no-op when the fit was refused or did not help, so a caller can apply
+    /// unconditionally and get the unrefined axis when refinement is not
+    /// warranted.
+    std::size_t apply(Library& library) const;
+
+    bool fitted() const { return fitted_; }
+
+  private:
+    bool fitted_ = false;
+    std::vector<double> weights_;   ///< in the feature order of `features()`
+  };
+
+} // namespace ODIA

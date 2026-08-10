@@ -16,6 +16,7 @@
 #include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/RtCalibration.h>
+#include <odia/RtRefiner.h>
 
 #include <fstream>
 #include <unordered_map>
@@ -554,6 +555,24 @@ protected:
                   "more identifications at a nominal 1% that is nearer 2% in truth. It is "
                   "exposed because parity with their NUMBERS and parity with their CALIBRATION "
                   "are different goals and the choice should be visible.", true);
+    registerStringOption_("rt_refine", "<mode>", "auto",
+                          "Refine retention-time prediction from THIS RUN's own identifications, "
+                          "in process. auto: fit after pass 1 and apply if it helps on held-out "
+                          "sequences; off: do not. "
+                          "\n\nThe map is a monotone function of the library's iRT and cannot beat "
+                          "the ordering it is given -- measured on Astral, the best monotone "
+                          "calibration reaches SD 38.6 s held out and no span, threshold or bin "
+                          "count goes below it, while DIA-NN's own residual is 29.29 s. What is "
+                          "left is elution-ORDER error, and only something that reads the SEQUENCE "
+                          "can touch it. "
+                          "\n\nRidge on amino-acid composition, length, charge and the calibrated "
+                          "iRT: 38.55 -> 33.19 s held out by stripped sequence on Astral. The "
+                          "peptdeep fine-tuner reaches 27.70 s and is better, but needs torch, a "
+                          "separate environment and a GPU node, so it stays behind "
+                          "-repredict_irt. This one has no dependency and runs by default, "
+                          "because a refinement nobody enables is a refinement nobody gets.",
+                          false, true);
+    setValidStrings_("rt_refine", {"auto", "off"});
     registerFlag_("repredict_irt",
                   "Re-predict the SUPPLIED library's iRT with -rt_model, instead of using the "
                   "values the library file carries. "
@@ -985,6 +1004,11 @@ protected:
     // with the library RT it came from.
     const double anchor_q = getDoubleOption_("anchor_q");
     std::vector<std::pair<double, double>> anchors;
+    // (precursor index, observed apex RT) for the retention-time refiner. The
+    // anchors themselves cannot serve: they carry the LIBRARY iRT, and the
+    // refiner needs the CALIBRATED one, which does not exist until the map
+    // below has been applied -- by which point `best` is out of scope.
+    std::vector<std::pair<std::size_t, double>> refine_rows;
     if (pass1.fdr_valid)
     {
       std::vector<const ODIA::PeakGroupScorer::PeakGroup*> best(
@@ -1013,6 +1037,7 @@ protected:
         {
           anchors.emplace_back(static_cast<double>(original_irt[i]),
                                static_cast<double>(best[i]->apex_rt));
+          refine_rows.emplace_back(i, static_cast<double>(best[i]->apex_rt));
         }
       }
 
@@ -1167,6 +1192,50 @@ protected:
       {
         irt[i] = static_cast<float>(trafo.apply(static_cast<double>(original_irt[i])));
       }
+    }
+
+    // Per-run retention-time refinement, in process.
+    //
+    // HERE, and not earlier: the library's irt now holds RUN SECONDS, so the
+    // anchors' x-values and the precursors' predictions are on one axis and the
+    // model learns a correction to the CALIBRATED value rather than to a
+    // normalised iRT the run has never seen.
+    //
+    // The refiner holds itself out by stripped sequence and REFUSES to apply a
+    // model that does not beat the calibration on those rows -- so this can run
+    // unconditionally and leave the axis alone when refinement is not warranted.
+    if (getStringOption_("rt_refine") != "off" && !refine_rows.empty())
+    {
+      const auto& pr = library.precursors();
+      std::vector<std::string> seqs;
+      std::vector<int> chg;
+      std::vector<double> cal, obs;
+      seqs.reserve(refine_rows.size());
+      for (const auto& [idx, apex] : refine_rows)
+      {
+        const auto sv = library.strings().get(pr.modified_sequence[idx]);
+        seqs.emplace_back(sv);
+        chg.push_back(static_cast<int>(pr.charge[idx]));
+        cal.push_back(static_cast<double>(pr.irt[idx]));   // CALIBRATED, applied above
+        obs.push_back(apex);
+      }
+      ODIA::RtRefiner refiner;
+      const auto rep = refiner.fit(seqs, chg, cal, obs);
+      std::ostringstream os;
+      os.setf(std::ios::fixed);
+      os.precision(2);
+      if (rep.fitted)
+      {
+        const std::size_t n = refiner.apply(library);
+        os << "retention-time refinement: fitted on " << rep.train
+           << " anchors, held-out SD " << rep.sd_before << " s -> " << rep.sd_after
+           << " s on " << rep.held_out << " sequences; applied to " << n << " precursors";
+      }
+      else
+      {
+        os << "retention-time refinement: not applied -- " << rep.note;
+      }
+      writeLogInfo_(os.str());
     }
 
     // -stop_after calib: the calibration IS the deliverable here, and pass 2
