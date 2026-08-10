@@ -439,3 +439,40 @@ the 400 s contaminated anchors a squared loss chases, a model file whose weight
 count did not match being read as valid, provenance silently dropped on load,
 the clamp not travelling with the weights, and stale state surviving a refused
 fit.
+
+## Three engines, one footing (2026-08-10)
+
+Fraction of DIA-NN's confident Astral precursors whose TRUE apex lies within
++/-W of each engine's OWN recalibrated prediction.
+
+    engine                     n   +/-15s   +/-30s   +/-60s  +/-120s    p50     p95
+    OpenSWATH (lowess)     10523   21.26%   41.69%   72.78%   93.88%   36.4   129.3
+    ODIA library iRT       10891   34.58%   60.75%   88.89%   99.33%   23.4    77.6
+    DIA-NN (own refit)     11112   43.38%   71.88%   95.04%   99.97%   17.9    59.9
+    ODIA in-process ridge  10891   43.05%   71.21%   93.62%   99.38%   18.1    66.5
+    ODIA peptdeep ep200    10891   70.29%   88.24%   97.27%   99.83%    7.8    45.3
+
+**The in-process ridge lands on DIA-NN.** 71.21% against 71.88% at +/-30 s, p50
+18.1 against 17.9. That is the no-dependency default, matching a mature engine's
+own run refinement.
+
+**The peptdeep path passes it.** 88.24% against 71.88%. Held out by stripped
+sequence, on 4,164 peptides the model never saw, it is 81.15% -- still above
+DIA-NN's 71.88%, and that comparison favours DIA-NN, whose figure is in-sample
+with respect to its own refinement.
+
+**OpenSWATH is well behind both**, and this is the number to treat most
+carefully. It is reconstructed rather than read: OSW does not publish a
+predicted RT per precursor, so its calibration was traced from the
+(NORM_RT, EXP_RT) pairs its features record -- those pairs ARE its lowess map --
+and interpolated. Three caveats, all pushing the same way:
+
+* the .osw available here is UNSCORED, so its features include interference that
+  a q-value filter would remove;
+* it is from an earlier run configuration (2026-07-31), not the one that
+  produced the 8,765 identifications;
+* the binned interpolation is ours, not OSW's own evaluation of its map.
+
+So read it as "OSW's calibration is materially looser than DIA-NN's on this
+file", not as a precise figure. Re-running pyprophet would sharpen it and is
+recorded in the backlog rather than done.
