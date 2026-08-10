@@ -156,7 +156,7 @@ is the only axis the model is defined on.
 
 **Change:** at that site, when a harvest sink is attached, also emit one
 `MassResidual{mz, rt, ppm, intensity}` per contributing fragment. No new decode,
-no new pass. ~12 fragments × ~15 k groups × 16 B ≈ 2.9 MB.
+no new pass. ~12 fragments × ~15 k groups × 24 B (after adding `im`, with alignment) ≈ 4.3 MB.
 
 ### 3.2 MS1 — a new path
 
@@ -337,7 +337,7 @@ extraction**, evaluating any *narrower* candidate window is a **filter over
 retained residuals**, not a re-extraction. So:
 
 ```
-  ONE wide extraction  (50 ppm, library iRT, collect residuals)
+  ONE wide extraction  (bootstrap width per SS5, library iRT, collect residuals)
         |
         v
   score + FDR at 1%
@@ -632,3 +632,172 @@ instruments the same model yields materially less.
 - Whether an iterated mass↔RT loop beats a single pass is **unknown**, not
   refuted. There is no evidence either way, only the absence of anyone trying and
   DIA-NN's warning about a related mechanism.
+
+---
+
+## 12. v4 amendments — round-2 adversarial review
+
+Round 2 (Kimi 0.34.0, Codex 0.147.0) reviewed v3 at `4b67160`. It did not reject
+the architecture, but it removed the confidence from the part v3 was most
+pleased with. **Every amendment below is a demotion.**
+
+### 12.1 The IM claim was overstated. Measure before building.
+
+v3's headline — "the IM term is almost certainly the largest single miss" — does
+not follow from the cited number and is **withdrawn**.
+
+- 52% is a share of MaxQuant's *modelled* variance, not of total mass error, and
+  its denominator is that model on that dataset.
+- It is a **DDA PASEF precursor** result. ODIA would apply it to **DIA
+  fragments**, where 1/K0 is not a fragment property at all: fragments inherit
+  the precursor's mobility (`ChromatogramExtractor.cpp:1111` tests a fragment
+  peak against `x.precursor_im`). So `f4` is a *per-precursor* covariate wearing
+  a per-fragment label.
+- Propagating it through ODIA's own S08 numbers gives an expected improvement in
+  total scatter of **~0.02 ppm** (random variance ≈ 4.19² − 0.54² ≈ 17.3 ppm²;
+  systematic residual after a 52% cut ≈ 0.37 ppm; new total ≈ 4.17 ppm). That is
+  five times *below* v3's own 0.1 ppm convergence tolerance.
+
+**Step 2 is therefore a measurement, not an implementation:**
+
+1. Take existing fragment residuals, remove the fitted `f1(m/z)`.
+2. Estimate the 1/K0 slope **within narrow m/z × isolation-window × charge
+   strata** — the marginal trend is confounded, the conditional one is not.
+3. **Permute 1/K0 within those same strata as the null.** If the conditional
+   slope survives permutation, the effect is real.
+4. Compare with `MobilityCalibration` on and off (see 12.2).
+5. Validate by **held-out precursor**, never held-out fragment — fragments of one
+   precursor share mobility, apex and interference, so a fragment-level split
+   leaks.
+
+Only a reproducible *conditional* trend justifies building `f4`.
+
+### 12.2 A confounder in the existing call order
+
+`applyMassCalibration_` runs at `OpenDIAlyzer.cpp:790`; `applyMobilityCalibration_`
+runs at `:811`. **The mass model is fitted on residuals collected before the
+mobility axis is centred.** `MassCalibration` gates its matches on an IM window
+around the *library* 1/K0, so any IM-dependent mass trend measured today is
+confounded with the uncorrected mobility gate — and `MobilityCalibration` may
+already be absorbing it by fixing which peak is selected.
+
+This is a pre-existing property of the pipeline, not a v3 invention, and it means
+**`f4` cannot be honestly measured without reversing the order or re-measuring
+after mobility calibration.** Added as a precondition to step 2.
+
+### 12.3 Backfitting order is not innocent; fit m/z first
+
+v3 copied MaxQuant's IM-first order. Both reviewers independently showed it can
+alias: m/z and 1/K0 covary through CCS, so fitting IM first and subtracting can
+assign several ppm of the *measured, strong* `f1` shape (t = 7.4) to `f4`, and a
+subtracted-and-frozen term cannot give it back.
+
+- Fit **`f1` first** — it is ODIA's established term, not a borrowed one.
+- Use **true backfitting** (cycle to stability) with **identifiability
+  constraints** — each term zero weighted mean — not one-pass subtraction.
+- Test all three of: IM-first, m/z-first, and a joint penalised fit with centred
+  terms. **If they disagree materially, the effect is confounding, not physics.**
+
+### 12.4 `f3(log I)` is endogenous, not "one column"
+
+Fragment intensity determines which peak wins the match, whether the fragment
+contributes, the group score, and ultimately FDR acceptance. It is simultaneously
+a proposed predictor **and part of the selection mechanism**.
+
+Failure mode: low-intensity genuine fragments get displaced by higher-intensity
+background peaks nearby; `f3` then learns an apparent intensity-dependent ppm
+shift **from peak-selection error**, and applying it moves genuine low-intensity
+fragments away from where they belong.
+
+Also, MaxQuant's `f3` models space charge on the *intact* ion; fragment intensity
+is governed by fragmentation propensity, not by the current that caused the
+shift. Two fragments of one precursor would receive different `f3` corrections,
+distorting their relative masses.
+
+`f3` is demoted to a candidate covariate requiring the same conditional and
+permutation tests as `f4`.
+
+### 12.5 §6.1's "second order" claim is false; the inner loop is model-selection only
+
+Both reviewers produced the same counter-example, and it is decisive. A fragment
+has the true peak at −8 ppm and a stronger interferer at +18 ppm; the wide
+extraction sees both and the retained residual is a weighted mixture near 0 ppm.
+Once the model centres at −8 ppm and the window narrows, the interferer leaves —
+and **re-extraction yields a clean residual near 0, while re-centring the
+retained residual yields +10 ppm for a peak that no longer exists.** The apex
+moves, the co-elution score changes, and acceptance can flip.
+
+So retained residuals are **not a sufficient statistic** for a narrower
+extraction. Amendments:
+
+- The inner loop fits and *compares* models. It does **not** size the final
+  window from re-centred residuals alone.
+- The confirmatory pass must compare **fitted coefficients, residual
+  distributions, apex movement and contributing-peak identity** — not merely
+  "did the accepted set move".
+- If those disagree, the outer cap of 2 is **not** sufficient, and the honest
+  fallback is the field's plain single pass: bootstrap wide → fit once → search
+  narrow. §11 finding 3 says that is what everyone does anyway.
+
+### 12.6 The bootstrap widening is largely inert as specified
+
+`search_ppm` defaults to 50 but **`gate_ppm` defaults to 30**
+(`MassCalibration.h:184,201`), and the gate, mode and scale estimator all work
+over `gate_ppm`. Widening `search_ppm` to 100 while leaving `gate_ppm` at 30
+collects residuals the fit then ignores — and the badly-miscalibrated instruments
+that motivate a 100 ppm search are exactly the ones whose peak lies outside a
+30 ppm gate. **Widen both, or widening buys nothing.**
+
+**A disagreement, resolved against Codex.** Codex argued the m/z-shifted control
+band overlaps the target band at 100 ppm, on `S ≤ 2W`. That is wrong:
+`decoy_shifts` are `{7.33, −7.19}` **Th**, not ppm
+(`MassCalibration.h:365`). At 2000 Th a 100 ppm half-width is 0.20 Th, so
+`2W = 0.40 Th` against a 7.33 Th shift — the control sits **18× clear** of the
+target band and does not overlap at any width under consideration. Kimi's framing
+(the real cost is match-loop work and mis-assignment opportunity) is the correct
+one.
+
+### 12.7 The 0.1 ppm convergence tolerance is not usable
+
+It fails in **both** directions:
+
+- **Too loose** to see the win it was written for: §12.1's propagation puts
+  `f4`'s effect on total scatter at ~0.02 ppm.
+- **Not resolvable**: `SE(σ̂_MAD) ≈ 1.17 σ/√n`. At σ ≈ 4.19 ppm, MS1 has
+  ~15,000 precursors × 15% held out ≈ 2,250 residuals → **SE ≈ 0.10 ppm**, i.e.
+  the whole tolerance. MS2's nominal ~27,000 residuals give SE ≈ 0.03 ppm, but
+  fragments of one precursor share apex, mobility and interference, so with a
+  design effect of 10–12 the effective SE approaches 0.1 ppm there too.
+- And the window it feeds is noisier still: the p99 quantile at n ≈ 7,000,
+  σ ≈ 4 ppm has SE ≈ 0.2 ppm, ~0.25 ppm after the 1.3 padding. Converging σ to
+  0.1 ppm while sizing the window from a quantity with 0.25 ppm sampling noise is
+  incoherent.
+
+**Replace the criterion.** Converge on the **stability of the correction function
+evaluated on a fixed m/z grid**, with uncertainty from a **precursor-cluster
+bootstrap**, and stop when successive corrections agree within that bootstrap
+uncertainty. This also matches §1's warning that total scatter is the wrong
+statistic — the S08 correction removed 68% of systematic error while moving
+scatter 4.66 → 4.19.
+
+### 12.8 Smaller corrections
+
+- **`MassResidual` grows** to ≥20 B, 24 B aligned, once `im` is added; the
+  worked estimate is now ~4.3 MB, and 15,000 groups is not an upper bound at a
+  widened bootstrap. Use measured record counts.
+- **The MS1 model is underpowered.** ~1 residual per precursor means the §10
+  falsification test ("coefficients agree within CIs") will often fail to reject
+  a shared model even when MS1 needs its own. The separate MS1 *window* (§4.1)
+  is unaffected and still ships.
+- **No interaction terms in a co-isolated world.** Fragments of co-eluting
+  precursors share RT and IM and their intensities are not independent; an
+  additive model can attribute cross-precursor interference structure to `f3` or
+  `f4`. Another reason both terms need permutation nulls.
+
+### 12.9 What survived round 2 intact
+
+Keeping the measured log-m/z term pending a held-out comparison against
+piecewise-linear; making `f2(RT)` earn inclusion per instrument; the separate MS1
+window; using the m/z-shifted control rather than decoys as the null; and the
+confirmatory extraction as the falsification point — provided its comparison is
+broadened per §12.5.
