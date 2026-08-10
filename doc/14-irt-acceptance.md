@@ -269,3 +269,41 @@ Astral progression for the day: 4,290 -> 4,969 (m/z window) -> 5,025 (apex gate)
 fine-tuning). Against OpenSWATH 8,765 and DIA-NN 11,112: 78% of OSW.
 
 Still recall against a ~100%-true library, not FDR-controlled discovery.
+
+## 2026-08-10: external coverage, and the criterion that had it backwards
+
+The question is "does the extraction window contain the peak", for EVERY
+precursor. Anchors cannot answer it -- they are the precursors we already found.
+`test/rt_coverage.py` compares the library ODIA writes after calibration (whose
+RT column is predicted run seconds) against DIA-NN's observed RT, over all
+10,891 Astral precursors, of which we anchor about 2,500.
+
+    config          +/-15s   +/-30s   +/-60s  +/-120s    p50    p95    p99    max
+    no refinement   34.18%   60.26%   88.46%   99.38%   23.5   76.7  108.4  298.0
+    map_only        34.30%   60.61%   88.72%   99.37%   23.4   77.2  111.6  303.5
+    ridge           43.05%   71.21%   93.62%   99.38%   18.1   66.5  108.9  298.4
+
+**Three things, and two of them reverse what the anchor metric said.**
+
+1. **The ridge is the win.** +11 points of coverage at +/-30 s, +5.2 at +/-60 s,
+   p50 23.5 -> 18.1 s, p95 76.7 -> 66.5 s. On the anchors it looked useless.
+
+2. **map_only does nothing.** 60.26% -> 60.61% at +/-30 s is noise. Iterating
+   the anchors without a sequence model buys no coverage at all -- the apparent
+   gain earlier was the anchor population changing between rounds.
+
+3. **The true p99 is 108 s, not 455 s.** The anchor p99 was contamination. The
+   calibration was always far better than our own anchors implied, and every
+   window conclusion drawn from that 455 was wrong.
+
+**Why the criterion inverted the answer.** The refinement improves the BULK and
+leaves the tail. p99 is the one statistic it does not move, measured on the one
+population that is contaminated -- so accepting on it rejected the thing that
+works. Acceptance is now the p50 on the frozen set, which tracked the external
+p50 and p95 correctly in both rounds (22.3 -> 15.7, 19.5 -> 13.7) and is the
+honest runtime proxy for a number that needs truth to compute.
+
+**What this means for the window.** At +/-120 s coverage is 99.38% and the
+refinement does not change it -- the tail is set by something else. What the
+refinement buys is a NARROWER window at the same coverage: 93.62% at +/-60 s
+against 88.46%. That is the clean-features lever, and it is real.

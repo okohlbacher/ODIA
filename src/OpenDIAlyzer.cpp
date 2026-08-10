@@ -1257,7 +1257,7 @@ protected:
       // that limitation is reported separately and is not fixable from inside
       // the loop.
       std::vector<std::pair<double, double>> eval_set;
-      double best_p99 = std::numeric_limits<double>::infinity();
+      double best_p50 = std::numeric_limits<double>::infinity();
 
       for (int round = 1; round <= rounds; ++round)
       {
@@ -1419,23 +1419,39 @@ protected:
            << ", not the criterion]";
         writeLogInfo_(ro.str());
 
-        // p99, not p95 and not the SD. p95 leaves one precursor in twenty
-        // outside the window, and an SD is a property of the bulk that says
-        // nothing about the tail a window has to cover.
+        // p50, NOT p99 -- measured, and the reverse of what this said first.
+        //
+        // The anchor p99 is contamination: on the anchors it reads ~455 s, and
+        // on DIA-NN's 10,891 confident precursors the true p99 is 108 s. So a
+        // criterion built on it was reading misassignment, not calibration, and
+        // it rejected the refinement that actually works.
+        //
+        // External coverage over all 10,891 (the population that includes the
+        // ~8,600 we never anchor):
+        //
+        //   no refinement   +/-30s 60.26%   +/-60s 88.46%   p50 23.5  p95 76.7
+        //   map_only        +/-30s 60.61%   +/-60s 88.72%   p50 23.4  p95 77.2
+        //   ridge           +/-30s 71.21%   +/-60s 93.62%   p50 18.1  p95 66.5
+        //
+        // The refinement improves the BULK and leaves the tail, which is why
+        // p99 could not see it and why p50 can. The anchor p50 tracked the
+        // external p50 and p95 correctly in both rounds (22.3 -> 15.7,
+        // 19.5 -> 13.7), so it is the honest runtime proxy for a number we
+        // cannot compute without truth.
         // ACROSS rounds, on the frozen set. Within a round, `map_only` changes
         // nothing by construction and a within-round test rejects it at round 1
         // -- which is exactly what happened, and why its iteration never ran.
         // Its gain is between rounds: better anchors, better map.
-        if (!(q_after[2] < best_p99))
+        if (!(q_after[0] < best_p50))
         {
           library.precursors().irt = original_irt;
           if (!refined_irt_.empty()) { library.precursors().irt = refined_irt_; }
           writeLogInfo_("rt refine: round " + std::to_string(round) +
-                        " did not narrow the window needed for 99% coverage on the frozen "
-                        "evaluation set; keeping the previous axis");
+                        " did not narrow the median residual on the frozen evaluation "
+                        "set; keeping the previous axis");
           break;
         }
-        best_p99 = q_after[2];
+        best_p50 = q_after[0];
         best_ids = pass1.identified_at_1pct;
         refined_irt_ = refined;
         trafo = map_ref;
