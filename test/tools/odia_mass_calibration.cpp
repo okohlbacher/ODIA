@@ -156,19 +156,34 @@ namespace
                   n ? sum / static_cast<double>(n) : 0.0);
     }
 
-    // ---- 1b. the same peak, too dilute to trust ---------------------------
-    // 3,000 true against 15,000 uniform: 17% purity, peakedness ~2. The offset
-    // is still there and the mode would still find it, which is the point --
-    // the gate refuses on the strength of the evidence, not on whether an
-    // answer can be computed.
+    // ---- 1b. the same peak, dilute -- and RECOVERED -----------------------
+    // 3,000 true against 15,000 uniform: 17% purity, peakedness ~2.6, i.e.
+    // below the old shape gate's threshold of 3.
+    //
+    // This case used to assert `!fitted`, on the reasoning that the gate should
+    // refuse "on the strength of the evidence, not on whether an answer can be
+    // computed". That was the wrong test and this fixture is the proof: the
+    // answer computed here is -10.69 ppm against a planted -10.5, accurate to
+    // 0.19 ppm, and the old gate threw it away.
+    //
+    // Shape was only ever a proxy for "are these real fragments". The residual
+    // of the CENTRED distribution answers it directly, and here it says 0.26
+    // ppm -- a good fit, from a dilute sample. Purity is not the question;
+    // whether the correction leaves systematic error behind is.
     {
       std::mt19937 rng(20260809);
       const auto r = synthesise(rng, 3000, 15000, -10.5, 0.0, 2.0, opt.search_ppm);
       const auto m = ODIA::MassCalibration::fit(r, opt);
       std::printf("1b. the same offset at 17%% purity\n%s",
                   ODIA::MassCalibration::report(m, nullptr).c_str());
-      check(!m.fitted, "the gate refuses a peak too dilute to be evidence");
-      check(m.ppmAt(700.0) == 0.0, "and applies nothing");
+      check(m.fitted, "a dilute but recoverable peak is ACCEPTED, not refused for being dilute");
+      check(m.peakedness < 3.0,
+            "and it would have failed the old shape gate (peakedness below 3)");
+      check(std::abs(m.ppmAt(700.0) - (-10.5)) < 0.6,
+            "the offset it recovers from 17% purity is right (got " +
+              std::to_string(m.ppmAt(700.0)) + ")");
+      check(m.centred_after_ppm < 1.0,
+            "which is why it passes: the centred residual left behind is small");
     }
 
     // ---- 2. a purely uniform sample must be refused ------------------------

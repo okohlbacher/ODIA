@@ -274,7 +274,33 @@ namespace ODIA
       /// at the edge of the search window by this factor. Uniform (all-noise)
       /// residuals give ~1. Ported unchanged from the reference, including the
       /// threshold, because the threshold is what caught the 72.6 ppm fit.
+      /// Kept because the number is still worth reporting, but it no longer
+      /// gates anything -- see the note in `fit`. Shape was a proxy for "are
+      /// these real fragments"; `accept_ratio` tests that directly.
       double min_peakedness = 3.0;
+
+      /// ACCEPTANCE: how much systematic error the correction LEAVES, ppm.
+      ///
+      /// The weighted RMS of the per-m/z-bin modes about ZERO, after the model
+      /// is applied. This replaces the peakedness gates, and it is the absolute
+      /// residual rather than a ratio for a reason that was measured: a RATIO
+      /// accepts pure noise. Re-centring any blob moves its bin modes toward
+      /// zero, so a uniform sample "improved" 21.11 -> 8.83 ppm (ratio 0.42)
+      /// and would have had a 29.83 ppm constant applied to it.
+      ///
+      /// What separates a real calibration from noise is not that the residual
+      /// fell but that what remains is small:
+      ///
+      ///     synthetic, model recoverable   0.03 - 0.26 ppm
+      ///     S08 (real)                     0.18 ppm
+      ///     Astral (real)                  0.21 ppm
+      ///     pure uniform noise             8.83 ppm
+      ///
+      /// A factor of 34 between the worst real case and the noise case, so the
+      /// bar is not finely tuned. It is a bin-MODE residual, whose precision is
+      /// sigma/sqrt(n) per bin, so it reflects model misfit rather than
+      /// per-fragment scatter and does not need to scale with the instrument.
+      double accept_after_ppm = 1.0;
 
       /// Minimum control residuals before the "control is as peaked as the
       /// data" rule may fire at all.
@@ -467,6 +493,12 @@ namespace ODIA
       /// constant, and about the chosen shape. In ppm of systematic error.
       double systematic_before = 0.0;
       double systematic_after = 0.0;
+      /// The acceptance quantities: weighted RMS of the per-m/z-bin modes about
+      /// ZERO, before and after the model. Distinct from `systematic_*`, which
+      /// are taken about a refitted constant and therefore cannot see a residual
+      /// offset -- the very thing a window mis-centres on.
+      double centred_before_ppm = 0.0;
+      double centred_after_ppm = 0.0;
       /// The losing basis's systematic residual, so the basis choice is visible.
       double systematic_log = 0.0;
       double systematic_linear = 0.0;

@@ -362,20 +362,30 @@ namespace ODIA
     // implying the null was consulted and agreed.
     std::string thin_control;
 
-    // A flat residual distribution is not a calibration waiting to be found; it
-    // is the absence of one, and applying a mode fitted to it is strictly worse
-    // than doing nothing.
-    if (m.peakedness < opt.min_peakedness)
-    {
-      char buf[256];
-      std::snprintf(buf, sizeof buf,
-                    "residuals are FLAT (peakedness %.2f < %.2f over %zu residuals) -- "
-                    "that is what a mostly-noise sample looks like; a mode and a width can "
-                    "still be computed from it and would be meaningless",
-                    m.peakedness, opt.min_peakedness, target.size());
-      m.reason = buf;
-      return m;
-    }
+    // PEAKEDNESS IS COMPUTED AND REPORTED, AND DECIDES NOTHING.
+    //
+    // It used to gate the fit, both absolutely (peakedness >= 3) and against the
+    // m/z-shifted control. Both are shape tests, and shape is a PROXY for the
+    // question that matters -- "are these real fragments?" -- when the residual
+    // of the centred distribution answers it directly. See `acceptCorrection`.
+    //
+    // The proxy was measurably wrong. On Astral the control produced 98
+    // residuals against 4,033 target, so its ratio came out 12.00 from an edge
+    // count of one to three: 12.00 +/- 7 to +/-12, against a target statistic of
+    // 6.90 +/- 0.74. Two intervals that overlap everything, and the coin landed
+    // wrong way up, so the run extracted uncalibrated at 50 ppm.
+    //
+    // The same probe collected the decisive number and discarded it. Match RATE:
+    // 4,033 residuals from 3,000 target cells against 98 from 5,769 control
+    // cells -- 1.344 vs 0.0170 per cell, a 79x enrichment. Under the null that
+    // target matches are as random as control matches, 3,000 cells should have
+    // yielded 51 residuals, not 4,033: a 558-sigma excess. Astral's evidence
+    // that its matches are real is NINE TIMES STRONGER than S08's 9.1x, and
+    // Astral is the run that failed.
+    //
+    // So the counts are kept as diagnostics and the decision is made on what the
+    // correction actually achieves.
+
     if (!(m.sigma_before > 0.0) || !std::isfinite(m.sigma_before) || !std::isfinite(mode0))
     {
       m.reason = "degenerate scale";
@@ -403,13 +413,15 @@ namespace ODIA
     }
     else if (!decoy.empty() && m.decoy_peakedness >= m.peakedness)
     {
+      // Recorded, not enforced. See the note above: this comparison is a shape
+      // test computed from an edge-band count that is routinely 1-3.
       char buf[256];
       std::snprintf(buf, sizeof buf,
-                    "the m/z-shifted control is as peaked as the data (%.2f vs %.2f) -- "
-                    "whatever structure is there is not the fragments",
+                    "; NOTE the m/z-shifted control is nominally as peaked as the data "
+                    "(%.2f vs %.2f), which is reported because it used to fail the run and "
+                    "is too noisy to decide anything",
                     m.decoy_peakedness, m.peakedness);
-      m.reason = buf;
-      return m;
+      thin_control += buf;
     }
 
     // ---- shape: is the error a function of m/z? ---------------------------
@@ -677,6 +689,44 @@ namespace ODIA
       }
     }
 
+    // ACCEPTANCE, on the residual of the centred distribution.
+    //
+    // Everything above fitted a model; this decides whether to believe it. The
+    // test is what the correction ACHIEVES: the weighted RMS of the per-m/z-bin
+    // modes about ZERO, before and after. About zero, not about a refitted
+    // constant -- a remaining uniform offset is real systematic error and is
+    // exactly what a window mis-centres on.
+    //
+    // A model fitted to noise cannot pass: noise has no systematic error to
+    // remove, so the ratio sits near 1 whatever shape is fitted to it. That is
+    // the property the peakedness gate was reaching for, tested directly.
+    {
+      const double before = systematicResidualPpm(residuals, [](double) { return 0.0; });
+      const double after  = systematicResidualPpm(residuals,
+                              [&](double mz) { return m.ppmAt(mz); });
+      m.centred_before_ppm = before;
+      m.centred_after_ppm  = after;
+      const bool measurable = std::isfinite(before) && std::isfinite(after);
+      if (!measurable || after > opt.accept_after_ppm)
+      {
+        char buf[320];
+        std::snprintf(buf, sizeof buf,
+                      "the correction leaves too much systematic error "
+                      "(centred residual %.3f -> %.3f ppm; needs <= %.2f ppm). A ratio "
+                      "would have passed this: re-centring any distribution moves its bin "
+                      "modes toward zero, including a uniform one",
+                      before, after, opt.accept_after_ppm);
+        m.reason = buf;
+        m.fitted = false;
+        m.window_ppm = -1.0;
+        return m;
+      }
+      char buf[220];
+      std::snprintf(buf, sizeof buf,
+                    " The centred residual falls %.3f -> %.3f ppm.", before, after);
+      m.reason += buf;
+    }
+
     if (!(m.sigma_after > 0.0) || !std::isfinite(m.sigma_after))
     {
       m.window_ppm = -1.0;
@@ -684,7 +734,21 @@ namespace ODIA
       return m;
     }
 
+    // Width from the run's own ROBUST sigma of the CORRECTED residual.
+    //
+    // `sigma_after` is `backgroundCorrectedScale`, which subtracts the flat
+    // pedestal a wide search always collects before estimating the scale, so it
+    // describes the core rather than the mixture. On Astral it comes out near
+    // 2.0 ppm against a plain SD of 10.7 -- and the plain SD is the number the
+    // pedestal owns, which is why it is not used.
+    //
+    // A deconvolved-COVERAGE width was tried here and removed. It assumed the
+    // pedestal is flat across the entire search, attributed the whole 10-30 ppm
+    // shoulder to real fragments on that assumption, and arrived at ~30 ppm.
+    // The assumption is not measured, and a window is too expensive a thing to
+    // hang on an unmeasured one.
     m.window_ppm = std::max(opt.sigma_multiple * m.sigma_after, opt.floor_ppm);
+
     // An estimate can never legitimately exceed the width it searched -- that is
     // a fit to the edge of the search window, i.e. noise. This rail is the
     // reference's, and it is there because an ungated fit once returned 72.6 ppm
