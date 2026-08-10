@@ -573,6 +573,21 @@ protected:
                           "because a refinement nobody enables is a refinement nobody gets.",
                           false, true);
     setValidStrings_("rt_refine", {"auto", "off"});
+    registerOutputFile_("rt_refine_model_out", "<file>", "",
+                        "Write the fitted retention-time refinement so it can be reused on OTHER "
+                        "runs, skipping the per-run fit. The file records what it was fitted on. "
+                        "\n\nThe hazard is specific and this project has already paid it: library "
+                        "v5 was built with a model tuned on a different run and cost 2,027 "
+                        "confident precursors. A SERIES sharing gradient, instrument and method is "
+                        "the case this is for; crossing any of the three is the case it is not.",
+                        false, true);
+    setValidFormats_("rt_refine_model_out", {"txt"}, false);
+    registerInputFile_("rt_refine_model_in", "<file>", "",
+                       "Apply a retention-time refinement written by -rt_refine_model_out instead "
+                       "of fitting one from this run. Skips the fit entirely, so it works on runs "
+                       "with too few identifications to fit their own -- which is the point.",
+                       false, true);
+    setValidFormats_("rt_refine_model_in", {"txt"}, false);
     registerFlag_("repredict_irt",
                   "Re-predict the SUPPLIED library's iRT with -rt_model, instead of using the "
                   "values the library file carries. "
@@ -1220,12 +1235,49 @@ protected:
         obs.push_back(apex);
       }
       ODIA::RtRefiner refiner;
-      const auto rep = refiner.fit(seqs, chg, cal, obs);
+      const std::string model_in = getStringOption_("rt_refine_model_in");
+      ODIA::RtRefiner::Report rep;
+      if (!model_in.empty())
+      {
+        std::string prov;
+        if (refiner.load(model_in, &prov))
+        {
+          rep.fitted = true;
+          writeLogWarn_("retention-time refinement LOADED from " + model_in +
+                        " and NOT fitted on this run" + (prov.empty() ? "" : " [" + prov + "]") +
+                        ". Correct only if this run shares the gradient, instrument and method "
+                        "it was fitted on; nothing here can check that.");
+        }
+        else
+        {
+          writeLogError_("-rt_refine_model_in " + model_in +
+                         " could not be read as a refinement model; refusing to guess.");
+          return INTERNAL_ERROR;
+        }
+      }
+      else
+      {
+        rep = refiner.fit(seqs, chg, cal, obs);
+      }
       std::ostringstream os;
       os.setf(std::ios::fixed);
       os.precision(2);
       if (rep.fitted)
       {
+        const std::string model_out = getStringOption_("rt_refine_model_out");
+        if (!model_out.empty() && model_in.empty())
+        {
+          std::ostringstream prov;
+          prov.setf(std::ios::fixed);
+          prov.precision(2);
+          prov << "fitted on " << run << ": " << rep.train << " anchors, held-out SD "
+               << rep.sd_before << " -> " << rep.sd_after << " s on " << rep.held_out
+               << " sequences";
+          if (refiner.save(model_out, prov.str()))
+          { writeLogInfo_("wrote the retention-time refinement to " + model_out); }
+          else
+          { writeLogWarn_("could not write " + model_out); }
+        }
         const std::size_t n = refiner.apply(library);
         os << "retention-time refinement: fitted on " << rep.train
            << " anchors, held-out SD " << rep.sd_before << " s -> " << rep.sd_after
@@ -2146,6 +2198,22 @@ protected:
 
     if (!out_lib.empty())
     {
+      // SAY WHAT THE RT COLUMN MEANS. After a search, `irt` no longer holds the
+      // library's normalised retention time: the map rewrote it to RUN SECONDS
+      // for this run, and the refiner may have rewritten it again. A DIA-NN TSV's
+      // RT column is normally an iRT, so exporting this without saying so hands
+      // out a file that looks transferable and is not.
+      //
+      // It is exactly what you want for a SERIES on one gradient -- the times
+      // are already where the peptides elute -- and exactly wrong anywhere else.
+      if (rt_map_fitted_)
+      {
+        writeLogWarn_(
+          "-out_lib is being written AFTER the retention-time map was fitted, so its RT "
+          "column holds RUN SECONDS for " + in_run + " -- not a normalised iRT. That is "
+          "what makes it useful for other runs on the SAME gradient and wrong for any "
+          "other. Run without -in to export the library's own retention times.");
+      }
       // Timed and reported. It was neither, and it is 26% of Phase 1 -- 211.7 s
       // of 821.1 s on the human library -- so the stage table had to obtain it
       // by subtracting the generator's own `load time` from the total wall.

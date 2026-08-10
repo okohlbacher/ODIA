@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <fstream>
 #include <sstream>
 #include <string_view>
 
@@ -45,6 +46,12 @@ namespace ODIA
       v[N_AA + 1] = static_cast<double>(charge);
       v[N_AA + 2] = irt;
       v[N_AA + 3] = 1.0;
+    }
+
+    double clampCorrection(double c, double limit)
+    {
+      if (!std::isfinite(c)) { return 0.0; }
+      return std::clamp(c, -limit, limit);
     }
 
     double sd(const std::vector<double>& r)
@@ -129,6 +136,7 @@ namespace ODIA
       return static_cast<unsigned>(h % 1000ULL);
     };
     const unsigned cut = static_cast<unsigned>(options.holdout * 1000.0);
+    const double med_abs_limit = options.trim_mads;
 
     std::vector<double> X(n * N_FEAT);
     for (std::size_t i = 0; i < n; ++i)
@@ -136,9 +144,26 @@ namespace ODIA
       features(stripped[i], charges[i], calibrated_irt[i], &X[i * N_FEAT]);
     }
 
+    // TRIM before fitting. Pass 1's anchors are peak groups accepted at
+    // -anchor_q, and their residual tail reaches 1,600 s -- misidentifications,
+    // not chromatography. A squared-loss fit chases them, which is how a model
+    // that improved the held-out SD by 2% still destroyed the search.
+    std::vector<double> resid(n);
+    for (std::size_t i = 0; i < n; ++i) { resid[i] = observed_rt[i] - calibrated_irt[i]; }
+    std::vector<double> sorted = resid;
+    std::sort(sorted.begin(), sorted.end());
+    const double med = sorted[n / 2];
+    std::vector<double> ad(n);
+    for (std::size_t i = 0; i < n; ++i) { ad[i] = std::fabs(resid[i] - med); }
+    std::sort(ad.begin(), ad.end());
+    const double mad = 1.4826 * ad[n / 2];
+    const double keep = med_abs_limit * std::max(mad, 1.0);
+
     std::vector<std::size_t> train, test;
+    std::size_t trimmed = 0;
     for (std::size_t i = 0; i < n; ++i)
     {
+      if (std::fabs(resid[i] - med) > keep) { ++trimmed; continue; }
       (bucket(stripped[i]) < cut ? test : train).push_back(i);
     }
     if (train.size() < options.min_anchors || test.size() < 30)
@@ -146,6 +171,7 @@ namespace ODIA
       rep.note = "split left too few rows on one side";
       return rep;
     }
+    rep.trimmed = trimmed;
     rep.train = train.size();
     rep.held_out = test.size();
 
@@ -178,7 +204,15 @@ namespace ODIA
       for (std::size_t f = 0; f < N_FEAT; ++f) { z[f] = (X[i * N_FEAT + f] - mu[f]) / sg[f]; }
       for (std::size_t r = 0; r < N_FEAT; ++r)
       {
-        b[r] += z[r] * observed_rt[i];
+        // THE RESIDUAL, not the absolute retention time.
+        //
+        // Fitting observed_rt directly makes this an unbounded linear
+        // extrapolator: a precursor whose calibrated iRT falls outside the
+        // training range gets a prediction with nothing holding it near the
+        // gradient, and pass 2 then extracts from a time the peptide cannot be
+        // at. The monotone map it replaced was bounded by interpolation.
+        // Measured: S08 went from 1,464 identifications to ZERO.
+        b[r] += z[r] * (observed_rt[i] - calibrated_irt[i]);
         for (std::size_t c = 0; c < N_FEAT; ++c) { A[r * N_FEAT + c] += z[r] * z[c]; }
       }
     }
@@ -195,8 +229,9 @@ namespace ODIA
       double z[N_FEAT], pred = 0.0;
       for (std::size_t f = 0; f < N_FEAT; ++f) { z[f] = (X[i * N_FEAT + f] - mu[f]) / sg[f]; }
       for (std::size_t f = 0; f < N_FEAT; ++f) { pred += w[f] * z[f]; }
+      pred = clampCorrection(pred, options.max_shift);
       before.push_back(observed_rt[i] - calibrated_irt[i]);
-      after.push_back(observed_rt[i] - pred);
+      after.push_back(observed_rt[i] - (calibrated_irt[i] + pred));
     }
     rep.sd_before = sd(before);
     rep.sd_after = sd(after);
@@ -223,6 +258,7 @@ namespace ODIA
       bias -= w[f] * mu[f] / sg[f];
     }
     weights_[N_FEAT] = bias;
+    max_shift_ = options.max_shift;
     fitted_ = true;
     rep.fitted = true;
     return rep;
@@ -236,6 +272,58 @@ namespace ODIA
     return fit(sequences, charges, calibrated_irt, observed_rt, Options{});
   }
 
+  bool RtRefiner::save(const std::string& path, const std::string& provenance) const
+  {
+    if (!fitted_) { return false; }
+    std::ofstream os(path);
+    if (!os) { return false; }
+    os << "# ODIA retention-time refinement model\n"
+       << "# WARNING: fitted on ONE run's chromatography. Applying it to a run on a\n"
+       << "# different gradient, instrument or method is the failure that cost 2,027\n"
+       << "# precursors when it last happened. A series sharing all three is the case\n"
+       << "# this exists for.\n"
+       << "# " << provenance << "\n"
+       << "features\t" << (N_FEAT + 1) << "\n";
+    os.precision(17);
+    for (const double w : weights_) { os << w << "\n"; }
+    return static_cast<bool>(os);
+  }
+
+  bool RtRefiner::load(const std::string& path, std::string* provenance_out)
+  {
+    std::ifstream is(path);
+    if (!is) { return false; }
+    std::string line, prov;
+    std::size_t n = 0;
+    while (std::getline(is, line))
+    {
+      if (!line.empty() && line[0] == '#')
+      {
+        if (line.rfind("# fitted", 0) == 0 || line.find("anchors") != std::string::npos)
+        { prov += (prov.empty() ? "" : " ") + line.substr(2); }
+        continue;
+      }
+      if (line.rfind("features", 0) == 0)
+      {
+        std::istringstream ls(line.substr(8));
+        ls >> n;
+        continue;
+      }
+      if (line.empty()) { continue; }
+      weights_.push_back(std::stod(line));
+    }
+    // The weight count is the contract. A file written by a different feature
+    // set would otherwise be read as a valid model and silently predict noise.
+    if (n != N_FEAT + 1 || weights_.size() != N_FEAT + 1)
+    {
+      weights_.clear();
+      return false;
+    }
+    if (provenance_out) { *provenance_out = prov; }
+    fitted_ = true;
+    return true;
+  }
+
   std::size_t RtRefiner::apply(Library& library) const
   {
     if (!fitted_) { return 0; }
@@ -247,9 +335,12 @@ namespace ODIA
       const std::string seq = stripMods(library.strings().get(p.modified_sequence[i]));
       double v[N_FEAT];
       features(seq, static_cast<int>(p.charge[i]), static_cast<double>(p.irt[i]), v);
-      double pred = weights_[N_FEAT];
-      for (std::size_t f = 0; f < N_FEAT; ++f) { pred += weights_[f] * v[f]; }
-      p.irt[i] = static_cast<float>(pred);
+      double corr = weights_[N_FEAT];
+      for (std::size_t f = 0; f < N_FEAT; ++f) { corr += weights_[f] * v[f]; }
+      // CLAMPED. The model may not move a precursor further than a real
+      // chromatographic shift, however confident its extrapolation is.
+      corr = clampCorrection(corr, max_shift_);
+      p.irt[i] = static_cast<float>(static_cast<double>(p.irt[i]) + corr);
       ++changed;
     }
     return changed;

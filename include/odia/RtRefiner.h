@@ -63,6 +63,18 @@ namespace ODIA
       /// Anchors below which no refinement is attempted. A model fitted on a
       /// handful of peptides will predict their neighbours and nothing else.
       std::size_t min_anchors = 250;
+
+      /// Anchors further than this many robust sigmas from the median residual
+      /// are dropped before fitting. Pass 1's anchors reach 1,600 s of residual
+      /// -- misidentifications, not chromatography -- and a squared loss chases
+      /// them.
+      double trim_mads = 4.0;
+
+      /// Hard bound on the correction, seconds. A linear model over composition
+      /// extrapolates without limit outside its training range, and an
+      /// unbounded correction put pass 2's windows off the gradient entirely:
+      /// S08 went 1,464 identifications -> 0 before this existed.
+      double max_shift = 120.0;
     };
 
     struct Report
@@ -71,6 +83,7 @@ namespace ODIA
       std::size_t anchors = 0;      ///< rows used
       std::size_t train = 0;
       std::size_t held_out = 0;
+      std::size_t trimmed = 0;    ///< anchors dropped as outliers before fitting
       double sd_before = 0.0;       ///< held-out SD of (observed - calibrated iRT), seconds
       double sd_after = 0.0;        ///< held-out SD after refinement, seconds
       std::string note;
@@ -105,9 +118,32 @@ namespace ODIA
 
     bool fitted() const { return fitted_; }
 
+    /// Write the fitted model so it can be applied to OTHER runs.
+    ///
+    /// READ THE HAZARD FIRST. This model learns THIS run's chromatography. The
+    /// project has already paid for reusing one across runs: library v5 was
+    /// generated with a model tuned on a different run and cost 2,027 confident
+    /// precursors against v4's stock model. The sidecar carried a warning and
+    /// the generation script passed it anyway.
+    ///
+    /// It is still worth having, because a SERIES of runs on one gradient,
+    /// instrument and method is the case this is actually for: fine-tune once
+    /// on a representative run, apply to the rest, skip the per-run fit. What
+    /// must not happen is a model crossing a gradient or an instrument.
+    ///
+    /// So the file records what it was fitted on -- run, anchor count, held-out
+    /// SD before and after -- and `load` refuses nothing but says all of it
+    /// loudly. A machine cannot tell whether two gradients are the same; the
+    /// person running it can.
+    bool save(const std::string& path, const std::string& provenance) const;
+
+    /// Load a model written by `save`. Returns false if the file is unusable.
+    bool load(const std::string& path, std::string* provenance_out = nullptr);
+
   private:
     bool fitted_ = false;
     std::vector<double> weights_;   ///< in the feature order of `features()`
+    double max_shift_ = 120.0;
   };
 
 } // namespace ODIA
