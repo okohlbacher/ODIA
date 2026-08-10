@@ -189,11 +189,15 @@ def main():
                          "point of a curve is to see where it stops improving and "
                          "whether it turns back up; a single end-point number "
                          "cannot show either.")
-    ap.add_argument("--converge-tol", type=float, default=0.05, metavar="MINUTES",
+    ap.add_argument("--converge-tol", type=float, default=0.1/60.0, metavar="MINUTES",
                     help="Early-stop when a --curve checkpoint improves the held-out "
                          "residual by less than this. A DELTA criterion: 'is the residual "
                          "below X' needs an X that differs per gradient and instrument, "
-                         "'has it stopped moving' does not. Default 0.05 min = 3 s.")
+                         "'has it stopped moving' does not. Default 0.1 s. On the measured "
+                         "Astral curve the per-25-epoch deltas past epoch 125 are 0.26, 0.11, "
+                         "0.12, 0.11 and 0.008 s, so 0.1 s lands the stop between 200 and 250 "
+                         "-- the flat region the held-out coverage identifies, without paying "
+                         "for the 250 epochs beyond it that bought 0.65 coverage points.")
     ap.add_argument("--converge-rel", type=float, default=0.001,
                     help="Early-stop when the improvement is below this FRACTION of the "
                          "current residual. Whichever of the two triggers first wins. "

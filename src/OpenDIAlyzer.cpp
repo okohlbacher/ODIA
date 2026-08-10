@@ -592,7 +592,7 @@ protected:
                           "the p99 that sets the window.",
                           false, true);
     setValidStrings_("rt_refine", {"auto", "map_only", "off"});
-    registerDoubleOption_("rt_converge_tol", "<seconds>", 0.5,
+    registerDoubleOption_("rt_converge_tol", "<seconds>", 0.1,
                           "Stop refining when a round improves the median |residual| by less "
                           "than this. "
                           "\n\nA DELTA criterion, not an absolute one, and that is the point: "
@@ -600,9 +600,11 @@ protected:
                           "should be, and X differs by gradient, instrument and library -- the "
                           "same mistake as a fixed m/z window. 'Has it stopped moving' needs no "
                           "such constant and is what convergence actually means. "
-                          "\n\n0.5 s against a median that starts near 23 s: two orders of "
-                          "magnitude below the signal, so the loop stops when the model has "
-                          "nothing left to add rather than when it hits a number somebody chose.",
+                          "\n\n0.1 s against a median that starts near 23 s: more than two "
+                          "orders of magnitude below the signal, so the loop stops when the model "
+                          "has nothing left to add rather than when it hits a number somebody "
+                          "chose. Lowered from 0.5 s, which stopped the equivalent epoch curve at "
+                          "125 -- about two points of +/-30 s coverage too early.",
                           false, true);
     registerDoubleOption_("rt_converge_rel", "<fraction>", 0.01,
                           "Stop refining when a round improves the median |residual| by less than "

@@ -377,3 +377,65 @@ while `ModelManager(device='gpu')` silently fell back.
   interop. torch's default is a heuristic that is frequently ONE thread inside a
   container, which is the difference between minutes and an hour for a 500-epoch
   fit. `ODIA_RT_THREADS` overrides.
+
+---
+
+# FROZEN: retention-time recalibration and fine-tuning (2026-08-10)
+
+**Do not change any of this without a measured reason and a re-run of both
+files.** The objective is RETENTION-TIME PREDICTION CONVERGENCE. Identification
+counts are printed beside it and are explicitly not the criterion -- they
+oscillate (629 -> 928 -> 799 in one arm) and optimising them selects for
+whichever axis happens to flatter today's scoring.
+
+## What is frozen
+
+| piece | where | default |
+|---|---|---|
+| monotone map, binned medians + PAVA | `src/calibrate/RtCalibration.cpp` | on |
+| akima interpolation between knots | `-rt_interpolation` | `akima` |
+| explicit monotone inverse by bisection | `Calibration::invertAt` | — |
+| per-run refinement in iRT space | `src/calibrate/RtRefiner.cpp` | `-rt_refine auto` |
+| iterative rounds, anchors re-derived each | `-rt_refine_rounds` | 10 (cap) |
+| delta convergence, round loop | `-rt_converge_tol` / `-rt_converge_rel` | 0.1 s / 1% |
+| delta convergence, epoch loop | `--converge-tol` / `--converge-rel` | 0.1 s / 0.1% |
+| model reuse across a series | `-rt_refine_model_out` / `_in` | off |
+| peptdeep path | `-repredict_irt -rt_model` | off |
+
+## The measured state, external (DIA-NN's confident set, not our anchors)
+
+    config              +/-15s   +/-30s   +/-60s  +/-120s    p50    p95
+    library iRT         34.58%   60.75%   88.89%   99.33%   23.4   77.6
+    in-process ridge    43.05%   71.21%   93.62%   99.38%   18.1   66.5
+    peptdeep ep200      70.29%   88.24%   97.27%   99.83%    7.8   45.3
+
+Held out by stripped sequence, 4,164 peptides no model saw: ep40 76.01%,
+ep100 79.30%, ep200 81.15%, ep500 81.80% at +/-30 s. So it plateaus near 200 and
+the gain past that is memorisation.
+
+## The four ways this was measured wrong, in order
+
+Recorded because each looked correct at the time and each pointed the wrong way.
+
+1. **SD of the residual.** Dominated by anchor contamination (max |e| ~1,600 s),
+   so it measured the FDR, not the calibration.
+2. **p95.** Same problem one quantile out; a window at p95 leaves one precursor
+   in twenty outside it.
+3. **p99.** Reads ~455 s on anchors against a TRUE 108 s on DIA-NN's set. A
+   criterion built on it rejected the refinement that actually works.
+4. **A growing evaluation population.** Anchors go 1,183 -> 1,408 between
+   rounds, which produced a reported 3.3x narrowing that was entirely a change
+   of denominator.
+
+**The rule this leaves:** any statistic computed over our own anchors describes
+the precursors we already find. The population at risk is the one we do not, and
+only an external reference can see it. `test/rt_coverage.py` is that reference.
+
+## Tests
+
+`test/tools/odia_rt_refiner.cpp`, one case per failure this code has actually
+had: the unbounded correction that took S08 from 1,464 identifications to zero,
+the 400 s contaminated anchors a squared loss chases, a model file whose weight
+count did not match being read as valid, provenance silently dropped on load,
+the clamp not travelling with the weights, and stale state surviving a refused
+fit.

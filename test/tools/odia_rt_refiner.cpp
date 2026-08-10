@@ -189,6 +189,58 @@ int main()
           "would predict noise with full confidence");
   }
 
+  // The clamp must SURVIVE the round trip. Version 1 wrote only weights, so a
+  // model fitted with a small clamp was applied after loading with the member
+  // default -- defeating the protection added after the 1,464 -> 0 incident.
+  {
+    auto r = plant(4000, 0.0, 17u);
+    // Compress the axis so the fitted clamp is far from any default.
+    for (auto& v : r.lib) { v *= 0.1; }
+    for (auto& v : r.target) { v *= 0.1; }
+    ODIA::RtRefiner a;
+    const auto rep = a.fit(r.seq, r.charge, r.lib, r.target);
+    check(rep.fitted, "fits on a compressed axis");
+    const std::string path = "/tmp/odia_rtref_clamp.txt";
+    check(a.save(path, "clamp test"), "saves with the clamp");
+
+    ODIA::RtRefiner b;
+    check(b.load(path), "loads");
+
+    const auto build = []() {
+      ODIA::Library lib;
+      auto& p = lib.precursors();
+      p.modified_sequence.push_back(lib.strings().intern("WWWWWWWWWWWWWWWWWWWW"));
+      p.charge.push_back(2); p.irt.push_back(5.0f);
+      p.transition_begin.push_back(0); p.transition_count.push_back(0);
+      p.decoy.push_back(0); p.mz.push_back(500.0); p.im.push_back(0.0f);
+      p.protein_group.push_back(lib.strings().intern("P"));
+      return lib;
+    };
+    ODIA::Library la = build(), lb = build();
+    a.apply(la); b.apply(lb);
+    check(std::fabs(static_cast<double>(la.precursors().irt[0]) -
+                    static_cast<double>(lb.precursors().irt[0])) < 1e-3,
+          "a loaded model applies the SAME correction as the fitted one -- if the "
+          "clamp did not travel, this diverges by up to the default bound");
+  }
+
+  // A stale model must not survive a failed fit or a failed load.
+  {
+    const auto good = plant(4000, 0.0, 18u);
+    ODIA::RtRefiner ref;
+    check(ref.fit(good.seq, good.charge, good.lib, good.target).fitted, "fits once");
+    check(ref.fitted(), "is fitted");
+    const auto tiny = plant(100, 0.0, 19u);
+    ref.fit(tiny.seq, tiny.charge, tiny.lib, tiny.target);
+    check(!ref.fitted(),
+          "a REFUSED refit clears the previous model rather than leaving it live");
+
+    ODIA::RtRefiner ref2;
+    check(ref2.fit(good.seq, good.charge, good.lib, good.target).fitted, "fits again");
+    check(!ref2.load("/tmp/does_not_exist_odia.txt"), "a missing file fails to load");
+    check(!ref2.fitted(), "and clears the model rather than keeping the old one");
+  }
+
   std::printf("%s\n", failures ? "FAILED" : "all good");
   return failures ? 1 : 0;
 }

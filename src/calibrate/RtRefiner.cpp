@@ -106,6 +106,13 @@ namespace ODIA
                                    const std::vector<double>& observed_rt,
                                    const Options& options)
   {
+    // Same reason as load(): every early return below leaves the object as it
+    // was, so a failed refit after a successful one would keep applying the old
+    // model while reporting that it was not fitted.
+    fitted_ = false;
+    weights_.clear();
+    max_shift_ = 0.0;
+
     Report rep;
     const std::size_t n = sequences.size();
     if (n != charges.size() || n != calibrated_irt.size() || n != observed_rt.size())
@@ -287,6 +294,13 @@ namespace ODIA
        << "# precursors when it last happened. A series sharing all three is the case\n"
        << "# this exists for.\n"
        << "# provenance: " << provenance << "\n"
+       << "version\t2\n"
+       // THE CLAMP TRAVELS WITH THE WEIGHTS. Version 1 wrote only the weights,
+       // so a model fitted with a 10-unit clamp was applied after loading with
+       // the member default of 120 -- which on a normalised iRT axis is nearly
+       // the whole gradient, and defeats the exact protection added after a
+       // 1,464 -> 0 incident. A file without it is refused rather than guessed.
+       << "max_shift\t" << max_shift_ << "\n"
        << "features\t" << (N_FEAT + 1) << "\n";
     os.precision(17);
     for (const double w : weights_) { os << w << "\n"; }
@@ -295,10 +309,19 @@ namespace ODIA
 
   bool RtRefiner::load(const std::string& path, std::string* provenance_out)
   {
+    // RESET FIRST. Neither this nor fit() cleared its own state, so a failed
+    // load after a successful fit left the object `fitted_` with the old
+    // weights, and two loads appended one file's weights to the other's.
+    fitted_ = false;
+    weights_.clear();
+    max_shift_ = 0.0;
+
     std::ifstream is(path);
     if (!is) { return false; }
     std::string line, prov;
     std::size_t n = 0;
+    int version = 0;
+    double shift = 0.0;
     while (std::getline(is, line))
     {
       if (!line.empty() && line[0] == '#')
@@ -313,21 +336,24 @@ namespace ODIA
         continue;
       }
       if (line.rfind("features", 0) == 0)
-      {
-        std::istringstream ls(line.substr(8));
-        ls >> n;
-        continue;
-      }
+      { std::istringstream(line.substr(8)) >> n; continue; }
+      if (line.rfind("version", 0) == 0)
+      { std::istringstream(line.substr(7)) >> version; continue; }
+      if (line.rfind("max_shift", 0) == 0)
+      { std::istringstream(line.substr(9)) >> shift; continue; }
       if (line.empty()) { continue; }
       weights_.push_back(std::stod(line));
     }
     // The weight count is the contract. A file written by a different feature
     // set would otherwise be read as a valid model and silently predict noise.
-    if (n != N_FEAT + 1 || weights_.size() != N_FEAT + 1)
+    // A version-1 file carries no clamp, and inventing one is how the
+    // protection gets silently disabled. Refuse it.
+    if (version < 2 || !(shift > 0.0) || n != N_FEAT + 1 || weights_.size() != N_FEAT + 1)
     {
       weights_.clear();
       return false;
     }
+    max_shift_ = shift;
     if (provenance_out) { *provenance_out = prov; }
     fitted_ = true;
     return true;
