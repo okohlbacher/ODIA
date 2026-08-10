@@ -589,8 +589,12 @@ protected:
                           "has not run yet, so auto leaves them ON; pass 2 is where the decision "
                           "is real.", false, true);
     setValidStrings_("mass_features", {"auto", "on", "off"});
-    registerFlag_("match_decoy_n",
-                  "Draw each decoy's best score from as many candidates as a TARGET has, "
+    registerFlag_("no_match_decoy_n",
+                  "TURN OFF the decoy candidate-count matching described below, which is on by "
+                  "default. Named for what the FLAG does, not for what the feature does: a flag "
+                  "whose help opens by praising the thing it disables is how a user ends up "
+                  "setting it to get the behaviour it removes. "
+                  "\n\nThe feature: draw each decoy's best score from as many candidates as a TARGET has, "
                   "instead of from all of its own. Target-decoy competition assumes the two "
                   "classes are exchangeable and they are not: the picker keeps candidates within "
                   "-max_corr_diff of a precursor's OWN best, so a precursor with no real peak "
@@ -599,7 +603,11 @@ protected:
                   "against best-of-21 over 9,453 decoy precursors -- and ODIA's own FDR then "
                   "refused 3,834 Astral precursors that are all in DIA-NN's truth set. Caps are "
                   "quantile-matched to the target distribution and applied in canonical order, "
-                  "never by score.", true);
+                  "never by score. "
+                  "\n\nON BY DEFAULT since 2026-08-10; this flag turns it OFF. It was worth +653 "
+                  "on Astral and +122 on S08, and the entrapment fixture measures it CONSERVATIVE "
+                  "-- FDP 0.0020 against a claimed 0.01 -- so leaving it opt-in meant every "
+                  "default run paid for an asymmetry we know how to remove.", true);
     registerDoubleOption_("mass_width_sigmas", "<n>", 3.0,
                           "Half-width, in robust sigmas of the per-fragment deviation, for "
                           "-mass_width_from_ids apply. 3 covers 99.7% of a Gaussian; the "
@@ -1346,7 +1354,7 @@ protected:
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
-    options.match_decoy_candidate_counts = getFlag_("match_decoy_n");
+    options.match_decoy_candidate_counts = !getFlag_("no_match_decoy_n");
     options.train_fdr_initial = getDoubleOption_("train_fdr_initial");
     options.train_fdr = getDoubleOption_("train_fdr");
     options.classifier_iterations = getIntOption_("classifier_iterations");

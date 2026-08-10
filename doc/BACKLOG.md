@@ -3143,3 +3143,30 @@ in question.
 Until then `mutate` stays the default, on the grounds that it is what DIA-NN
 does and the alternative has no evidence behind it beyond scoring higher --
 which is what an over-conservative null also does.
+
+## 2026-08-10: the best configuration was not the default
+
+Asked whether everything is wired in, the answer was no. Of the day's five
+gains, three were defaults and two were opt-in flags, so a plain run gave 5,729
+on Astral rather than 6,836:
+
+    m/z window 15 -> 50 ppm            default   +679
+    min_fragments_at_apex 3 -> 1       default    +56
+    mass sub-scores (mass_features)    default   +704
+    -match_decoy_n                     FLAG      +653
+    -repredict_irt                     FLAG      +454
+
+`-match_decoy_n` is now ON by default, disabled with `-no_match_decoy_n`. The
+evidence supports it: +653 on Astral, +122 on S08, and the entrapment fixture
+measures it CONSERVATIVE (FDP 0.0020 against a claimed 0.01), so leaving it
+opt-in meant every default run paid for an asymmetry we know how to remove.
+
+`-repredict_irt` cannot follow and should not. It needs a model fine-tuned on
+THAT run, and a model reused across runs cost 2,027 precursors when it happened.
+An opt-in flag is the correct shape for something that requires an artefact the
+user has to produce first.
+
+**The general lesson, which is worth more than the flag.** Every measured gain
+should be checked against the default path the same day it is measured. A win
+that lives behind a flag is a win nobody gets, and the gap is invisible in the
+benchmark logs because the benchmark scripts pass the flags.
