@@ -556,8 +556,15 @@ namespace ODIA
     /// selected sample, and the only honest check is held-out. See doc/15
     /// section 6.2.
     ///
-    /// Returns 0.0 when there are too few residuals to bin (the same floor
-    /// `fit` uses: 8 bins of at least 40).
+    /// The evaluation population is fixed ONCE from the UNCORRECTED residuals
+    /// (mode +/- 4 sigma) and every candidate correction is scored on those same
+    /// fragments. Re-cutting the core per candidate let a model that pushed
+    /// awkward fragments outside its own core score better for having lost them.
+    ///
+    /// Returns NaN -- never 0.0 -- when the sample cannot support the statistic
+    /// (under 40 residuals, a degenerate scale, or fewer than 4 populated bins).
+    /// Zero is the best possible score, so using it as a failure value reports
+    /// failure as perfection.
     static double systematicResidualPpm(const std::vector<MassResidual>& residuals,
                                         const std::function<double(double)>& correction);
 

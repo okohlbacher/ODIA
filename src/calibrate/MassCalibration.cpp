@@ -1121,47 +1121,52 @@ namespace ODIA
     const std::vector<MassResidual>& residuals,
     const std::function<double(double)>& correction)
   {
-    // Corrected residuals, targets only: a control cell's deviation is uniform
-    // by construction and would drag every bin mode towards the window centre.
-    std::vector<std::pair<double, double>> by_mz;
+    // Every candidate correction is scored on the SAME fragments.
+    //
+    // The first version re-estimated the mode and scale after applying each
+    // correction and then kept that model's own 4-sigma core -- so two models
+    // were compared on two different populations, and a model that pushed
+    // awkward fragments out of its own core scored better for having lost them.
+    // The evaluation radius is therefore fixed ONCE, from the UNCORRECTED
+    // residuals, before any candidate is applied.
+    std::vector<std::pair<double, double>> raw;
     std::vector<double> sorted;
-    by_mz.reserve(residuals.size());
+    raw.reserve(residuals.size());
     sorted.reserve(residuals.size());
     for (const MassResidual& r : residuals)
     {
       if (r.decoy || !(r.mz > 0.0) || !std::isfinite(r.ppm)) { continue; }
-      const double c = r.ppm - correction(static_cast<double>(r.mz));
-      by_mz.emplace_back(static_cast<double>(r.mz), c);
-      sorted.push_back(c);
+      raw.emplace_back(static_cast<double>(r.mz), static_cast<double>(r.ppm));
+      sorted.push_back(static_cast<double>(r.ppm));
     }
-    if (sorted.size() < 40) { return 0.0; }
+    // NaN, never 0.0. Zero is the best possible score, so returning it on
+    // insufficient data reports a failure as a perfect result -- and three of
+    // this function's own unit tests once passed against exactly that.
+    if (sorted.size() < 40) { return std::numeric_limits<double>::quiet_NaN(); }
 
-    // Location and scale of what is left, so the core can be cut the same way
-    // `fit` cuts it. Using the model's own residuals rather than the raw ones
-    // is the point: a correction that shifts the population must be judged on
-    // where it put it.
-    std::sort(sorted.begin(), sorted.end());
     const double gate_w = 30.0;
+    std::sort(sorted.begin(), sorted.end());
     const double mode0 = refineLocation(sorted, halfSampleMode(sorted), gate_w);
     std::vector<double> dev;
     dev.reserve(sorted.size());
     for (const double v : sorted) { dev.push_back(std::abs(v - mode0)); }
-    // Sorted, because the scale estimator reads quantiles of it. `fit` does the
-    // same two lines up from its own call; leaving it out here returned a scale
-    // of zero and made the whole statistic silently 0.0, which reads as "no
-    // systematic error" -- the most dangerous possible way for this to fail.
     std::sort(dev.begin(), dev.end());
-    const double sigma = backgroundCorrectedScale(dev, gate_w);
-    if (!(sigma > 0.0)) { return 0.0; }
+    const double sigma0 = backgroundCorrectedScale(dev, gate_w);
+    if (!(sigma0 > 0.0)) { return std::numeric_limits<double>::quiet_NaN(); }
+    const double radius = 4.0 * sigma0;   // fixed for every candidate below
 
     std::vector<std::pair<double, double>> core;
-    core.reserve(by_mz.size());
-    for (const auto& kv : by_mz)
+    core.reserve(raw.size());
+    for (const auto& kv : raw)
     {
-      if (std::abs(kv.second - mode0) <= 4.0 * sigma) { core.push_back(kv); }
+      // Membership decided on the UNCORRECTED residual, so the population is
+      // identical for every model; the correction then only moves the values.
+      if (std::abs(kv.second - mode0) <= radius)
+      { core.emplace_back(kv.first, kv.second - correction(kv.first)); }
     }
     const auto bins = binBy(core, 8, 40);
-    if (bins.empty()) { return 0.0; }
+    // A single bin cannot describe a shape, and the caller is comparing shapes.
+    if (bins.size() < 4) { return std::numeric_limits<double>::quiet_NaN(); }
 
     // Weighted about ZERO, not about a refitted constant: the question is how
     // much systematic error the correction LEFT, and a model that leaves a
@@ -1174,7 +1179,7 @@ namespace ODIA
       const double w = 1.0 / (e * e);
       sw += w; swr += w * b.location * b.location;
     }
-    return sw > 0.0 ? std::sqrt(swr / sw) : 0.0;
+    return sw > 0.0 ? std::sqrt(swr / sw) : std::numeric_limits<double>::quiet_NaN();
   }
 
 } // namespace ODIA

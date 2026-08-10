@@ -158,12 +158,41 @@ int main()
               "3x as many control cells do not move the statistic");
   }
 
-  // --- too few residuals reports nothing, rather than a number ------------
+  // --- failure is NaN, never zero -----------------------------------------
   {
+    // Zero is the BEST possible score for this statistic, so returning it on
+    // insufficient data reports failure as perfection -- and every
+    // "smaller is better" comparison then silently prefers the failed model.
+    // This is not hypothetical: three checks in this file passed vacuously
+    // against an early version that returned 0.0 from a bailout path.
     const auto few = synth(rng, 20, -9.0, 3.0, 4.0);
     const double v = ODIA::MassCalibration::systematicResidualPpm(
       few, [](double) { return 0.0; });
-    checkNear(v, 0.0, 1e-12, "below the binning floor it returns exactly 0");
+    check(std::isnan(v), "below the binning floor it returns NaN, not 0");
+  }
+
+  // --- every candidate is scored on the SAME fragments ---------------------
+  {
+    // A model that shifts residuals must not be able to change WHICH residuals
+    // it is judged on. The old version re-cut a 4-sigma core after applying
+    // each correction, so a model could improve its score by pushing awkward
+    // fragments out of its own core.
+    //
+    // Construct exactly that: a clean population plus a shoulder at +14 ppm.
+    // A correction of -14 would move the shoulder onto zero and the bulk to
+    // -14; if membership were recomputed per model it could keep the shoulder
+    // and discard the bulk, and score well. With a fixed population it cannot.
+    auto rs = synth(rng, 4000, 0.0, 0.0, 1.0);
+    for (const auto& r : synth(rng, 800, 14.0, 0.0, 1.0)) { rs.push_back(r); }
+
+    const double honest = ODIA::MassCalibration::systematicResidualPpm(
+      rs, [](double) { return 0.0; });
+    const double gaming = ODIA::MassCalibration::systematicResidualPpm(
+      rs, [](double) { return 14.0; });
+    check(std::isfinite(honest) && std::isfinite(gaming),
+          "both candidates are scorable on the shouldered population");
+    check(gaming > honest,
+          "shifting onto the minority shoulder scores WORSE, not better");
   }
 
   // --- `im` survives a round trip through the struct -----------------------

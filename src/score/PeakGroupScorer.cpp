@@ -1116,20 +1116,13 @@ namespace ODIA
                                       const Options& options)
   {
     const std::size_t n_precursors = library.precursorCount();
-    std::vector<std::vector<double>> features;
-    std::vector<int> labels;
-    std::vector<long long> group;
-    features.reserve(result.groups.size());
-    labels.reserve(result.groups.size());
-    group.reserve(result.groups.size());
-    for (const auto& g : result.groups)
-    {
-      features.push_back(g.sub_scores);
-      labels.push_back(g.decoy ? 0 : 1);
-      group.push_back(static_cast<long long>(g.precursor));
-    }
-
     // PART 4 step 1: "Columns that are constant or all-missing are dropped."
+    //
+    // BEFORE the feature matrix is built, not after. This block only zeroes
+    // `result.groups`, so building `features` first meant the classifier
+    // received the original constants and NaNs while the log announced they had
+    // been dropped -- and a later refit(), which rebuilds from the now-zeroed
+    // groups, silently trained on different inputs from the first fit.
     //
     // Not implemented until now, and it bites today: USABLE_FRAGMENTS is a
     // constant 12.000 (a trace is degenerate only if constant, and in a window
@@ -1172,6 +1165,19 @@ namespace ODIA
           for (const std::size_t j : dropped) { g.sub_scores[j] = 0.0; }
         }
       }
+    }
+
+    std::vector<std::vector<double>> features;
+    std::vector<int> labels;
+    std::vector<long long> group;
+    features.reserve(result.groups.size());
+    labels.reserve(result.groups.size());
+    group.reserve(result.groups.size());
+    for (const auto& g : result.groups)
+    {
+      features.push_back(g.sub_scores);
+      labels.push_back(g.decoy ? 0 : 1);
+      group.push_back(static_cast<long long>(g.precursor));
     }
 
     Scoring::LDAParams params;
