@@ -70,11 +70,17 @@ namespace ODIA
       /// them.
       double trim_mads = 4.0;
 
-      /// Hard bound on the correction, seconds. A linear model over composition
-      /// extrapolates without limit outside its training range, and an
-      /// unbounded correction put pass 2's windows off the gradient entirely:
-      /// S08 went 1,464 identifications -> 0 before this existed.
-      double max_shift = 120.0;
+      /// Hard bound on the correction, as a FRACTION of the anchors' own iRT
+      /// range. A linear model over composition extrapolates without limit
+      /// outside its training range, and an unbounded correction put pass 2's
+      /// windows off the gradient entirely: S08 went 1,464 identifications -> 0
+      /// before this existed.
+      ///
+      /// A fraction rather than an absolute, because this now works in iRT
+      /// units, and an iRT axis may be normalised to [-50, 150] or already be
+      /// run seconds when -irt_slope was given. 0.05 of the range is a large
+      /// chromatographic shift and a small modelling error.
+      double max_shift_fraction = 0.05;
     };
 
     struct Report
@@ -89,8 +95,16 @@ namespace ODIA
       std::string note;
     };
 
-    /// Fit from (stripped sequence, charge, calibrated iRT in run seconds,
-    /// observed apex RT in run seconds).
+    /// Fit from (stripped sequence, charge, LIBRARY iRT, TARGET iRT).
+    ///
+    /// IN iRT SPACE, not in retention-time space. The calibration is a monotone
+    /// map iRT -> RT and it should be the ONLY transform on the RT axis; a
+    /// correction applied after it is a second, unconstrained one, which is how
+    /// an earlier version put pass 2's windows off the gradient and took S08 to
+    /// zero. So the caller inverts the map to get the iRT each anchor SHOULD
+    /// have had -- `target = map^-1(observed RT)` -- and this learns
+    /// `sequence -> (target - library)`. The map is then refitted on the
+    /// refined axis, so its monotonicity is re-established rather than assumed.
     ///
     /// The split is by STRIPPED SEQUENCE, so a peptide's charge states never
     /// straddle it: 2+ and 3+ of one peptide elute together, and splitting

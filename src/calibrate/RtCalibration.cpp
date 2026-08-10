@@ -181,7 +181,8 @@ namespace ODIA::Calibration
   // loess_span <= 0 selects the historical binned-median path; >0 fits LOESS at the bin centres
   // and then isotonises. Both end in PAVA + an interpolated model, so the only thing that changes
   // is how the control-point y values are estimated.
-  TransformationDescription fitTrafo_(std::vector<std::pair<double, double>> pts,
+  TransformationDescription fitTrafo_(const std::string& interpolation,
+                                      std::vector<std::pair<double, double>> pts,
                                              double* p95_resid = nullptr,
                                              double loess_span = 0.0)
   {
@@ -304,7 +305,21 @@ namespace ODIA::Calibration
     TransformationDescription td;
     td.setDataPoints(cps);
     Param p;
-    p.setValue("interpolation_type", "linear");
+    // AKIMA, not linear.
+    //
+    // The knots come from binned medians through PAVA, so the map's SHAPE is
+    // already monotone and data-driven -- but joining them with straight lines
+    // makes the derivative jump at every knot, and a retention-time map is a
+    // physical thing that has no reason to be piecewise-linear. OpenMS offers
+    // linear, cspline and akima; akima is documented as "less affected by
+    // outliers", which is the property that matters here because pass 1's
+    // anchors reach 1,600 s of residual and a cubic spline will ring around
+    // them.
+    //
+    // For reference: OpenSWATH aligns iRT with TransformationModelLowess, and
+    // DIA-NN fits a nonlinear monotone regression. Neither joins knots with
+    // line segments, which is what this did.
+    p.setValue("interpolation_type", interpolation);
     p.setValue("extrapolation_type", "four-point-linear");
     td.fitModel("interpolated", p);
     setP95Resid_(td, pts, p95_resid);
@@ -314,11 +329,34 @@ namespace ODIA::Calibration
   } // namespace
 
   TransformationDescription fit(std::vector<std::pair<double, double>> anchors,
-                                double* p95_resid, double loess_span)
+                                double* p95_resid, double loess_span,
+                                const std::string& interpolation)
   {
-    return fitTrafo_(std::move(anchors), p95_resid, loess_span);
+    return fitTrafo_(interpolation, std::move(anchors), p95_resid, loess_span);
   }
 
   TransformationDescription identity() { return identityTrafo_(); }
+
+  double invertAt(const TransformationDescription& map, double rt, double lo, double hi)
+  {
+    if (!(hi > lo)) { return lo; }
+    // Orientation is not assumed. A retention-time map is increasing in
+    // practice, but a map fitted from too few anchors need not be, and reading
+    // the direction off the endpoints costs two evaluations against a silently
+    // wrong answer for the rest of the run.
+    const double f_lo = map.apply(lo), f_hi = map.apply(hi);
+    const bool increasing = f_hi >= f_lo;
+    if (increasing ? (rt <= f_lo) : (rt >= f_lo)) { return lo; }
+    if (increasing ? (rt >= f_hi) : (rt <= f_hi)) { return hi; }
+
+    double a = lo, b = hi;
+    for (int i = 0; i < 60; ++i)
+    {
+      const double m = 0.5 * (a + b);
+      const double f = map.apply(m);
+      if (increasing ? (f < rt) : (f > rt)) { a = m; } else { b = m; }
+    }
+    return 0.5 * (a + b);
+  }
 
 } // namespace ODIA::Calibration

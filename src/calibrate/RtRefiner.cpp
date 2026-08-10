@@ -137,6 +137,10 @@ namespace ODIA
     };
     const unsigned cut = static_cast<unsigned>(options.holdout * 1000.0);
     const double med_abs_limit = options.trim_mads;
+    // The clamp, in the units of the axis actually in use.
+    double lo = calibrated_irt[0], hi = calibrated_irt[0];
+    for (const double v : calibrated_irt) { lo = std::min(lo, v); hi = std::max(hi, v); }
+    const double max_shift = std::max(1e-6, options.max_shift_fraction * (hi - lo));
 
     std::vector<double> X(n * N_FEAT);
     for (std::size_t i = 0; i < n; ++i)
@@ -229,7 +233,7 @@ namespace ODIA
       double z[N_FEAT], pred = 0.0;
       for (std::size_t f = 0; f < N_FEAT; ++f) { z[f] = (X[i * N_FEAT + f] - mu[f]) / sg[f]; }
       for (std::size_t f = 0; f < N_FEAT; ++f) { pred += w[f] * z[f]; }
-      pred = clampCorrection(pred, options.max_shift);
+      pred = clampCorrection(pred, max_shift);
       before.push_back(observed_rt[i] - calibrated_irt[i]);
       after.push_back(observed_rt[i] - (calibrated_irt[i] + pred));
     }
@@ -258,7 +262,7 @@ namespace ODIA
       bias -= w[f] * mu[f] / sg[f];
     }
     weights_[N_FEAT] = bias;
-    max_shift_ = options.max_shift;
+    max_shift_ = max_shift;
     fitted_ = true;
     rep.fitted = true;
     return rep;

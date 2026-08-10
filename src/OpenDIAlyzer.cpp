@@ -332,6 +332,16 @@ protected:
                         "different search. Written before the map is applied, so the iRT column "
                         "is the LIBRARY value.", false, true);
     setValidFormats_("out_anchors", {"tsv"}, false);
+    registerStringOption_("rt_interpolation", "<type>", "akima",
+                          "How the retention-time map joins its knots. akima: nonlinear and "
+                          "outlier-resistant. cspline: nonlinear but rings around outliers, and "
+                          "pass 1's anchors reach 1,600 s of residual. linear: straight segments, "
+                          "which is what this did until 2026-08-10 -- the derivative jumps at "
+                          "every knot and a retention-time map has no reason to be "
+                          "piecewise-linear. OpenSWATH aligns iRT with LOWESS and DIA-NN fits a "
+                          "nonlinear monotone regression; neither joins knots with line segments.",
+                          false, true);
+    setValidStrings_("rt_interpolation", {"akima", "cspline", "linear"});
     registerDoubleOption_("rt_loess_span", "<fraction>", 0.0,
                           "LOESS span for the retention-time map, as a fraction of the anchors. "
                           "0 uses binned medians alone. "
@@ -1132,7 +1142,8 @@ protected:
 
     double p95 = 0.0;
     const double loess_span = getDoubleOption_("rt_loess_span");
-    const auto trafo = ODIA::Calibration::fit(anchors, &p95, loess_span);
+    const std::string rt_interp = getStringOption_("rt_interpolation");
+    auto trafo = ODIA::Calibration::fit(anchors, &p95, loess_span, rt_interp);
 
     // p95 above is IN-SAMPLE: it is the residual on the very anchors the map
     // was fitted to, so it cannot see overfitting. That is not hypothetical --
@@ -1154,7 +1165,7 @@ protected:
       }
       double dummy = 0.0;
       // Same span as the real fit, or the probe measures a different model.
-      const auto probe = ODIA::Calibration::fit(fit_set, &dummy, loess_span);
+      const auto probe = ODIA::Calibration::fit(fit_set, &dummy, loess_span, rt_interp);
       std::vector<double> resid;
       resid.reserve(held.size());
       for (const auto& a : held)
@@ -1194,6 +1205,151 @@ protected:
     // gap between them IS the diagnostic.
     reportRtResiduals_(anchors, trafo);
 
+    // Per-run retention-time refinement, IN iRT SPACE, before the map is
+    // applied and before pass 2 sees anything.
+    //
+    // The calibration is a monotone map iRT -> RT and it should be the ONLY
+    // transform on the retention-time axis. A correction applied AFTER it is a
+    // second, unconstrained one: the first version of this did exactly that and
+    // took S08 from 1,464 identifications to zero, because a linear model
+    // extrapolating outside its training range put pass 2's windows off the
+    // gradient.
+    //
+    // So: invert the map to learn what iRT each anchor SHOULD have had, fit
+    // sequence -> (target - library) on that, apply to every precursor's
+    // library iRT, and REFIT the map on the refined axis. Monotonicity is then
+    // re-established by the refit rather than assumed to survive.
+    if (getStringOption_("rt_refine") != "off" && !refine_rows.empty())
+    {
+      // The iRT bracket the inverse may search, taken from the anchors
+      // themselves. A retention time outside the map's range has no iRT
+      // preimage, and invertAt clamps rather than extrapolating.
+      double irt_lo = anchors.front().first, irt_hi = anchors.front().first;
+      for (const auto& a : anchors)
+      { irt_lo = std::min(irt_lo, a.first); irt_hi = std::max(irt_hi, a.first); }
+      const auto& pr = library.precursors();
+      std::vector<std::string> seqs;
+      std::vector<int> chg;
+      std::vector<double> lib_irt, target_irt;
+      seqs.reserve(refine_rows.size());
+      for (const auto& [idx, apex] : refine_rows)
+      {
+        seqs.emplace_back(library.strings().get(pr.modified_sequence[idx]));
+        chg.push_back(static_cast<int>(pr.charge[idx]));
+        lib_irt.push_back(static_cast<double>(original_irt[idx]));
+        target_irt.push_back(ODIA::Calibration::invertAt(trafo, apex, irt_lo, irt_hi));
+      }
+
+      ODIA::RtRefiner refiner;
+      const std::string model_in = getStringOption_("rt_refine_model_in");
+      ODIA::RtRefiner::Report rep;
+      if (!model_in.empty())
+      {
+        std::string prov;
+        if (refiner.load(model_in, &prov))
+        {
+          rep.fitted = true;
+          writeLogWarn_("retention-time refinement LOADED from " + model_in +
+                        " and NOT fitted on this run" +
+                        (prov.empty() ? "" : " [" + prov + "]") +
+                        ". Correct only if this run shares the gradient, instrument and "
+                        "method it was fitted on; nothing here can check that.");
+        }
+        else
+        {
+          writeLogError_("-rt_refine_model_in " + model_in +
+                         " could not be read as a refinement model; refusing to guess.");
+          return INTERNAL_ERROR;
+        }
+      }
+      else
+      {
+        rep = refiner.fit(seqs, chg, lib_irt, target_irt);
+      }
+
+      std::ostringstream ro;
+      ro.setf(std::ios::fixed);
+      ro.precision(3);
+      if (rep.fitted)
+      {
+        const std::string model_out = getStringOption_("rt_refine_model_out");
+        if (!model_out.empty() && model_in.empty())
+        {
+          std::ostringstream prov;
+          prov.setf(std::ios::fixed);
+          prov.precision(3);
+          prov << "fitted on " << run << ": " << rep.train << " anchors, " << rep.trimmed
+               << " trimmed, held-out iRT SD " << rep.sd_before << " -> " << rep.sd_after;
+          if (refiner.save(model_out, prov.str()))
+          { writeLogInfo_("wrote the retention-time refinement to " + model_out); }
+          else { writeLogWarn_("could not write " + model_out); }
+        }
+
+        // Refine the library axis, then REFIT the map on it.
+        std::vector<float>& lirt = library.precursors().irt;
+        lirt = original_irt;                       // refine from the original axis
+        const std::size_t n_ref = refiner.apply(library);
+        std::vector<float> refined = library.precursors().irt;
+
+        std::vector<std::pair<double, double>> refit;
+        refit.reserve(refine_rows.size());
+        for (const auto& [idx, apex] : refine_rows)
+        { refit.emplace_back(static_cast<double>(refined[idx]), apex); }
+        double p95_ref = 0.0;
+        const auto trafo_ref = ODIA::Calibration::fit(refit, &p95_ref, loess_span, rt_interp);
+
+        // THE NUMBER THAT MATTERS, in the RT domain: how far the extracted
+        // feature sits from where the library says it should be, before and
+        // after refinement. The refiner's own figure is in iRT units and is not
+        // comparable to anything else in this log.
+        const auto rt_sd = [&](const OpenMS::TransformationDescription& m,
+                               const std::vector<float>& axis) {
+          double mean = 0.0;
+          std::vector<double> r;
+          r.reserve(refine_rows.size());
+          for (const auto& [idx, apex] : refine_rows)
+          { r.push_back(apex - m.apply(static_cast<double>(axis[idx]))); }
+          for (const double x : r) { mean += x; }
+          mean /= static_cast<double>(r.size());
+          double ss = 0.0;
+          for (const double x : r) { ss += (x - mean) * (x - mean); }
+          return std::sqrt(ss / static_cast<double>(r.size() - 1));
+        };
+        const double rt_sd_cal = rt_sd(trafo, original_irt);
+        const double rt_sd_ref = rt_sd(trafo_ref, refined);
+
+        ro << "retention-time refinement: " << rep.train << " anchors (" << rep.trimmed
+           << " trimmed), held-out iRT SD " << rep.sd_before << " -> " << rep.sd_after
+           << " on " << rep.held_out << " sequences; applied to " << n_ref
+           << " precursors"
+           << "\n  RT-domain SD of (extracted apex - predicted): recalibrated "
+           << rt_sd_cal << " s -> fine-tuned " << rt_sd_ref << " s"
+           << "\n  map p95 " << p95 << " s -> " << p95_ref << " s";
+        // ACCEPT ONLY IF THE MAP IMPROVED. The refinement's own held-out number
+        // is measured on anchors, which are contaminated; the map's p95 is what
+        // pass 2's window is built from and is the thing that must not get
+        // worse.
+        if (p95_ref < p95)
+        {
+          trafo = trafo_ref;
+          p95 = p95_ref;
+          refined_irt_ = std::move(refined);
+          writeLogInfo_(ro.str());
+        }
+        else
+        {
+          library.precursors().irt = original_irt;
+          ro << " -- REJECTED, the map did not improve";
+          writeLogInfo_(ro.str());
+        }
+      }
+      else
+      {
+        ro << "retention-time refinement: not applied -- " << rep.note;
+        writeLogInfo_(ro.str());
+      }
+    }
+
     // Applied to the ORIGINAL values, for the reason above.
     //
     // After this the library's `irt` holds RUN SECONDS, not normalised iRT,
@@ -1201,11 +1357,13 @@ protected:
     // an identity map.
     rt_map_fitted_ = true;
     auto& irt = library.precursors().irt;
+    // The refined axis when refinement was accepted, the original otherwise.
+    const std::vector<float>& source = refined_irt_.empty() ? original_irt : refined_irt_;
     for (std::size_t i = 0; i < irt.size(); ++i)
     {
-      if (std::isfinite(original_irt[i]))
+      if (std::isfinite(source[i]))
       {
-        irt[i] = static_cast<float>(trafo.apply(static_cast<double>(original_irt[i])));
+        irt[i] = static_cast<float>(trafo.apply(static_cast<double>(source[i])));
       }
     }
 
@@ -1219,77 +1377,6 @@ protected:
     // The refiner holds itself out by stripped sequence and REFUSES to apply a
     // model that does not beat the calibration on those rows -- so this can run
     // unconditionally and leave the axis alone when refinement is not warranted.
-    if (getStringOption_("rt_refine") != "off" && !refine_rows.empty())
-    {
-      const auto& pr = library.precursors();
-      std::vector<std::string> seqs;
-      std::vector<int> chg;
-      std::vector<double> cal, obs;
-      seqs.reserve(refine_rows.size());
-      for (const auto& [idx, apex] : refine_rows)
-      {
-        const auto sv = library.strings().get(pr.modified_sequence[idx]);
-        seqs.emplace_back(sv);
-        chg.push_back(static_cast<int>(pr.charge[idx]));
-        cal.push_back(static_cast<double>(pr.irt[idx]));   // CALIBRATED, applied above
-        obs.push_back(apex);
-      }
-      ODIA::RtRefiner refiner;
-      const std::string model_in = getStringOption_("rt_refine_model_in");
-      ODIA::RtRefiner::Report rep;
-      if (!model_in.empty())
-      {
-        std::string prov;
-        if (refiner.load(model_in, &prov))
-        {
-          rep.fitted = true;
-          writeLogWarn_("retention-time refinement LOADED from " + model_in +
-                        " and NOT fitted on this run" + (prov.empty() ? "" : " [" + prov + "]") +
-                        ". Correct only if this run shares the gradient, instrument and method "
-                        "it was fitted on; nothing here can check that.");
-        }
-        else
-        {
-          writeLogError_("-rt_refine_model_in " + model_in +
-                         " could not be read as a refinement model; refusing to guess.");
-          return INTERNAL_ERROR;
-        }
-      }
-      else
-      {
-        rep = refiner.fit(seqs, chg, cal, obs);
-      }
-      std::ostringstream os;
-      os.setf(std::ios::fixed);
-      os.precision(2);
-      if (rep.fitted)
-      {
-        const std::string model_out = getStringOption_("rt_refine_model_out");
-        if (!model_out.empty() && model_in.empty())
-        {
-          std::ostringstream prov;
-          prov.setf(std::ios::fixed);
-          prov.precision(2);
-          prov << "fitted on " << run << ": " << rep.train << " anchors, held-out SD "
-               << rep.sd_before << " -> " << rep.sd_after << " s on " << rep.held_out
-               << " sequences";
-          if (refiner.save(model_out, prov.str()))
-          { writeLogInfo_("wrote the retention-time refinement to " + model_out); }
-          else
-          { writeLogWarn_("could not write " + model_out); }
-        }
-        const std::size_t n = refiner.apply(library);
-        os << "retention-time refinement: fitted on " << rep.train
-           << " anchors, held-out SD " << rep.sd_before << " s -> " << rep.sd_after
-           << " s on " << rep.held_out << " sequences; applied to " << n << " precursors";
-      }
-      else
-      {
-        os << "retention-time refinement: not applied -- " << rep.note;
-      }
-      writeLogInfo_(os.str());
-    }
-
     // -stop_after calib: the calibration IS the deliverable here, and pass 2
     // would cost a full extraction to tell us nothing more about it. Placed
     // after the library's irt has been rewritten, so a caller that also asked
@@ -1569,7 +1656,8 @@ protected:
 
       double p95 = 0.0;
       const auto trafo = ODIA::Calibration::fit(anchors, &p95,
-                                                getDoubleOption_("rt_loess_span"));
+                                                getDoubleOption_("rt_loess_span"),
+                                                getStringOption_("rt_interpolation"));
       // Applied to the ORIGINAL iRT every round, never to the previous round's
       // output: composing maps would drift, and each fit is a map from library
       // units to run seconds, not a correction to the last one.
@@ -2255,6 +2343,10 @@ private:
   /// half-width pass 1 was itself extracted through. See `MassWidth`.
   ODIA::MassWidth::Estimate mass_width_;
   double extracted_ppm_ = 0.0;
+
+  /// The refined iRT axis, when per-run refinement was accepted. Empty
+  /// otherwise, and the map is then applied to the original values.
+  std::vector<float> refined_irt_;
 
   /// The measured half-width if it may be used, else `fallback`.
   ///

@@ -5,6 +5,7 @@
 
 #include <OpenMS/ANALYSIS/MAPMATCHING/TransformationDescription.h>
 
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -33,11 +34,42 @@ namespace ODIA::Calibration
   /// @param loess_span 0 uses BINNED MEDIANS ALONE -- it does not "let the fit
   ///        choose", which is what this comment claimed while every production
   ///        call site passed 0. LOESS runs only for span > 0 and >= 50 anchors.
+  /// @param interpolation how the knots are joined: "akima" (default,
+  ///        nonlinear and outlier-resistant), "cspline" (nonlinear, rings
+  ///        around outliers) or "linear" (what this used to do -- a
+  ///        retention-time map has no reason to be piecewise-linear, and the
+  ///        derivative jumps at every knot). OpenSWATH aligns iRT with LOWESS
+  ///        and DIA-NN fits a nonlinear monotone regression; neither joins
+  ///        knots with line segments.
   OpenMS::TransformationDescription fit(std::vector<std::pair<double, double>> anchors,
                                         double* p95_resid = nullptr,
-                                        double loess_span = 0.0);
+                                        double loess_span = 0.0,
+                                        const std::string& interpolation = "akima");
 
   /// The identity map, for when there are no anchors to fit.
   OpenMS::TransformationDescription identity();
+
+  /// Invert a monotone retention-time map: given RT, return the iRT that maps
+  /// to it.
+  ///
+  /// NOT `TransformationDescription::invert()`. That swaps the control points
+  /// and refits, so for an akima or cspline model the "inverse" is a NEW
+  /// interpolation through the swapped knots -- close to the true inverse where
+  /// the knots are dense and free to diverge from it where they are not, with
+  /// no guarantee that `invert(apply(x)) == x` anywhere. Fitting a curve to
+  /// approximate a function we already have exactly is the wrong move.
+  ///
+  /// This does the direct thing instead: the forward map is monotone by
+  /// construction (PAVA), so bisect on it. `apply` is a few interpolation
+  /// lookups, ~60 iterations pins the answer to machine precision over any
+  /// plausible gradient, and the result is the inverse of the map actually in
+  /// use rather than of a refit approximation to it.
+  ///
+  /// @param lo,hi the iRT bracket to search. Outside it the answer is clamped,
+  ///        which is correct: a retention time beyond the map's range has no
+  ///        iRT preimage and inventing one by extrapolation is how a refinement
+  ///        puts windows off the gradient.
+  double invertAt(const OpenMS::TransformationDescription& map, double rt,
+                  double lo, double hi);
 
 } // namespace ODIA::Calibration
