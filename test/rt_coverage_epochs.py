@@ -17,7 +17,15 @@ import csv, subprocess, sys
 import numpy as np, pyarrow.parquet as pq
 
 anchors_path, lib_path, report_path, predictor = sys.argv[1:5]
-models = [a.split('=', 1) for a in sys.argv[5:]]
+rest = sys.argv[5:]
+# Optional --exclude <parquet>: drop its stripped sequences from the evaluation.
+# Without it, a model trained on the run's own identifications is scored partly
+# on peptides it memorised, and "more epochs help" cannot be told from "more
+# epochs memorise harder".
+exclude_path = ""
+if rest and rest[0] == "--exclude":
+    exclude_path = rest[1]; rest = rest[2:]
+models = [a.split('=', 1) for a in rest]
 
 def strip_mods(s):
     out, depth = [], 0
@@ -47,6 +55,12 @@ for i in range(t.num_rows):
     if d['Q.Value'][i] > 0.01: continue
     obs[(d['Stripped.Sequence'][i], int(d['Precursor.Charge'][i]))] = float(d['RT'][i]) * 60.0
 keys = sorted(set(lib) & set(obs))
+if exclude_path:
+    ex = pq.read_table(exclude_path, columns=['Modified.Sequence']).to_pydict()
+    seen = {strip_mods(x) for x in ex['Modified.Sequence']}
+    before = len(keys)
+    keys = [k for k in keys if k[0] not in seen]
+    print(f"excluded {len(seen)} training sequences: {before} -> {len(keys)} evaluable")
 print(f"anchors {len(anch)}   evaluable precursors {len(keys)}")
 
 def predict(onnx, seqs, chunk=400):

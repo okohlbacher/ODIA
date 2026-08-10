@@ -189,6 +189,17 @@ def main():
                          "point of a curve is to see where it stops improving and "
                          "whether it turns back up; a single end-point number "
                          "cannot show either.")
+    ap.add_argument("--converge-tol", type=float, default=0.05, metavar="MINUTES",
+                    help="Early-stop when a --curve checkpoint improves the held-out "
+                         "residual by less than this. A DELTA criterion: 'is the residual "
+                         "below X' needs an X that differs per gradient and instrument, "
+                         "'has it stopped moving' does not. Default 0.05 min = 3 s.")
+    ap.add_argument("--converge-rel", type=float, default=0.001,
+                    help="Early-stop when the improvement is below this FRACTION of the "
+                         "current residual. Whichever of the two triggers first wins. "
+                         "Measured on the Astral 500-epoch curve, 0.001 stops at ~250 "
+                         "epochs; 0.01 would stop at 125, which the held-out coverage "
+                         "says is 2 points of +/-30s coverage too early.")
     ap.add_argument("--device", default="gpu", choices=("gpu", "cpu"),
                     help="peptdeep device. 'gpu' falls back to CPU SILENTLY when "
                          "torch is a CPU-only build, which is how this ran on CPU "
@@ -239,15 +250,44 @@ def main():
     if not hi > lo:
         raise SystemExit("every identification has the same retention time")
 
-    import torch as _torch
+    import os as _os, torch as _torch
     _cuda = _torch.cuda.is_available()
+    if _cuda and args.device == "gpu":
+        # Every visible GPU, not just cuda:0. peptdeep drives one device, so the
+        # win here is picking the LEAST BUSY one rather than colliding with
+        # whatever is already resident -- these cards are shared, and today one
+        # of them was carrying 60 GB of somebody else's job.
+        free = []
+        for d in range(_torch.cuda.device_count()):
+            try:
+                f, _t = _torch.cuda.mem_get_info(d)
+                free.append((f, d))
+            except Exception:
+                free.append((0, d))
+        free.sort(reverse=True)
+        _os.environ["CUDA_VISIBLE_DEVICES"] = str(free[0][1])
+        _torch.cuda.set_device(free[0][1])
+    else:
+        # CPU: use the cores we actually have. torch defaults to a heuristic
+        # that is frequently one thread inside a container, and a 500-epoch fit
+        # single-threaded is the difference between minutes and an hour.
+        _n = int(_os.environ.get("ODIA_RT_THREADS", "0")) or (_os.cpu_count() or 1)
+        _torch.set_num_threads(_n)
+        _torch.set_num_interop_threads(max(1, _n // 4))
     print(f"torch {_torch.__version__}; cuda available {_cuda}; "
           f"device requested {args.device}; RESOLVED {'cuda' if (_cuda and args.device == 'gpu') else 'cpu'}"
           + ("" if _cuda or args.device == "cpu" else
              "  <-- CPU-ONLY TORCH: install a CUDA build to use the H100s"),
           flush=True)
-    if _cuda:
-        print(f"  gpu: {_torch.cuda.get_device_name(0)} x{_torch.cuda.device_count()}", flush=True)
+    if _cuda and args.device == "gpu":
+        d = _torch.cuda.current_device()
+        f, t = _torch.cuda.mem_get_info(d)
+        print(f"  gpu {d}: {_torch.cuda.get_device_name(d)}, "
+              f"{f/2**30:.1f} of {t/2**30:.1f} GiB free "
+              f"(of {_torch.cuda.device_count()} visible)", flush=True)
+    else:
+        print(f"  cpu threads: {_torch.get_num_threads()} intra, "
+              f"{_torch.get_num_interop_threads()} inter", flush=True)
     mgr = ModelManager(mask_modloss=False, device=args.device)
     mgr.load_installed_models()
     if args.base_model:
@@ -300,6 +340,7 @@ def main():
             cf.write(f"0\t{te:.5f}\t{tr:.5f}\t0.0\n"); cf.flush()
             print(f"  epoch    0  held-out {te*60:7.2f} s  train {tr*60:7.2f} s", flush=True)
             mgr.epoch_to_train_rt_ccs = args.curve
+            prev = te
             while done < args.epochs:
                 step = min(args.curve, args.epochs - done)
                 mgr.epoch_to_train_rt_ccs = step
@@ -307,8 +348,22 @@ def main():
                 done += step
                 te, tr = _sd_at()
                 cf.write(f"{done}\t{te:.5f}\t{tr:.5f}\t{_time.time()-t0:.1f}\n"); cf.flush()
-                print(f"  epoch {done:4d}  held-out {te*60:7.2f} s  train {tr*60:7.2f} s",
+                delta = prev - te
+                print(f"  epoch {done:4d}  held-out {te*60:7.2f} s  train {tr*60:7.2f} s"
+                      f"  delta {delta*60:6.3f} s ({100*delta/prev if prev else 0:5.2f}%)",
                       flush=True)
+                # EARLY STOP on the delta. The held-out curve here is flat rather
+                # than U-shaped -- it stops improving and does not degrade -- so
+                # there is no minimum to overshoot, only compute to waste. On the
+                # Astral curve the remaining 250 epochs past this point bought
+                # 0.36 s of residual and, held out by sequence, 0.65 points of
+                # +/-30 s coverage.
+                if delta < args.converge_tol or delta < args.converge_rel * prev:
+                    print(f"  CONVERGED at epoch {done}: improvement {delta*60:.3f} s is "
+                          f"below --converge-tol {args.converge_tol*60:.3f} s and "
+                          f"--converge-rel {100*args.converge_rel:.2f}%", flush=True)
+                    break
+                prev = te
         print(f"wrote {curve_path}", flush=True)
     else:
         mgr.train_rt_model(train_df)

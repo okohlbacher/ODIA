@@ -592,12 +592,33 @@ protected:
                           "the p99 that sets the window.",
                           false, true);
     setValidStrings_("rt_refine", {"auto", "map_only", "off"});
-    registerIntOption_("rt_refine_rounds", "<n>", 4,
+    registerDoubleOption_("rt_converge_tol", "<seconds>", 0.5,
+                          "Stop refining when a round improves the median |residual| by less "
+                          "than this. "
+                          "\n\nA DELTA criterion, not an absolute one, and that is the point: "
+                          "'is the median below X' cannot be answered without knowing what X "
+                          "should be, and X differs by gradient, instrument and library -- the "
+                          "same mistake as a fixed m/z window. 'Has it stopped moving' needs no "
+                          "such constant and is what convergence actually means. "
+                          "\n\n0.5 s against a median that starts near 23 s: two orders of "
+                          "magnitude below the signal, so the loop stops when the model has "
+                          "nothing left to add rather than when it hits a number somebody chose.",
+                          false, true);
+    registerDoubleOption_("rt_converge_rel", "<fraction>", 0.01,
+                          "Stop refining when a round improves the median |residual| by less than "
+                          "this FRACTION of it. Runs at both ends of the residual scale then get "
+                          "the same criterion: 0.5 s is a real gain on a 5 s median and noise on "
+                          "a 200 s one. Whichever of -rt_converge_tol and this triggers first "
+                          "stops the loop.", false, true);
+    registerIntOption_("rt_refine_rounds", "<n>", 10,
                        "Iterations of the per-run retention-time refinement. Each round derives "
                        "its anchors from the CURRENT scoring, refines, refits the map and "
                        "re-scores -- so a better axis finds better anchors, which is the whole "
                        "point and what a single pass cannot do. Stops early when a round does not "
-                       "increase identifications. DIA-NN runs twelve for the same reason.",
+                       "increase identifications. DIA-NN runs twelve for the same reason. "
+                       "\n\nThis is the CAP, not the schedule: -rt_converge_tol and "
+                       "-rt_converge_rel stop the loop when the median residual stops moving, "
+                       "which is normally well before the cap.",
                        false, true);
     registerOutputFile_("rt_refine_model_out", "<file>", "",
                         "Write the fitted retention-time refinement so it can be reused on OTHER "
@@ -1236,6 +1257,8 @@ protected:
     if (getStringOption_("rt_refine") != "off" && !refine_rows.empty())
     {
       const int rounds = std::max(1, getIntOption_("rt_refine_rounds"));
+      const double tol_abs = std::max(0.0, getDoubleOption_("rt_converge_tol"));
+      const double tol_rel = std::max(0.0, getDoubleOption_("rt_converge_rel"));
       const double anchor_q_r = getDoubleOption_("anchor_q");
       auto refit_options = scoringOptions_();
       refit_options.library_rt_is_run_seconds = true;
@@ -1442,13 +1465,23 @@ protected:
         // nothing by construction and a within-round test rejects it at round 1
         // -- which is exactly what happened, and why its iteration never ran.
         // Its gain is between rounds: better anchors, better map.
-        if (!(q_after[0] < best_p50))
+        // CONVERGENCE ON THE DELTA, not on an absolute threshold.
+        //
+        // Three outcomes, and they are different. A round can make things
+        // WORSE, in which case roll back. It can improve by so little that the
+        // next round will not repay its cost, in which case accept and stop.
+        // Or it can still be moving, in which case continue.
+        const double improvement = best_p50 - q_after[0];
+        const bool worse = !(q_after[0] < best_p50);
+        const bool converged = !worse &&
+          (improvement < tol_abs || improvement < tol_rel * best_p50);
+
+        if (worse)
         {
           library.precursors().irt = original_irt;
           if (!refined_irt_.empty()) { library.precursors().irt = refined_irt_; }
           writeLogInfo_("rt refine: round " + std::to_string(round) +
-                        " did not narrow the median residual on the frozen evaluation "
-                        "set; keeping the previous axis");
+                        " made the median residual worse; keeping the previous axis");
           break;
         }
         best_p50 = q_after[0];
@@ -1457,6 +1490,18 @@ protected:
         trafo = map_ref;
         p95 = p95_ref;
         kept = refiner;
+
+        if (converged)
+        {
+          std::ostringstream co;
+          co.setf(std::ios::fixed);
+          co.precision(3);
+          co << "rt refine: CONVERGED after round " << round << " -- the median residual "
+             << "improved by " << improvement << " s, below -rt_converge_tol " << tol_abs
+             << " s and " << (100.0 * tol_rel) << "% of " << (best_p50 + improvement) << " s";
+          writeLogInfo_(co.str());
+          break;
+        }
       }
 
       const std::string model_out = getStringOption_("rt_refine_model_out");

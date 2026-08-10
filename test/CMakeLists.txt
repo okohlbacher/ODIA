@@ -604,6 +604,12 @@ add_test(NAME mass_recalibration_recovers_drift COMMAND odia_mass_recalibration)
 # by the window it was observed through.
 add_test(NAME mass_width_from_identifications COMMAND odia_mass_width)
 
+# The per-run retention-time refiner. Every case is a failure it has actually
+# had on real data: an unbounded correction that took S08 to zero, contaminated
+# anchors a squared loss chased, and a model file whose weight count did not
+# match being read as valid.
+add_test(NAME rt_refiner COMMAND odia_rt_refiner)
+
 # The two TSV writers, byte for byte against the std::ofstream form they
 # replace.
 #

@@ -307,3 +307,73 @@ honest runtime proxy for a number that needs truth to compute.
 refinement does not change it -- the tail is set by something else. What the
 refinement buys is a NARROWER window at the same coverage: 93.62% at +/-60 s
 against 88.46%. That is the clean-features lever, and it is real.
+
+## The delta convergence criterion: what it actually does
+
+**Two loops, two criteria, same principle.** Both stop when the thing being
+minimised STOPS MOVING, not when it crosses a threshold somebody chose. "Is the
+residual below X" needs an X that differs by gradient, instrument and library --
+the same mistake as a fixed m/z window. "Has it stopped moving" needs no
+constant.
+
+### 1. The refinement ROUND loop (`-rt_converge_tol`, `-rt_converge_rel`)
+
+Each round re-derives anchors from the current scoring, refines, refits the map,
+re-scores. After each, the median |residual| is measured on an evaluation set
+FROZEN at round 1 -- frozen because the anchor set grows every round, and a
+statistic measured on a growing population is not comparable across rounds. That
+artefact once produced a reported 3.3x narrowing that was entirely a change of
+denominator.
+
+Three outcomes, distinguished:
+
+    worse than the best so far   -> roll back to the previous axis, stop
+    improved by < tol or < rel   -> ACCEPT this round, then stop
+    improved by more             -> continue, up to -rt_refine_rounds (cap, 10)
+
+Defaults 0.5 s and 1%. Against a median that starts near 23 s, 0.5 s is two
+orders of magnitude below the signal.
+
+### 2. The peptdeep EPOCH loop (`--converge-tol`, `--converge-rel`)
+
+`--curve N` evaluates the held-out residual every N epochs; the same delta test
+then stops training. Calibrated against the measured Astral 500-epoch curve:
+
+    epoch   held-out    delta     rel
+        0     58.47 s        -       -
+       25     29.38 s   29.085   49.75%
+       50     26.83 s    2.548    8.67%
+       75     26.15 s    0.685    2.55%
+      100     25.63 s    0.515    1.97%
+      125     25.24 s    0.397    1.55%   <- 0.5 s / 1% stops HERE
+      ...
+      250     24.63 s    0.008    0.02%   <- 0.05 s / 0.1% stops here
+
+    tol 0.50 s, rel 1.0%   -> stops at epoch 125
+    tol 0.05 s, rel 0.1%   -> stops at epoch 250
+
+**Verified: the epoch defaults (0.05 min, 0.1%) stop at 250 on this curve.**
+The looser round-loop tolerance would stop at 125, which the held-out coverage
+says is about 2 points of +/-30 s coverage too early (ep100 79.30%, ep200
+81.15%). The two loops therefore carry DIFFERENT tolerances on purpose: a
+refinement round costs a re-score, an epoch block costs seconds on a GPU, so the
+epoch loop can afford to be fussier.
+
+Note the held-out curve is FLAT, not U-shaped -- it stops improving and does not
+degrade. So there is no minimum to overshoot, only compute to waste, which is
+why a delta test is sufficient and no patience counter is needed.
+
+## Parallelism
+
+GPU when one is available, all cores when not, and it SAYS WHICH -- the resolved
+device, not the requested one. torch was a CPU-only build for a whole afternoon
+while `ModelManager(device='gpu')` silently fell back.
+
+* **GPU**: picks the device with the most free memory rather than `cuda:0`.
+  These cards are shared and one of them was carrying 60 GiB of another user's
+  job today. 200 epochs takes 41.7 s on an H100 against 481.9 s for 100 on CPU
+  -- about 23x per epoch.
+* **CPU**: `torch.set_num_threads(os.cpu_count())` and a quarter of that for
+  interop. torch's default is a heuristic that is frequently ONE thread inside a
+  container, which is the difference between minutes and an hour for a 500-epoch
+  fit. `ODIA_RT_THREADS` overrides.

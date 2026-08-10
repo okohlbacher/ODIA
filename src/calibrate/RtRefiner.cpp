@@ -286,7 +286,7 @@ namespace ODIA
        << "# different gradient, instrument or method is the failure that cost 2,027\n"
        << "# precursors when it last happened. A series sharing all three is the case\n"
        << "# this exists for.\n"
-       << "# " << provenance << "\n"
+       << "# provenance: " << provenance << "\n"
        << "features\t" << (N_FEAT + 1) << "\n";
     os.precision(17);
     for (const double w : weights_) { os << w << "\n"; }
@@ -303,8 +303,13 @@ namespace ODIA
     {
       if (!line.empty() && line[0] == '#')
       {
-        if (line.rfind("# fitted", 0) == 0 || line.find("anchors") != std::string::npos)
-        { prov += (prov.empty() ? "" : " ") + line.substr(2); }
+        // An EXPLICIT marker. The first version matched lines containing
+        // "fitted" or "anchors", so provenance written in any other words was
+        // silently dropped -- and provenance is the whole safety mechanism for
+        // reusing a model across runs. A guard that quietly discards its own
+        // evidence is worse than no guard.
+        static constexpr const char* kMark = "# provenance: ";
+        if (line.rfind(kMark, 0) == 0) { prov = line.substr(std::strlen(kMark)); }
         continue;
       }
       if (line.rfind("features", 0) == 0)

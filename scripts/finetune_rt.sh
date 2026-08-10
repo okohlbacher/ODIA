@@ -44,6 +44,7 @@ echo "==> fine-tuning on ${ids}"
   --q-value "${ODIA_RT_QVALUE:-0.01}" \
   ${ODIA_RT_CURVE:+--curve "${ODIA_RT_CURVE}"} \
   --device "${ODIA_RT_DEVICE:-gpu}" \
+  ${ODIA_RT_THREADS:+} \
   --method "${ODIA_RT_METHOD:-direct}" --evaluate
 
 echo "==> exporting to ONNX"
