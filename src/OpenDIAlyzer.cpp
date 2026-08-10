@@ -18,6 +18,8 @@
 #include <odia/RtCalibration.h>
 #include <odia/RtRefiner.h>
 
+#include <array>
+
 #include <fstream>
 #include <unordered_map>
 
@@ -580,9 +582,22 @@ protected:
                           "peptdeep fine-tuner reaches 27.70 s and is better, but needs torch, a "
                           "separate environment and a GPU node, so it stays behind "
                           "-repredict_irt. This one has no dependency and runs by default, "
-                          "because a refinement nobody enables is a refinement nobody gets.",
+                          "because a refinement nobody enables is a refinement nobody gets. "
+                          "\n\nmap_only: iterate the ANCHORS without the sequence model -- "
+                          "re-derive anchors from the current scoring, refit the map, re-score, "
+                          "repeat. That half is separable and on S08 it is the half that works: "
+                          "the window for 99% coverage fell 913.7 -> 281.0 s between rounds purely "
+                          "from better anchors, while the ridge improved the median and WIDENED "
+                          "the p99 that sets the window.",
                           false, true);
-    setValidStrings_("rt_refine", {"auto", "off"});
+    setValidStrings_("rt_refine", {"auto", "map_only", "off"});
+    registerIntOption_("rt_refine_rounds", "<n>", 4,
+                       "Iterations of the per-run retention-time refinement. Each round derives "
+                       "its anchors from the CURRENT scoring, refines, refits the map and "
+                       "re-scores -- so a better axis finds better anchors, which is the whole "
+                       "point and what a single pass cannot do. Stops early when a round does not "
+                       "increase identifications. DIA-NN runs twelve for the same reason.",
+                       false, true);
     registerOutputFile_("rt_refine_model_out", "<file>", "",
                         "Write the fitted retention-time refinement so it can be reused on OTHER "
                         "runs, skipping the per-run fit. The file records what it was fitted on. "
@@ -1205,148 +1220,196 @@ protected:
     // gap between them IS the diagnostic.
     reportRtResiduals_(anchors, trafo);
 
-    // Per-run retention-time refinement, IN iRT SPACE, before the map is
-    // applied and before pass 2 sees anything.
+    // Per-run retention-time refinement, IN iRT SPACE and ITERATIVELY.
     //
-    // The calibration is a monotone map iRT -> RT and it should be the ONLY
-    // transform on the retention-time axis. A correction applied AFTER it is a
-    // second, unconstrained one: the first version of this did exactly that and
-    // took S08 from 1,464 identifications to zero, because a linear model
-    // extrapolating outside its training range put pass 2's windows off the
-    // gradient.
+    // One-shot refinement measured on the anchors it was fitted to is circular:
+    // the whole benefit of a better iRT is that it finds BETTER ANCHORS, and a
+    // single pass never lets it. So each round re-derives the anchors from the
+    // CURRENT scoring, refines against those, refits the map, and re-scores --
+    // which is what DIA-NN does for twelve rounds and for the same reason.
     //
-    // So: invert the map to learn what iRT each anchor SHOULD have had, fit
-    // sequence -> (target - library) on that, apply to every precursor's
-    // library iRT, and REFIT the map on the refined axis. Monotonicity is then
-    // re-established by the refit rather than assumed to survive.
+    // It costs no extraction. Pass 1's peak groups are already in memory and
+    // the candidate picker is retention-time agnostic, so a new axis changes
+    // RT_DELTA and nothing else; `PeakGroupScorer::refit` recomputes that one
+    // column and refits the discriminant.
     if (getStringOption_("rt_refine") != "off" && !refine_rows.empty())
     {
-      // The iRT bracket the inverse may search, taken from the anchors
-      // themselves. A retention time outside the map's range has no iRT
-      // preimage, and invertAt clamps rather than extrapolating.
-      double irt_lo = anchors.front().first, irt_hi = anchors.front().first;
-      for (const auto& a : anchors)
-      { irt_lo = std::min(irt_lo, a.first); irt_hi = std::max(irt_hi, a.first); }
-      const auto& pr = library.precursors();
-      std::vector<std::string> seqs;
-      std::vector<int> chg;
-      std::vector<double> lib_irt, target_irt;
-      seqs.reserve(refine_rows.size());
-      for (const auto& [idx, apex] : refine_rows)
-      {
-        seqs.emplace_back(library.strings().get(pr.modified_sequence[idx]));
-        chg.push_back(static_cast<int>(pr.charge[idx]));
-        lib_irt.push_back(static_cast<double>(original_irt[idx]));
-        target_irt.push_back(ODIA::Calibration::invertAt(trafo, apex, irt_lo, irt_hi));
-      }
+      const int rounds = std::max(1, getIntOption_("rt_refine_rounds"));
+      const double anchor_q_r = getDoubleOption_("anchor_q");
+      auto refit_options = scoringOptions_();
+      refit_options.library_rt_is_run_seconds = true;
+      refit_options.disabled_sub_scores = ablatedSubScores_();
 
-      ODIA::RtRefiner refiner;
       const std::string model_in = getStringOption_("rt_refine_model_in");
-      ODIA::RtRefiner::Report rep;
-      if (!model_in.empty())
+      std::size_t best_ids = pass1.identified_at_1pct;
+      ODIA::RtRefiner kept;
+
+      for (int round = 1; round <= rounds; ++round)
       {
-        std::string prov;
-        if (refiner.load(model_in, &prov))
+        // ANCHORS FROM THE CURRENT SCORING, not from round zero.
+        std::vector<const ODIA::PeakGroupScorer::PeakGroup*> cur(
+          library.precursorCount(), nullptr);
+        for (const auto& g : pass1.groups)
         {
+          if (g.decoy || g.qvalue > anchor_q_r) { continue; }
+          auto*& bp = cur[g.precursor];
+          if (bp == nullptr || g.dscore > bp->dscore) { bp = &g; }
+        }
+        std::vector<std::pair<double, double>> a_r;
+        std::vector<std::string> seqs;
+        std::vector<int> chg;
+        std::vector<double> lib_irt, target_irt;
+        const auto& pr = library.precursors();
+        for (std::size_t i = 0; i < cur.size(); ++i)
+        {
+          if (cur[i] == nullptr || !std::isfinite(original_irt[i])) { continue; }
+          a_r.emplace_back(static_cast<double>(original_irt[i]),
+                           static_cast<double>(cur[i]->apex_rt));
+          seqs.emplace_back(library.strings().get(pr.modified_sequence[i]));
+          chg.push_back(static_cast<int>(pr.charge[i]));
+          lib_irt.push_back(static_cast<double>(original_irt[i]));
+        }
+        if (a_r.size() < 250) { break; }
+
+        double p95_r = 0.0;
+        const auto map_r = ODIA::Calibration::fit(a_r, &p95_r, loess_span, rt_interp);
+        double ilo = a_r.front().first, ihi = a_r.front().first;
+        for (const auto& q : a_r)
+        { ilo = std::min(ilo, q.first); ihi = std::max(ihi, q.first); }
+        for (const auto& q : a_r)
+        { target_irt.push_back(ODIA::Calibration::invertAt(map_r, q.second, ilo, ihi)); }
+
+        ODIA::RtRefiner refiner;
+        ODIA::RtRefiner::Report rep;
+        if (!model_in.empty() && round == 1)
+        {
+          std::string prov;
+          if (!refiner.load(model_in, &prov))
+          {
+            writeLogError_("-rt_refine_model_in " + model_in + " is not a refinement model.");
+            return INTERNAL_ERROR;
+          }
           rep.fitted = true;
           writeLogWarn_("retention-time refinement LOADED from " + model_in +
                         " and NOT fitted on this run" +
-                        (prov.empty() ? "" : " [" + prov + "]") +
-                        ". Correct only if this run shares the gradient, instrument and "
-                        "method it was fitted on; nothing here can check that.");
+                        (prov.empty() ? "" : " [" + prov + "]") + ".");
         }
-        else
+        else if (!model_in.empty()) { break; }
+        else if (getStringOption_("rt_refine") == "map_only")
         {
-          writeLogError_("-rt_refine_model_in " + model_in +
-                         " could not be read as a refinement model; refusing to guess.");
-          return INTERNAL_ERROR;
+          // No sequence model: the round is anchors -> map -> re-score. The
+          // refined axis IS the original one, so the refit below is a refit of
+          // the same map on a better anchor set, which is the point.
+          rep.fitted = true;
         }
-      }
-      else
-      {
-        rep = refiner.fit(seqs, chg, lib_irt, target_irt);
-      }
-
-      std::ostringstream ro;
-      ro.setf(std::ios::fixed);
-      ro.precision(3);
-      if (rep.fitted)
-      {
-        const std::string model_out = getStringOption_("rt_refine_model_out");
-        if (!model_out.empty() && model_in.empty())
+        else { rep = refiner.fit(seqs, chg, lib_irt, target_irt); }
+        if (!rep.fitted)
         {
-          std::ostringstream prov;
-          prov.setf(std::ios::fixed);
-          prov.precision(3);
-          prov << "fitted on " << run << ": " << rep.train << " anchors, " << rep.trimmed
-               << " trimmed, held-out iRT SD " << rep.sd_before << " -> " << rep.sd_after;
-          if (refiner.save(model_out, prov.str()))
-          { writeLogInfo_("wrote the retention-time refinement to " + model_out); }
-          else { writeLogWarn_("could not write " + model_out); }
+          writeLogInfo_("retention-time refinement round " + std::to_string(round) +
+                        ": not applied -- " + rep.note);
+          break;
         }
 
-        // Refine the library axis, then REFIT the map on it.
-        std::vector<float>& lirt = library.precursors().irt;
-        lirt = original_irt;                       // refine from the original axis
-        const std::size_t n_ref = refiner.apply(library);
+        // Refine the axis and REFIT the map on it, so monotonicity is
+        // re-established rather than assumed to survive the correction.
+        library.precursors().irt = original_irt;
+        if (getStringOption_("rt_refine") != "map_only") { refiner.apply(library); }
         std::vector<float> refined = library.precursors().irt;
-
-        std::vector<std::pair<double, double>> refit;
-        refit.reserve(refine_rows.size());
-        for (const auto& [idx, apex] : refine_rows)
-        { refit.emplace_back(static_cast<double>(refined[idx]), apex); }
-        double p95_ref = 0.0;
-        const auto trafo_ref = ODIA::Calibration::fit(refit, &p95_ref, loess_span, rt_interp);
-
-        // THE NUMBER THAT MATTERS, in the RT domain: how far the extracted
-        // feature sits from where the library says it should be, before and
-        // after refinement. The refiner's own figure is in iRT units and is not
-        // comparable to anything else in this log.
-        const auto rt_sd = [&](const OpenMS::TransformationDescription& m,
-                               const std::vector<float>& axis) {
-          double mean = 0.0;
-          std::vector<double> r;
-          r.reserve(refine_rows.size());
-          for (const auto& [idx, apex] : refine_rows)
-          { r.push_back(apex - m.apply(static_cast<double>(axis[idx]))); }
-          for (const double x : r) { mean += x; }
-          mean /= static_cast<double>(r.size());
-          double ss = 0.0;
-          for (const double x : r) { ss += (x - mean) * (x - mean); }
-          return std::sqrt(ss / static_cast<double>(r.size() - 1));
-        };
-        const double rt_sd_cal = rt_sd(trafo, original_irt);
-        const double rt_sd_ref = rt_sd(trafo_ref, refined);
-
-        ro << "retention-time refinement: " << rep.train << " anchors (" << rep.trimmed
-           << " trimmed), held-out iRT SD " << rep.sd_before << " -> " << rep.sd_after
-           << " on " << rep.held_out << " sequences; applied to " << n_ref
-           << " precursors"
-           << "\n  RT-domain SD of (extracted apex - predicted): recalibrated "
-           << rt_sd_cal << " s -> fine-tuned " << rt_sd_ref << " s"
-           << "\n  map p95 " << p95 << " s -> " << p95_ref << " s";
-        // ACCEPT ONLY IF THE MAP IMPROVED. The refinement's own held-out number
-        // is measured on anchors, which are contaminated; the map's p95 is what
-        // pass 2's window is built from and is the thing that must not get
-        // worse.
-        if (p95_ref < p95)
+        std::vector<std::pair<double, double>> refit_pts;
+        refit_pts.reserve(a_r.size());
         {
-          trafo = trafo_ref;
-          p95 = p95_ref;
-          refined_irt_ = std::move(refined);
-          writeLogInfo_(ro.str());
+          std::size_t k = 0;
+          for (std::size_t i = 0; i < cur.size(); ++i)
+          {
+            if (cur[i] == nullptr || !std::isfinite(original_irt[i])) { continue; }
+            refit_pts.emplace_back(static_cast<double>(refined[i]), a_r[k].second);
+            ++k;
+          }
         }
-        else
+        double p95_ref = 0.0;
+        const auto map_ref = ODIA::Calibration::fit(refit_pts, &p95_ref, loess_span, rt_interp);
+
+        // Apply and RE-SCORE, then judge on identifications -- the quantity we
+        // actually want -- rather than on a residual over the anchors the model
+        // was just fitted to.
+        auto& irt_r = library.precursors().irt;
+        for (std::size_t i = 0; i < irt_r.size(); ++i)
+        {
+          if (std::isfinite(refined[i]))
+          { irt_r[i] = static_cast<float>(map_ref.apply(static_cast<double>(refined[i]))); }
+        }
+        ODIA::PeakGroupScorer::refit(library, pass1, refit_options);
+
+        // WHAT THIS IS FOR, and it is not identifications.
+        //
+        // The calibration exists so extraction does not MISS a peak and the
+        // window it opens is CLEAN. Those are two numbers, not one:
+        //
+        //   COVERAGE  -- the half-width that contains a given fraction of true
+        //                apices. Miss this and the peak is not in the window at
+        //                any score.
+        //   WIDTH     -- what that half-width costs. Every extra second admits
+        //                interference into every trace, which is what makes a
+        //                feature dirty and what the m/z recalibration downstream
+        //                then has to survive.
+        //
+        // So the objective is the WIDTH REQUIRED FOR A FIXED COVERAGE. A
+        // refinement that narrows it wins; one that widens it loses, whatever it
+        // does to the identification count today.
+        const auto quantiles = [&](const std::vector<std::pair<double, double>>& pts,
+                                   const OpenMS::TransformationDescription& m) {
+          std::vector<double> a;
+          a.reserve(pts.size());
+          for (const auto& q : pts) { a.push_back(std::fabs(q.second - m.apply(q.first))); }
+          std::sort(a.begin(), a.end());
+          const auto at = [&](double f) {
+            return a[std::min(a.size() - 1,
+                              static_cast<std::size_t>(f * (a.size() - 1)))];
+          };
+          return std::array<double, 4>{at(0.50), at(0.95), at(0.99), a.back()};
+        };
+        const auto q_before = quantiles(a_r, map_r);
+        const auto q_after = quantiles(refit_pts, map_ref);
+
+        std::ostringstream ro;
+        ro.setf(std::ios::fixed);
+        ro.precision(2);
+        ro << "rt refine round " << round << ": " << a_r.size() << " anchors ("
+           << rep.trimmed << " trimmed)"
+           << "\n  |residual| p50 " << q_before[0] << " -> " << q_after[0]
+           << " s, p95 " << q_before[1] << " -> " << q_after[1]
+           << " s, p99 " << q_before[2] << " -> " << q_after[2]
+           << " s, max " << q_before[3] << " -> " << q_after[3] << " s"
+           << "\n  window for 99% coverage: " << (2.0 * q_before[2]) << " s -> "
+           << (2.0 * q_after[2]) << " s"
+           << "   [identifications " << best_ids << " -> " << pass1.identified_at_1pct
+           << ", not the criterion]";
+        writeLogInfo_(ro.str());
+
+        // p99, not p95 and not the SD. p95 leaves one precursor in twenty
+        // outside the window, and an SD is a property of the bulk that says
+        // nothing about the tail a window has to cover.
+        if (!(q_after[2] < q_before[2]))
         {
           library.precursors().irt = original_irt;
-          ro << " -- REJECTED, the map did not improve";
-          writeLogInfo_(ro.str());
+          if (!refined_irt_.empty()) { library.precursors().irt = refined_irt_; }
+          writeLogInfo_("rt refine: round " + std::to_string(round) +
+                        " did not narrow the window needed for 99% coverage; "
+                        "keeping the previous axis");
+          break;
         }
+        best_ids = pass1.identified_at_1pct;
+        refined_irt_ = refined;
+        trafo = map_ref;
+        p95 = p95_ref;
+        kept = refiner;
       }
-      else
+
+      const std::string model_out = getStringOption_("rt_refine_model_out");
+      if (!model_out.empty() && model_in.empty() && kept.fitted())
       {
-        ro << "retention-time refinement: not applied -- " << rep.note;
-        writeLogInfo_(ro.str());
+        if (kept.save(model_out, "fitted iteratively on " + run))
+        { writeLogInfo_("wrote the retention-time refinement to " + model_out); }
       }
     }
 
