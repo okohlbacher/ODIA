@@ -449,6 +449,9 @@ namespace ODIA
     /// interference too.
     struct MassAnchor
     {
+      /// `residual.decoy` is NOT populated here -- target/decoy status belongs
+      /// to the group, and holding a second copy on the residual is what let
+      /// the two disagree once. `acceptedMassResiduals` fills it from the group.
       MassResidual residual;
       std::uint32_t group = 0;   ///< index into Result::groups
     };

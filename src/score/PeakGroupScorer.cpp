@@ -645,6 +645,14 @@ namespace ODIA
 
     for (const auto& cand : candidates)
     {
+      // Per CANDIDATE, not per mass block. The mass block below is guarded by
+      // `hi > lo`, so a single-cycle candidate skips it -- and used to inherit
+      // whatever the previous candidate staged, committing it under this
+      // candidate's group index and decoy flag. Measured on S08 before the fix:
+      // 26,868 anchors passed a target-group filter against 13,778 that were
+      // actually flagged target, and the mismatched pairs put 876 control
+      // residuals into a set that contained none, which made the fit refuse.
+      staged_anchors.clear();
       const std::size_t lo = cand.left, hi = cand.right;
       const std::size_t width = hi - lo + 1;
 
@@ -848,7 +856,6 @@ namespace ODIA
         std::vector<double> dev, per_fragment, cell;
         dev.reserve((hi - lo + 1) * tc);
         per_fragment.reserve(tc);
-        staged_anchors.clear();
         for (std::uint32_t k = 0; k < tc; ++k)
         {
           const std::uint32_t n = chromatogram.pointCount(k);
@@ -911,7 +918,9 @@ namespace ODIA
                 // The precursor's mobility. A fragment has none of its own.
                 a.residual.im = (i < p.im.size()) ? p.im[i]
                                 : std::numeric_limits<float>::quiet_NaN();
-                a.residual.decoy = false;   // set from the group at commit
+                // NOT set here, and not at commit either: `decoy` is a property
+                // of the GROUP, and storing it a second time on the residual is
+                // what let the two disagree. Filled from the group at read time.
                 staged_anchors.push_back(a);
               }
             }
@@ -1033,13 +1042,11 @@ namespace ODIA
       if (options.collect_mass_anchors && !staged_anchors.empty())
       {
         const std::uint32_t gi = static_cast<std::uint32_t>(result.groups.size());
-        const bool is_decoy = g.decoy;
         for (MassAnchor& a : staged_anchors)
         {
           if (result.mass_anchors.size() >= options.max_mass_anchors)
           { ++result.mass_anchors_dropped; continue; }
           a.group = gi;
-          a.residual.decoy = is_decoy;
           result.mass_anchors.push_back(a);
         }
         staged_anchors.clear();
@@ -1473,7 +1480,9 @@ namespace ODIA
       const PeakGroup& g = result.groups[a.group];
       if (g.decoy && !include_decoys) { continue; }
       if (!(g.qvalue <= q_threshold)) { continue; }
-      out.push_back(a.residual);
+      MassResidual r = a.residual;
+      r.decoy = g.decoy;          // the single source of truth
+      out.push_back(r);
     }
     return out;
   }

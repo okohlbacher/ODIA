@@ -545,6 +545,12 @@ protected:
                           "are what it reads. See doc/15.",
                           false);
     setValidStrings_("mass_anchors", {"off", "measure"});
+    registerStringOption_("out_mass_anchors", "<file>", "",
+                          "Write the harvested fragment mass residuals here as a TSV: mz, rt, "
+                          "ppm (against the UNCORRECTED theoretical m/z), intensity, im, decoy, "
+                          "group, qvalue. Fitting a calibration is a modelling question and "
+                          "re-running a 10-minute search to try another model is the wrong loop.",
+                          false);
     registerIntOption_("max_mass_anchors", "<n>", 8000000,
                        "Ceiling on harvested anchors, ~24 B each. Hitting it truncates the "
                        "sample in RUN ORDER, which is a retention-time bias, so the number "
@@ -1800,6 +1806,29 @@ protected:
       ((h % 100u) < 15u ? test : train).push_back(a.residual);
     }
 
+    const std::string dump = getStringOption_("out_mass_anchors");
+    if (!dump.empty())
+    {
+      std::ofstream out(dump);
+      if (!out)
+      { writeLogWarn_("cannot write -out_mass_anchors " + dump); }
+      else
+      {
+        out << "mz\trt\tppm\tintensity\tim\tdecoy\tgroup\tqvalue\tprecursor\n";
+        for (const auto& a : pass1.mass_anchors)
+        {
+          if (a.group >= pass1.groups.size()) { continue; }
+          const auto& g = pass1.groups[a.group];
+          out << a.residual.mz << '\t' << a.residual.rt << '\t' << a.residual.ppm << '\t'
+              << a.residual.intensity << '\t' << a.residual.im << '\t'
+              << (g.decoy ? 1 : 0) << '\t' << a.group << '\t' << g.qvalue << '\t'
+              << g.precursor << '\n';
+        }
+        writeLogInfo_("wrote " + std::to_string(pass1.mass_anchors.size()) +
+                      " mass anchors to " + dump);
+      }
+    }
+
     std::ostringstream os;
     os << "mass anchors: " << pass1.mass_anchors.size() << " harvested, "
        << train.size() << " train / " << test.size() << " held out by stripped sequence "
@@ -1835,6 +1864,17 @@ protected:
       ? ODIA::MassCalibration::systematicResidualPpm(
           test, [&](double mz) { return mass_model_.ppmAt(mz); })
       : std::numeric_limits<double>::quiet_NaN();
+
+    {
+      // The two counts that say whether the fit saw what it was meant to see.
+      // The first attempt refused with a control peakedness of 1e9, which is
+      // only reachable when a control population exists at all -- so it is
+      // reported rather than inferred.
+      std::ostringstream d;
+      d << "mass anchors: fit saw " << id_model.residuals << " target and "
+        << id_model.decoy_residuals << " control residuals";
+      writeLogInfo_(d.str());
+    }
 
     std::ostringstream r;
     r.setf(std::ios::fixed); r.precision(3);
