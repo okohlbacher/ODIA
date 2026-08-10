@@ -2011,8 +2011,22 @@ protected:
         const auto name = library.strings().get(p.protein_group[kv.first]);
         (name.rfind(prefix, 0) == 0 ? e : t)++;
       }
-      const double fdp = (e + t) > 0
-        ? static_cast<double>(e) / static_cast<double>(e + t) / r : 0.0;
+      // FDP among the reported TARGET discoveries.
+      //
+      // Entrapment is r times as numerous as target, so a false discovery lands
+      // on an entrapment sequence r/(1+r) of the time and on a target 1/(1+r).
+      // Observing e entrapment hits therefore implies e/r false TARGET hits,
+      // and the proportion is that over the targets actually reported:
+      //
+      //     FDP = (e / r) / t
+      //
+      // NOT e/(e+t)/r, which was the first implementation and is wrong: it
+      // leaves all e entrapment discoveries in the denominator before applying
+      // the opportunity correction, and so understates the rate -- worst
+      // exactly where the diagnostic matters. At t=100, e=30, r=3 it reports
+      // 7.69% where the truth is 10.0%.
+      const double fdp = t > 0
+        ? (static_cast<double>(e) / r) / static_cast<double>(t) : 0.0;
       os << "\n  q <= " << q << "   " << t << " target + " << e
          << " entrapment   FDP " << 100.0 * fdp << "%"
          << (fdp > 2.0 * q ? "   <-- MORE THAN TWICE THE NOMINAL RATE" : "");

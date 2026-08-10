@@ -1262,7 +1262,21 @@ namespace ODIA
     // this scorer carries neither an rt_delta nor a mass_error sub-score --
     // both deliberately absent, see the SubScore comments. So the constraint
     // transfers in principle and covers different columns.
-    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD};
+    // LOWER-IS-BETTER features, whose weights may never come out positive.
+    //
+    // RT_DELTA and IM_DELTA were missing here, and both are stored as +|error|.
+    // Nothing stopped the semi-supervised fit assigning them a POSITIVE weight
+    // -- i.e. rewarding candidates for sitting FURTHER from their predicted
+    // retention time or mobility. That is not a theoretical risk: the initial
+    // target class is heavily contaminated on a sparse library (see the
+    // seeding note below), so a positive coefficient can be learned whenever
+    // the contaminating set happens to carry larger errors than the decoys.
+    //
+    // RT_DELTA has been in production with this defect. IM_DELTA acquired it
+    // tonight when the feature was finally fed, and is a credible explanation
+    // for the 12 identifications the mobility features appeared to cost.
+    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD,
+                                   RT_DELTA, IM_DELTA};
     params.match_decoy_candidate_counts = options.match_decoy_candidate_counts;
 
     // Seed the semi-supervised loop on CORR_SUM alone.
