@@ -555,7 +555,7 @@ protected:
                           "has ion mobility and is inert where it does not; 'off' restores "
                           "the previous behaviour.",
                           false);
-    setValidStrings_("im_features", {"auto", "off"});
+    setValidStrings_("im_features", {"auto", "spread", "off"});
     registerStringOption_("mass_anchors", "<mode>", "off",
                           "Harvest one fragment mass residual per contributing fragment of "
                           "every retained candidate, so a mass model can be fitted from "
@@ -1800,6 +1800,16 @@ protected:
     // OFF when the extractor collected no residuals, because a column of NaN is
     // worse than an absent one.
     const bool mass_on = mode == "on" || mode == "auto";
+
+    // var_im_spread is opt-in. See -im_features: it costs 60 identifications on
+    // S08 for a purity gain the entrapment counts cannot establish, so it is
+    // built, correct, and NOT shipped on. var_im_delta is unaffected -- that one
+    // is a documented feature that was simply never fed.
+    if (getStringOption_("im_features") != "spread")
+    {
+      const int i = index_of("var_im_spread");
+      if (i >= 0) { out.push_back(i); }
+    }
     if (!mass_on)
     {
       for (const char* n : {"var_mass_accuracy", "var_mass_spread"})
