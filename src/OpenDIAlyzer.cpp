@@ -2046,8 +2046,28 @@ protected:
       { ODIA::Calibration::fit(dec, &p95_d, span, interp); }
       // Decoys must be MEASURABLY worse. Equal residuals mean the fit is
       // describing its own anchors rather than the run.
-      const bool ok = dec.size() < min_anchors || p95_d > 1.25 * p95_t;
+      //
+      // "Too few decoys to fit" is NOT a pass. An earlier version wrote
+      //   dec.size() < min_anchors || p95_d > 1.25 * p95_t
+      // so the control auto-succeeded once decoys fell below the floor -- which
+      // is exactly where a rising threshold puts them, and exactly where the
+      // claim is most aggressive. On Astral that accepted contiguity >= 11 on a
+      // control that had never run (96 decoys, p95_d reported as 0.0), and the
+      // map it accepted had a p95 of 473 s. A check that cannot be evaluated
+      // has not been passed.
+      const bool control_ran = dec.size() >= min_anchors;
+      const bool ok = control_ran && p95_d > 1.25 * p95_t;
       tried.push_back({k, tgt.size(), dec.size(), p95_t, p95_d, ok});
+      if (!control_ran)
+      {
+        // Say so out loud: the row would otherwise show a decoy p95 of 0.0,
+        // which reads as "the decoys fitted perfectly" rather than "no fit".
+        writeLogInfo_("rt seed: at contiguity >= " + std::to_string(k) +
+                      " only " + std::to_string(dec.size()) + " decoys remain, "
+                      "below the " + std::to_string(min_anchors) + " needed to "
+                      "fit a control -- this threshold CANNOT be validated and "
+                      "is not accepted on the strength of its enrichment alone.");
+      }
       if (ok && best_k == 0) { best_k = k; best_trafo = tf; }
     }
 
