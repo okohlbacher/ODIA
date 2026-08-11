@@ -284,6 +284,20 @@ protected:
     registerDoubleOption_("irt_intercept", "<b>", 0.0, "See -irt_slope.", false, true);
     registerIntOption_("max_precursors", "<n>", 0,
                        "Extract only the first N precursors, 0 for all.", false, true);
+    registerDoubleOption_("live_memory_gb", "<GB>", 20.0,
+                          "Memory budget for the extractor's live blocks, GiB. The live-"
+                          "precursor cap is DERIVED from this, because a cap in precursors "
+                          "cannot be chosen without knowing the transition count and window "
+                          "width -- which is why it was never set, and why a 4,986,319-"
+                          "precursor library OOM-killed the run at 588 GB.\n\n"
+                          "0 = auto: take 60% of MemAvailable at startup. A negative value "
+                          "restores the old behaviour of no cap at all, bounded only by "
+                          "retention-time overlap -- which does NOT tighten as the library "
+                          "grows and is therefore not a bound on a large library.\n\n"
+                          "-max_live_precursors still applies and the TIGHTER of the two "
+                          "wins: an explicit cap is a caller's assertion and a budget must "
+                          "not loosen it.",
+                          false);
     registerIntOption_("max_live_precursors", "<n>", 0,
                        "Cap how many precursors may have chromatograms in memory at "
                        "once. 0 lets the retention-time overlap decide, which is the "
@@ -832,9 +846,39 @@ protected:
       // The NaN handling is NOT part of this knob and stays fixed: a precursor
       // with no library 1/K0 is ungated, matching MS2, rather than having every
       // peak rejected.
-      ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
-                                           options.precursor_im_window *
-                                             getDoubleOption_("ms1_im_scale"));
+      // SIZE IT BEFORE ALLOCATING IT. Ms1Traces is a DENSE
+      // precursors x MS1-spectra float matrix (Ms1Traces.cpp:52,
+      // values_.assign(np * bins_, 0.0f)), so it grows linearly with the
+      // library and is charged before extraction begins -- it is not covered by
+      // the live-block budget.
+      //
+      // At 5,330 precursors it is 83 MB and invisible. At 4,986,319 it is
+      // 77.6 GB, which is 13% of the 588 GB peak that OOM-killed a benchmark
+      // run. Every memory figure this project published before that was
+      // measured on a library ~1000x too small to show it.
+      {
+        const std::size_t ms1_bins = source->ms1Spectra().size();
+        const double need = double(library.precursorCount()) * double(ms1_bins) * 4.0;
+        const double cap = double(options.live_memory_budget_bytes);
+        if (cap > 0.0 && need > cap)
+        {
+          std::ostringstream w;
+          w.setf(std::ios::fixed); w.precision(1);
+          w << "MS1 traces would need " << need / 1073741824.0 << " GiB ("
+            << library.precursorCount() << " precursors x " << ms1_bins
+            << " MS1 spectra x 4 B), above the " << cap / 1073741824.0
+            << " GiB budget -- SKIPPING them. var_ms1_coelution will be absent "
+               "rather than the run being killed. Raise -live_memory_gb to keep "
+               "them, or narrow the library.";
+          writeLogWarn_(w.str());
+        }
+        else
+        {
+          ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
+                                               options.precursor_im_window *
+                                                 getDoubleOption_("ms1_im_scale"));
+        }
+      }
       const double secs = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t0).count();
       if (ms1_traces_.empty())
@@ -892,6 +936,29 @@ protected:
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     options.max_live_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_live_precursors")));
+    {
+      const double gb = getDoubleOption_("live_memory_gb");
+      if (gb < 0.0) { options.live_memory_budget_bytes = 0; }
+      else if (gb > 0.0)
+      { options.live_memory_budget_bytes = std::size_t(gb * 1024.0 * 1024.0 * 1024.0); }
+      else
+      {
+        // auto: 60% of what the kernel says is available right now. Not of
+        // MemTotal -- a node with other tenants has less than it owns, and the
+        // vault records a run measuring 52 effective cores on a 128-core box
+        // for the same reason.
+        std::size_t avail_kb = 0;
+        if (std::ifstream mi("/proc/meminfo"); mi)
+        {
+          std::string k; unsigned long long v; std::string unit;
+          while (mi >> k >> v >> unit)
+          { if (k == "MemAvailable:") { avail_kb = v; break; } }
+        }
+        options.live_memory_budget_bytes =
+          avail_kb ? std::size_t(double(avail_kb) * 1024.0 * 0.60)
+                   : std::size_t(20.0 * 1024 * 1024 * 1024);
+      }
+    }
     options.decode_block = static_cast<std::size_t>(
       std::max(0, getIntOption_("decode_block")));
 
@@ -934,6 +1001,8 @@ protected:
         << stats.peak_live_points << " points ("
         << double(stats.peak_live_points) * sizeof(float) / 1073741824.0
         << " GiB), bound by " << stats.memory_bound_by;
+    if (!stats.live_budget_note.empty())
+    { msg << "\n  live budget: " << stats.live_budget_note; }
     if (stats.chunks > 1)
     {
       msg << "\n  " << stats.chunks << " chunks, " << stats.spectra_decoded

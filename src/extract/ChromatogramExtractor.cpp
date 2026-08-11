@@ -617,7 +617,31 @@ namespace ODIA
     // a band needs only the spectra inside it, which is why chunking costs a
     // fraction of a decode pass rather than a whole one per chunk.
     std::vector<std::vector<std::uint32_t>> chunks;
-    const std::size_t cap = options.max_live_precursors;
+    // Derive the cap from the memory budget when one is given. Stated in
+    // bytes because that is the quantity a caller actually has, and inverted
+    // here because only the extractor knows the mean cells per precursor.
+    std::size_t cap = options.max_live_precursors;
+    if (options.live_memory_budget_bytes > 0)
+    {
+      std::size_t planes = 1;
+      if (options.collect_mass_residuals) { planes += 2; }
+      if (options.collect_im_residuals)   { planes += 2; }
+      double mean_cells = 0.0;
+      for (const Assignment& a : assignments)
+      { mean_cells += double(a.valid) * double(a.hi - a.lo); }
+      if (!assignments.empty()) { mean_cells /= double(assignments.size()); }
+      const double per = mean_cells * 4.0 * double(planes);
+      const std::size_t derived = per > 0.0
+        ? std::max<std::size_t>(1, std::size_t(double(options.live_memory_budget_bytes) / per))
+        : 0;
+      // The tighter of the two wins: an explicit -max_live_precursors is a
+      // caller's assertion and must not be loosened by a budget.
+      cap = (cap == 0) ? derived : std::min(cap, derived);
+      st.live_budget_note = "budget " +
+        std::to_string(options.live_memory_budget_bytes / (1024ull*1024*1024)) +
+        " GiB / " + std::to_string(std::size_t(per)) + " B per live precursor (" +
+        std::to_string(planes) + " planes) -> cap " + std::to_string(cap);
+    }
     if (cap == 0 || overlap_precursors <= cap)
     {
       chunks.push_back(std::move(by_start));

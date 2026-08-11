@@ -614,6 +614,28 @@ namespace ODIA
       /// bound the memory is reported in `Stats::memory_bound_by`.
       std::size_t max_live_precursors = 0;
 
+      /// Memory budget for the live blocks, BYTES. Non-zero overrides
+      /// `max_live_precursors`, which is derived from it.
+      ///
+      /// `max_live_precursors = 0` means "bounded only by retention-time
+      /// overlap", and that bound is a property of the RUN, not of the library:
+      /// it does not tighten as the library grows. On a 4,986,319-precursor
+      /// library with no iRT map -- so every precursor predicted across the
+      /// whole gradient -- essentially the entire library is live at once, and
+      /// the extractor was OOM-killed at 588 GB on a 995 GB node.
+      ///
+      /// A cap stated in precursors cannot be chosen without knowing the
+      /// transition count and window width, which is why nobody set one. A cap
+      /// stated in BYTES can: the extractor knows the mean cells per precursor
+      /// and how many planes each carries, so it inverts the budget into a
+      /// precursor count itself and reports what it chose.
+      ///
+      /// Per live precursor the cost is
+      ///     valid_transitions x cycles_in_window x 4 B x planes
+      /// where planes is 1, +2 with `collect_mass_residuals`, +2 with
+      /// `collect_im_residuals` -- so 5 with both, which is the default.
+      std::size_t live_memory_budget_bytes = 0;
+
       /// How many spectra are decoded and held at once.
       ///
       /// This is the largest single term in the run's memory, and it was found
@@ -757,6 +779,10 @@ namespace ODIA
       /// not. Said out loud because the two have completely different costs --
       /// the first is free, the second buys memory with decode passes.
       std::string memory_bound_by;
+      /// How the byte budget was inverted into a precursor cap, when one was
+      /// given. Empty when the cap came from -max_live_precursors or from
+      /// retention-time overlap alone.
+      std::string live_budget_note;
     };
 
     /// Extract into a sink, holding only what is live.
