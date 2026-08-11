@@ -1992,39 +1992,15 @@ protected:
     const std::size_t min_run =
       static_cast<std::size_t>(std::max(1, getIntOption_("rt_seed_min_contiguity")));
 
-    // CONTIGUITY, not depth. The first attempt keyed on full depth and the
-    // control refused it: 69,669 target against 60,243 decoy anchors, a ratio
-    // of 1.16, and p95 residuals of 673.6 s against 679.6 s. The signal was
-    // there -- the ~9,400 excess is about the number of peptides actually in
-    // the sample -- but at ~14% of the anchor set, and a binned-median fit
-    // takes the median of each bin, which at 14% signal is the noise.
-    //
-    // Depth cannot fix that: it is a MAXIMUM over spectra, so one lucky
-    // coincidence wins it outright. Requiring the match to REPEAT in
-    // consecutive cycles of the same window is the orthogonal condition
-    // doc/08 listed and nobody built -- a peptide elutes over a peak, and the
-    // interfering ions behind a chance hit are not eluting on that peak.
-    std::vector<std::pair<double, double>> tgt, dec;
-    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    // Populate the histograms. They live on Stats and are filled by select(),
+    // which this path does not otherwise need -- an earlier version reported a
+    // histogram it had never computed and printed an empty one, which looked
+    // like "no data" rather than like a bug.
     {
-      if (ev[i].contiguity < min_run || !(ev[i].contiguous_rt >= 0.0f)) { continue; }
-      if (!std::isfinite(p.irt[i])) { continue; }
-      (p.decoy[i] ? dec : tgt).push_back({double(p.irt[i]),
-                                          double(ev[i].contiguous_rt)});
+      ODIA::PrecursorPrefilter::Options hist = po;
+      hist.keep_fraction = 1.0;                       // discards nothing
+      ODIA::PrecursorPrefilter::select(library, ev, hist, ps);
     }
-
-    std::ostringstream os;
-    os.setf(std::ios::fixed); os.precision(1);
-    os << "rt seed: swept " << ps.spectra_swept << " MS2 spectra in " << ps.seconds
-       << " s at " << po.ppm << " ppm; " << tgt.size() << " target and "
-       << dec.size() << " decoy anchors at contiguity >= " << min_run
-       << " cycles";
-    if (dec.size() > 0)
-    { os << " (" << (double(tgt.size()) / double(dec.size())) << "x enrichment)"; }
-    writeLogInfo_(os.str());
-
-    // Both histograms, so the two statistics can be compared directly rather
-    // than one being adopted on the strength of a story about the other.
     {
       std::ostringstream h;
       h << "rt seed contiguity histogram (target / decoy), 0..9,10+:";
@@ -2034,40 +2010,74 @@ protected:
       writeLogInfo_(h.str());
     }
 
-    const std::size_t min_anchors = 100;
-    if (tgt.size() < min_anchors)
-    {
-      writeLogWarn_("rt seed: too few full-depth target anchors (" +
-                    std::to_string(tgt.size()) + " < " + std::to_string(min_anchors) +
-                    "); pass 1 falls back to spreading the library over the run.");
-      return EXECUTION_OK;
-    }
-
     const double span = getDoubleOption_("rt_loess_span");
     const std::string interp = getStringOption_("rt_interpolation");
-    double p95_t = 0.0, p95_d = 0.0;
-    const auto trafo_t = ODIA::Calibration::fit(tgt, &p95_t, span, interp);
-    if (dec.size() >= min_anchors)
-    { ODIA::Calibration::fit(dec, &p95_d, span, interp); }
+    const std::size_t min_anchors = 100;
 
-    std::ostringstream c;
-    c.setf(std::ios::fixed); c.precision(1);
-    c << "rt seed control: p95 residual " << p95_t << " s from targets against "
-      << p95_d << " s from decoys";
-    writeLogInfo_(c.str());
+    // SWEEP the threshold rather than guess it.
+    //
+    // Depth gave 1.16x target-over-decoy enrichment and was refused.
+    // Contiguity >= 3 gave 1.6x -- better, so the statistic is doing what it
+    // was added for -- and was still refused, because ~38% signal is not
+    // enough for a binned-median fit: the median of each bin is still the
+    // noise. The question is therefore not "does contiguity work" but "is
+    // there a threshold at which the anchor set becomes majority signal", and
+    // that is answerable from evidence already in hand for the cost of a refit.
+    struct Try { std::size_t k, nt, nd; double p95t, p95d; bool ok; };
+    std::vector<Try> tried;
+    OpenMS::TransformationDescription best_trafo;
+    std::size_t best_k = 0;
 
-    // Decoys must be MEASURABLY worse. Equal residuals mean the fit is
-    // describing its own anchors rather than the run.
-    if (dec.size() >= min_anchors && !(p95_d > 1.25 * p95_t))
+    for (std::size_t k = min_run; k <= 12; ++k)
     {
-      writeLogWarn_("rt seed REFUSED: the decoy fit is as good as the target fit ("
-                    + std::to_string(p95_d) + " s against " + std::to_string(p95_t)
-                    + " s), so the anchors carry no retention-time information and "
-                      "the map would centre pass 1 on nothing. Falling back to "
-                      "spreading the library over the run, which is less wrong "
-                      "than a confident error.");
+      std::vector<std::pair<double, double>> tgt, dec;
+      for (std::size_t i = 0; i < library.precursorCount(); ++i)
+      {
+        if (ev[i].contiguity < k || !(ev[i].contiguous_rt >= 0.0f)) { continue; }
+        if (!std::isfinite(p.irt[i])) { continue; }
+        (p.decoy[i] ? dec : tgt).push_back({double(p.irt[i]),
+                                            double(ev[i].contiguous_rt)});
+      }
+      if (tgt.size() < min_anchors) { tried.push_back({k, tgt.size(), dec.size(), 0, 0, false}); break; }
+
+      double p95_t = 0.0, p95_d = 0.0;
+      auto tf = ODIA::Calibration::fit(tgt, &p95_t, span, interp);
+      if (dec.size() >= min_anchors)
+      { ODIA::Calibration::fit(dec, &p95_d, span, interp); }
+      // Decoys must be MEASURABLY worse. Equal residuals mean the fit is
+      // describing its own anchors rather than the run.
+      const bool ok = dec.size() < min_anchors || p95_d > 1.25 * p95_t;
+      tried.push_back({k, tgt.size(), dec.size(), p95_t, p95_d, ok});
+      if (ok && best_k == 0) { best_k = k; best_trafo = tf; }
+    }
+
+    {
+      std::ostringstream t;
+      t.setf(std::ios::fixed); t.precision(1);
+      t << "rt seed threshold sweep (contiguity, targets, decoys, enrichment, "
+           "p95 target, p95 decoy, verdict):";
+      for (const Try& r : tried)
+      {
+        t << "\n  >=" << r.k << " cycles: " << r.nt << " / " << r.nd;
+        if (r.nd > 0) { t << "  " << (double(r.nt) / double(r.nd)) << "x"; }
+        t << "  p95 " << r.p95t << " s vs " << r.p95d << " s  "
+          << (r.ok ? "PASSES" : "refused");
+      }
+      writeLogInfo_(t.str());
+    }
+
+    if (best_k == 0)
+    {
+      writeLogWarn_("rt seed REFUSED at every contiguity threshold: no anchor "
+                    "set was found whose fit beats the same fit made from "
+                    "decoys. Falling back to spreading the library over the "
+                    "run, which is less wrong than a confident error.");
       return EXECUTION_OK;
     }
+
+    const auto& trafo_t = best_trafo;
+    writeLogInfo_("rt seed ACCEPTED at contiguity >= " + std::to_string(best_k) +
+                  " cycles.");
 
     auto& irt = library.precursors().irt;
     for (std::size_t i = 0; i < irt.size(); ++i)
@@ -2077,8 +2087,8 @@ protected:
     }
     external_irt_ = true;
     scoring_rt_is_run_seconds_ = true;
-    writeLogInfo_("rt seed ACCEPTED: pass 1 now extracts where the map says "
-                  "rather than across the whole gradient.");
+    writeLogInfo_("pass 1 now extracts where the map says rather than across "
+                  "the whole gradient.");
     return EXECUTION_OK;
   }
 
