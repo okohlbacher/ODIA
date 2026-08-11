@@ -15,6 +15,7 @@
 #include <odia/Ms1Traces.h>
 #include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
+#include <odia/PrecursorPrefilter.h>
 #include <odia/RtCalibration.h>
 #include <odia/RtRefiner.h>
 
@@ -335,6 +336,41 @@ protected:
                        "one feature of fifteen and cannot carry the improvement. Kept "
                        "for experiments.",
                        false, true);
+    registerStringOption_("prefilter", "<mode>", "off",
+                          "Discard precursors the run cannot support BEFORE pass 2, which is "
+                          "the pass whose memory is proportional to how many survive. Runs "
+                          "BETWEEN the passes, so it inherits pass 1's retention-time map and "
+                          "calibrated fragment window -- doc/08's design ran before pass 1, had "
+                          "neither, and was refuted on S08 (99.7% of precursors at maximum "
+                          "depth, and the two non-maximum statistics ranked WORSE than random). "
+                          "doc/08 named the cause: depth is a MAXIMUM over ~32,210 spectra and "
+                          "an extreme-value statistic saturates whatever the per-draw "
+                          "probability is. A retention-time neighbourhood is the one rescue it "
+                          "called workable, dismissed only as circular because supplying the RT "
+                          "seed was the filter's own second purpose -- which binds only if it "
+                          "runs before pass 1. 'measure' sweeps and REPORTS the enrichment "
+                          "without discarding anything; 'on' also discards. Default off: the "
+                          "conjecture that the gradient returns in this regime is UNMEASURED on "
+                          "our data, and doc/13's rule is two files before any such conclusion "
+                          "is recorded.", false);
+    setValidStrings_("prefilter", {"off", "measure", "on"});
+    registerDoubleOption_("prefilter_keep", "<frac>", 0.5,
+                          "Fraction of each label class to retain under -prefilter on. Applied "
+                          "as a COUNT PER CLASS, never as a shared depth threshold: targets "
+                          "clear an evidence bar more often, so one threshold would retain a "
+                          "biased, weaker decoy sample, and those decoys would then score below "
+                          "a fair null and make every downstream q-value optimistic. Equal "
+                          "counts retain the BEST decoys, which biases the FDR conservative -- "
+                          "the safe direction.", false);
+    registerDoubleOption_("prefilter_rt_window", "<s>", 0.0,
+                          "Full width, seconds, of the retention-time neighbourhood the depth "
+                          "statistic is taken over. 0 uses the pass-2 extraction window, which "
+                          "is the same neighbourhood pass 2 will search and therefore the "
+                          "honest one -- a filter that looked wider than the search could "
+                          "discard a precursor on evidence pass 2 would never have seen.", false);
+    registerIntOption_("prefilter_top_n", "<n>", 6,
+                       "How many of the highest-intensity library fragments define a "
+                       "precursor's signature. doc/08's measurement used 6.", false);
     registerIntOption_("pass1_offset", "<n>", 0,
                        "Which residue class -pass1_precursors keeps. Diagnostic: it "
                        "lets equal-sized pass-1 subsets with different members be "
@@ -823,6 +859,7 @@ protected:
     ODIA::ChromatogramExtractor::Options options;
     options.precursor_stride = pass_stride_;
     options.precursor_offset = pass_offset_;
+    options.precursor_keep = prefilter_keep_.empty() ? nullptr : prefilter_keep_.data();
     // MS1 traces, once per run, before the first extraction that will score.
     //
     // Built here rather than inside the extractor: the streaming extractor is
@@ -1749,6 +1786,50 @@ protected:
 
     pass_stride_ = 1;  // pass 2 is the real search and needs every precursor
     pass_offset_ = 0;
+
+    // The prefilter, HERE and nowhere else.
+    //
+    // doc/08 put it before pass 1, where it had no retention-time map and no
+    // calibrated fragment window, and it was refuted on S08: 99.7% of
+    // precursors reached the maximum depth. doc/08 also named the cause --
+    // depth is a MAXIMUM over ~32,210 spectra, and an extreme-value statistic
+    // saturates whatever the per-draw probability is. Cutting the number of
+    // DRAWS is what a retention-time neighbourhood does; doc/13 called that
+    // the rescue that "would actually work" and blocked it as circular,
+    // because supplying the RT seed was the filter's own second purpose. That
+    // circularity binds only if the filter runs before pass 1.
+    //
+    // At this point the library's irt holds RUN SECONDS, so the map is the
+    // identity, and the fragment window is the calibrated one pass 2 is about
+    // to use.
+    const std::string prefilter_mode = getStringOption_("prefilter");
+    if (prefilter_mode != "off")
+    {
+      ODIA::PrecursorPrefilter::Options po;
+      po.top_n = static_cast<std::size_t>(std::max(1, getIntOption_("prefilter_top_n")));
+      po.ppm = extracted_ppm_ > 0.0 ? extracted_ppm_ : 15.0;
+      po.ppm_centre = extracted_ppm_offset_;
+      po.im_window = getDoubleOption_("precursor_im_window");
+      const double pw = getDoubleOption_("prefilter_rt_window");
+      po.rt_half_window = (pw > 0.0 ? pw : pass2_window) * 0.5;
+      po.irt_slope = 1.0;          // the library is already in run seconds
+      po.irt_intercept = 0.0;
+      po.keep_fraction = prefilter_mode == "on" ? getDoubleOption_("prefilter_keep") : 1.0;
+
+      ODIA::PrecursorPrefilter::Stats ps;
+      // Its own handle on the run. The extraction path opens and closes one per
+      // pass, so there is none in scope here, and the sweep is a single
+      // sequential read that shares nothing with an extraction.
+      auto pf_source = ODIA::openRun(run);
+      const auto ev = ODIA::PrecursorPrefilter::measure(library, *pf_source, po, ps);
+      auto keep = ODIA::PrecursorPrefilter::select(library, ev, po, ps);
+      reportPrefilter_(ps, po);
+      // Only bind the mask when it actually discards -- "measure" must leave
+      // pass 2 bit-for-bit identical to a run without the filter, or the
+      // measurement cannot be compared against one.
+      if (prefilter_mode == "on") { prefilter_keep_ = std::move(keep); }
+    }
+
     writeLogInfo_("pass 2 of 2: narrow extraction on the calibrated axis");
     chromatograms = ODIA::Chromatograms{};
     // The library now carries run seconds, so the affine map is the identity.
@@ -1766,6 +1847,73 @@ protected:
     return runScoring_(library, chromatograms, out);
   }
 
+
+  /// doc/08's third safety rule: "a filter that silently discards is
+  /// indistinguishable from a search that found nothing".
+  ///
+  /// The depth histogram is per label class on purpose. The decoy column IS
+  /// the null: a filter that works separates the two, and one that does not
+  /// produces two histograms of the same shape -- which is exactly what was
+  /// measured on 2026-08-08 and is the result this has to be checked against
+  /// before the retained set is trusted.
+  void reportPrefilter_(const ODIA::PrecursorPrefilter::Stats& ps,
+                        const ODIA::PrecursorPrefilter::Options& po)
+  {
+    std::ostringstream os;
+    os.setf(std::ios::fixed);
+    os << "prefilter: swept " << ps.spectra_swept << " MS2 spectra in "
+       << std::setprecision(1) << ps.seconds << " s at " << std::setprecision(2)
+       << po.ppm << " ppm about " << po.ppm_centre << " ppm, +/-"
+       << std::setprecision(1) << po.rt_half_window << " s";
+    if (po.im_window > 0.0) { os << ", +/-" << std::setprecision(4) << po.im_window << " 1/K0"; }
+    writeLogInfo_(os.str());
+
+    std::ostringstream h;
+    h << "prefilter depth histogram (target / decoy), depth 0.." << po.top_n << ":";
+    for (std::size_t d = 0; d < ps.depth_hist_target.size(); ++d)
+    {
+      h << "\n  " << d << ": " << ps.depth_hist_target[d] << " / "
+        << ps.depth_hist_decoy[d];
+    }
+    writeLogInfo_(h.str());
+
+    // The separation, said out loud rather than left to be eyeballed. At the
+    // top depth a filter that works has many more targets than decoys; the
+    // 2026-08-08 refutation had a ratio of 1.0.
+    if (!ps.depth_hist_target.empty())
+    {
+      const std::size_t td = ps.depth_hist_target.back(), dd = ps.depth_hist_decoy.back();
+      std::ostringstream r;
+      r.setf(std::ios::fixed); r.precision(2);
+      r << "prefilter separation at full depth: " << td << " targets vs " << dd
+        << " decoys";
+      if (dd > 0) { r << " (" << (double(td) / double(dd)) << "x)"; }
+      else if (td > 0) { r << " (no decoys reach it)"; }
+      r << " -- a ratio near 1.0 means the statistic does not discriminate and "
+           "the filter must not be used to discard";
+      writeLogInfo_(r.str());
+    }
+
+    if (!ps.note.empty()) { writeLogInfo_("prefilter: " + ps.note); return; }
+
+    std::ostringstream k;
+    k.setf(std::ios::fixed); k.precision(2);
+    k << "prefilter retained " << ps.targets_kept << " of " << ps.targets_in
+      << " targets and " << ps.decoys_kept << " of " << ps.decoys_in
+      << " decoys (cut at depth >= " << unsigned(ps.depth_threshold) << ")";
+    writeLogInfo_(k.str());
+    // Label symmetry is asserted, not hoped for -- doc/08's first rule, and the
+    // one whose failure silently invalidates every q-value downstream.
+    if (ps.targets_kept != ps.decoys_kept)
+    {
+      std::ostringstream w;
+      w << "prefilter LABEL SYMMETRY VIOLATED: " << ps.targets_kept
+        << " targets but " << ps.decoys_kept << " decoys retained. The "
+        << "target-decoy null is no longer a fair sample and the FDR below is "
+        << "not trustworthy.";
+      writeLogWarn_(w.str());
+    }
+  }
 
   /// Residuals of the fitted retention-time map, before and against it.
   ///
@@ -2915,6 +3063,11 @@ private:
   /// half-width pass 1 was itself extracted through. See `MassWidth`.
   ODIA::MassWidth::Estimate mass_width_;
   double extracted_ppm_ = 0.0;
+  double extracted_ppm_offset_ = 0.0;
+
+  /// The prefilter's verdict, in full-library indexing. A member because the
+  /// extractor holds a bare pointer into it for the whole of pass 2.
+  std::vector<char> prefilter_keep_;
 
   /// The refined iRT axis, when per-run refinement was accepted. Empty
   /// otherwise, and the map is then applied to the original values.
@@ -3216,6 +3369,7 @@ private:
     // possible. Set here rather than in each branch of the implementation so a
     // new early return cannot quietly leave it stale.
     extracted_ppm_ = options.fragment_ppm;
+    extracted_ppm_offset_ = options.fragment_ppm_offset;
   }
 
   void applyMassCalibrationImpl_(const ODIA::Library& library, ODIA::SpectrumSource& source,

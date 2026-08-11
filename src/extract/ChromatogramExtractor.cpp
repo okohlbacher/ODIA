@@ -471,6 +471,13 @@ namespace ODIA
       {
         continue;
       }
+      // The prefilter's verdict, for the same reason and with the same
+      // indexing rule as the stride above.
+      if (options.precursor_keep != nullptr && options.precursor_keep[i] == 0)
+      {
+        ++st.precursors_prefiltered;
+        continue;
+      }
       const double mz = fromFixed(p.mz[i]);
       std::size_t best = windows.size();
       double best_offset = std::numeric_limits<double>::infinity();

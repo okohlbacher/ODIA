@@ -611,6 +611,7 @@ add_test(NAME mass_width_from_identifications COMMAND odia_mass_width)
 # case is the one that matters: a model fitted to the opposite trend must come
 # out worse than its own constant.
 add_test(NAME mass_anchors_heldout COMMAND odia_mass_anchors)
+add_test(NAME prefilter_selection COMMAND odia_prefilter)
 
 # The per-run retention-time refiner. Every case is a failure it has actually
 # had on real data: an unbounded correction that took S08 to zero, contaminated

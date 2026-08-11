@@ -685,6 +685,16 @@ namespace ODIA
       /// anchors" from "which anchors" when measuring how stable the RT fit is.
       std::size_t precursor_offset = 0;
 
+      /// Optional per-precursor keep-mask, in FULL-library indexing, or null
+      /// for all of them. Non-null means `PrecursorPrefilter` has already
+      /// decided this precursor cannot be supported by the run.
+      ///
+      /// Like the stride, this does NOT renumber: a filtered pass still reports
+      /// full-library indices, so anchors and the iRT they are fitted against
+      /// cannot drift apart. The caller owns the storage and it must outlive
+      /// the extraction.
+      const char* precursor_keep = nullptr;
+
       /// Maps the library's iRT onto this run's retention time, in seconds:
       /// rt = irt_slope * irt + irt_intercept.
       ///
@@ -773,6 +783,11 @@ namespace ODIA
       /// caller, which never sees one, still gets them.
       std::size_t precursors_without_window = 0;
       std::size_t precursors_in_several_windows = 0;
+
+      /// How many `precursor_keep` excluded. Reported because a filter that
+      /// silently discards is indistinguishable from a search that found
+      /// nothing -- doc/08's third safety rule.
+      std::size_t precursors_prefiltered = 0;
 
       /// Which of the two mechanisms set the peak: "retention-time overlap"
       /// when the live set fitted, "precursor cap (N), C chunks" when it did
