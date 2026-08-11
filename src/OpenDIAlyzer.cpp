@@ -16,6 +16,7 @@
 #include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/PrecursorPrefilter.h>
+#include <OpenMS/FORMAT/TransformationXMLFile.h>
 #include <odia/RtCalibration.h>
 #include <odia/RtRefiner.h>
 
@@ -336,6 +337,41 @@ protected:
                        "one feature of fifteen and cannot carry the improvement. Kept "
                        "for experiments.",
                        false, true);
+    registerStringOption_("rt_seed", "<mode>", "off",
+                          "Seed pass 1's retention-time map, instead of spreading the library "
+                          "evenly over the run. prefilter: sweep the run with "
+                          "PrecursorPrefilter BEFORE pass 1 and fit a map from each precursor's "
+                          "best-matching spectrum. doc/08 designed the filter to produce exactly "
+                          "this -- 'best_spectrum_rt, carried forward, not scored. These are "
+                          "exactly the anchors the RT calibration needs, which is why the filter "
+                          "and the calibration seed are one job rather than two.' "
+                          "\n\nSeeding does NOT require the depth statistic to discriminate per "
+                          "precursor, which is what it was refuted for. It requires a TREND, and "
+                          "a false anchor is uncorrelated with library iRT while a true one is "
+                          "not, so a robust fit over millions of precursors can recover the trend "
+                          "from a mostly-wrong anchor set. "
+                          "\n\nWhether it does is checked, not assumed: the same map is fitted "
+                          "from DECOY anchors, and the seed is REFUSED unless the target fit is "
+                          "clearly better. An uninformative seed is worse than none -- it points "
+                          "pass 1 confidently at the wrong retention times, where 'no map' at "
+                          "least searches everywhere.", false, true);
+    setValidStrings_("rt_seed", {"off", "prefilter"});
+    registerDoubleOption_("rt_seed_ppm", "<ppm>", 15.0,
+                          "Fragment tolerance for the seeding sweep. Wide on purpose: no mass "
+                          "calibration exists yet at this point in the run.", false, true);
+    registerOutputFile_("out_rt_map", "<file>", "",
+                        "Write the fitted retention-time map, so a later run on the same "
+                        "instrument and gradient can be seeded with -rt_map_in instead of "
+                        "bootstrapping blind. ON DEMAND ONLY -- a run that is not asked for it "
+                        "writes nothing. The map is akima over knots, not a slope and intercept, "
+                        "so it is stored as OpenMS trafoXML rather than as two numbers.", false, true);
+    setValidFormats_("out_rt_map", {"trafoXML"}, false);
+    registerInputFile_("rt_map_in", "<file>", "",
+                       "Seed pass 1 from a map written by -out_rt_map. Only valid for the same "
+                       "instrument, gradient and library iRT scale -- nothing here can check "
+                       "that, so a mismatched map centres pass 1 on the wrong retention times "
+                       "and is worse than no map. Overrides -rt_seed.", false, true);
+    setValidFormats_("rt_map_in", {"trafoXML"}, false);
     registerStringOption_("prefilter", "<mode>", "off",
                           "Discard precursors the run cannot support BEFORE pass 2, which is "
                           "the pass whose memory is proportional to how many survive. Runs "
@@ -1154,6 +1190,52 @@ protected:
       }
     }
 
+    // The retention-time SEED for pass 1.
+    //
+    // Without one, pass 1 spreads the library evenly over the run: it extracts
+    // from approximately the wrong retention times, and -- because every
+    // precursor is then live across most of the gradient -- it is also the
+    // memory term that OOM-killed a 4,986,319-precursor run at 616.7 GB.
+    //
+    // doc/08 designed the prefilter to produce this and said so: best_spectrum_rt
+    // is "carried forward, not scored. These are exactly the anchors the RT
+    // calibration needs, which is why the filter and the calibration seed are
+    // one job rather than two."
+    if (!external_irt_)
+    {
+      const std::string map_in = getStringOption_("rt_map_in");
+      if (!map_in.empty())
+      {
+        try
+        {
+          OpenMS::TransformationDescription loaded;
+          OpenMS::TransformationXMLFile().load(map_in, loaded);
+          auto& irt = library.precursors().irt;
+          for (std::size_t i = 0; i < irt.size(); ++i)
+          {
+            if (std::isfinite(irt[i]))
+            { irt[i] = static_cast<float>(loaded.apply(double(irt[i]))); }
+          }
+          external_irt_ = true;
+          scoring_rt_is_run_seconds_ = true;
+          writeLogInfo_("seeded pass 1 from -rt_map_in " + map_in +
+                        ". Nothing here can check it was fitted on the same "
+                        "instrument, gradient and iRT scale; a mismatched map "
+                        "centres pass 1 on the wrong retention times.");
+        }
+        catch (const std::exception& e)
+        {
+          writeLogError_(std::string("-rt_map_in could not be read: ") + e.what());
+          return INPUT_FILE_CORRUPT;
+        }
+      }
+      else if (getStringOption_("rt_seed") == "prefilter")
+      {
+        const auto rc = seedRtFromPrefilter_(library, run);
+        if (rc != EXECUTION_OK) { return rc; }
+      }
+    }
+
     // Pass 2 has scored peak groups to measure the 1/K0 axis at, so `auto`
     // waits for them instead of guessing from a blind probe in pass 1.
     mobility_anchors_expected_ = passes > 1;
@@ -1715,6 +1797,29 @@ protected:
     // which is what lets the mass probe be re-measured against it below with
     // an identity map.
     rt_map_fitted_ = true;
+
+    // ON DEMAND ONLY. A run that was not asked for the map writes nothing.
+    // Written HERE, after refinement has been accepted or rejected, so the file
+    // is the map the run actually used rather than an intermediate.
+    {
+      const std::string map_out = getStringOption_("out_rt_map");
+      if (!map_out.empty())
+      {
+        try
+        {
+          OpenMS::TransformationXMLFile().store(map_out, trafo);
+          writeLogInfo_("wrote the retention-time map to " + map_out +
+                        "; -rt_map_in seeds a later run on the same instrument "
+                        "and gradient with it.");
+        }
+        catch (const std::exception& e)
+        {
+          writeLogError_(std::string("could not write -out_rt_map: ") + e.what());
+          return CANNOT_WRITE_OUTPUT_FILE;
+        }
+      }
+    }
+
     auto& irt = library.precursors().irt;
     // The refined axis when refinement was accepted, the original otherwise.
     const std::vector<float>& source = refined_irt_.empty() ? original_irt : refined_irt_;
@@ -1847,6 +1952,99 @@ protected:
     return runScoring_(library, chromatograms, out);
   }
 
+
+  /// Fit pass 1's retention-time map from the prefilter's best-matching
+  /// spectra, and REFUSE it unless it beats the same fit made from decoys.
+  ///
+  /// The refusal is the substance here. doc/08's depth statistic was refuted as
+  /// a per-precursor discriminator, and seeding does not need it to be one --
+  /// it needs a TREND, and a wrong anchor is uncorrelated with library iRT
+  /// while a right one is not, so a robust fit over millions of precursors can
+  /// find the trend in a mostly-wrong anchor set. But "can" is not "does", and
+  /// a seed that is noise is WORSE than no seed: it points pass 1 confidently
+  /// at the wrong retention times, where an unseeded pass at least searches
+  /// everywhere. Decoys carry no true retention time by construction, so a
+  /// decoy fit as tight as the target fit means the tightness came from the
+  /// fitting, not from the run.
+  ExitCodes seedRtFromPrefilter_(ODIA::Library& library, const std::string& run)
+  {
+    ODIA::PrecursorPrefilter::Options po;
+    po.top_n = static_cast<std::size_t>(std::max(1, getIntOption_("prefilter_top_n")));
+    po.ppm = getDoubleOption_("rt_seed_ppm");
+    po.ppm_centre = 0.0;                 // no mass calibration exists yet
+    po.im_window = getDoubleOption_("precursor_im_window");
+    po.rt_half_window = 0.0;             // ungated: finding the RT is the point
+    po.keep_fraction = 1.0;
+
+    ODIA::PrecursorPrefilter::Stats ps;
+    auto source = ODIA::openRun(run);
+    const auto ev = ODIA::PrecursorPrefilter::measure(library, *source, po, ps);
+
+    const auto& p = library.precursors();
+    std::vector<std::pair<double, double>> tgt, dec;
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      // Only precursors whose whole signature was seen at once. A partial match
+      // is where a wrong retention time comes from.
+      if (ev[i].depth < po.top_n || !(ev[i].best_rt >= 0.0f)) { continue; }
+      if (!std::isfinite(p.irt[i])) { continue; }
+      (p.decoy[i] ? dec : tgt).push_back({double(p.irt[i]), double(ev[i].best_rt)});
+    }
+
+    std::ostringstream os;
+    os.setf(std::ios::fixed); os.precision(1);
+    os << "rt seed: swept " << ps.spectra_swept << " MS2 spectra in " << ps.seconds
+       << " s at " << po.ppm << " ppm; " << tgt.size() << " target and "
+       << dec.size() << " decoy anchors at full depth " << po.top_n;
+    writeLogInfo_(os.str());
+
+    const std::size_t min_anchors = 100;
+    if (tgt.size() < min_anchors)
+    {
+      writeLogWarn_("rt seed: too few full-depth target anchors (" +
+                    std::to_string(tgt.size()) + " < " + std::to_string(min_anchors) +
+                    "); pass 1 falls back to spreading the library over the run.");
+      return EXECUTION_OK;
+    }
+
+    const double span = getDoubleOption_("rt_loess_span");
+    const std::string interp = getStringOption_("rt_interpolation");
+    double p95_t = 0.0, p95_d = 0.0;
+    const auto trafo_t = ODIA::Calibration::fit(tgt, &p95_t, span, interp);
+    if (dec.size() >= min_anchors)
+    { ODIA::Calibration::fit(dec, &p95_d, span, interp); }
+
+    std::ostringstream c;
+    c.setf(std::ios::fixed); c.precision(1);
+    c << "rt seed control: p95 residual " << p95_t << " s from targets against "
+      << p95_d << " s from decoys";
+    writeLogInfo_(c.str());
+
+    // Decoys must be MEASURABLY worse. Equal residuals mean the fit is
+    // describing its own anchors rather than the run.
+    if (dec.size() >= min_anchors && !(p95_d > 1.25 * p95_t))
+    {
+      writeLogWarn_("rt seed REFUSED: the decoy fit is as good as the target fit ("
+                    + std::to_string(p95_d) + " s against " + std::to_string(p95_t)
+                    + " s), so the anchors carry no retention-time information and "
+                      "the map would centre pass 1 on nothing. Falling back to "
+                      "spreading the library over the run, which is less wrong "
+                      "than a confident error.");
+      return EXECUTION_OK;
+    }
+
+    auto& irt = library.precursors().irt;
+    for (std::size_t i = 0; i < irt.size(); ++i)
+    {
+      if (std::isfinite(irt[i]))
+      { irt[i] = static_cast<float>(trafo_t.apply(double(irt[i]))); }
+    }
+    external_irt_ = true;
+    scoring_rt_is_run_seconds_ = true;
+    writeLogInfo_("rt seed ACCEPTED: pass 1 now extracts where the map says "
+                  "rather than across the whole gradient.");
+    return EXECUTION_OK;
+  }
 
   /// doc/08's third safety rule: "a filter that silently discards is
   /// indistinguishable from a search that found nothing".
