@@ -105,6 +105,18 @@ namespace ODIA
     std::vector<std::uint32_t> slots_touched;
     slots_touched.reserve(1u << 16);
 
+    // Contiguity state. A run is consecutive in CYCLES OF ITS OWN WINDOW, not
+    // in spectrum index: a run interleaves its isolation windows, so successive
+    // spectra of one precursor's window are tens of indices apart.
+    const std::uint32_t NO_CYCLE = std::numeric_limits<std::uint32_t>::max();
+    const std::size_t qual_depth = options.contiguity_depth > 0
+                                     ? options.contiguity_depth
+                                     : (options.top_n > 1 ? options.top_n - 1 : 1);
+    std::vector<std::uint32_t> last_cycle(n_prec, NO_CYCLE);
+    std::vector<std::uint16_t> cur_run(n_prec, 0);
+    std::vector<float> run_start_rt(n_prec, -1.0f);
+    std::vector<std::uint32_t> window_cycle(windows.size(), 0);
+
     constexpr std::size_t BLOCK = 256;
     std::vector<SpectrumPeaks> block;
 
@@ -139,6 +151,7 @@ namespace ODIA
         const bool im_gated = options.im_window > 0.0 &&
                               sp.ion_mobility.size() == sp.mz.size();
         const float rt = static_cast<float>(info[si].retention_time);
+        const std::uint32_t cycle = window_cycle[w]++;
 
         for (std::size_t pk = 0; pk < sp.mz.size(); ++pk)
         {
@@ -185,6 +198,25 @@ namespace ODIA
           {
             ev[slot].total_matches += h;
             if (h > ev[slot].depth) { ev[slot].depth = h; ev[slot].best_rt = rt; }
+
+            // A chance coincidence wins ONE cycle. It does not easily win the
+            // next one too, because the interfering ions that produced it are
+            // not eluting on this precursor's peak.
+            if (h >= qual_depth)
+            {
+              if (last_cycle[slot] != NO_CYCLE && last_cycle[slot] + 1 == cycle)
+              { ++cur_run[slot]; }
+              else
+              { cur_run[slot] = 1; run_start_rt[slot] = rt; }
+              last_cycle[slot] = cycle;
+              if (cur_run[slot] > ev[slot].contiguity)
+              {
+                ev[slot].contiguity = cur_run[slot];
+                // The midpoint of the elution peak, not the single spectrum
+                // that happened to match best.
+                ev[slot].contiguous_rt = 0.5f * (run_start_rt[slot] + rt);
+              }
+            }
           }
           hits[slot] = 0;                      // the sparse clear
         }
@@ -221,6 +253,15 @@ namespace ODIA
     {
       const std::size_t d = std::min<std::size_t>(evidence[i].depth, max_depth - 1);
       ++(p.decoy[i] ? stats.depth_hist_decoy : stats.depth_hist_target)[d];
+    }
+
+    constexpr std::size_t CONTIG_BINS = 11;   // 0..9 and "10 or more"
+    stats.contig_hist_target.assign(CONTIG_BINS, 0);
+    stats.contig_hist_decoy.assign(CONTIG_BINS, 0);
+    for (std::size_t i = 0; i < n_prec; ++i)
+    {
+      const std::size_t c = std::min<std::size_t>(evidence[i].contiguity, CONTIG_BINS - 1);
+      ++(p.decoy[i] ? stats.contig_hist_decoy : stats.contig_hist_target)[c];
     }
 
     if (options.keep_fraction >= 1.0)

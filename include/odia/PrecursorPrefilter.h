@@ -99,6 +99,10 @@ namespace ODIA
       /// label-symmetry rule above.
       double keep_fraction = 1.0;
 
+      /// A spectrum counts towards contiguity when it reaches this depth.
+      /// Defaults to top_n - 1 when left at 0.
+      std::size_t contiguity_depth = 0;
+
       /// Never retain fewer than this many per class, so a filter that fails on
       /// an unusual run degrades to "kept too much" rather than to an empty
       /// search.
@@ -114,6 +118,10 @@ namespace ODIA
       /// Depth histogram over ALL precursors, index = depth. Reported for the
       /// discarded set too, because that is where a filter's damage shows.
       std::vector<std::size_t> depth_hist_target, depth_hist_decoy;
+      /// Same, over contiguity, capped at the last bin. This is the histogram
+      /// that says whether the orthogonal statistic separates where depth did
+      /// not.
+      std::vector<std::size_t> contig_hist_target, contig_hist_decoy;
       double seconds = 0.0;
       std::string note;
     };
@@ -124,6 +132,25 @@ namespace ODIA
       std::uint8_t depth = 0;
       std::uint32_t total_matches = 0;
       float best_rt = -1.0f;
+
+      /// The longest run of CONSECUTIVE cycles of this precursor's isolation
+      /// window in which it reached `contiguity_depth`.
+      ///
+      /// doc/08 listed this and it was never built: "whether the qualifying
+      /// spectra are consecutive cycles. A peptide elutes over a peak; random
+      /// coincidences scatter. Cheap, and orthogonal to everything else here."
+      ///
+      /// Orthogonal is the operative word. `depth` asks how good the best
+      /// single moment was, and a chance coincidence can win that outright --
+      /// which is why it saturated. A chance coincidence cannot easily repeat
+      /// in the NEXT cycle and the one after, because the interfering ions
+      /// that produced it are not eluting on this precursor's peak.
+      std::uint16_t contiguity = 0;
+
+      /// The centre of that run: an elution-peak midpoint rather than the
+      /// single spectrum that happened to match best, and therefore the
+      /// retention time worth calibrating against.
+      float contiguous_rt = -1.0f;
     };
 
     /// Sweep the run and score every precursor. Does not select.

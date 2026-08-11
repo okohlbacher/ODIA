@@ -356,6 +356,14 @@ protected:
                           "pass 1 confidently at the wrong retention times, where 'no map' at "
                           "least searches everywhere.", false, true);
     setValidStrings_("rt_seed", {"off", "prefilter"});
+    registerIntOption_("rt_seed_min_contiguity", "<cycles>", 3,
+                       "How many CONSECUTIVE cycles of its own isolation window a precursor "
+                       "must hold a near-complete fragment match for its retention time to be "
+                       "used as a seed anchor. 1 makes this the depth statistic again, which "
+                       "was measured and refused: 1.16x target-over-decoy enrichment and a "
+                       "decoy fit as tight as the target one. A chance coincidence wins ONE "
+                       "cycle; it does not easily win the next two, because the ions behind it "
+                       "are not eluting on this precursor's peak.", false, true);
     registerDoubleOption_("rt_seed_ppm", "<ppm>", 15.0,
                           "Fragment tolerance for the seeding sweep. Wide on purpose: no mass "
                           "calibration exists yet at this point in the run.", false, true);
@@ -1981,22 +1989,50 @@ protected:
     const auto ev = ODIA::PrecursorPrefilter::measure(library, *source, po, ps);
 
     const auto& p = library.precursors();
+    const std::size_t min_run =
+      static_cast<std::size_t>(std::max(1, getIntOption_("rt_seed_min_contiguity")));
+
+    // CONTIGUITY, not depth. The first attempt keyed on full depth and the
+    // control refused it: 69,669 target against 60,243 decoy anchors, a ratio
+    // of 1.16, and p95 residuals of 673.6 s against 679.6 s. The signal was
+    // there -- the ~9,400 excess is about the number of peptides actually in
+    // the sample -- but at ~14% of the anchor set, and a binned-median fit
+    // takes the median of each bin, which at 14% signal is the noise.
+    //
+    // Depth cannot fix that: it is a MAXIMUM over spectra, so one lucky
+    // coincidence wins it outright. Requiring the match to REPEAT in
+    // consecutive cycles of the same window is the orthogonal condition
+    // doc/08 listed and nobody built -- a peptide elutes over a peak, and the
+    // interfering ions behind a chance hit are not eluting on that peak.
     std::vector<std::pair<double, double>> tgt, dec;
     for (std::size_t i = 0; i < library.precursorCount(); ++i)
     {
-      // Only precursors whose whole signature was seen at once. A partial match
-      // is where a wrong retention time comes from.
-      if (ev[i].depth < po.top_n || !(ev[i].best_rt >= 0.0f)) { continue; }
+      if (ev[i].contiguity < min_run || !(ev[i].contiguous_rt >= 0.0f)) { continue; }
       if (!std::isfinite(p.irt[i])) { continue; }
-      (p.decoy[i] ? dec : tgt).push_back({double(p.irt[i]), double(ev[i].best_rt)});
+      (p.decoy[i] ? dec : tgt).push_back({double(p.irt[i]),
+                                          double(ev[i].contiguous_rt)});
     }
 
     std::ostringstream os;
     os.setf(std::ios::fixed); os.precision(1);
     os << "rt seed: swept " << ps.spectra_swept << " MS2 spectra in " << ps.seconds
        << " s at " << po.ppm << " ppm; " << tgt.size() << " target and "
-       << dec.size() << " decoy anchors at full depth " << po.top_n;
+       << dec.size() << " decoy anchors at contiguity >= " << min_run
+       << " cycles";
+    if (dec.size() > 0)
+    { os << " (" << (double(tgt.size()) / double(dec.size())) << "x enrichment)"; }
     writeLogInfo_(os.str());
+
+    // Both histograms, so the two statistics can be compared directly rather
+    // than one being adopted on the strength of a story about the other.
+    {
+      std::ostringstream h;
+      h << "rt seed contiguity histogram (target / decoy), 0..9,10+:";
+      for (std::size_t c = 0; c < ps.contig_hist_target.size(); ++c)
+      { h << "\n  " << c << ": " << ps.contig_hist_target[c] << " / "
+          << ps.contig_hist_decoy[c]; }
+      writeLogInfo_(h.str());
+    }
 
     const std::size_t min_anchors = 100;
     if (tgt.size() < min_anchors)

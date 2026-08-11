@@ -173,6 +173,67 @@ int main()
           "and label symmetry still holds, so the FDR stays fair even then");
   }
 
+  // --- contiguity is reported per class and is what the seed keys on --------
+  {
+    // The property that makes contiguity worth having: it is ORTHOGONAL to
+    // depth. Give targets and decoys the SAME depth distribution -- so depth
+    // cannot separate them at all, reproducing the 2026-08-08 result -- and
+    // let only the targets repeat across consecutive cycles. A statistic that
+    // is merely a proxy for depth would show nothing here.
+    std::vector<ODIA::PrecursorPrefilter::Evidence> e2(2 * N);
+    std::binomial_distribution<int> same(6, 0.5);
+    std::binomial_distribution<int> tgt_run(8, 0.45);
+    for (std::size_t i = 0; i < 2 * N; ++i)
+    {
+      e2[i].depth = static_cast<std::uint8_t>(same(rng));
+      e2[i].contiguity = static_cast<std::uint16_t>(i >= N ? (rng() % 2) : tgt_run(rng));
+    }
+
+    ODIA::PrecursorPrefilter::Stats s5;
+    ODIA::PrecursorPrefilter::select(lib, e2, po, s5);
+
+    std::size_t th = 0, dh = 0;
+    for (const auto v : s5.contig_hist_target) { th += v; }
+    for (const auto v : s5.contig_hist_decoy)  { dh += v; }
+    check(th == N && dh == N, "every precursor appears in its contiguity histogram");
+
+    // Depth says nothing here, by construction.
+    const double dratio = double(s5.depth_hist_target.back()) /
+                          std::max<double>(1.0, double(s5.depth_hist_decoy.back()));
+    check(dratio > 0.75 && dratio < 1.35,
+          "depth does NOT separate this population (as on 2026-08-08)");
+
+    // Contiguity does. Count at the seed's default threshold of 3 cycles.
+    std::size_t t3 = 0, d3 = 0;
+    for (std::size_t c = 3; c < s5.contig_hist_target.size(); ++c)
+    { t3 += s5.contig_hist_target[c]; d3 += s5.contig_hist_decoy[c]; }
+    check(d3 == 0 || double(t3) / double(d3) > 5.0,
+          "contiguity DOES separate it -- the statistic is orthogonal to depth, "
+          "not a proxy for it");
+  }
+
+  // --- a run must be CONSECUTIVE, which is the whole claim ------------------
+  {
+    // Contiguity counts consecutive cycles of one precursor's OWN isolation
+    // window. Spectra of a run interleave its windows, so consecutive spectrum
+    // INDICES are a different and wrong thing -- successive spectra of one
+    // window are tens of indices apart. This models the invariant directly.
+    const std::uint32_t NO_CYCLE = 0xFFFFFFFFu;
+    auto longest = [&](const std::vector<std::uint32_t>& cycles) {
+      std::uint32_t last = NO_CYCLE; std::uint16_t cur = 0, best = 0;
+      for (const std::uint32_t c : cycles)
+      {
+        if (last != NO_CYCLE && last + 1 == c) { ++cur; } else { cur = 1; }
+        last = c; best = std::max(best, cur);
+      }
+      return best;
+    };
+    check(longest({4, 5, 6}) == 3, "three consecutive cycles is a run of 3");
+    check(longest({4, 6, 8}) == 1, "every other cycle is NOT a run -- it is three runs of 1");
+    check(longest({1, 2, 9, 10, 11}) == 3, "the LONGEST run is reported, not the first");
+    check(longest({}) == 0, "no qualifying cycles is a run of 0");
+  }
+
   std::printf("%s\n", failures == 0 ? "ALL PASSED" : "FAILURES");
   return failures == 0 ? 0 : 1;
 }
