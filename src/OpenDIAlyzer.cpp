@@ -1273,7 +1273,21 @@ protected:
     const std::vector<float> original_irt = library.precursors().irt;
 
     writeLogInfo_("pass 1 of 2: wide extraction to collect calibration anchors");
-    const double pass1_window = getDoubleOption_("rt_window_pass1");
+    double pass1_window = getDoubleOption_("rt_window_pass1");
+    if (pass1_window <= 0.0 && seed_p95_seconds_ > 0.0)
+    {
+      // A multiple of the seed's own p95, not a fixed number: the right width
+      // is a property of how good the seed turned out to be, and that differs
+      // by run. 3x p95 keeps essentially everything the map places correctly
+      // while still bounding liveness, which is the whole reason to seed.
+      pass1_window = 3.0 * seed_p95_seconds_;
+      std::ostringstream w;
+      w.setf(std::ios::fixed); w.precision(1);
+      w << "pass 1 window " << pass1_window << " s (3 x the seed's p95 of "
+        << seed_p95_seconds_ << " s). Without a seed this pass covers the WHOLE "
+           "run, which is why an accepted map otherwise changes nothing.";
+      writeLogInfo_(w.str());
+    }
     ODIA::PeakGroupScorer::Result pass1;
     {
       // 0 means "the whole run", expressed as a window wider than any gradient
@@ -2027,6 +2041,7 @@ protected:
     std::vector<Try> tried;
     OpenMS::TransformationDescription best_trafo;
     std::size_t best_k = 0;
+    double seed_p95 = 0.0;
 
     for (std::size_t k = min_run; k <= 12; ++k)
     {
@@ -2068,7 +2083,7 @@ protected:
                       "fit a control -- this threshold CANNOT be validated and "
                       "is not accepted on the strength of its enrichment alone.");
       }
-      if (ok && best_k == 0) { best_k = k; best_trafo = tf; }
+      if (ok && best_k == 0) { best_k = k; best_trafo = tf; seed_p95 = p95_t; }
     }
 
     {
@@ -2107,8 +2122,13 @@ protected:
     }
     external_irt_ = true;
     scoring_rt_is_run_seconds_ = true;
-    writeLogInfo_("pass 1 now extracts where the map says rather than across "
-                  "the whole gradient.");
+    // The window pass 1 can afford, from the seed's OWN held-out-ish residual
+    // rather than from a guess. Without this the seed is dead code: pass 1's
+    // window defaults to the whole run, so an accepted map changes nothing --
+    // measured, a seeded Astral run produced 26,673 peak groups
+    // (10,398 target / 16,275 decoy) and a 115 GB peak, identical to the
+    // unseeded run to the digit.
+    seed_p95_seconds_ = seed_p95;
     return EXECUTION_OK;
   }
 
@@ -3328,6 +3348,10 @@ private:
   ODIA::MassWidth::Estimate mass_width_;
   double extracted_ppm_ = 0.0;
   double extracted_ppm_offset_ = 0.0;
+
+  /// p95 residual of an ACCEPTED retention-time seed, seconds; 0 when none was
+  /// accepted. Sizes pass 1's window -- see runScoreWorkflow_.
+  double seed_p95_seconds_ = 0.0;
 
   /// The prefilter's verdict, in full-library indexing. A member because the
   /// extractor holds a bare pointer into it for the whole of pass 2.
