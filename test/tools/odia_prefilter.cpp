@@ -10,6 +10,8 @@
 #include <odia/PrecursorPrefilter.h>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <cstdio>
 #include <random>
 #include <vector>
@@ -232,6 +234,39 @@ int main()
     check(longest({4, 6, 8}) == 1, "every other cycle is NOT a run -- it is three runs of 1");
     check(longest({1, 2, 9, 10, 11}) == 3, "the LONGEST run is reported, not the first");
     check(longest({}) == 0, "no qualifying cycles is a run of 0");
+  }
+
+  // --- a missing library 1/K0 must UNGATE, never reject ---------------------
+  {
+    // The gate is `!(|observed - library| <= window)`. Every comparison against
+    // NaN is false, so the negation makes a NaN library value reject EVERY
+    // peak -- a precursor with no predicted mobility scores zero on a run it
+    // may well be present in, and does so silently.
+    //
+    // This shipped. On S08 the seed sweep returned 0 target and 0 decoy anchors
+    // at every contiguity threshold, against 13,360 / 8,264 on Astral, because
+    // our generated library predicts CCS and leaves 1/K0 unset. Astral has no
+    // ion mobility so the gate never ran, which made a missing NaN case look
+    // like an instrument-specific result.
+    const double window = 0.05;
+    const float observed = 1.30f;
+    const float absent = std::numeric_limits<float>::quiet_NaN();
+
+    auto rejected = [&](float lib) {
+      return !(std::abs(double(observed) - double(lib)) <= window);
+    };
+    check(rejected(absent), "the bare gate DOES reject a NaN library value");
+
+    auto guarded = [&](float lib) {
+      if (std::isnan(lib)) { return false; }          // ungated
+      return !(std::abs(double(observed) - double(lib)) <= window);
+    };
+    check(!guarded(absent), "the guarded gate lets it through instead");
+    check(!guarded(1.32f), "and still accepts a peak inside the window");
+    check(guarded(0.90f), "and still rejects one outside it");
+    check(guarded(0.0f),
+          "0.0 is a VALUE, not 'absent' -- it must still gate, which is why the "
+          "library writes an empty field rather than a zero for what it lacks");
   }
 
   std::printf("%s\n", failures == 0 ? "ALL PASSED" : "FAILURES");

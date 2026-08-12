@@ -175,7 +175,19 @@ namespace ODIA
             // the passes. It cuts the number of DRAWS the depth maximum is
             // taken over, which doc/08 named as why the statistic saturated.
             if (rt < rt_lo[it->slot] || rt > rt_hi[it->slot]) { continue; }
-            if (im_gated)
+            // A precursor with NO library 1/K0 is UNGATED, matching what the
+            // extractor does and for the same reason. it->im is NaN whenever
+            // the library carries no mobility -- every comparison against NaN
+            // is false, so the negation below rejects every peak and the
+            // precursor scores zero on a run it may well be present in.
+            //
+            // Measured: on S08 the seed sweep returned 0 target and 0 decoy
+            // anchors at every contiguity threshold, against 13,360 / 8,264 on
+            // Astral, purely because our generated library predicts CCS and
+            // leaves 1/K0 unset. Astral has no ion mobility so the gate never
+            // ran there, which is why the failure looked instrument-specific
+            // rather than like a missing NaN case.
+            if (im_gated && !std::isnan(it->im))
             {
               const float pim = sp.ion_mobility[pk];
               if (!(std::abs(double(pim) - double(it->im)) <= options.im_window))
