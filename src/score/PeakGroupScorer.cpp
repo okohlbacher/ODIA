@@ -138,7 +138,7 @@ namespace ODIA
     /// of signal, but only counting can say which threshold.
     struct PickerRejects
     {
-      std::size_t too_few_present = 0;   ///< <2 fragments in {k-1,k,k+1}
+      std::size_t too_few_present[2] = {0, 0};   ///< [0] target, [1] decoy   ///< <2 fragments in {k-1,k,k+1}
       /// Precursors that never entered the correlation loop at all.
       ///
       /// `n < 2*S+4 || tc < 2` returns before anything is counted, so these were
@@ -152,17 +152,17 @@ namespace ODIA
       /// picker rejects under `precursors_without_candidate`.
       std::size_t no_points = 0;        ///< pointCount(0) < 3
       std::size_t empty_trace = 0;      ///< extracted, but the summed trace is 0
-      std::size_t too_few_transitions = 0;
+      std::size_t too_few_transitions[2] = {0, 0};   ///< [0] target, [1] decoy
       /// Entered the loop, computed correlations, and found no qualifying
       /// position anywhere in the window.
       std::size_t no_hit_anywhere = 0;
-      std::size_t below_corr = 0;        ///< reference corr sum < min_corr_score
-      std::size_t reference_zero = 0;    ///< smoothed reference not positive
-      std::size_t not_local_max = 0;     ///< k is not the local maximum
-      std::size_t below_apex_evidence = 0;
+      std::size_t below_corr[2] = {0, 0};   ///< [0] target, [1] decoy        ///< reference corr sum < min_corr_score
+      std::size_t reference_zero[2] = {0, 0};   ///< [0] target, [1] decoy    ///< smoothed reference not positive
+      std::size_t not_local_max[2] = {0, 0};   ///< [0] target, [1] decoy     ///< k is not the local maximum
+      std::size_t below_apex_evidence[2] = {0, 0};   ///< [0] target, [1] decoy
       std::size_t outside_margin = 0;    ///< beyond MaxCorrDiff of the best
       std::size_t too_few_at_apex = 0;   ///< candidate emitted, then dropped by the scorer
-      std::size_t scans = 0;             ///< positions examined
+      std::size_t scans[2] = {0, 0};   ///< [0] target, [1] decoy             ///< positions examined
     };
 
     struct Candidate
@@ -296,7 +296,8 @@ namespace ODIA
     ///    maximum of the reference fragment's own smoothed trace, which is a
     ///    far stricter shape test than a maximum of a sum.
     std::vector<Candidate> findCandidatesByCorrelation(
-      const PrecursorChromatogram& c, PickerRejects& rej, std::size_t half_window,
+      const PrecursorChromatogram& c, PickerRejects& rej, bool is_decoy,
+      std::size_t half_window,
       double min_corr_score, double max_corr_diff, double apex_evidence,
       std::size_t smooth_half_width, double boundary_fraction,
       std::size_t max_candidates)
@@ -305,7 +306,7 @@ namespace ODIA
       const std::uint32_t tc = c.transition_count;
       const std::size_t n = c.cycles;
       const std::size_t S = std::max<std::size_t>(1, half_window);
-      if (tc < 2) { ++rej.too_few_transitions; return found; }
+      if (tc < 2) { ++rej.too_few_transitions[is_decoy]; return found; }
       if (n < 2 * S + 4) { ++rej.too_few_cycles; return found; }
 
       // Traces once, smoothed once. DIA-NN smooths the reference trace before
@@ -333,8 +334,8 @@ namespace ODIA
         {
           if (tr[f][k - 1] > 0.0 || tr[f][k] > 0.0 || tr[f][k + 1] > 0.0) { ++present; }
         }
-        ++rej.scans;
-        if (present < 2) { ++rej.too_few_present; continue; }
+        ++rej.scans[is_decoy];
+        if (present < 2) { ++rej.too_few_present[is_decoy]; continue; }
 
         // Pairwise correlation over [k-S, k+S]; each fragment scores the sum of
         // its correlations to the others.
@@ -360,8 +361,8 @@ namespace ODIA
         // this position a peak, and we stop -- at most one candidate per cycle.
         for (const std::uint32_t ref : order)
         {
-          if (score[ref] < min_corr_score) { ++rej.below_corr; break; }
-          if (!(sm[ref][k] > 0.0)) { ++rej.reference_zero; continue; }
+          if (score[ref] < min_corr_score) { ++rej.below_corr[is_decoy]; break; }
+          if (!(sm[ref][k] > 0.0)) { ++rej.reference_zero[is_decoy]; continue; }
 
           const std::size_t half = std::max<std::size_t>(S / 3, 1);
           bool is_max = true;
@@ -369,7 +370,7 @@ namespace ODIA
           {
             if (sm[ref][j] > sm[ref][k]) { is_max = false; break; }
           }
-          if (!is_max) { ++rej.not_local_max; continue; }
+          if (!is_max) { ++rej.not_local_max[is_decoy]; continue; }
 
           double best_near = 0.0;
           const std::size_t e = S > 1 ? S - 1 : 1;
@@ -378,7 +379,7 @@ namespace ODIA
             best_near = std::max(best_near, sm[ref][j]);
           }
           if (best_near > 0.0 && sm[ref][k] < apex_evidence * best_near)
-          { ++rej.below_apex_evidence; continue; }
+          { ++rej.below_apex_evidence[is_decoy]; continue; }
 
           hits.push_back({k, score[ref]});
           break;
@@ -619,7 +620,14 @@ namespace ODIA
                             options.max_candidates, options.boundary_fraction);
     };
     const auto coelution_candidates = [&] {
-      return findCandidatesByCorrelation(chromatogram, rejects_, options.corr_half_window,
+      // The picker's rejection counters are split by class so the stage at
+      // which targets and decoys diverge can be SEEN. Astral yields 1.47x more
+      // decoy peak groups than target ones from a balanced library and the
+      // cause is unknown; totals cannot localise it, and the previous counters
+      // could not even be summed -- they overcounted scan positions by 27.8%.
+      return findCandidatesByCorrelation(chromatogram, rejects_,
+                                         p.decoy[chromatogram.precursor] != 0,
+                                         options.corr_half_window,
                                          options.min_corr_score, options.max_corr_diff,
                                          options.apex_evidence, options.smooth_half_width,
                                          options.boundary_fraction, options.max_candidates);
@@ -1527,12 +1535,22 @@ namespace ODIA
     {
       const auto& r = rejects_;
       std::ostringstream w;
-      w << "picker rejections over " << r.scans << " scan positions: "
-        << r.too_few_present << " <2 fragments present, "
-        << r.below_corr << " below min_corr_score, "
-        << r.reference_zero << " reference trace zero, "
-        << r.not_local_max << " not a local maximum, "
-        << r.below_apex_evidence << " below apex_evidence, "
+      auto pc = [](std::size_t t, std::size_t d) {
+        std::ostringstream o; o.setf(std::ios::fixed); o.precision(2);
+        o << t << "/" << d;
+        if (t > 0) { o << " (" << (double(d) / double(t)) << "x)"; }
+        return o.str();
+      };
+      // target/decoy at EVERY stage, because the imbalance has to arise
+      // somewhere and only a per-stage split says where.
+      w << "picker rejections, target/decoy (decoy:target ratio):"
+        << "\n  scan positions      " << pc(r.scans[0], r.scans[1])
+        << "\n  <2 fragments        " << pc(r.too_few_present[0], r.too_few_present[1])
+        << "\n  <2 transitions      " << pc(r.too_few_transitions[0], r.too_few_transitions[1])
+        << "\n  below min_corr      " << pc(r.below_corr[0], r.below_corr[1])
+        << "\n  reference zero      " << pc(r.reference_zero[0], r.reference_zero[1])
+        << "\n  not a local max     " << pc(r.not_local_max[0], r.not_local_max[1])
+        << "\n  below apex_evidence " << pc(r.below_apex_evidence[0], r.below_apex_evidence[1])
         << r.outside_margin << " outside max_corr_diff; then "
         << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex"
         << "\n  EXTRACTION losses (no usable chromatogram): "
