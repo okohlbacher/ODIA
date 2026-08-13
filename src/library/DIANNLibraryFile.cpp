@@ -9,6 +9,9 @@
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
+#include <parquet/file_reader.h>
+#include <iomanip>
+#include <filesystem>
 #include <arrow/builder.h>
 #include <arrow/table.h>
 
@@ -475,7 +478,70 @@ namespace ODIA
     else { storeTSV(filename, library); }
   }
 
+  DIANNLibraryFile::Fingerprint
+  DIANNLibraryFile::fingerprintFasta(const std::string& fasta)
+  {
+    std::ifstream in(fasta, std::ios::binary);
+    if (!in) { throw std::runtime_error("cannot read FASTA: " + fasta); }
+
+    // FNV-1a over the CONTENT. Not path, size or mtime: the same FASTA staged
+    // to /scratch must hit the cache, and an edited one that happens to keep
+    // its size and timestamp must miss it. Not cryptographic -- this guards
+    // against accident, not against an adversary editing a FASTA to collide.
+    std::uint64_t h = 1469598103934665603ull;
+    std::uint64_t bytes = 0;
+    std::vector<char> buf(1 << 20);
+    while (in)
+    {
+      in.read(buf.data(), std::streamsize(buf.size()));
+      const std::streamsize got = in.gcount();
+      for (std::streamsize i = 0; i < got; ++i)
+      {
+        h ^= static_cast<unsigned char>(buf[std::size_t(i)]);
+        h *= 1099511628211ull;
+      }
+      bytes += std::uint64_t(got);
+    }
+    std::ostringstream hex;
+    hex << std::hex << std::setw(16) << std::setfill('0') << h;
+    Fingerprint fp;
+    fp.fasta_hash = hex.str();
+    fp.fasta_bytes = bytes;
+    return fp;
+  }
+
+  std::string DIANNLibraryFile::readFingerprint(const std::string& filename)
+  {
+    if (!std::filesystem::exists(filename)) { return {}; }
+    try
+    {
+      auto infile = arrow::io::ReadableFile::Open(filename);
+      if (!infile.ok()) { return {}; }
+      // Read it back the SAME way it is written -- through the Arrow schema,
+      // not the raw Parquet key-value block. store_schema() serialises the
+      // whole Arrow schema under one key, so looking for "odia.fingerprint" at
+      // the Parquet level finds nothing even though it is present.
+      //
+      // Schema ONLY, never the table: deciding whether to use a multi-GiB
+      // library must not cost reading it.
+      auto reader_result = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
+      if (!reader_result.ok()) { return {}; }
+      std::shared_ptr<arrow::Schema> schema;
+      if (!(*reader_result)->GetSchema(&schema).ok() || !schema) { return {}; }
+      const auto kv = schema->metadata();
+      if (!kv) { return {}; }
+      const auto got = kv->Get("odia.fingerprint");
+      if (!got.ok()) { return {}; }
+      return *got;
+    }
+    catch (const std::exception&) { return {}; }
+  }
+
   void DIANNLibraryFile::storeParquet(const std::string& filename, const Library& library)
+  { storeParquet(filename, library, Fingerprint{}); }
+
+  void DIANNLibraryFile::storeParquet(const std::string& filename, const Library& library,
+                                      const Fingerprint& fp)
   {
     const auto& p = library.precursors();
     const auto& t = library.transitions();
@@ -559,6 +625,14 @@ namespace ODIA
       arrow::field(Columns::FRAGMENT_LOSS_TYPE, arrow::utf8()),
       arrow::field(Columns::PROTEIN_GROUP, arrow::utf8()),
     });
+    if (!fp.params.empty() || !fp.fasta_hash.empty())
+    {
+      // Human-readable siblings alongside the compared key, so a library found
+      // on disk months later can be explained without running anything.
+      schema = schema->WithMetadata(arrow::key_value_metadata(
+        {"odia.fingerprint", "odia.fasta_sha", "odia.fasta_bytes", "odia.params"},
+        {fp.key(), fp.fasta_hash, std::to_string(fp.fasta_bytes), fp.params}));
+    }
     auto table = arrow::Table::Make(schema,
       {a_id, a_seq, a_z, a_dec, a_rt, a_im, a_ccs, a_pmz, a_qmz, a_int,
        a_ft, a_fz, a_ord, a_lt, a_pg});
@@ -571,8 +645,13 @@ namespace ODIA
                    .compression(parquet::Compression::ZSTD)
                    ->enable_dictionary()
                    ->build();
+    // store_schema(), or the Arrow schema metadata -- which is where the
+    // fingerprint lives -- is silently dropped and every cache lookup misses.
+    // Verified: without it the written file reports no key-value metadata at
+    // all, from either the file level or the Arrow schema.
+    auto arrow_props = parquet::ArrowWriterProperties::Builder().store_schema()->build();
     const auto st = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
-                                               *outfile, 1 << 20, props);
+                                               *outfile, 1 << 20, props, arrow_props);
     if (!st.ok()) { throw std::runtime_error("cannot write Parquet: " + st.ToString()); }
   }
 

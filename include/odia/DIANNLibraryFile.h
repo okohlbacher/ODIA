@@ -72,6 +72,43 @@ namespace ODIA
 
     /// Dispatches on the extension, mirroring `load`.
     static void store(const std::string& filename, const Library& library);
+
+    /// Identity of a generated library: the FASTA it came from and every
+    /// parameter that changes its contents.
+    ///
+    /// Predicting a proteome library costs ~23 minutes of GPU-less inference,
+    /// and the inputs rarely change between runs -- so a library is worth
+    /// reusing, but ONLY when it was built from the same FASTA under the same
+    /// rules. Reusing one built with different charges or a different m/z
+    /// window would silently answer a different question, which is the failure
+    /// this whole benchmark keeps tripping over.
+    ///
+    /// The FASTA is identified by CONTENT, not path or mtime: the same file
+    /// copied to /scratch must hit the cache, and an edited file with the same
+    /// size and timestamp must miss it.
+    struct Fingerprint
+    {
+      std::string fasta_hash;      ///< 64-bit FNV-1a over the file's bytes, hex
+      std::uint64_t fasta_bytes = 0;
+      std::string params;          ///< every content-affecting parameter, canonical
+
+      /// The single string stored in and compared against the file.
+      std::string key() const
+      { return fasta_hash + ":" + std::to_string(fasta_bytes) + ":" + params; }
+    };
+
+    /// Hash a FASTA by content. Throws if it cannot be read.
+    static Fingerprint fingerprintFasta(const std::string& fasta);
+
+    /// Write with a fingerprint recorded in the file's metadata. Parquet only:
+    /// TSV has nowhere to put it, so a TSV library is never cache-eligible.
+    static void storeParquet(const std::string& filename, const Library& library,
+                             const Fingerprint& fp);
+
+    /// The fingerprint recorded in a Parquet library, or empty if the file is
+    /// missing, unreadable, or carries none. Reads ONLY the metadata -- it must
+    /// not cost a full table read to decide whether to use the table.
+    static std::string readFingerprint(const std::string& filename);
   };
 
 } // namespace ODIA

@@ -156,6 +156,22 @@ protected:
     registerDoubleOption_("fragment_mz_max", "<Th>", 1800.0,
                           "Highest fragment m/z to keep. Already matches DIA-NN's default.",
                           false, true);
+    registerInputFile_("library_cache", "<file>", "",
+                       "Reuse a predicted library from here when its recorded fingerprint "
+                       "matches this FASTA and these parameters. Defaults to -out_lib, so "
+                       "pointing both at one path makes a run generate once and reuse "
+                       "thereafter with no extra flags. "
+                       "\n\nThe fingerprint is the FASTA's CONTENT hash plus every parameter "
+                       "that changes what is generated -- charges, lengths, m/z windows, "
+                       "fragment rules, decoy method, models. Content, not path or mtime, so a "
+                       "FASTA staged to /scratch still hits and an edited one still misses. A "
+                       "mismatch REBUILDS and says why; it never silently reuses a library "
+                       "built under different rules, which would answer a different question "
+                       "while looking like a fast success. Parquet only -- TSV has nowhere to "
+                       "record a fingerprint.", false, true);
+    setValidFormats_("library_cache", {"parquet"}, false);
+    registerFlag_("regenerate_library",
+                  "Ignore any cached library and predict from the FASTA again.", true);
     registerIntOption_("missed_cleavages", "<n>", 1, "Maximum missed cleavages.", false, true);
     registerIntOption_("min_peptide_length", "<n>", 7, "Minimum peptide length.", false, true);
     registerIntOption_("max_peptide_length", "<n>", 30, "Maximum peptide length.", false, true);
@@ -2915,6 +2931,11 @@ protected:
     const std::string tr = getStringOption_("tr");
     const std::string fasta = getStringOption_("fasta");
     const std::string out_lib = getStringOption_("out_lib");
+    bool library_was_reused = false;
+    // Recorded when a library is GENERATED, so the writer can stamp it into the
+    // file and a later run can recognise it. Empty when the library came from
+    // -tr: a library we did not build has no fingerprint we can vouch for.
+    ODIA::DIANNLibraryFile::Fingerprint generated_fp;
     std::string stop_after = getStringOption_("stop_after");
     const bool sort_library = getFlag_("sort_library");
 
@@ -3082,7 +3103,78 @@ protected:
           writeLogInfo_(cs.str());
         }
 
-        const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
+        // Reuse an already-predicted library when NOTHING that shapes it has
+        // changed. Predicting a proteome library is ~23 minutes of inference
+        // and the inputs rarely move between runs.
+        //
+        // The fingerprint covers the FASTA's CONTENT plus every parameter that
+        // changes what comes out. It deliberately does NOT cover the output
+        // path: the same library staged elsewhere should hit. It deliberately
+        // DOES cover things that look cosmetic -- charges, m/z windows, decoy
+        // method -- because reusing a library built under different rules
+        // answers a different question while looking like a fast success,
+        // which is this project's most-repeated failure.
+        ODIA::DIANNLibraryFile::Fingerprint& fp = generated_fp;
+        try { fp = ODIA::DIANNLibraryFile::fingerprintFasta(fasta); }
+        catch (const std::exception& e)
+        {
+          writeLogError_(std::string("cannot fingerprint the FASTA: ") + e.what());
+          return INPUT_FILE_NOT_FOUND;
+        }
+        {
+          std::ostringstream ps;
+          ps.setf(std::ios::fixed); ps.precision(3);
+          ps << "v1"
+             << ";len=" << params.min_length << "-" << params.max_length
+             << ";mc=" << params.missed_cleavages
+             << ";z=";
+          for (const int z : params.charges) { ps << z << "."; }
+          ps << ";pmz=" << params.precursor_mz_min << "-" << params.precursor_mz_max
+             << ";fmz=" << params.fragment_mz_min << "-" << params.fragment_mz_max
+             << ";fz=" << params.max_fragment_charge
+             << ";frag=" << params.min_fragments << "-" << params.max_fragments
+             << ";varmod=" << params.max_variable_modifications
+             << ";nme=" << (params.n_terminal_methionine_excision ? 1 : 0)
+             << ";rdc=" << params.reserved_doubly_charged
+             << ";decoy=" << getStringOption_("decoys")
+             << ";rt=" << getStringOption_("rt_model")
+             << ";frgmodel=" << getStringOption_("ms2_model")
+             << ";ccsmodel=" << getStringOption_("ccs_model")
+             << ";nce=" << getDoubleOption_("nce")
+             << ";inst=" << getStringOption_("instrument");
+          fp.params = ps.str();
+        }
+
+        const std::string cached = getStringOption_("library_cache").empty()
+                                     ? out_lib : getStringOption_("library_cache");
+        const bool may_reuse = !cached.empty() && cached.ends_with(".parquet") &&
+                               !getFlag_("regenerate_library");
+        if (may_reuse &&
+            ODIA::DIANNLibraryFile::readFingerprint(cached) == fp.key())
+        {
+          const auto t_reuse = std::chrono::steady_clock::now();
+          ODIA::DIANNLibraryFile::load(cached, library);
+          const double secs = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_reuse).count();
+          std::ostringstream r;
+          r.setf(std::ios::fixed); r.precision(1);
+          r << "reusing the library at " << cached << " (" << secs
+            << " s): its recorded fingerprint matches this FASTA and these "
+               "parameters exactly. -regenerate_library forces a rebuild.";
+          writeLogInfo_(r.str());
+          library_was_reused = true;
+        }
+        else
+        {
+          if (may_reuse && !ODIA::DIANNLibraryFile::readFingerprint(cached).empty())
+          {
+            // Say WHY it missed. A cache that silently rebuilds looks like a
+            // cache that does not work.
+            writeLogInfo_("not reusing " + cached +
+                          ": its fingerprint does not match this FASTA and these "
+                          "parameters, so it was built differently.");
+          }
+          const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
 
         std::ostringstream gen;
         gen << "generated from " << stats.proteins << " proteins: "
@@ -3319,6 +3411,7 @@ protected:
         dec << "appended " << decoys << " decoys";
         if (decoys_skipped) { dec << " (" << decoys_skipped << " targets got none)"; }
         writeLogInfo_(dec.str());
+        }   // end of the generate-from-scratch branch
       }
     }
     catch (const std::exception& e)
@@ -3429,7 +3522,13 @@ protected:
       const auto t_write = std::chrono::steady_clock::now();
       try
       {
-        ODIA::DIANNLibraryFile::store(out_lib, library);
+        // Stamp the fingerprint when we know it. Without this the cache can
+        // never hit: readFingerprint would find nothing and every run would
+        // rebuild while appearing to support reuse.
+        if (!generated_fp.params.empty() && out_lib.ends_with(".parquet"))
+        { ODIA::DIANNLibraryFile::storeParquet(out_lib, library, generated_fp); }
+        else
+        { ODIA::DIANNLibraryFile::store(out_lib, library); }
       }
       catch (const std::exception& e)
       {
