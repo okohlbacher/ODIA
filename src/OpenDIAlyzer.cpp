@@ -2990,20 +2990,36 @@ protected:
           std::vector<int> zs;
           std::stringstream ss(spec);
           std::string tok;
+          std::string bad;
           while (std::getline(ss, tok, ','))
           {
-            try
-            {
-              const int z = std::stoi(tok);
-              if (z >= 1 && z <= 10) { zs.push_back(z); }
-              else { zs.clear(); break; }
-            }
-            catch (const std::exception&) { zs.clear(); break; }
+            // Trim, so "2, 3" is accepted -- a space after a comma is what a
+            // person types, not an error worth refusing.
+            const auto b = tok.find_first_not_of(" \t");
+            const auto e = tok.find_last_not_of(" \t");
+            tok = (b == std::string::npos) ? std::string() : tok.substr(b, e - b + 1);
+
+            // std::stoi STOPS at the first non-digit and reports success, so
+            // "2abc" parses as 2 and a typo becomes a silent, different search.
+            // Verified on this compiler: "2abc" -> 2 consuming 1 of 4
+            // characters, "10xyz" -> 10 consuming 2 of 5. The whole token has
+            // to be consumed for the parse to mean what it appears to mean.
+            std::size_t pos = 0;
+            int z = 0;
+            try { z = std::stoi(tok, &pos); }
+            catch (const std::exception&) { bad = tok.empty() ? "<empty>" : tok; break; }
+            if (pos != tok.size() || z < 1 || z > 10)
+            { bad = tok.empty() ? "<empty>" : tok; break; }
+            zs.push_back(z);
           }
-          if (zs.empty())
+          if (!bad.empty() || zs.empty())
           {
-            writeLogError_("-library_charges '" + spec + "' is not a comma-separated "
-                           "list of charges in 1..10.");
+            // Name the offending token. "the list is bad" leaves the caller to
+            // find which of four entries was the typo.
+            writeLogError_("-library_charges '" + spec + "': " +
+                           (bad.empty() ? std::string("no charges given")
+                                        : "'" + bad + "' is not a charge in 1..10") +
+                           ". Expected a comma-separated list, e.g. 2,3 or 1,2,3,4.");
             return ILLEGAL_PARAMETERS;
           }
           std::sort(zs.begin(), zs.end());
