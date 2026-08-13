@@ -77,19 +77,23 @@ protected:
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
-    registerStringOption_("library_charges", "<list>", "2,3",
-                          "Precursor charge states to generate, comma-separated. This was "
-                          "hardcoded to 2,3 and not settable at all, which put a CEILING on "
-                          "what ODIA can ever identify: measured against DIA-NN's confident "
-                          "set on Astral, ODIA's library covers 92.76% of it, and every one of "
-                          "the 891 it misses is charge 1 (193) or charge 4 (698) -- z2 and z3 "
-                          "are covered completely. No amount of extraction or scoring work can "
-                          "recover a precursor the library cannot express. "
-                          "\n\n2,3 remains the DEFAULT so that existing measurements stay "
-                          "comparable; 1,2,3,4 matches DIA-NN's range and closes the gap "
-                          "entirely, at roughly TWICE the library size -- which is paid in the "
-                          "extraction memory that had to be bounded to stop a 4,986,319-precursor "
-                          "run being OOM-killed at 616.7 GB. Parity here is not free.", false);
+    registerStringOption_("library_charges", "<list>", "1,2,3,4",
+                          "Precursor charge states to generate, comma-separated. MEASURED, not "
+                          "chosen: against DIA-NN's 12,308 confident precursors on Astral, a "
+                          "2,3 library covers 92.76% and every one of the 891 it misses is "
+                          "charge 1 (193) or charge 4 (698); a 1,2,3,4 library covers 100.00% "
+                          "with none missing. No extraction or scoring work can recover a "
+                          "precursor the library cannot express, so this is a CEILING on "
+                          "identifications and not a tuning knob -- which is why the default "
+                          "is the one that reaches parity. "
+                          "\n\nThe cost is 1.55x the target precursors (2,493,162 -> 3,864,606) "
+                          "and 23:02 against 12:18 to generate. Not 2x: charge 1 sits highest "
+                          "in m/z and charge 4 lowest, so both are disproportionately dropped "
+                          "by the 350..1200 Th precursor window -- 2,352,750 dropped against "
+                          "615,516 at 2,3. That extra filtering costs nothing in coverage "
+                          "because a precursor DIA-NN actually detected is in a detectable "
+                          "m/z range by construction. "
+                          "\n\nUse 2,3 to reproduce measurements taken before 2026-08-13.", false);
     registerIntOption_("reserved_doubly_charged", "<n>", 0,
                        "Reserve this many of the fragment cap for doubly-charged ions. "
                        "0 ranks purely by predicted intensity, which is faithful to the "
