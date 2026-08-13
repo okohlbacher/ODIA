@@ -3526,7 +3526,7 @@ protected:
         // never hit: readFingerprint would find nothing and every run would
         // rebuild while appearing to support reuse.
         if (!generated_fp.params.empty() && out_lib.ends_with(".parquet"))
-        { ODIA::DIANNLibraryFile::storeParquet(out_lib, library, generated_fp); }
+        { ODIA::DIANNLibraryFile::storeParquetCompact(out_lib, library, generated_fp); }
         else
         { ODIA::DIANNLibraryFile::store(out_lib, library); }
       }

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <odia/Library.h>
+#include <arrow/type_fwd.h>
 
 #include <string>
 
@@ -109,6 +110,31 @@ namespace ODIA
     /// missing, unreadable, or carries none. Reads ONLY the metadata -- it must
     /// not cost a full table read to decide whether to use the table.
     static std::string readFingerprint(const std::string& filename);
+
+  private:
+    /// Read the compact (one row per precursor, transitions nested) layout.
+    static void loadParquetCompact(const std::shared_ptr<arrow::Table>& table,
+                                   Library& library);
+  public:
+
+    /// Write the library in ODIA's COMPACT Parquet layout: one row per
+    /// PRECURSOR, with the transitions as Arrow list columns.
+    ///
+    /// The flat layout writes one row per TRANSITION, so every precursor-level
+    /// value -- id, sequence, protein, precursor m/z, RT, IM, CCS, charge,
+    /// decoy -- is repeated for each of that precursor's ~12 fragments. On the
+    /// parity library that is ~44 of 56 bytes per row describing only
+    /// 9,983,789 precursors across 119,088,506 rows.
+    ///
+    /// Storing them once takes the raw form from ~6.2 GiB to ~1.7 GiB, which is
+    /// about what the in-memory library costs (1,845.7 MiB) -- the right
+    /// target, since that representation is already the well-designed one.
+    ///
+    /// `loadParquet` detects the layout from the schema (Product.Mz being a
+    /// list) and reads either, so old files keep working.
+    static void storeParquetCompact(const std::string& filename, const Library& library,
+                                    const Fingerprint& fp);
+
   };
 
 } // namespace ODIA

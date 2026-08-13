@@ -19,6 +19,7 @@
 #include <cstring>
 #include <cmath>
 #include <fstream>
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -328,6 +329,19 @@ namespace ODIA
       throw std::runtime_error("cannot read Parquet table: " + filename);
     }
 
+    // COMPACT layout? Product.Mz being a list means one row per PRECURSOR with
+    // the transitions nested, rather than one row per transition. Detected from
+    // the schema rather than from a version field, so a file is readable on its
+    // own terms.
+    {
+      const int qi = table->schema()->GetFieldIndex(Columns::PRODUCT_MZ);
+      if (qi >= 0 && table->schema()->field(qi)->type()->id() == arrow::Type::LIST)
+      {
+        loadParquetCompact(table, library);
+        return;
+      }
+    }
+
     // Combine chunks up front. A library at proteome scale exceeds the 2 GB
     // limit of a 32-bit-offset StringArray, so string columns arrive chunked;
     // resolving (global row) -> (chunk, index) per access is the alternative,
@@ -535,6 +549,224 @@ namespace ODIA
       return *got;
     }
     catch (const std::exception&) { return {}; }
+  }
+
+  void DIANNLibraryFile::loadParquetCompact(const std::shared_ptr<arrow::Table>& table_in,
+                                            Library& library)
+  {
+    auto combined = table_in->CombineChunks(arrow::default_memory_pool());
+    if (!combined.ok()) { throw std::runtime_error("cannot combine Parquet chunks"); }
+    auto table = *combined;
+
+    std::vector<std::shared_ptr<arrow::Array>> keep_alive;
+    auto col = [&](const char* n) -> std::shared_ptr<arrow::Array> {
+      const int i = table->schema()->GetFieldIndex(n);
+      return i < 0 ? nullptr : table->column(i)->chunk(0);
+    };
+    // Dictionary columns decode to their values; the flat path does the same.
+    auto str = [&](const char* n) -> std::shared_ptr<arrow::StringArray> {
+      auto a = col(n);
+      if (!a) { return nullptr; }
+      if (a->type_id() != arrow::Type::STRING)
+      {
+        auto casted = arrow::compute::Cast(arrow::Datum(a), arrow::utf8());
+        if (!casted.ok()) { return nullptr; }
+        a = casted->make_array();
+        keep_alive.push_back(a);
+      }
+      return std::static_pointer_cast<arrow::StringArray>(a);
+    };
+    auto num = [&](const std::shared_ptr<arrow::Array>& a, int64_t i) -> double {
+      if (!a || a->IsNull(i)) { return std::numeric_limits<double>::quiet_NaN(); }
+      switch (a->type_id())
+      {
+        case arrow::Type::DOUBLE: return static_cast<const arrow::DoubleArray&>(*a).Value(i);
+        case arrow::Type::FLOAT:  return static_cast<const arrow::FloatArray&>(*a).Value(i);
+        case arrow::Type::UINT8:  return static_cast<const arrow::UInt8Array&>(*a).Value(i);
+        case arrow::Type::INT32:  return static_cast<const arrow::Int32Array&>(*a).Value(i);
+        default: return std::numeric_limits<double>::quiet_NaN();
+      }
+    };
+    auto lst = [&](const char* n) -> std::shared_ptr<arrow::ListArray> {
+      auto a = col(n);
+      if (!a || a->type_id() != arrow::Type::LIST) { return nullptr; }
+      return std::static_pointer_cast<arrow::ListArray>(a);
+    };
+
+    const auto a_seq = str(Columns::MODIFIED_SEQUENCE);
+    const auto a_pg  = str(Columns::PROTEIN_GROUP);
+    const auto a_z   = col(Columns::PRECURSOR_CHARGE);
+    const auto a_dec = col(Columns::DECOY);
+    const auto a_rt  = col(Columns::RT);
+    const auto a_im  = col(Columns::IM);
+    const auto a_ccs = col(Columns::CCS);
+    const auto a_pmz = col(Columns::PRECURSOR_MZ);
+    const auto l_qmz = lst(Columns::PRODUCT_MZ);
+    const auto l_int = lst(Columns::RELATIVE_INTENSITY);
+    const auto l_ft  = lst(Columns::FRAGMENT_TYPE);
+    const auto l_fz  = lst(Columns::FRAGMENT_CHARGE);
+    const auto l_ord = lst(Columns::FRAGMENT_SERIES_NUMBER);
+    if (!a_seq || !l_qmz || !l_int)
+    { throw std::runtime_error("compact Parquet library is missing required columns"); }
+
+    const auto v_qmz = std::static_pointer_cast<arrow::DoubleArray>(l_qmz->values());
+    const auto v_int = std::static_pointer_cast<arrow::FloatArray>(l_int->values());
+    const auto v_ft  = l_ft ? std::static_pointer_cast<arrow::UInt8Array>(l_ft->values()) : nullptr;
+    const auto v_fz  = l_fz ? std::static_pointer_cast<arrow::UInt8Array>(l_fz->values()) : nullptr;
+    const auto v_ord = l_ord ? std::static_pointer_cast<arrow::UInt8Array>(l_ord->values()) : nullptr;
+
+    auto& p = library.precursors();
+    auto& t = library.transitions();
+    const int64_t n = table->num_rows();
+
+    for (int64_t i = 0; i < n; ++i)
+    {
+      const auto seq = a_seq->GetView(i);
+      p.mz.push_back(toFixed(num(a_pmz, i)));
+      p.irt.push_back(static_cast<float>(num(a_rt, i)));
+      const double im = num(a_im, i);
+      p.im.push_back(im > 0.0 ? static_cast<float>(im) : std::nanf(""));
+      const double ccs = num(a_ccs, i);
+      p.ccs.push_back(ccs > 0.0 ? static_cast<float>(ccs) : std::nanf(""));
+      p.charge.push_back(static_cast<std::uint8_t>(num(a_z, i)));
+      p.decoy.push_back(num(a_dec, i) != 0.0 ? std::uint8_t{1} : std::uint8_t{0});
+      p.modified_sequence.push_back(library.strings().intern(
+        std::string_view(seq.data(), seq.size())));
+      const auto pg = a_pg ? a_pg->GetView(i) : std::string_view{};
+      p.protein_group.push_back(library.strings().intern(
+        std::string_view(pg.data(), pg.size())));
+
+      p.transition_begin.push_back(static_cast<std::uint32_t>(t.product_mz.size()));
+      const int64_t b = l_qmz->value_offset(i), e = l_qmz->value_offset(i + 1);
+      for (int64_t k = b; k < e; ++k)
+      {
+        t.product_mz.push_back(toFixed(v_qmz->Value(k)));
+        t.library_intensity.push_back(v_int->Value(k));
+        t.type.push_back(v_ft ? static_cast<FragmentType>(v_ft->Value(k))
+                              : FragmentType::Unknown);
+        t.charge.push_back(v_fz ? static_cast<std::int8_t>(v_fz->Value(k)) : std::int8_t{1});
+        t.ordinal.push_back(v_ord ? static_cast<std::uint8_t>(v_ord->Value(k))
+                                  : std::uint8_t{0});
+        // The compact layout drops the loss COLUMN because it is "noloss" on
+        // every row here -- but the ARRAY still has to be filled. Leaving it
+        // empty while product_mz holds 672 entries made sortByPrecursorMz index
+        // transitions_.loss[s] out of bounds and segfault after the library had
+        // already loaded and reported itself correctly, which is why this
+        // looked like a write failure rather than a read one.
+        t.loss.push_back(LossType::None);
+      }
+      p.transition_count.push_back(static_cast<std::uint32_t>(e - b));
+    }
+  }
+
+  void DIANNLibraryFile::storeParquetCompact(const std::string& filename,
+                                             const Library& library,
+                                             const Fingerprint& fp)
+  {
+    const auto& p = library.precursors();
+    const auto& t = library.transitions();
+    const std::size_t n = library.precursorCount();
+
+    auto ok = [](const arrow::Status& st) {
+      if (!st.ok()) { throw std::runtime_error("parquet build: " + st.ToString()); }
+    };
+
+    // Precursor-level: ONE value each, not one per transition.
+    arrow::StringDictionaryBuilder b_id, b_seq, b_pg;
+    arrow::UInt8Builder b_z, b_dec;
+    arrow::FloatBuilder b_rt, b_im, b_ccs;
+    arrow::DoubleBuilder b_pmz;
+
+    // Transition-level: a LIST per precursor. The list offsets replace the
+    // repeated precursor key entirely -- there is no foreign key to store.
+    auto pool = arrow::default_memory_pool();
+    auto qmz_v = std::make_shared<arrow::DoubleBuilder>(pool);
+    auto int_v = std::make_shared<arrow::FloatBuilder>(pool);
+    auto ft_v  = std::make_shared<arrow::UInt8Builder>(pool);
+    auto fz_v  = std::make_shared<arrow::UInt8Builder>(pool);
+    auto ord_v = std::make_shared<arrow::UInt8Builder>(pool);
+    arrow::ListBuilder b_qmz(pool, qmz_v), b_int(pool, int_v),
+                       b_ft(pool, ft_v), b_fz(pool, fz_v), b_ord(pool, ord_v);
+
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      const auto seq = library.strings().get(p.modified_sequence[i]);
+      const auto pg = library.strings().get(p.protein_group[i]);
+      const std::string seq_s(seq.data(), seq.size());
+      const std::string pg_s(pg.data(), pg.size());
+      const int z = static_cast<int>(p.charge[i]);
+      const std::string id = seq_s + std::to_string(z) + (p.decoy[i] ? "_decoy" : "");
+
+      ok(b_id.Append(id)); ok(b_seq.Append(seq_s)); ok(b_pg.Append(pg_s));
+      ok(b_z.Append(static_cast<std::uint8_t>(z)));
+      ok(b_dec.Append(static_cast<std::uint8_t>(p.decoy[i])));
+      // NaN means ABSENT and is written as null. A zero ion mobility is a
+      // VALUE that gates every peak against 0 and rejects them all.
+      if (!std::isnan(p.irt[i])) { ok(b_rt.Append(p.irt[i])); } else { ok(b_rt.AppendNull()); }
+      if (i < p.im.size() && !std::isnan(p.im[i])) { ok(b_im.Append(p.im[i])); }
+      else { ok(b_im.AppendNull()); }
+      if (i < p.ccs.size() && !std::isnan(p.ccs[i])) { ok(b_ccs.Append(p.ccs[i])); }
+      else { ok(b_ccs.AppendNull()); }
+      ok(b_pmz.Append(fromFixed(p.mz[i])));
+
+      ok(b_qmz.Append()); ok(b_int.Append()); ok(b_ft.Append());
+      ok(b_fz.Append()); ok(b_ord.Append());
+      const std::uint32_t begin = p.transition_begin[i];
+      for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
+      {
+        const std::uint32_t j = begin + k;
+        ok(qmz_v->Append(fromFixed(t.product_mz[j])));
+        ok(int_v->Append(t.library_intensity[j]));
+        // The enum's own value, not its spelling: "noloss" and "y" cost bytes
+        // and a parse on every read.
+        ok(ft_v->Append(static_cast<std::uint8_t>(t.type[j])));
+        ok(fz_v->Append(static_cast<std::uint8_t>(t.charge[j])));
+        ok(ord_v->Append(static_cast<std::uint8_t>(t.ordinal[j])));
+      }
+    }
+
+    std::shared_ptr<arrow::Array> a_id, a_seq, a_pg, a_z, a_dec, a_rt, a_im,
+                                  a_ccs, a_pmz, a_qmz, a_int, a_ft, a_fz, a_ord;
+    ok(b_id.Finish(&a_id));   ok(b_seq.Finish(&a_seq)); ok(b_pg.Finish(&a_pg));
+    ok(b_z.Finish(&a_z));     ok(b_dec.Finish(&a_dec)); ok(b_rt.Finish(&a_rt));
+    ok(b_im.Finish(&a_im));   ok(b_ccs.Finish(&a_ccs)); ok(b_pmz.Finish(&a_pmz));
+    ok(b_qmz.Finish(&a_qmz)); ok(b_int.Finish(&a_int)); ok(b_ft.Finish(&a_ft));
+    ok(b_fz.Finish(&a_fz));   ok(b_ord.Finish(&a_ord));
+
+    auto schema = arrow::schema({
+      arrow::field(Columns::PRECURSOR_ID, a_id->type()),
+      arrow::field(Columns::MODIFIED_SEQUENCE, a_seq->type()),
+      arrow::field(Columns::PROTEIN_GROUP, a_pg->type()),
+      arrow::field(Columns::PRECURSOR_CHARGE, arrow::uint8()),
+      arrow::field(Columns::DECOY, arrow::uint8()),
+      arrow::field(Columns::RT, arrow::float32()),
+      arrow::field(Columns::IM, arrow::float32()),
+      arrow::field(Columns::CCS, arrow::float32()),
+      arrow::field(Columns::PRECURSOR_MZ, arrow::float64()),
+      arrow::field(Columns::PRODUCT_MZ, arrow::list(arrow::float64())),
+      arrow::field(Columns::RELATIVE_INTENSITY, arrow::list(arrow::float32())),
+      arrow::field(Columns::FRAGMENT_TYPE, arrow::list(arrow::uint8())),
+      arrow::field(Columns::FRAGMENT_CHARGE, arrow::list(arrow::uint8())),
+      arrow::field(Columns::FRAGMENT_SERIES_NUMBER, arrow::list(arrow::uint8())),
+    });
+    schema = schema->WithMetadata(arrow::key_value_metadata(
+      {"odia.fingerprint", "odia.layout", "odia.fasta_sha", "odia.fasta_bytes", "odia.params"},
+      {fp.key(), "compact-v1", fp.fasta_hash, std::to_string(fp.fasta_bytes), fp.params}));
+
+    auto table = arrow::Table::Make(schema,
+      {a_id, a_seq, a_pg, a_z, a_dec, a_rt, a_im, a_ccs, a_pmz,
+       a_qmz, a_int, a_ft, a_fz, a_ord});
+
+    auto outfile = arrow::io::FileOutputStream::Open(filename);
+    if (!outfile.ok()) { throw std::runtime_error("cannot write library: " + filename); }
+    auto props = parquet::WriterProperties::Builder()
+                   .compression(parquet::Compression::ZSTD)
+                   ->enable_dictionary()
+                   ->build();
+    auto arrow_props = parquet::ArrowWriterProperties::Builder().store_schema()->build();
+    const auto st = parquet::arrow::WriteTable(*table, pool, *outfile, 1 << 20,
+                                               props, arrow_props);
+    if (!st.ok()) { throw std::runtime_error("cannot write Parquet: " + st.ToString()); }
   }
 
   void DIANNLibraryFile::storeParquet(const std::string& filename, const Library& library)
