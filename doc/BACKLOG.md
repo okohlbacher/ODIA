@@ -3232,3 +3232,45 @@ cycles-per-precursor by class next, and look at boundary clipping.
 Note the counters could not have shown this before: they summed to 17,320,479
 over 13,547,545 scan positions, 27.8% more than exist, mixing per-precursor and
 per-scan-position granularity. They were never a partition.
+
+### RESOLVED (2026-08-13): the excess is a zero-threshold on a zero-mean quantity
+
+With the counters aggregated across threads and every stage split by class, the
+whole library is accounted for and the divergence is at ONE gate:
+
+    no points (<3)   4,990,048 / 4,990,026   1.00x   balanced
+    empty trace          1,716 /     1,608   0.94x   balanced
+    precursors reached     137 /       254   1.85x   <-- all of it
+
+    of those WITH usable points:  1,853 target / 1,862 decoy   (1.005x)
+    surviving to the picker:        7.4%     /   13.6%
+
+Extraction is symmetric -- identical numbers of each class have points, exactly
+as the code proves. The gate is:
+
+    total[i] += (at[i] - median) * scale;    // median-subtracted, ZERO-CENTRED
+    if (window_total <= 0.0) { empty_trace; return; }
+
+Every transition is median-subtracted, so for a precursor with NO REAL PEAK the
+summed trace is a zero-mean random variable and `<= 0.0` is a COIN FLIP. The
+gate does not test for signal; it tests the sign of noise. Roughly half of all
+absent precursors pass by chance, and because the threshold sits exactly on the
+centre of the distribution it is maximally sensitive to any systematic
+difference between the classes.
+
+The systematic difference is the one dismissed earlier as too small: decoy
+fragments average 2.35 Th LOWER in m/z, where Astral spectra are denser, so
+marginally more of their points are non-zero and the sum tips positive slightly
+more often. 2.35 Th is negligible against an 8 ppm TOLERANCE -- the comparison
+made at the time -- and decisive against a threshold on a distribution's centre.
+
+It also explains the diaPASEF contrast: mobility gating removes the chance
+coincidences that make the sum jitter about zero, the coin stops flipping, and
+the classes balance (142,321 / 142,320).
+
+CONSEQUENCE. This is a defect in the gate, not a property of decoys. A test that
+admits half of all absent precursors inflates the decoy null, and an inflated
+null raises the 1% threshold above the few real targets -- which is exactly
+"the scorer ran, the classifier trained, and the threshold rejected everything".
+The fix is to test for actual signal (e.g. a positive excursion above local
+noise in a minimum number of transitions) rather than the sign of a centred sum.

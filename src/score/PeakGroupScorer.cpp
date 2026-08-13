@@ -151,8 +151,8 @@ namespace ODIA
       /// Never got a usable chromatogram OUT OF THE EXTRACTOR at all. These are
       /// extraction losses, not picking losses, and they were pooled with
       /// picker rejects under `precursors_without_candidate`.
-      std::size_t no_points = 0;        ///< pointCount(0) < 3
-      std::size_t empty_trace = 0;      ///< extracted, but the summed trace is 0
+      std::size_t no_points[2] = {0, 0};   ///< [0] target, [1] decoy        ///< pointCount(0) < 3
+      std::size_t empty_trace[2] = {0, 0};   ///< [0] target, [1] decoy      ///< extracted, but the summed trace is 0
       std::size_t too_few_transitions[2] = {0, 0};   ///< [0] target, [1] decoy
       /// Entered the loop, computed correlations, and found no qualifying
       /// position anywhere in the window.
@@ -615,8 +615,8 @@ namespace ODIA
           t.outside_margin[c] += r->outside_margin[c];
           t.reached[c] += r->reached[c];
         }
-        t.no_points += r->no_points;
-        t.empty_trace += r->empty_trace;
+        for (int c = 0; c < 2; ++c) { t.no_points[c] += r->no_points[c]; }
+        for (int c = 0; c < 2; ++c) { t.empty_trace[c] += r->empty_trace[c]; }
         t.too_few_at_apex += r->too_few_at_apex;
       }
       return t;
@@ -637,7 +637,13 @@ namespace ODIA
     if (tc == 0) { return; }
 
     const std::size_t points = chromatogram.pointCount(0);
-    if (points < 3) { ++rejects_.no_points; ++result.precursors_without_candidate; return; }
+    // The class is needed BEFORE these gates, not after: `reached` is
+    // incremented past them, so an asymmetry here is invisible in every counter
+    // downstream. One thread's numbers already put the entire target/decoy
+    // imbalance in `reached` (137/254) while scans PER PRECURSOR were identical
+    // (2014 both), so the divergence happens at exactly these two returns.
+    const bool is_decoy = p.decoy[chromatogram.precursor] != 0;
+    if (points < 3) { ++rejects_.no_points[is_decoy]; ++result.precursors_without_candidate; return; }
 
     // D8: each transition standardised against its own local noise before
     // summing, so no transition dominates by being loud and none is boosted
@@ -648,7 +654,7 @@ namespace ODIA
       : summedTrace(chromatogram, points);
     const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
     if (window_total <= 0.0)
-    { ++rejects_.empty_trace; ++result.precursors_without_candidate; return; }
+    { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
 
     std::vector<MassAnchor> staged_anchors;
     const std::size_t first_group = result.groups.size();
@@ -687,7 +693,7 @@ namespace ODIA
       // decoy peak groups than target ones from a balanced library and the
       // cause is unknown; totals cannot localise it, and the previous counters
       // could not even be summed -- they overcounted scan positions by 27.8%.
-      ++rejects_.reached[p.decoy[chromatogram.precursor] != 0];
+      ++rejects_.reached[is_decoy];
       return findCandidatesByCorrelation(chromatogram, rejects_,
                                          p.decoy[chromatogram.precursor] != 0,
                                          options.corr_half_window,
@@ -1607,6 +1613,8 @@ namespace ODIA
       // target/decoy at EVERY stage, because the imbalance has to arise
       // somewhere and only a per-stage split says where.
       w << "picker rejections, target/decoy (decoy:target ratio):"
+        << "\n  no points (<3)      " << pc(r.no_points[0], r.no_points[1])
+        << "\n  empty trace         " << pc(r.empty_trace[0], r.empty_trace[1])
         << "\n  precursors reached  " << pc(r.reached[0], r.reached[1])
         << "\n  scan positions      " << pc(r.scans[0], r.scans[1])
         << "\n  <2 fragments        " << pc(r.too_few_present[0], r.too_few_present[1])
