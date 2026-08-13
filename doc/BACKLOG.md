@@ -3170,3 +3170,49 @@ user has to produce first.
 should be checked against the default path the same day it is measured. A win
 that lives behind a flag is a win nobody gets, and the gap is invisible in the
 benchmark logs because the benchmark scripts pass the flags.
+
+## The Astral decoy excess: located upstream of the picker (2026-08-13)
+
+Decoys yield ~1.5x more peak groups than targets on Astral from a balanced
+library, nothing is identified at 1% FDR, and on diaPASEF the same code is
+balanced to a single group (142,321 / 142,320). FIVE explanations are now dead,
+each by measurement rather than argument:
+
+* **RT placement.** Target mean 30.00, decoy 30.47. Matched.
+* **Fragment m/z in denser spectral regions.** -2.35 Th library-wide. Too small.
+* **A library artefact.** Survives two independently generated libraries with
+  different charges and m/z windows.
+* **The `max_corr_diff` relative margin.** The best mechanistic proposal anyone
+  made -- an absent precursor's "best" correlation IS noise, so a fixed margin
+  around it admits nearly every position, and decoys are absent by construction.
+  It predicts the right sign AND the diaPASEF contrast. It is still wrong:
+  `outside_margin` fires TWICE in an entire run, and setting -max_corr_diff 0.0
+  cuts candidates threefold while leaving the ratio at 1.536 against 1.539.
+* **Skewed sampling.** Pass 1 samples every 499th precursor of an m/z-sorted
+  library in which each decoy sits adjacent to the target whose precursor m/z it
+  shares. Measured composition: 9,979 target / 10,029 decoy, ratio 1.005.
+
+WHERE IT ACTUALLY IS. The per-class picker counters put the imbalance at the
+FIRST one, before any criterion applies, and no later stage amplifies it:
+
+    scan positions        1,091,533 / 1,661,479   1.52x
+    <2 fragments            428,178 /   642,481   1.50x
+    below min_corr          509,556 /   786,456   1.54x
+    reference zero          163,324 /   243,947   1.49x
+    not a local max         221,241 /   347,826   1.57x
+    below apex_evidence      75,535 /   115,838   1.53x
+    outside max_corr_diff           2 / 0
+
+Per precursor, over a balanced sample: 109.4 scan positions for a target, 165.7
+for a decoy. `rej.scans` increments once per position in a precursor's
+extraction window, so DECOYS ARE GETTING WIDER EXTRACTION WINDOWS. The picker is
+symmetric; the asymmetry is already present when it starts.
+
+The open question is therefore narrow and answerable: a decoy shares its
+target's precursor m/z, hence its isolation window, and pass 1 spreads the
+library evenly over the run -- so why is its window wider? Instrument
+cycles-per-precursor by class next, and look at boundary clipping.
+
+Note the counters could not have shown this before: they summed to 17,320,479
+over 13,547,545 scan positions, 27.8% more than exist, mixing per-precursor and
+per-scan-position granularity. They were never a partition.

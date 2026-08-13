@@ -160,7 +160,7 @@ namespace ODIA
       std::size_t reference_zero[2] = {0, 0};   ///< [0] target, [1] decoy    ///< smoothed reference not positive
       std::size_t not_local_max[2] = {0, 0};   ///< [0] target, [1] decoy     ///< k is not the local maximum
       std::size_t below_apex_evidence[2] = {0, 0};   ///< [0] target, [1] decoy
-      std::size_t outside_margin = 0;    ///< beyond MaxCorrDiff of the best
+      std::size_t outside_margin[2] = {0, 0};   ///< [0] target, [1] decoy    ///< beyond MaxCorrDiff of the best
       std::size_t too_few_at_apex = 0;   ///< candidate emitted, then dropped by the scorer
       std::size_t scans[2] = {0, 0};   ///< [0] target, [1] decoy             ///< positions examined
     };
@@ -402,7 +402,7 @@ namespace ODIA
       }
       for (const auto& h : hits)
       {
-        if (h.corr_sum < best - max_corr_diff) { ++rej.outside_margin; break; }
+        if (h.corr_sum < best - max_corr_diff) { ++rej.outside_margin[is_decoy]; break; }
         if (found.size() >= max_candidates) { break; }
         Candidate cd;
         cd.apex = h.apex;
@@ -1551,7 +1551,13 @@ namespace ODIA
         << "\n  reference zero      " << pc(r.reference_zero[0], r.reference_zero[1])
         << "\n  not a local max     " << pc(r.not_local_max[0], r.not_local_max[1])
         << "\n  below apex_evidence " << pc(r.below_apex_evidence[0], r.below_apex_evidence[1])
-        << r.outside_margin << " outside max_corr_diff; then "
+        // THE one to watch: max_corr_diff is a margin around each precursor's
+        // OWN best correlation, so an absent precursor -- whose best IS noise --
+        // keeps far more positions than a present one whose best is a real
+        // peak. Decoys are absent by construction and targets are a mixture, so
+        // this stage is where the classes should diverge if that is the cause.
+        << "\n  outside max_corr_diff " << pc(r.outside_margin[0], r.outside_margin[1])
+
         << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex"
         << "\n  EXTRACTION losses (no usable chromatogram): "
         << r.no_points << " with <3 points, " << r.empty_trace << " with an all-zero trace"
