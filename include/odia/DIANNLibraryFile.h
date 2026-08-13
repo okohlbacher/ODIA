@@ -93,9 +93,25 @@ namespace ODIA
       std::uint64_t fasta_bytes = 0;
       std::string params;          ///< every content-affecting parameter, canonical
 
-      /// The single string stored in and compared against the file.
+      /// Everything in `params` EXCEPT the decoy method.
+      ///
+      /// The expensive half of building a library is inference -- ~19 minutes
+      /// of retention time, fragment intensity and CCS prediction on the human
+      /// proteome -- and none of it depends on how decoys are made. Keying the
+      /// cache on the full parameter set therefore threw all of it away when
+      /// only the decoy method changed, which is exactly what happens when
+      /// comparing Mutate against PseudoReverse.
+      std::string target_params;
+      std::string decoy_method;
+
       std::string key() const
       { return fasta_hash + ":" + std::to_string(fasta_bytes) + ":" + params; }
+
+      /// Identifies the PREDICTIONS, independent of the decoy layer.
+      std::string targetKey() const
+      { return fasta_hash + ":" + std::to_string(fasta_bytes) + ":" + target_params; }
+
+
     };
 
     /// Hash a FASTA by content. Throws if it cannot be read.
@@ -109,7 +125,8 @@ namespace ODIA
     /// The fingerprint recorded in a Parquet library, or empty if the file is
     /// missing, unreadable, or carries none. Reads ONLY the metadata -- it must
     /// not cost a full table read to decide whether to use the table.
-    static std::string readFingerprint(const std::string& filename);
+    static std::string readFingerprint(const std::string& filename,
+                                       const char* key = "odia.fingerprint");
 
   private:
     /// Read the compact (one row per precursor, transitions nested) layout.

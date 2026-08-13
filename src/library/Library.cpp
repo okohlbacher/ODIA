@@ -203,6 +203,60 @@ namespace ODIA
     t.charge.shrink_to_fit(); t.loss.shrink_to_fit();
   }
 
+  std::size_t Library::dropDecoys()
+  {
+    const std::size_t n = precursorCount();
+    std::size_t removed = 0;
+    for (std::size_t i = 0; i < n; ++i) { if (precursors_.decoy[i]) { ++removed; } }
+    if (removed == 0) { return 0; }
+
+    // Rebuild rather than erase in place: transitions are a CSR layout, so
+    // removing a precursor means recomputing every later transition_begin.
+    // This mirrors sortByPrecursorMz's rebuild, including copying every
+    // per-transition array -- omitting one there segfaulted the sort, and the
+    // same omission here would do the same.
+    PrecursorArrays np;
+    TransitionArrays nt;
+    const std::size_t keep = n - removed;
+    np.mz.reserve(keep); np.irt.reserve(keep); np.im.reserve(keep);
+    np.ccs.reserve(keep); np.charge.reserve(keep); np.decoy.reserve(keep);
+    np.modified_sequence.reserve(keep); np.protein_group.reserve(keep);
+    np.transition_begin.reserve(keep); np.transition_count.reserve(keep);
+
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      if (precursors_.decoy[i]) { continue; }
+      np.mz.push_back(precursors_.mz[i]);
+      np.irt.push_back(precursors_.irt[i]);
+      np.im.push_back(precursors_.im[i]);
+      np.ccs.push_back(precursors_.ccs.empty()
+                         ? std::numeric_limits<float>::quiet_NaN()
+                         : precursors_.ccs[i]);
+      np.charge.push_back(precursors_.charge[i]);
+      np.decoy.push_back(0);
+      np.modified_sequence.push_back(precursors_.modified_sequence[i]);
+      np.protein_group.push_back(precursors_.protein_group[i]);
+
+      const std::uint32_t begin = precursors_.transition_begin[i];
+      const std::uint32_t count = precursors_.transition_count[i];
+      np.transition_begin.push_back(static_cast<std::uint32_t>(nt.product_mz.size()));
+      np.transition_count.push_back(count);
+      for (std::uint32_t k = 0; k < count; ++k)
+      {
+        const std::uint32_t s = begin + k;
+        nt.product_mz.push_back(transitions_.product_mz[s]);
+        nt.library_intensity.push_back(transitions_.library_intensity[s]);
+        nt.type.push_back(transitions_.type[s]);
+        nt.ordinal.push_back(transitions_.ordinal[s]);
+        nt.charge.push_back(transitions_.charge[s]);
+        nt.loss.push_back(transitions_.loss[s]);
+      }
+    }
+    precursors_ = std::move(np);
+    transitions_ = std::move(nt);
+    return removed;
+  }
+
   void Library::sortByPrecursorMz()
   {
     const std::size_t n = precursorCount();

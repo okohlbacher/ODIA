@@ -216,6 +216,15 @@ namespace ODIA
     /// locatable by binary search.
     void sortByPrecursorMz();
 
+    /// Drop every decoy precursor and its transitions, keeping targets in
+    /// order. Returns how many were removed.
+    ///
+    /// Exists so a CACHED library can be re-decoyed with a different method
+    /// without repeating the ~19 minutes of retention-time, fragment-intensity
+    /// and CCS inference that produced its targets. None of that inference
+    /// depends on how decoys are made.
+    std::size_t dropDecoys();
+
     /// First precursor with m/z >= @p mz_low, for window slicing.
     ///
     /// Throws if the library is not sorted. Returning 0 instead would be

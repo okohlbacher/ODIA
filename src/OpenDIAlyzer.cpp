@@ -3136,21 +3136,53 @@ protected:
              << ";varmod=" << params.max_variable_modifications
              << ";nme=" << (params.n_terminal_methionine_excision ? 1 : 0)
              << ";rdc=" << params.reserved_doubly_charged
-             << ";decoy=" << getStringOption_("decoys")
              << ";rt=" << getStringOption_("rt_model")
              << ";frgmodel=" << getStringOption_("ms2_model")
              << ";ccsmodel=" << getStringOption_("ccs_model")
              << ";nce=" << getDoubleOption_("nce")
              << ";inst=" << getStringOption_("instrument");
-          fp.params = ps.str();
+          // The TARGET key omits the decoy method on purpose: no part of the
+          // inference depends on it, so a method change must not discard it.
+          fp.target_params = ps.str();
+          fp.decoy_method = getStringOption_("decoys");
+          fp.params = fp.target_params + ";decoy=" + fp.decoy_method;
         }
 
         const std::string cached = getStringOption_("library_cache").empty()
                                      ? out_lib : getStringOption_("library_cache");
         const bool may_reuse = !cached.empty() && cached.ends_with(".parquet") &&
                                !getFlag_("regenerate_library");
-        if (may_reuse &&
-            ODIA::DIANNLibraryFile::readFingerprint(cached) == fp.key())
+        const std::string cached_key = may_reuse
+          ? ODIA::DIANNLibraryFile::readFingerprint(cached) : std::string();
+        const std::string cached_target = may_reuse
+          ? ODIA::DIANNLibraryFile::readFingerprint(cached, "odia.target_fingerprint")
+          : std::string();
+
+        // A TARGET hit with a different decoy method: the expensive half is
+        // still valid. Drop the decoys and re-append with the requested method
+        // rather than re-running ~19 minutes of inference to change how a
+        // sequence is shuffled.
+        if (may_reuse && cached_key != fp.key() && !cached_target.empty() &&
+            cached_target == fp.targetKey())
+        {
+          const auto t0r = std::chrono::steady_clock::now();
+          ODIA::DIANNLibraryFile::load(cached, library);
+          const std::size_t dropped = library.dropDecoys();
+          std::size_t skipped = 0;
+          const auto made = ODIA::LibraryGenerator::appendDecoys(
+            library, ODIA::parseDecoyMethod(fp.decoy_method), &skipped);
+          std::ostringstream r;
+          r.setf(std::ios::fixed); r.precision(1);
+          r << "reusing the PREDICTIONS in " << cached << " and re-decoying: dropped "
+            << dropped << ", appended " << made << " with method " << fp.decoy_method
+            << " in " << std::chrono::duration<double>(
+                 std::chrono::steady_clock::now() - t0r).count()
+            << " s. The retention-time, fragment-intensity and CCS predictions do "
+               "not depend on the decoy method, so changing it must not cost them.";
+          writeLogInfo_(r.str());
+          library_was_reused = true;
+        }
+        else if (may_reuse && cached_key == fp.key())
         {
           const auto t_reuse = std::chrono::steady_clock::now();
           ODIA::DIANNLibraryFile::load(cached, library);

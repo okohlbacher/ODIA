@@ -524,7 +524,8 @@ namespace ODIA
     return fp;
   }
 
-  std::string DIANNLibraryFile::readFingerprint(const std::string& filename)
+  std::string DIANNLibraryFile::readFingerprint(const std::string& filename,
+                                                const char* key)
   {
     if (!std::filesystem::exists(filename)) { return {}; }
     try
@@ -544,7 +545,7 @@ namespace ODIA
       if (!(*reader_result)->GetSchema(&schema).ok() || !schema) { return {}; }
       const auto kv = schema->metadata();
       if (!kv) { return {}; }
-      const auto got = kv->Get("odia.fingerprint");
+      const auto got = kv->Get(key);
       if (!got.ok()) { return {}; }
       return *got;
     }
@@ -750,8 +751,18 @@ namespace ODIA
       arrow::field(Columns::FRAGMENT_SERIES_NUMBER, arrow::list(arrow::uint8())),
     });
     schema = schema->WithMetadata(arrow::key_value_metadata(
-      {"odia.fingerprint", "odia.layout", "odia.fasta_sha", "odia.fasta_bytes", "odia.params"},
-      {fp.key(), "compact-v1", fp.fasta_hash, std::to_string(fp.fasta_bytes), fp.params}));
+      {"odia.fingerprint", "odia.target_fingerprint", "odia.layout",
+       "odia.decoy_semantics", "odia.decoy_method",
+       "odia.fasta_sha", "odia.fasta_bytes", "odia.params"},
+      // decoy_semantics is stated because a consumer CANNOT infer it and one
+      // already got it wrong: OpenSwathAssayGenerator recomputed fragments from
+      // Modified.Sequence, found the decoys identical to their targets, and
+      // deduplicated them into a PQP with zero decoys. A decoy row here carries
+      // its TARGET's sequence by design -- DIA-NN's convention -- with only the
+      // fragment m/z shifted, so the sequence does NOT generate the fragments.
+      {fp.key(), fp.targetKey(), "compact-v1",
+       "target-sequence-with-shifted-fragments", fp.decoy_method,
+       fp.fasta_hash, std::to_string(fp.fasta_bytes), fp.params}));
 
     auto table = arrow::Table::Make(schema,
       {a_id, a_seq, a_pg, a_z, a_dec, a_rt, a_im, a_ccs, a_pmz,
