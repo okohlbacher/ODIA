@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <odia/PeakGroupScorer.h>
+#include <mutex>
 #include <odia/scoring/PercolatorEngine.h>
 
 #include <odia/scoring/gbt.h>
@@ -160,7 +161,14 @@ namespace ODIA
       std::size_t reference_zero[2] = {0, 0};   ///< [0] target, [1] decoy    ///< smoothed reference not positive
       std::size_t not_local_max[2] = {0, 0};   ///< [0] target, [1] decoy     ///< k is not the local maximum
       std::size_t below_apex_evidence[2] = {0, 0};   ///< [0] target, [1] decoy
-      std::size_t outside_margin[2] = {0, 0};   ///< [0] target, [1] decoy    ///< beyond MaxCorrDiff of the best
+      std::size_t outside_margin[2] = {0, 0};   ///< [0] target, [1] decoy
+      /// Precursors that reached Session::add, per class. The code says these
+      /// MUST be equal -- assignment is unconditional, the only precursor-level
+      /// drop is covering==0 which depends solely on m/z, and every decoy shares
+      /// its target's m/z (verified: 4,991,888 of 4,991,888). The scan counters
+      /// say otherwise (1.52x). One of those is wrong and this is the counter
+      /// that decides which.
+      std::size_t reached[2] = {0, 0};    ///< beyond MaxCorrDiff of the best
       std::size_t too_few_at_apex = 0;   ///< candidate emitted, then dropped by the scorer
       std::size_t scans[2] = {0, 0};   ///< [0] target, [1] decoy             ///< positions examined
     };
@@ -559,7 +567,61 @@ namespace ODIA
   {
   }
 
-  namespace { thread_local PickerRejects rejects_; }
+  namespace
+  {
+    // thread_local for speed -- these increment once per scan position, so a
+    // shared atomic would serialise the hottest loop in the scorer. But a
+    // thread_local counter that is REPORTED from one thread reports one
+    // thread's slice of the work, and nothing distributes chromatograms to
+    // threads in a class-balanced way.
+    //
+    // That is not hypothetical: reading the unaggregated counters produced a
+    // "1.52x more scan positions for decoys" that was taken as evidence the
+    // decoy excess arises upstream of the picker. It arose from thread
+    // scheduling. The peak-group excess itself is real -- it comes from the
+    // scored result, not from here -- but its LOCATION was wrong.
+    //
+    // So each thread's instance registers itself once and the reporter sums
+    // them. The hot path stays a plain increment.
+    std::mutex rejects_registry_mutex_;
+    std::vector<PickerRejects*> rejects_registry_;
+
+    struct RegisteredRejects : PickerRejects
+    {
+      RegisteredRejects()
+      {
+        std::lock_guard<std::mutex> g(rejects_registry_mutex_);
+        rejects_registry_.push_back(this);
+      }
+    };
+    thread_local RegisteredRejects rejects_;
+
+    /// Every thread's counters, summed. The only correct way to read them.
+    PickerRejects totalRejects()
+    {
+      PickerRejects t;
+      std::lock_guard<std::mutex> g(rejects_registry_mutex_);
+      for (const PickerRejects* r : rejects_registry_)
+      {
+        for (int c = 0; c < 2; ++c)
+        {
+          t.scans[c] += r->scans[c];
+          t.too_few_present[c] += r->too_few_present[c];
+          t.too_few_transitions[c] += r->too_few_transitions[c];
+          t.below_corr[c] += r->below_corr[c];
+          t.reference_zero[c] += r->reference_zero[c];
+          t.not_local_max[c] += r->not_local_max[c];
+          t.below_apex_evidence[c] += r->below_apex_evidence[c];
+          t.outside_margin[c] += r->outside_margin[c];
+          t.reached[c] += r->reached[c];
+        }
+        t.no_points += r->no_points;
+        t.empty_trace += r->empty_trace;
+        t.too_few_at_apex += r->too_few_at_apex;
+      }
+      return t;
+    }
+  }
 
   void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram)
   {
@@ -625,6 +687,7 @@ namespace ODIA
       // decoy peak groups than target ones from a balanced library and the
       // cause is unknown; totals cannot localise it, and the previous counters
       // could not even be summed -- they overcounted scan positions by 27.8%.
+      ++rejects_.reached[p.decoy[chromatogram.precursor] != 0];
       return findCandidatesByCorrelation(chromatogram, rejects_,
                                          p.decoy[chromatogram.precursor] != 0,
                                          options.corr_half_window,
@@ -1533,7 +1596,7 @@ namespace ODIA
     // aggregate "N precursors yielded no candidate peak group" was true and
     // useless, and on a realistic library it is 19,150 of 100,000.
     {
-      const auto& r = rejects_;
+      const PickerRejects r = totalRejects();
       std::ostringstream w;
       auto pc = [](std::size_t t, std::size_t d) {
         std::ostringstream o; o.setf(std::ios::fixed); o.precision(2);
@@ -1544,6 +1607,7 @@ namespace ODIA
       // target/decoy at EVERY stage, because the imbalance has to arise
       // somewhere and only a per-stage split says where.
       w << "picker rejections, target/decoy (decoy:target ratio):"
+        << "\n  precursors reached  " << pc(r.reached[0], r.reached[1])
         << "\n  scan positions      " << pc(r.scans[0], r.scans[1])
         << "\n  <2 fragments        " << pc(r.too_few_present[0], r.too_few_present[1])
         << "\n  <2 transitions      " << pc(r.too_few_transitions[0], r.too_few_transitions[1])

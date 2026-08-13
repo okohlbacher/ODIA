@@ -3192,8 +3192,24 @@ each by measurement rather than argument:
   library in which each decoy sits adjacent to the target whose precursor m/z it
   shares. Measured composition: 9,979 target / 10,029 decoy, ratio 1.005.
 
-WHERE IT ACTUALLY IS. The per-class picker counters put the imbalance at the
-FIRST one, before any criterion applies, and no later stage amplifies it:
+WHERE IT IS NOT, AND A RETRACTION. The per-class picker table below was read as
+putting the imbalance at the FIRST stage, upstream of the picker. THAT WAS
+WRONG. `PickerRejects` is `thread_local` and the reporter read one thread's
+copy with no aggregation across 48 threads, so every ratio here is one thread's
+slice of the work and nothing distributes chromatograms to threads in a
+class-balanced way. Fixed by registering each thread's instance and summing.
+
+The code, meanwhile, PROVES the classes must reach the scorer equally:
+assignment is unconditional, the only precursor-level drop is `covering == 0`
+which depends solely on precursor m/z, and every decoy shares its target's m/z
+(verified 4,991,888 of 4,991,888). `scans` also cannot measure window width --
+the `break` at the min_corr_score test exits the INNER fragment loop, not the
+scan loop, so scans per precursor is fixed at n-2S-3 and `restrict_rt` is false
+in pass 1 anyway, giving every precursor the identical whole-window range.
+
+The peak-group excess itself is REAL and unaffected: it comes from the scored
+result, not from these counters. Only its localisation was wrong. The numbers
+below are retained as the record of a misleading measurement, not as evidence:
 
     scan positions        1,091,533 / 1,661,479   1.52x
     <2 fragments            428,178 /   642,481   1.50x
