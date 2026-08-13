@@ -550,9 +550,44 @@ namespace ODIA
     // loadTSV populate the same structures from the same column names. A
     // narrower per-precursor schema would be smaller still but would not round
     // trip through the existing reader.
-    arrow::StringBuilder b_id, b_seq, b_pg, b_ft, b_lt;
-    arrow::Int32Builder b_z, b_dec, b_fz, b_ord;
-    arrow::DoubleBuilder b_rt, b_im, b_ccs, b_pmz, b_qmz, b_int;
+    // DICTIONARY builders: store an INDEX per row and each distinct string
+    // once, which is what the in-memory library already does with its
+    // StringArena and what this writer was throwing away.
+    //
+    // Measured on the parity library: 1,588,688 distinct strings totalling
+    // 32,920,618 bytes (31.4 MiB), materialised across 119,088,506 transition
+    // rows at 69.0 characters each -- Precursor.Id 20.3, Modified.Sequence
+    // 19.3, Protein.Group 22.3 -- for 7.65 GiB of string bytes. A 250x
+    // amplification of 31 MiB of actual content, because a precursor's
+    // sequence is rewritten for all ~12 of its transitions.
+    //
+    // That is what overflowed the 32-bit offset limit (2147483648 bytes of
+    // Precursor.Id alone) and cost 17.9 GB of RAM during the write. Parquet
+    // would have dictionary-compressed the FILE anyway; the blow-up was
+    // entirely in the Arrow builder before the file was ever touched.
+    //
+    // loadParquet already decodes dictionary columns -- "Parquet writes
+    // repeated strings dictionary-encoded by default, which is the very
+    // property that makes this path cheap" -- so nothing on the read side
+    // changes.
+    arrow::StringDictionaryBuilder b_id, b_seq, b_pg, b_ft, b_lt;
+    // Widths that MATCH THE IN-MEMORY TYPES, which is both lossless and
+    // minimal. charge/decoy/fragment charge/ordinal are uint8 in the library;
+    // irt, im, ccs and library_intensity are float. Writing them as int32 and
+    // float64 was pure upcasting: 28 bytes per row of padding across
+    // 119,088,506 rows, about 3.3 GB of buffer for no information.
+    //
+    // m/z stays float64 DELIBERATELY. The library holds it as uint32
+    // fixed-point at 1e-5 Th precisely because that beats float32 -- 0.0025 ppm
+    // at m/z 2000 against float32's flat 0.03-0.05 ppm (Library.h:20-23) -- so
+    // narrowing to float32 would store LESS precision than memory holds and
+    // break the exact round trip. Storing the raw fixed-point integer instead
+    // would be 4 bytes and exact, but changes what the column MEANS: the
+    // reader would return 97199181 where it expects 971.99181. That is a
+    // format-version change, not a width change, and is left as one.
+    arrow::UInt8Builder b_z, b_dec, b_fz, b_ord;
+    arrow::FloatBuilder b_rt, b_im, b_ccs, b_int;
+    arrow::DoubleBuilder b_pmz, b_qmz;
 
     auto ok = [](const arrow::Status& st) {
       if (!st.ok()) { throw std::runtime_error("parquet build: " + st.ToString()); }
@@ -585,17 +620,17 @@ namespace ODIA
         ok(b_id.Append(id));
         ok(b_seq.Append(seq_s));
         ok(b_pg.Append(pg_s));
-        ok(b_z.Append(z));
-        ok(b_dec.Append(static_cast<int>(p.decoy[i])));
-        if (has_rt) { ok(b_rt.Append(double(p.irt[i]))); } else { ok(b_rt.AppendNull()); }
-        if (has_im) { ok(b_im.Append(double(p.im[i]))); } else { ok(b_im.AppendNull()); }
-        if (has_ccs) { ok(b_ccs.Append(double(p.ccs[i]))); } else { ok(b_ccs.AppendNull()); }
+        ok(b_z.Append(static_cast<std::uint8_t>(z)));
+        ok(b_dec.Append(static_cast<std::uint8_t>(p.decoy[i])));
+        if (has_rt) { ok(b_rt.Append(p.irt[i])); } else { ok(b_rt.AppendNull()); }
+        if (has_im) { ok(b_im.Append(p.im[i])); } else { ok(b_im.AppendNull()); }
+        if (has_ccs) { ok(b_ccs.Append(p.ccs[i])); } else { ok(b_ccs.AppendNull()); }
         ok(b_pmz.Append(fromFixed(p.mz[i])));
         ok(b_qmz.Append(fromFixed(t.product_mz[j])));
-        ok(b_int.Append(double(t.library_intensity[j])));
+        ok(b_int.Append(t.library_intensity[j]));
         ok(b_ft.Append(std::string(toString(t.type[j]))));
-        ok(b_fz.Append(static_cast<int>(t.charge[j])));
-        ok(b_ord.Append(static_cast<int>(t.ordinal[j])));
+        ok(b_fz.Append(static_cast<std::uint8_t>(t.charge[j])));
+        ok(b_ord.Append(static_cast<std::uint8_t>(t.ordinal[j])));
         ok(b_lt.Append(std::string("noloss")));
       }
     }
@@ -609,21 +644,21 @@ namespace ODIA
     ok(b_pmz.Finish(&a_pmz)); ok(b_qmz.Finish(&a_qmz)); ok(b_int.Finish(&a_int));
 
     auto schema = arrow::schema({
-      arrow::field(Columns::PRECURSOR_ID, arrow::utf8()),
-      arrow::field(Columns::MODIFIED_SEQUENCE, arrow::utf8()),
-      arrow::field(Columns::PRECURSOR_CHARGE, arrow::int32()),
-      arrow::field(Columns::DECOY, arrow::int32()),
-      arrow::field(Columns::RT, arrow::float64()),
-      arrow::field(Columns::IM, arrow::float64()),
-      arrow::field(Columns::CCS, arrow::float64()),
+      arrow::field(Columns::PRECURSOR_ID, a_id->type()),
+      arrow::field(Columns::MODIFIED_SEQUENCE, a_seq->type()),
+      arrow::field(Columns::PRECURSOR_CHARGE, arrow::uint8()),
+      arrow::field(Columns::DECOY, arrow::uint8()),
+      arrow::field(Columns::RT, arrow::float32()),
+      arrow::field(Columns::IM, arrow::float32()),
+      arrow::field(Columns::CCS, arrow::float32()),
       arrow::field(Columns::PRECURSOR_MZ, arrow::float64()),
       arrow::field(Columns::PRODUCT_MZ, arrow::float64()),
-      arrow::field(Columns::RELATIVE_INTENSITY, arrow::float64()),
-      arrow::field(Columns::FRAGMENT_TYPE, arrow::utf8()),
-      arrow::field(Columns::FRAGMENT_CHARGE, arrow::int32()),
-      arrow::field(Columns::FRAGMENT_SERIES_NUMBER, arrow::int32()),
-      arrow::field(Columns::FRAGMENT_LOSS_TYPE, arrow::utf8()),
-      arrow::field(Columns::PROTEIN_GROUP, arrow::utf8()),
+      arrow::field(Columns::RELATIVE_INTENSITY, arrow::float32()),
+      arrow::field(Columns::FRAGMENT_TYPE, a_ft->type()),
+      arrow::field(Columns::FRAGMENT_CHARGE, arrow::uint8()),
+      arrow::field(Columns::FRAGMENT_SERIES_NUMBER, arrow::uint8()),
+      arrow::field(Columns::FRAGMENT_LOSS_TYPE, a_lt->type()),
+      arrow::field(Columns::PROTEIN_GROUP, a_pg->type()),
     });
     if (!fp.params.empty() || !fp.fasta_hash.empty())
     {
