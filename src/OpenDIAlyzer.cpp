@@ -141,8 +141,14 @@ protected:
     registerIntOption_("max_peptide_length", "<n>", 30, "Maximum peptide length.", false, true);
 
     registerOutputFile_("out_lib", "<file>", "",
-                        "Write the assay library here (DIA-NN TSV).", false);
-    setValidFormats_("out_lib", {"tsv"}, false);
+                        "Write the assay library here. The format follows the EXTENSION: "
+                        ".parquet (default and preferred) or .tsv. "
+                        "\n\nParquet because the row unit is a TRANSITION, so the sequence and "
+                        "protein group repeat twelve times per precursor: the proteome library "
+                        "is 12.35 GiB of text that costs 67-86 s to re-parse on every search. "
+                        "Parquet dictionary-encodes exactly those repeated strings. TSV remains "
+                        "available and is what other tools read.", false);
+    setValidFormats_("out_lib", {"parquet", "tsv"}, false);
 
     registerStringOption_("stop_after", "<stage>", "",
                           "End the run after this stage and write its output. The "
@@ -3382,7 +3388,7 @@ protected:
       const auto t_write = std::chrono::steady_clock::now();
       try
       {
-        ODIA::DIANNLibraryFile::storeTSV(out_lib, library);
+        ODIA::DIANNLibraryFile::store(out_lib, library);
       }
       catch (const std::exception& e)
       {

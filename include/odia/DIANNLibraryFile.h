@@ -60,6 +60,18 @@ namespace ODIA
     /// Precursor.Id is synthesised as <Modified.Sequence><charge>, matching
     /// DIA-NN, since ODIA does not store per-transition identifiers.
     static void storeTSV(const std::string& filename, const Library& library);
+
+    /// Write the library as Parquet. Same columns as `storeTSV`, same names,
+    /// so `loadParquet` reads back what this writes.
+    ///
+    /// Worth having because the TSV is one row per TRANSITION with the sequence
+    /// and protein group repeated 12 times: a proteome library is 12.35 GiB of
+    /// text that takes 67-86 s to re-parse on every single search. Parquet
+    /// dictionary-encodes exactly those repeated strings.
+    static void storeParquet(const std::string& filename, const Library& library);
+
+    /// Dispatches on the extension, mirroring `load`.
+    static void store(const std::string& filename, const Library& library);
   };
 
 } // namespace ODIA

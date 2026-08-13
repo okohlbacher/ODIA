@@ -8,6 +8,9 @@
 #include <arrow/compute/api.h>
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
+#include <parquet/arrow/writer.h>
+#include <arrow/builder.h>
+#include <arrow/table.h>
 
 #include <charconv>
 #include <cstring>
@@ -75,7 +78,7 @@ namespace ODIA
       std::string_view modified_sequence;
       std::string_view protein_group;
       double precursor_mz = 0, product_mz = 0;
-      double rt = 0, im = 0, intensity = 0;
+      double rt = 0, im = 0, ccs = 0, intensity = 0;
       long precursor_charge = 0, fragment_charge = 0, ordinal = 0, decoy = 0;
       std::string_view fragment_type, loss_type;
     };
@@ -143,6 +146,17 @@ namespace ODIA
         p.mz.push_back(toFixed(r.precursor_mz));
         p.irt.push_back(static_cast<float>(r.rt));
         p.im.push_back(r.im > 0.0 ? static_cast<float>(r.im) : std::nanf(""));
+        // CCS was written by both writers and read by NEITHER reader, so a
+        // library round-tripped through ODIA lost it silently: the generator
+        // predicts it, storeTSV writes it, and every search that reloaded that
+        // file saw an empty column. Measured on a round trip -- CCS 627.119385
+        // went in and an empty field came out.
+        //
+        // It matters because CCS is the ONLY mobility information a generated
+        // library carries: IM is left unset (NaN) because 1/K0 needs the drift
+        // gas and the instrument calibration to derive. Dropping CCS therefore
+        // discards the mobility dimension entirely on reload.
+        p.ccs.push_back(r.ccs > 0.0 ? static_cast<float>(r.ccs) : std::nanf(""));
         p.charge.push_back(static_cast<std::uint8_t>(r.precursor_charge));
         p.decoy.push_back(r.decoy != 0 ? std::uint8_t{1} : std::uint8_t{0});
         p.modified_sequence.push_back(lib_.strings().intern(r.modified_sequence));
@@ -224,6 +238,7 @@ namespace ODIA
     const int c_qmz = col(Columns::PRODUCT_MZ);
     const int c_rt = col(Columns::RT);
     const int c_im = col(Columns::IM);
+    const int c_ccs = col(Columns::CCS);
     const int c_int = col(Columns::RELATIVE_INTENSITY);
     const int c_z = col(Columns::PRECURSOR_CHARGE);
     const int c_fz = col(Columns::FRAGMENT_CHARGE);
@@ -269,6 +284,7 @@ namespace ODIA
       r.product_mz = toDouble(get(c_qmz));
       r.rt = toDouble(get(c_rt));
       r.im = toDouble(get(c_im));
+      r.ccs = toDouble(get(c_ccs));
       r.intensity = toDouble(get(c_int));
       r.precursor_charge = toLong(get(c_z));
       r.fragment_charge = toLong(get(c_fz));
@@ -378,6 +394,7 @@ namespace ODIA
     const auto a_qmz = num(Columns::PRODUCT_MZ);
     const auto a_rt = num(Columns::RT);
     const auto a_im = num(Columns::IM);
+    const auto a_ccs = num(Columns::CCS);
     const auto a_int = num(Columns::RELATIVE_INTENSITY);
     const auto a_z = num(Columns::PRECURSOR_CHARGE);
     const auto a_fz = num(Columns::FRAGMENT_CHARGE);
@@ -408,6 +425,7 @@ namespace ODIA
       r.product_mz = at(a_qmz, i);
       r.rt = at(a_rt, i);
       r.im = at(a_im, i);
+      r.ccs = at(a_ccs, i);
       r.intensity = at(a_int, i);
       // at() yields NaN for a type it cannot decode or a null cell; casting
       // that to long is undefined behaviour, which is exactly what the toFixed
@@ -451,6 +469,113 @@ namespace ODIA
   /// header for why the precisions below are passed explicitly, and
   /// `odia_tsv_writers` for the byte-for-byte check against this function's
   /// previous ofstream form.
+  void DIANNLibraryFile::store(const std::string& filename, const Library& library)
+  {
+    if (filename.ends_with(".parquet")) { storeParquet(filename, library); }
+    else { storeTSV(filename, library); }
+  }
+
+  void DIANNLibraryFile::storeParquet(const std::string& filename, const Library& library)
+  {
+    const auto& p = library.precursors();
+    const auto& t = library.transitions();
+
+    // One row per TRANSITION, matching the TSV exactly, because loadParquet and
+    // loadTSV populate the same structures from the same column names. A
+    // narrower per-precursor schema would be smaller still but would not round
+    // trip through the existing reader.
+    arrow::StringBuilder b_id, b_seq, b_pg, b_ft, b_lt;
+    arrow::Int32Builder b_z, b_dec, b_fz, b_ord;
+    arrow::DoubleBuilder b_rt, b_im, b_ccs, b_pmz, b_qmz, b_int;
+
+    auto ok = [](const arrow::Status& st) {
+      if (!st.ok()) { throw std::runtime_error("parquet build: " + st.ToString()); }
+    };
+
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      const auto seq = library.strings().get(p.modified_sequence[i]);
+      const auto pg = library.strings().get(p.protein_group[i]);
+      const std::string seq_s(seq.data(), seq.size());
+      const std::string pg_s(pg.data(), pg.size());
+      const int z = static_cast<int>(p.charge[i]);
+      // The suffix is what makes a decoy's id distinct from its target's: they
+      // share sequence, charge and precursor m/z, so <sequence><charge> alone
+      // collides and a reload silently merges the pair. See storeTSV.
+      const std::string id = seq_s + std::to_string(z) + (p.decoy[i] ? "_decoy" : "");
+      // NaN means ABSENT and is written as null, not as 0. A zero ion mobility
+      // is a VALUE that gates every peak against 0 and rejects them all; the
+      // TSV writer emits 0 here and only survives because the reader maps 0
+      // back to NaN. Parquet has real nulls, so this path does not need that
+      // round-trip coincidence.
+      const bool has_im = i < p.im.size() && !std::isnan(p.im[i]);
+      const bool has_ccs = i < p.ccs.size() && !std::isnan(p.ccs[i]);
+      const bool has_rt = !std::isnan(p.irt[i]);
+
+      const std::uint32_t begin = p.transition_begin[i];
+      for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
+      {
+        const std::uint32_t j = begin + k;
+        ok(b_id.Append(id));
+        ok(b_seq.Append(seq_s));
+        ok(b_pg.Append(pg_s));
+        ok(b_z.Append(z));
+        ok(b_dec.Append(static_cast<int>(p.decoy[i])));
+        if (has_rt) { ok(b_rt.Append(double(p.irt[i]))); } else { ok(b_rt.AppendNull()); }
+        if (has_im) { ok(b_im.Append(double(p.im[i]))); } else { ok(b_im.AppendNull()); }
+        if (has_ccs) { ok(b_ccs.Append(double(p.ccs[i]))); } else { ok(b_ccs.AppendNull()); }
+        ok(b_pmz.Append(fromFixed(p.mz[i])));
+        ok(b_qmz.Append(fromFixed(t.product_mz[j])));
+        ok(b_int.Append(double(t.library_intensity[j])));
+        ok(b_ft.Append(std::string(toString(t.type[j]))));
+        ok(b_fz.Append(static_cast<int>(t.charge[j])));
+        ok(b_ord.Append(static_cast<int>(t.ordinal[j])));
+        ok(b_lt.Append(std::string("noloss")));
+      }
+    }
+
+    std::shared_ptr<arrow::Array> a_id, a_seq, a_pg, a_ft, a_lt, a_z, a_dec,
+                                  a_fz, a_ord, a_rt, a_im, a_ccs, a_pmz, a_qmz, a_int;
+    ok(b_id.Finish(&a_id));   ok(b_seq.Finish(&a_seq)); ok(b_pg.Finish(&a_pg));
+    ok(b_ft.Finish(&a_ft));   ok(b_lt.Finish(&a_lt));   ok(b_z.Finish(&a_z));
+    ok(b_dec.Finish(&a_dec)); ok(b_fz.Finish(&a_fz));   ok(b_ord.Finish(&a_ord));
+    ok(b_rt.Finish(&a_rt));   ok(b_im.Finish(&a_im));   ok(b_ccs.Finish(&a_ccs));
+    ok(b_pmz.Finish(&a_pmz)); ok(b_qmz.Finish(&a_qmz)); ok(b_int.Finish(&a_int));
+
+    auto schema = arrow::schema({
+      arrow::field(Columns::PRECURSOR_ID, arrow::utf8()),
+      arrow::field(Columns::MODIFIED_SEQUENCE, arrow::utf8()),
+      arrow::field(Columns::PRECURSOR_CHARGE, arrow::int32()),
+      arrow::field(Columns::DECOY, arrow::int32()),
+      arrow::field(Columns::RT, arrow::float64()),
+      arrow::field(Columns::IM, arrow::float64()),
+      arrow::field(Columns::CCS, arrow::float64()),
+      arrow::field(Columns::PRECURSOR_MZ, arrow::float64()),
+      arrow::field(Columns::PRODUCT_MZ, arrow::float64()),
+      arrow::field(Columns::RELATIVE_INTENSITY, arrow::float64()),
+      arrow::field(Columns::FRAGMENT_TYPE, arrow::utf8()),
+      arrow::field(Columns::FRAGMENT_CHARGE, arrow::int32()),
+      arrow::field(Columns::FRAGMENT_SERIES_NUMBER, arrow::int32()),
+      arrow::field(Columns::FRAGMENT_LOSS_TYPE, arrow::utf8()),
+      arrow::field(Columns::PROTEIN_GROUP, arrow::utf8()),
+    });
+    auto table = arrow::Table::Make(schema,
+      {a_id, a_seq, a_z, a_dec, a_rt, a_im, a_ccs, a_pmz, a_qmz, a_int,
+       a_ft, a_fz, a_ord, a_lt, a_pg});
+
+    auto outfile = arrow::io::FileOutputStream::Open(filename);
+    if (!outfile.ok()) { throw std::runtime_error("cannot write library: " + filename); }
+    // Dictionary encoding is the whole point: the sequence and protein group
+    // repeat once per transition, twelve times per precursor.
+    auto props = parquet::WriterProperties::Builder()
+                   .compression(parquet::Compression::ZSTD)
+                   ->enable_dictionary()
+                   ->build();
+    const auto st = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
+                                               *outfile, 1 << 20, props);
+    if (!st.ok()) { throw std::runtime_error("cannot write Parquet: " + st.ToString()); }
+  }
+
   void DIANNLibraryFile::storeTSV(const std::string& filename, const Library& library)
   {
     TextWriter out(filename);
