@@ -77,6 +77,19 @@ protected:
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
 
+    registerStringOption_("library_charges", "<list>", "2,3",
+                          "Precursor charge states to generate, comma-separated. This was "
+                          "hardcoded to 2,3 and not settable at all, which put a CEILING on "
+                          "what ODIA can ever identify: measured against DIA-NN's confident "
+                          "set on Astral, ODIA's library covers 92.76% of it, and every one of "
+                          "the 891 it misses is charge 1 (193) or charge 4 (698) -- z2 and z3 "
+                          "are covered completely. No amount of extraction or scoring work can "
+                          "recover a precursor the library cannot express. "
+                          "\n\n2,3 remains the DEFAULT so that existing measurements stay "
+                          "comparable; 1,2,3,4 matches DIA-NN's range and closes the gap "
+                          "entirely, at roughly TWICE the library size -- which is paid in the "
+                          "extraction memory that had to be bounded to stop a 4,986,319-precursor "
+                          "run being OOM-killed at 616.7 GB. Parity here is not free.", false);
     registerIntOption_("reserved_doubly_charged", "<n>", 0,
                        "Reserve this many of the fragment cap for doubly-charged ions. "
                        "0 ranks purely by predicted intensity, which is faithful to the "
@@ -2966,6 +2979,41 @@ protected:
         params.decoy_method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
         params.reserved_doubly_charged =
           static_cast<std::size_t>(getIntOption_("reserved_doubly_charged"));
+
+        // Precursor charges. Parsed rather than hardcoded -- see the option's
+        // help for why this is a ceiling on identifications and not a tuning
+        // knob. An unparseable or empty list is an ERROR, not a silent fallback
+        // to the default: a caller who asked for charges and got the default
+        // would measure the default and attribute it to their request.
+        {
+          const std::string spec = getStringOption_("library_charges");
+          std::vector<int> zs;
+          std::stringstream ss(spec);
+          std::string tok;
+          while (std::getline(ss, tok, ','))
+          {
+            try
+            {
+              const int z = std::stoi(tok);
+              if (z >= 1 && z <= 10) { zs.push_back(z); }
+              else { zs.clear(); break; }
+            }
+            catch (const std::exception&) { zs.clear(); break; }
+          }
+          if (zs.empty())
+          {
+            writeLogError_("-library_charges '" + spec + "' is not a comma-separated "
+                           "list of charges in 1..10.");
+            return ILLEGAL_PARAMETERS;
+          }
+          std::sort(zs.begin(), zs.end());
+          zs.erase(std::unique(zs.begin(), zs.end()), zs.end());
+          params.charges = zs;
+          std::ostringstream cs;
+          cs << "library charges:";
+          for (const int z : zs) { cs << " " << z; }
+          writeLogInfo_(cs.str());
+        }
 
         const auto stats = ODIA::LibraryGenerator::generate(fasta, params, library);
 
