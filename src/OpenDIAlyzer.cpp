@@ -136,6 +136,26 @@ protected:
                        "belongs inside that run's calibration loop, built from it and "
                        "discarded with it.", false);
 
+    registerDoubleOption_("precursor_mz_min", "<Th>", 300.0,
+                          "Lowest precursor m/z to generate. DIA-NN's default, adopted for "
+                          "comparability -- ODIA used 350 and that is a free parameter the "
+                          "benchmark should not carry. "
+                          "\n\nMEASURED on Astral: DIA-NN's 12,308 confident precursors span "
+                          "380.5..980.5 Th, so NOTHING it identified falls outside 350..1200 and "
+                          "widening the window buys no coverage on THIS instrument -- the "
+                          "isolation windows do not reach there, and a precursor no window "
+                          "covers cannot be fragmented. It costs library size, which is paid in "
+                          "extraction memory. Narrow it again on an instrument whose windows "
+                          "are known.", false, true);
+    registerDoubleOption_("precursor_mz_max", "<Th>", 1800.0,
+                          "Highest precursor m/z to generate. See -precursor_mz_min; ODIA used "
+                          "1200.", false, true);
+    registerDoubleOption_("fragment_mz_min", "<Th>", 200.0,
+                          "Lowest fragment m/z to keep. Already matches DIA-NN's default.",
+                          false, true);
+    registerDoubleOption_("fragment_mz_max", "<Th>", 1800.0,
+                          "Highest fragment m/z to keep. Already matches DIA-NN's default.",
+                          false, true);
     registerIntOption_("missed_cleavages", "<n>", 1, "Maximum missed cleavages.", false, true);
     registerIntOption_("min_peptide_length", "<n>", 7, "Minimum peptide length.", false, true);
     registerIntOption_("max_peptide_length", "<n>", 30, "Maximum peptide length.", false, true);
@@ -2984,6 +3004,27 @@ protected:
       {
         ODIA::DigestParams params;
         params.missed_cleavages = static_cast<std::size_t>(getIntOption_("missed_cleavages"));
+        params.precursor_mz_min = getDoubleOption_("precursor_mz_min");
+        params.precursor_mz_max = getDoubleOption_("precursor_mz_max");
+        params.fragment_mz_min = getDoubleOption_("fragment_mz_min");
+        params.fragment_mz_max = getDoubleOption_("fragment_mz_max");
+        if (params.precursor_mz_min >= params.precursor_mz_max ||
+            params.fragment_mz_min >= params.fragment_mz_max)
+        {
+          writeLogError_("m/z ranges must have min < max.");
+          return ILLEGAL_PARAMETERS;
+        }
+        {
+          std::ostringstream r;
+          r.setf(std::ios::fixed); r.precision(1);
+          r << "digest: length " << params.min_length << ".." << params.max_length
+            << ", missed cleavages " << params.missed_cleavages
+            << ", precursor m/z " << params.precursor_mz_min << ".."
+            << params.precursor_mz_max
+            << ", fragment m/z " << params.fragment_mz_min << ".."
+            << params.fragment_mz_max;
+          writeLogInfo_(r.str());
+        }
         params.min_length = static_cast<std::size_t>(getIntOption_("min_peptide_length"));
         params.max_length = static_cast<std::size_t>(getIntOption_("max_peptide_length"));
         params.decoy_method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
