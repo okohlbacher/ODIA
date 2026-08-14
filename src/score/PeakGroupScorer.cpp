@@ -1826,12 +1826,19 @@ namespace ODIA
         // peak. Decoys are absent by construction and targets are a mixture, so
         // this stage is where the classes should diverge if that is the cause.
         << "\n  outside max_corr_diff " << pc(r.outside_margin[0], r.outside_margin[1])
-
-        << r.too_few_at_apex << " candidates dropped by min_fragments_at_apex"
+        // These print target/decoy like every line above. They used to print the
+        // ARRAY, which after the split-by-class change is a pointer -- the log
+        // read "0x7fff6c83b1b8 with <3 points". A diagnostic that silently
+        // prints an address is worse than one that prints nothing, because it
+        // still looks like a reading.
+        // Not split by class, so it prints as one number (and on its own line --
+        // it previously ran on from the line above with no separator).
+        << "\n  min_fragments_at_apex " << r.too_few_at_apex
         << "\n  EXTRACTION losses (no usable chromatogram): "
-        << r.no_points << " with <3 points, " << r.empty_trace << " with an all-zero trace"
+        << pc(r.no_points[0], r.no_points[1]) << " with <3 points, "
+        << pc(r.empty_trace[0], r.empty_trace[1]) << " with an all-zero trace"
         << "\n  precursors that never reached the correlation loop: "
-        << r.too_few_transitions << " with <2 transitions, "
+        << pc(r.too_few_transitions[0], r.too_few_transitions[1]) << " with <2 transitions, "
         << r.too_few_cycles << " with too few cycles; "
         << r.no_hit_anywhere << " entered it and found no qualifying position";
       std::fprintf(stderr, "%s\n", w.str().c_str());
