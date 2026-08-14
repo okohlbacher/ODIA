@@ -1,6 +1,11 @@
 # The joint reference map: one anchor structure for calibration and fine-tuning
 
-Status: PLAN v1, for adversarial review. Written 2026-08-14.
+Status: **v1 REJECTED by review round 7 (codex at effort max, kimi). v2 below.**
+Written 2026-08-14. Raw: `vault/70-Adversarial/round7-*`.
+
+**The decision to build one joint structure stands — the user set it and both
+reviewers endorsed it. What failed is v1's ANCHOR MECHANISM, and it failed a
+measurement, not an argument.**
 
 **This document is the spine.** `doc/15` (mass calibration), `doc/16` (phases 3+4)
 and `doc/17` (the MS1 arm) each solved a piece and each assumed an anchor source
@@ -41,13 +46,17 @@ wrong way during the RT work. A data-driven map is **unconditioned by
 construction** — it does not know what the library contains or what scoring
 accepted.
 
-**(b) It is the exogenous transform `doc/16` §2.2 said Option B required.** Both
-codex and kimi independently found that peptdeep emits **iRT — a rank, not run
-seconds** — so `RT = a + b·iRT` needs `a` and `b` from something available before
-any identification, or Option B is as circular as the thing it replaces.
-Measured: **1,794 unique `(library iRT, observed RT)` pairs** at ±5 ppm from the
-mid-sensitivity map, spread evenly over all ten RT deciles — more than the frozen
-RT work's ~1,183–1,408 anchors, and unconditioned where those were not.
+**(b) ~~It is the exogenous transform `doc/16` §2.2 said Option B required.~~**
+**RETRACTED — see §4.** The claim rested on 1,794 unique `(library iRT, observed
+RT)` pairs, and those pairs measured at **r = 0.045** against a shifted-library
+control that produced **more** of them than the real library. The map does not
+supply the `a, b` transform. That comes from the free metadata iRT→gradient
+transform instead (88.89% at ±60 s), per §5.
+
+The underlying problem `doc/16` §2.2 identified is unchanged and real: peptdeep
+emits **iRT — a rank, not run seconds** — so `RT = a + b·iRT` needs its
+coefficients from something available before any identification. This document
+proposed the wrong source for them.
 
 **(c) It makes MS1 mass calibration possible at all.** `doc/17` defect 3: MS1 is
 extracted before `applyMassCalibration_`, so DIA-NN's third use of MS1 —
@@ -107,7 +116,71 @@ anchor count move **in lockstep** (0.30/365, 0.51/1,794, 0.42/1,154), so the
 anchor and overview roles do **not** compete; a single sensitivity axis serves
 both. (I predicted they would compete. They do not.)
 
-## 4. THE SHARPEST RISK, stated first
+## 4. WHAT KILLED v1 — measured, not argued
+
+I proposed selecting anchors as MS1 features matching **exactly one** library
+precursor within tolerance, and queued a precision check I had not yet run. Kimi
+ran it.
+
+| test | result |
+|---|---|
+| Pearson / Spearman of the 1,794 pairs, library iRT vs observed RT | **0.045 / 0.047** |
+| **+30 ppm shifted (all-false) library, density matched** | **2,848 "unique" matches — 158% of the real 1,794** |
+| same control on the default map | 605 vs 365 real — **166%** |
+| overlap with DIA-NN's confident set | 3 of 1,794 |
+
+**A deliberately wrong library yields MORE unique matches than the real one.** The
+unique bucket sits *below* its own chance baseline, so it contains essentially no
+true pairs. The mechanism: **real present peptides land in DENSE library
+neighbourhoods and therefore fall into the AMBIGUOUS bucket. The unique bucket is
+where sparse-neighbourhood coincidences live.**
+
+Codex reached the same place structurally, without the measurement:
+
+> The bootstrap is **residual-censored**. Step 2 selects matches within ±5 ppm
+> *before* mass calibration, then step 4 estimates calibration from them. True
+> anchors outside the window are excluded while chance matches near zero residual
+> survive. The fitted model recovers **the selection window**, not the instrument
+> error. Tightening 20 → 5 ppm mechanically increases "uniqueness"; it says
+> nothing about correctness.
+
+v1 cited that very trend (365 at ±5 ppm vs 196 at ±20) as *evidence*. It is an
+artefact.
+
+**And the bootstrap would have been worse than doing nothing:** it replaces a free
+degenerate transform covering **88.89% at ±60 s** with a fitted one covering
+~4.5%.
+
+**The conceptual error, in kimi's words:** *the plan confused "unambiguous" with
+"unconditioned". Unconditioned anchoring is possible, but via robust consensus
+over ambiguous evidence, not via uniqueness filtering.*
+
+Four further blocking findings from codex, all accepted:
+
+- **"Unique library match" cannot mean identity at all.** Production decoys share
+  the target's precursor m/z, so a mass match is *at minimum* target/decoy
+  ambiguous. Only a precursor-mass equivalence class is defensible, and that is
+  not peptide identity.
+- **The map is not library-independent after step 1.** MS1 *detection* is;
+  library mass *matching* is not, and MS2 candidate extraction is explicitly
+  conditioned. Keep the claim narrowly, at the observation layer.
+- **The `BOTH` merge is unsound.** MS1↔MS2 is many-to-many, and an MS2-only DIA
+  observation has no observed precursor m/z or charge — filling those from the
+  library turns a hypothesis into an observation. Use a versioned association
+  *edge* (isolation-window compatibility, RT-profile overlap on native time
+  grids, charge/isotope hypotheses, mobility overlap). Never average or overwrite
+  apexes; disagreement is QC evidence.
+- **"Indexes, never gates" is operationally false.** A map-derived calibration
+  that narrows extraction windows excludes evidence — that *is* a gate, and it is
+  precisely the 4,969 → 2,422 failure. Needs a narrow primary path plus a fixed
+  **wide rescue/audit path**, with unsupported strata keeping wide windows.
+
+Also caught: v1 fits RT before mass in §5 while §6 argues mass-before-RT. A real
+internal contradiction.
+
+---
+
+## 4b. THE DETECTABILITY RISK (v1's §4, still live but no longer the sharpest)
 
 **Fitting calibration only where the map has entries conditions the calibration on
 what the feature finder detects.** That is the
@@ -129,11 +202,49 @@ selected sample. Nothing about this map prevents a rerun of that.
 - Validate the fitted map on precursors the feature finder did **not** detect —
   which is the only test that speaks for the population at risk.
 
-## 5. Bootstrap order — the circularity, and the way out
+## 5. v2 BOOTSTRAP — consensus, not uniqueness
 
-MS2 features come from candidate detection, which needs RT windows, which needs
-calibration, which needs anchors. The escape is that **the MS1 side is
-library-independent and needs no calibration to exist**:
+**Replace uniqueness with mode/consensus estimation on BOTH axes. Neither needs
+identity.**
+
+```
+  1. MS1 features            FeatureFinderCentroided, DEFAULT settings
+                             (1:42, 749 MB, 215 anchors/min -- section 3).
+  2. MASS offset, IDENTITY-FREE   For each library precursor, collect the ppm
+                             deviation to nearby map features. TRUE offsets
+                             CLUSTER; false matches are FLAT in ppm. Take the
+                             MODE over thousands of precursors. This is
+                             MassCalibration::collect's existing probe logic with
+                             map features as cleaner, denser input -- a genuine
+                             improvement available today.
+  3. RT transform            DEFAULT: the FREE metadata iRT->gradient transform.
+                             88.89% at +/-60 s with no anchors at all, and the
+                             bar any fitted alternative must beat.
+                             Fallback: DIA-NN's shape -- wide windows -> simple
+                             fixed-criterion seeds (survey F5) -> refit -> tighten.
+                             UNPROVEN option: RANSAC / median-of-residuals
+                             consensus line fit over AMBIGUOUS candidates. Kimi's
+                             first attempt at this failed; it is not the default.
+  4. EXTRACT + detect MS2    Narrow primary path PLUS a fixed wide rescue/audit
+                             path (section 4). Unsupported strata keep wide windows.
+  5. MERGE as EDGES          Versioned association edges, not fused rows. Never
+                             overwrite an apex.
+  6. REFIT from the graph    Convergence on parameter STABILITY over data halves.
+  7. ONE confirmatory pass
+```
+
+**The map's role is DEMOTED**: from "the escape from the circle" to "the MS1
+mass-calibration residual source, and the persistent index". Step 2 is the part
+that works today and needs no identity.
+
+Codex's shape for the structure itself: **one typed, versioned evidence graph
+with task-specific anchor views**, not one fused feature row and not one
+universal anchor set. Eligibility differs per task — precursor-mass calibration
+needs only that all hypotheses imply the same theoretical mass; RT calibration
+needs a sufficiently concentrated iRT; fine-tuning needs independently supported
+sequence identity.
+
+### v1's bootstrap, kept visible because it was wrong in an instructive way
 
 ```
   1. MS1 features            FeatureFinderCentroided. No library, no calibration.
