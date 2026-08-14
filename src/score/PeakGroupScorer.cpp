@@ -50,8 +50,18 @@ namespace ODIA
     /// peak has that peak in its own noise estimate, and the SD would be
     /// inflated by exactly the feature being looked for. MAD is unmoved by a
     /// few large points, so a strong fragment does not suppress itself.
+    /// Summed noise-normalised trace, and how many transitions actually rose
+    /// above `sigma` at any point.
+    ///
+    /// The count is the point. Summing median-subtracted traces gives a
+    /// ZERO-MEAN quantity for a precursor with no real peak, so testing that
+    /// sum against zero tests the sign of noise and admits about half of all
+    /// absent precursors. Counting transitions with a positive excursion tests
+    /// whether anything is actually there.
     std::vector<double> noiseNormalisedTrace(const PrecursorChromatogram& c,
-                                             std::size_t points)
+                                             std::size_t points,
+                                             double sigma = 0.0,
+                                             std::size_t* excursions = nullptr)
     {
       std::vector<double> total(points, 0.0);
       std::vector<double> scratch;
@@ -72,10 +82,15 @@ namespace ODIA
         // a floor and injecting a scaled copy of its own rounding.
         if (!(mad > 0.0)) { continue; }
         const double scale = 1.0 / (1.4826 * mad);   // MAD -> sigma for normal noise
+        double peak = 0.0;
         for (std::uint32_t i = 0; i < n && i < points; ++i)
         {
-          total[i] += (at[i] - median) * scale;
+          const double z = (at[i] - median) * scale;
+          total[i] += z;
+          if (z > peak) { peak = z; }
         }
+        // Already in sigma units, so the threshold is read directly.
+        if (excursions && sigma > 0.0 && peak >= sigma) { ++*excursions; }
       }
       return total;
     }
@@ -649,12 +664,38 @@ namespace ODIA
     // summing, so no transition dominates by being loud and none is boosted
     // by what the library expects. See the option's comment for why library
     // weighting was rejected.
+    std::size_t excursions = 0;
     const auto total = options.noise_normalised_picking
-      ? noiseNormalisedTrace(chromatogram, points)
+      ? noiseNormalisedTrace(chromatogram, points,
+                             options.empty_trace_sigma, &excursions)
       : summedTrace(chromatogram, points);
-    const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
-    if (window_total <= 0.0)
-    { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+
+    // Does anything rise above this precursor's own noise?
+    //
+    // The old test was `sum(median-subtracted trace) <= 0.0`. That sum is
+    // ZERO-MEAN for a precursor with no real peak, so it was a coin flip on the
+    // sign of noise and admitted about half of every absent precursor.
+    // Measured on Astral: of precursors with usable points, 7.4% of targets and
+    // 13.6% of decoys survived it -- the entire 1.85x decoy excess, from a gate
+    // sitting exactly on the centre of the distribution where a 2.35 Th mean
+    // m/z difference between the classes is enough to tip it.
+    //
+    // An inflated decoy null raises the 1% threshold above the few real
+    // targets, which is what "the classifier trained and the threshold rejected
+    // everything" looks like.
+    //
+    // -empty_trace_sigma 0 restores the old behaviour for comparison.
+    if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)
+    {
+      if (excursions < options.empty_trace_min_transitions)
+      { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+    }
+    else
+    {
+      const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
+      if (window_total <= 0.0)
+      { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+    }
 
     std::vector<MassAnchor> staged_anchors;
     const std::size_t first_group = result.groups.size();

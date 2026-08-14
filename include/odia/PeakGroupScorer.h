@@ -251,6 +251,15 @@ namespace ODIA
       /// independent of everything the sub-scores later measure.
       bool noise_normalised_picking = true;
 
+      /// A transition counts as carrying signal when it rises this many sigma
+      /// above its own local noise. 0 restores the old sum-against-zero test.
+      double empty_trace_sigma = 3.0;
+
+      /// How many transitions must show that excursion. Two, matching the
+      /// picker's own "at least 2 fragments present" bar -- one transition
+      /// above noise is a spike, not a peak group.
+      std::size_t empty_trace_min_transitions = 2;
+
       /// Detect candidates by co-elution among the precursor's own fragments,
       /// the way DIA-NN's Searcher::peaks does, instead of by the height of a
       /// summed trace.

@@ -396,6 +396,23 @@ protected:
                        "one feature of fifteen and cannot carry the improvement. Kept "
                        "for experiments.",
                        false, true);
+    registerDoubleOption_("empty_trace_sigma", "<sigma>", 3.0,
+                          "How far above its own local noise a transition must rise to count as "
+                          "carrying signal. The trace is already scaled to sigma by "
+                          "1/(1.4826*MAD), so this is read directly. "
+                          "\n\n0 restores the previous test, sum(median-subtracted trace) <= 0.0. "
+                          "That sum is ZERO-MEAN for a precursor with no real peak, so the old "
+                          "gate was a coin flip on the sign of noise and admitted about half of "
+                          "every absent precursor. Measured on Astral, of precursors with usable "
+                          "points 7.4% of targets and 13.6% of decoys survived it -- the whole "
+                          "1.85x decoy excess, because a threshold sitting exactly on the centre "
+                          "of a distribution is tipped by the 2.35 Th mean m/z difference between "
+                          "the classes. An inflated decoy null then raises the 1% threshold above "
+                          "the few real targets.", false, true);
+    registerIntOption_("empty_trace_min_transitions", "<n>", 2,
+                       "How many transitions must show that excursion. Two matches the picker's "
+                       "own 'at least 2 fragments present' bar: one transition above noise is a "
+                       "spike, not a peak group.", false, true);
     registerStringOption_("rt_seed", "<mode>", "off",
                           "Seed pass 1's retention-time map, instead of spreading the library "
                           "evenly over the run. prefilter: sweep the run with "
@@ -2633,6 +2650,9 @@ protected:
     options.min_fragments_at_apex = static_cast<std::size_t>(
       std::max(1, getIntOption_("min_fragments_at_apex")));
     options.apex_evidence = getDoubleOption_("apex_evidence");
+    options.empty_trace_sigma = getDoubleOption_("empty_trace_sigma");
+    options.empty_trace_min_transitions =
+      static_cast<std::size_t>(std::max(1, getIntOption_("empty_trace_min_transitions")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     // Built once per run and owned by the tool; null until then, and null
     // forever on a run with no MS1, in which case MS1_COELUTION is NaN for every
