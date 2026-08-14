@@ -95,9 +95,14 @@ extra features are ever shown to earn their place -- a separate question, decide
 separately. `hot2` is strictly dominated: 28 minutes for fewer features than
 `mid`'s 22.
 
-Two measured lessons from the sweep: `mass_trace:max_missing` is the **dominant**
-parameter — mid beat hot2 on both metrics despite far tighter score thresholds,
-the only difference being it tolerates one more gap in a trace. And recall and
+Two measured lessons from the sweep: both trace parameters matter and
+**`min_spectra` is the stronger lever** — at `max_missing`≈1, taking it 10→5
+gives 18,446→95,216 features; at `min_spectra`=10, `max_missing` 1→4 gives
+18,446→40,979. An earlier draft of this section called `max_missing` dominant on
+the strength of mid-beating-hot2, but those two differ in **both** trace
+parameters and cannot isolate either. What survives from that claim is narrower:
+dropping `min_spectra` 5→4 did not compensate for losing one gap of tolerance.
+And recall and
 anchor count move **in lockstep** (0.30/365, 0.51/1,794, 0.42/1,154), so the
 anchor and overview roles do **not** compete; a single sensitivity axis serves
 both. (I predicted they would compete. They do not.)
