@@ -255,6 +255,23 @@ namespace ODIA
       /// above its own local noise. 0 restores the old sum-against-zero test.
       double empty_trace_sigma = 3.0;
 
+      /// Gate C: admit a precursor when its co-elution evidence reaches the
+      /// (1-alpha) quantile of the run's OWN decoy null. 0 disables it and
+      /// falls back to the excursion gate.
+      ///
+      /// alpha IS the false-admit rate, by construction -- that is the point of
+      /// calibrating on the null rather than assuming a distribution.
+      double gate_alpha = 0.05;
+
+      /// Decoy statistics to collect before the threshold is fixed. Those
+      /// precursors are admitted unconditionally and scored normally; 20,000
+      /// against a ~10M library is 0.2%.
+      std::size_t gate_calibration_n = 20000;
+
+      /// Half-width of the smoothing window, in cycles. A real peak spans
+      /// several; a single bright cycle in one transition must not carry it.
+      std::size_t gate_smooth_half = 2;
+
       /// How many transitions must show that excursion. Two, matching the
       /// picker's own "at least 2 fragments present" bar -- one transition
       /// above noise is a spike, not a peak group.

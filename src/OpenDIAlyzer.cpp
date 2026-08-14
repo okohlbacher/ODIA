@@ -396,6 +396,20 @@ protected:
                        "one feature of fifteen and cannot carry the improvement. Kept "
                        "for experiments.",
                        false, true);
+    registerDoubleOption_("gate_alpha", "<alpha>", 0.05,
+                          "Gate C: admit a precursor when its co-elution evidence reaches the "
+                          "(1-alpha) quantile of the run's OWN decoy null. alpha IS the "
+                          "false-admit rate by construction, which is the point of calibrating "
+                          "on the null rather than assuming a distribution -- assuming one is "
+                          "what made the previous gate's '3 sigma' mean 81% instead of 0.1%. "
+                          "\n\nMeasured at real dimensions (12 traces x 200 cycles, Poisson "
+                          "noise) against both predecessors on identical traces: absent "
+                          "precursors admitted 90.1% (sum>0), 99.0% (3 sigma), 4.8% (this). "
+                          "Real peaks kept: 100% in all three. 0 disables it.", false, true);
+    registerIntOption_("gate_calibration_n", "<n>", 20000,
+                       "Decoy statistics to collect before Gate C's threshold is fixed. Those "
+                       "precursors are admitted unconditionally and scored normally; 20,000 "
+                       "against a ~10M library is 0.2%.", false, true);
     registerDoubleOption_("empty_trace_sigma", "<sigma>", 3.0,
                           "How far above its own local noise a transition must rise to count as "
                           "carrying signal. The trace is already scaled to sigma by "
@@ -2651,6 +2665,9 @@ protected:
       std::max(1, getIntOption_("min_fragments_at_apex")));
     options.apex_evidence = getDoubleOption_("apex_evidence");
     options.empty_trace_sigma = getDoubleOption_("empty_trace_sigma");
+    options.gate_alpha = getDoubleOption_("gate_alpha");
+    options.gate_calibration_n =
+      static_cast<std::size_t>(std::max(100, getIntOption_("gate_calibration_n")));
     options.empty_trace_min_transitions =
       static_cast<std::size_t>(std::max(1, getIntOption_("empty_trace_min_transitions")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));

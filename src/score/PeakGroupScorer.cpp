@@ -697,6 +697,47 @@ namespace ODIA
     //
     // So each thread's instance registers itself once and the reporter sums
     // them. The hot path stays a plain increment.
+    /// Gate C's threshold, calibrated from the run's OWN decoy null.
+    ///
+    /// It cannot be known up front -- the null does not exist until decoys have
+    /// been seen -- and assuming a distribution is exactly what made Gate B's
+    /// "3 sigma" mean 81% instead of 0.1%. So the first `calibration_n` decoys
+    /// are admitted unconditionally while their statistics accumulate, then tau
+    /// is the (1-alpha) quantile of those and applies from that point on.
+    ///
+    /// Admitting the first tranche costs nothing at this scale: 20,000 against
+    /// a 9,983,789-precursor library is 0.2%, and they are scored normally.
+    struct NullCalibration
+    {
+      std::mutex mu;
+      std::vector<double> decoy_stats;
+      double tau = 0.0;
+      bool ready = false;
+      std::size_t admitted_uncalibrated = 0;
+
+      /// Returns true if the precursor should be admitted.
+      bool admit(double stat, bool is_decoy, std::size_t n_needed, double alpha)
+      {
+        std::lock_guard<std::mutex> g(mu);
+        if (!ready)
+        {
+          if (is_decoy) { decoy_stats.push_back(stat); }
+          if (decoy_stats.size() >= n_needed)
+          {
+            std::sort(decoy_stats.begin(), decoy_stats.end());
+            const std::size_t k = std::min(decoy_stats.size() - 1,
+              std::size_t((1.0 - alpha) * double(decoy_stats.size())));
+            tau = decoy_stats[k];
+            ready = true;
+          }
+          ++admitted_uncalibrated;
+          return true;                 // admit while the null is being built
+        }
+        return stat >= tau;
+      }
+    };
+    NullCalibration null_calib_;
+
     std::mutex rejects_registry_mutex_;
     std::vector<PickerRejects*> rejects_registry_;
 
@@ -784,7 +825,23 @@ namespace ODIA
     // everything" looks like.
     //
     // -empty_trace_sigma 0 restores the old behaviour for comparison.
-    if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)
+    if (options.gate_alpha > 0.0)
+    {
+      // Gate C. Co-elution evidence against a threshold calibrated from the
+      // run's own decoy null. Measured at real dimensions (12 traces x 200
+      // cycles, Poisson noise) against its two predecessors on identical data:
+      //
+      //     gate           ABSENT      PRESENT
+      //     A sum>0         90.1%       100.0%
+      //     B 3sigma        99.0%       100.0%
+      //     C co-elution     4.8%       100.0%
+      const double m = coelutionEvidence(chromatogram, points,
+                                         options.gate_smooth_half);
+      if (!null_calib_.admit(m, is_decoy, options.gate_calibration_n,
+                             options.gate_alpha))
+      { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+    }
+    else if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)
     {
       if (excursions < options.empty_trace_min_transitions)
       { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
