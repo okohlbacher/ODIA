@@ -422,6 +422,14 @@ namespace ODIA
       n_prec == 0 ? 0 : p.transition_begin[n_prec - 1] + p.transition_count[n_prec - 1];
 
     const bool restrict_rt = options.irt_slope != 0.0;
+    // Three runs -- uncalibrated, calibrated at 600 s, calibrated at 60 s --
+    // extracted 119,088,506 transitions each, identical to the digit. The RT
+    // window has never restricted anything, and reading the code cannot say why.
+    std::fprintf(stderr,
+      "RT-RESTRICT DIAGNOSTIC: restrict_rt=%d irt_slope=%.6g irt_intercept=%.6g "
+      "rt_window_seconds=%.6g\n",
+      int(restrict_rt), options.irt_slope, options.irt_intercept,
+      options.rt_window_seconds);
     std::uint64_t total_points = 0;
     std::uint64_t live_sum = 0;
 
