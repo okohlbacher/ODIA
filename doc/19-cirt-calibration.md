@@ -169,3 +169,88 @@ Do not sweep N on S08 and then report the best one.
   here**: 149 targets cannot support an FDR estimate. Calibration needs correct
   apexes, not q-values — which is the whole reason this route works where the
   full-library bootstrap does not.
+
+---
+
+## 7. AMENDED GATE — frozen 2026-08-14 BEFORE the S08 output was opened
+
+Review round 8 (codex effort max, kimi; vibe 0 bytes for the fifth time) reached
+the same verdict independently: **sound seed, sound architecture, unsound gate.**
+The S08 run had completed when these reviews landed and **its output was not read
+until this section was written and committed.**
+
+### What was wrong with §4
+
+1. **The intercept was unconstrained.** Both reviewers led with this. A line of
+   slope 11.0 and intercept 1,157 — 250 s from truth — passes every criterion in
+   §4. Kimi: *"the plan HAS the right test, it just filed it under the wrong
+   heading"* — the kill condition tests absolute placement; the pass criteria do
+   not, so **step 2 could pass while the kill condition fires.**
+2. **Two of three criteria were internal-consistency checks.** Inlier count and
+   inlier median residual are both measured against the fitted line, so any
+   coherent structure satisfies them by construction — and if the fitter defines
+   inliers at 60 s, "inlier median ≤ 60 s" is tautological.
+3. **Theil–Sen was disqualified by the plan's own numbers.** Breakdown point
+   1−1/√2 ≈ 29.3% against a contamination rate that is not "~50%" but **82–89%**
+   (27, or the reference fit's 17, of 149). Writing "RANSAC / Theil–Sen" also left
+   an outcome-dependent choice inside something called a pre-registration.
+4. **No mechanism-level control**, in a project where four mechanisms died to
+   controls the same day.
+5. **Key spaces mixed.** 149 precursors are 47 sequences; charge states of one
+   peptide sit at the *same* RT and iRT and are not independent evidence. "12
+   inliers" could be 5 peptides.
+
+### The frozen criteria
+
+**Fitter:** RANSAC only. Residual threshold 60 s, 2-point samples, 2,000
+iterations, seed 0, inliers refitted by least squares. No alternative estimator.
+
+**PASS requires all of:**
+
+- **P1 absolute placement** — ≥ **12 distinct stripped sequences** (not
+  precursors) whose predicted RT is within **60 s of that instrument's own DIA-NN
+  RT**. This folds the old kill condition into the pass, which is where it
+  belonged.
+- **P2 intercept** — |intercept − that instrument's DIA-NN CiRT intercept| ≤ **90 s**.
+- **P3 slope** — within **20%** of that instrument's own DIA-NN CiRT slope.
+  *Astral's 10.873 is an Astral number and is not a bound for S08.*
+- **P4 permutation null** — the identical fitter run on **999 iRT-label
+  permutations** must not reach the observed inlier count. Passing means beating
+  the empirical maximum-consensus null, not resembling a slope.
+- **P5 shifted-CiRT control** — the same blind search on an m/z-shifted CiRT list
+  must **fail** P1–P3.
+- **P6 independent cross-check** — the whole-library MS2 Hough, an estimator that
+  never saw the CiRT list, must agree on slope within **10%**. On Astral it gave
+  10.53 / 890.6 against CiRT's 10.873 / 907.0 (~3%). Kimi is right that this was
+  buried as a "retrospect" when it is the strongest evidence in the document that
+  the line is real: **two mechanisms that failed certification can still confirm
+  each other.**
+- **P7 span** — anchors must cover ≥ 6 of 10 RT deciles. A mid-gradient fit
+  extrapolates silently at the ends, where the ±60 s window then misses.
+
+### Corrections to record
+
+- **"27 is the realistic ceiling" was wrong** — 27 is *externally checkable*, not
+  present. A blind search may legitimately place peptides DIA-NN filtered out.
+- **"0/11 Biognosys, therefore absent" was wrong.** I searched the **library**,
+  which is FASTA-predicted from the sample proteome — spike-ins would not appear
+  there even if they were in the sample. Absence must be tested against the raw
+  data by the same blind search, or established from prep records.
+- **The r = 0.9913 fit used 17 of 27 and the selection rule was never stated.**
+  If those 17 are the well-fitting subset, the number is a selected-sample
+  statistic. This must be resolved before the figure is cited again.
+- **Step 6's stability test is circular**: groups extracted within ±60 s of the
+  seed line are conditioned to lie near it, so both halves reproduce the slope
+  even from noise. Needs a held-out set searched over the full gradient.
+- **The +600 s MS1-shift control goes vacuous after step 4** — a feature shifted
+  600 s can never confirm inside a ±60 s window, so it collapses to zero by
+  construction and "beats its control" stops meaning anything. Step 5 needs a
+  within-window micro-shift or m/z permutation instead.
+- **">0 IDs with FDP calibrated at 1%" is internally inconsistent.** A handful of
+  identifications cannot validate a 1% FDP; pre-register a 95% upper bound
+  (≤1.5% at nominal 1%) and a powered minimum count.
+- **±60 s is asserted, not defended.** Window width has an optimum, not a maximum.
+  Sweep ±30/±60/±90 judged on the frozen criteria, never on ID count.
+- **If step 7 fails, run the oracle ladder** (`doc/16` §1) to discriminate "the
+  CiRT line was wrong" from "the classifier never ignited". Pre-registered now as
+  the failure-analysis branch so it is not negotiated after a red result.
