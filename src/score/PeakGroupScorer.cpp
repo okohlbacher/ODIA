@@ -89,10 +89,32 @@ namespace ODIA
         // tolerated this by accident; an explicit signal test must not.
         if (!(mad > 0.0))
         {
+          // MAD zero means the trace has no measurable spread, which happens
+          // two very different ways and they must not be treated alike:
+          //
+          //   a clean peak on a flat baseline -- the strongest signal there is
+          //   a SPARSE trace that is mostly zeros -- the weakest
+          //
+          // Counting "any rise above the median" made the second qualify, and
+          // in real chromatograms almost every trace is mostly zeros, so the
+          // gate stopped rejecting anything at all: measured on Astral it fired
+          // 0 times and let 11.5x more precursors through than the old one.
+          // Unbiased, but not a test.
+          //
+          // With no spread to scale by, the only defensible bar is a RELATIVE
+          // one: the peak must stand well above the baseline it sits on. A
+          // clean Gaussian on a flat baseline clears it easily; a sparse trace
+          // whose single nonzero point is a lone count does not.
           if (excursions && sigma > 0.0)
           {
             const float* mx = std::max_element(at, at + n);
-            if (mx && double(*mx) > median) { ++*excursions; }
+            if (mx)
+            {
+              // Requiring the same sigma-multiple of the baseline keeps one
+              // knob rather than inventing a second.
+              const double floor_level = std::max(median, 1.0);
+              if (double(*mx) >= floor_level * (1.0 + sigma)) { ++*excursions; }
+            }
           }
           continue;
         }
