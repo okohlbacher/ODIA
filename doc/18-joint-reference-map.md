@@ -202,7 +202,51 @@ selected sample. Nothing about this map prevents a rerun of that.
 - Validate the fitted map on precursors the feature finder did **not** detect —
   which is the only test that speaks for the population at risk.
 
-## 5. v2 BOOTSTRAP — consensus, not uniqueness
+## 4c. v2's STEP 2 IS ALSO REFUTED — measured 2026-08-14
+
+The consensus/mode repair was tested before implementation, and it fails the same
+way v1 did.
+
+For each of 1,828,424 distinct library target precursor m/z, histogram the ppm
+deviation to **every** map feature within the window; a true instrument offset
+should appear as a peak above a flat background.
+
+| map | window | mode | **prominence over background** |
+|---|---|---|---|
+| default (18,446) | ±50 ppm | +2.5 ppm | **1.1×** |
+| default | ±15 ppm | +2.5 ppm | **1.0×** |
+| default | ±8 ppm | +2.5 ppm | **1.0×** |
+| mid (95,216) | ±15 ppm | +3.0 ppm | **1.0×** |
+
+Shifted-library controls give the same 1.0–1.1× in every case. (Their modes track
+the shift exactly, e.g. +30 ppm shift → −27.5 ppm mode, but that is arithmetic,
+not evidence.) **There is no peak. The histogram is flat.**
+
+**A first version of this test took the NEAREST feature per precursor and found a
+7.6× "mode" at 0 ppm — with the shifted controls at 7.0×.** Nearest-neighbour
+distance peaks at zero by construction whatever the truth. The control caught the
+estimator before it reached C++. Keep the controls.
+
+### Why, and the rule it re-teaches
+
+1.8M distinct precursor m/z over ~380–980 Th means the m/z axis is **saturated**:
+at ±15 ppm every position has library entries, so 4.1M candidate pairs contain at
+most ~18k true ones — 0.4% signal. **On a proteome-scale library, precursor m/z
+ALONE carries no identifying information**, and no window width or map density
+changes that. Both v1 (uniqueness) and v2 (mode) were single-coordinate matches
+against a saturated axis.
+
+This is [[odia-shape-not-presence]] again. The existing MS2 probe works precisely
+because it uses **fragment co-occurrence** — many coordinates per precursor.
+
+**v3, therefore: break the m/z degeneracy with a second coordinate.** Match
+features to library precursors on m/z **and** retention time, using the free
+metadata iRT→gradient transform for the RT constraint. A ±60 s window on a
+~1,770 s gradient is ~3.4% of the run, which cuts background ~30× while keeping
+true matches. That is the next measurement, and it must carry the same
+shifted-library control.
+
+## 5. v2 BOOTSTRAP — consensus, not uniqueness (STEP 2 REFUTED, see 4c)
 
 **Replace uniqueness with mode/consensus estimation on BOTH axes. Neither needs
 identity.**
