@@ -50,6 +50,68 @@ namespace ODIA
     /// peak has that peak in its own noise estimate, and the SD would be
     /// inflated by exactly the feature being looked for. MAD is unmoved by a
     /// few large points, so a strong fragment does not suppress itself.
+    /// Gate C: the co-elution evidence statistic.
+    ///
+    /// M_p = max over cycles of a smoothed sum, ACROSS transitions, of each
+    /// transition's variance-stabilised z-score. Three properties the two
+    /// previous gates lacked:
+    ///
+    ///  * summing across transitions AT THE SAME CYCLE makes co-elution a
+    ///    requirement. Gate B counted excursions anywhere in any trace, so 12
+    ///    traces x 200 cycles gave ~2400 independent chances and it admitted
+    ///    81.5% of pure noise -- worse than the 28.2% of the gate it replaced.
+    ///  * the maximum is over ~200 cycles, not ~2400 trace-cycle pairs, so the
+    ///    multiple-testing burden is an order of magnitude smaller.
+    ///  * sqrt() stabilises the variance of counting noise, so the MAD estimate
+    ///    is not dominated by the few bright cycles.
+    ///
+    /// The threshold is NOT set here. It is calibrated from the decoy null,
+    /// because assuming a Gaussian null is exactly what made Gate B's 3 sigma
+    /// mean 81% instead of 0.1%.
+    double coelutionEvidence(const PrecursorChromatogram& c, std::size_t points,
+                             std::size_t half)
+    {
+      if (points == 0) { return 0.0; }
+      std::vector<double> s(points, 0.0);
+      std::vector<double> y, scratch;
+      for (std::uint32_t t = 0; t < c.transition_count; ++t)
+      {
+        const std::uint32_t n = c.pointCount(t);
+        if (n == 0) { continue; }
+        const float* at = c.trace(t);
+        y.assign(n, 0.0);
+        for (std::uint32_t i = 0; i < n; ++i)
+        { y[i] = std::sqrt(std::max(0.0, double(at[i]))); }
+
+        scratch = y;
+        std::sort(scratch.begin(), scratch.end());
+        const double median = scratch[scratch.size() / 2];
+        for (auto& v : scratch) { v = std::abs(v - median); }
+        std::sort(scratch.begin(), scratch.end());
+        const double mad = scratch[scratch.size() / 2];
+        // A transition with no spread contributes NOTHING rather than being
+        // given an invented scale. It cannot vote for or against co-elution.
+        if (!(mad > 0.0)) { continue; }
+        const double scale = 1.0 / (1.4826 * mad);
+        for (std::uint32_t i = 0; i < n && i < points; ++i)
+        { s[i] += (y[i] - median) * scale; }
+      }
+
+      // Smooth, so a single bright cycle in one transition cannot carry the
+      // precursor: a real peak spans several cycles.
+      double best = 0.0;
+      const std::size_t w = 2 * half + 1;
+      for (std::size_t i = 0; i < points; ++i)
+      {
+        double acc = 0.0;
+        std::size_t used = 0;
+        for (std::size_t j = (i > half ? i - half : 0);
+             j <= i + half && j < points; ++j) { acc += s[j]; ++used; }
+        if (used) { best = std::max(best, acc / double(w)); }
+      }
+      return best;
+    }
+
     /// Summed noise-normalised trace, and how many transitions actually rose
     /// above `sigma` at any point.
     ///
