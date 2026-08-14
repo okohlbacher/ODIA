@@ -346,3 +346,75 @@ production decoys, since ODIA's decoys carry the target's precursor m/z.
    a schema serving both compromise either?
 6. **What breaks if the MS1 negative-control gate fails?** Which parts of this
    plan survive an MS1 sub-score that carries no information?
+
+---
+
+## 9. CiRT peptides: the seed that works (measured 2026-08-14)
+
+Four anchoring mechanisms failed their controls in one afternoon — uniqueness,
+mass-mode, whole-library Hough on MS1, and dscore-ranked Hough on MS2. Then:
+
+| fit | n | line | r | median residual |
+|---|---|---|---|---|
+| **CiRT × DIA-NN RT** | **17** | **RT = 907.0 + 10.873·iRT** | **+0.9913** | **32.3 s** |
+| CiRT × nearest MS1 feature | 26 | RT = 1119.7 + 2.718·iRT | +0.320 | 258.7 s |
+
+**Seventeen endogenous peptides define the calibration line that 5M library
+precursors could not.** No Biognosys spike-ins exist in this sample (0/11), so
+the CiRT set (Parker et al., MCP 2015) — conserved, abundant, endogenous — is the
+usable one.
+
+Retrospect worth keeping: the whole-library MS2 Hough returned slope **+10.53,
+intercept +890.6** against the truth **+10.873, +907.0**. The fit was essentially
+RIGHT; its prominence (4.6× against a 4.0× permuted control) simply could not
+certify it. The signal was there and the statistic could not see it.
+
+### Why "a better MS1→sequence mapping rule" is the wrong question
+
+Selection criteria compared on CiRT peptides with known truth, all drawing from
+the same ±20 ppm pool:
+
+| criterion | median err | within 60 s |
+|---|---|---|
+| nearest-m/z | 53.8 s | 54% |
+| most-intense | 79.2 s | 46% |
+| nearest predicted-RT | 53.8 s | 54% |
+| both | 53.8 s | 54% |
+
+All identical, because the **median candidate pool is 2 features (max 4)**. The
+correct feature is usually ABSENT, which is the default map's 29.8% recall showing
+through. No selection rule recovers a feature that was never detected.
+
+### MS1-confirmed MS2 — real, controlled, and insufficient
+
+An MS2 peak group is confirmed when an MS1 feature sits at the same precursor m/z
+within ±W s of its apex (mid map, 95,216 features):
+
+| set | n | slope | r | within 60 s of truth |
+|---|---|---|---|---|
+| all MS2 groups | 5,964 | +1.59 | 0.164 | 8% |
+| confirmed ±10 s | 310 | +4.39 | **0.420** | 12% |
+| **CONTROL, MS1 RTs +600 s** | 343 | +1.98 | **0.211** | 7% |
+
+Confirmation lifts r 0.164 → 0.420 and the control collapses it to 0.211 — **the
+first intervention of the day to beat its own control by a clear margin.** But
+slope 4.39 against a true 10.873, and 12% within 60 s, is not a usable
+calibration. Confirmation can only re-weight the population it is given, and an
+uncalibrated pass supplies one that is ~98% misplaced.
+
+### v4: seed from CiRT, then confirm
+
+```
+  1. CiRT targeted search      ~17 anchors, r ~ 0.99, no calibration needed
+  2. predict library RT        from that line
+  3. MS2 extraction            in a +/-60 s window instead of blind
+  4. MS1 confirmation          NOW powerful: the population is mostly right
+  5. robust refit on the union stop on SLOPE STABILITY, not ID count
+```
+
+The union is the right structure. It was being asked to bootstrap from nothing;
+given a CiRT seed it consolidates a mostly-correct population instead.
+
+**Open:** CiRT coverage on S08 (this is Astral-only), whether a targeted CiRT
+search finds them without calibration (it should — they are abundant and few),
+and how many of the ~120-peptide CiRT set are present rather than the 20 probed.
