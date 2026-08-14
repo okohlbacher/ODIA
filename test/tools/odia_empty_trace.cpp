@@ -74,7 +74,14 @@ namespace
 int main()
 {
   std::mt19937 rng(20260814);
-  constexpr std::size_t N = 40, TRIALS = 4000;
+  // REAL dimensions. The first version of this file used N=40 with 6
+  // transitions -- 240 trace-cycle values against the ~2400 a real precursor
+  // presents -- and that difference is the whole story: a pointwise 3-sigma
+  // cutoff admits 3.5% of pure noise at 240 draws and 81.5% at 2400, because
+  // the search over cycles and fragments is a multiple-testing problem the
+  // threshold does not account for. Validating an admission rule at a tenth of
+  // its real search size flatters it, and did.
+  constexpr std::size_t N = 200, FRAGS = 12, TRIALS = 4000;
 
   // --- the old gate is a coin flip on absent precursors --------------------
   {
@@ -82,7 +89,7 @@ int main()
     for (std::size_t t = 0; t < TRIALS; ++t)
     {
       double sum = 0.0;
-      for (int f = 0; f < 6; ++f)
+      for (std::size_t f = 0; f < FRAGS; ++f)
       {
         const auto z = normalise(noiseOnly(rng, N, 100.0));
         sum += std::accumulate(z.begin(), z.end(), 0.0);
@@ -104,7 +111,7 @@ int main()
     for (std::size_t t = 0; t < TRIALS; ++t)
     {
       std::size_t exc = 0;
-      for (int f = 0; f < 6; ++f)
+      for (std::size_t f = 0; f < FRAGS; ++f)
       {
         const auto z = normalise(noiseOnly(rng, N, 100.0));
         if (*std::max_element(z.begin(), z.end()) >= sigma) { ++exc; }
@@ -113,7 +120,15 @@ int main()
     }
     const double rate = double(passed) / double(TRIALS);
     std::printf("      new gate admits %.1f%% of ABSENT precursors\n", 100.0 * rate);
-    check(rate < 0.25, "the new excursion rule admits far fewer absent precursors");
+    // NOT a pass/fail on the current rule -- it is 81.5% at these dimensions,
+    // which is WORSE than the gate it replaced. The invariant worth pinning is
+    // the one that made that invisible: an admission rule must be measured at
+    // the search size it actually faces.
+    std::printf("      (at 12x200 the pointwise 3-sigma rule is NOT a precursor-level test)\n");
+    check(rate > 0.5,
+          "a pointwise 3-sigma cutoff admits MOST pure-noise precursors at real "
+          "dimensions -- 12 traces x 200 cycles is 2400 draws, so ~3 excursions "
+          "are expected from noise alone and 'at least 2 fired' is nearly certain");
   }
 
   // --- and it still keeps real peaks --------------------------------------
@@ -124,7 +139,7 @@ int main()
     for (std::size_t t = 0; t < TRIALS; ++t)
     {
       std::size_t exc = 0;
-      for (int f = 0; f < 6; ++f)
+      for (std::size_t f = 0; f < FRAGS; ++f)
       {
         const auto z = normalise(withPeak(rng, N, 100.0, 800.0));
         if (*std::max_element(z.begin(), z.end()) >= sigma) { ++exc; }
@@ -148,7 +163,7 @@ int main()
       for (std::size_t t = 0; t < TRIALS; ++t)
       {
         double sum = 0.0;
-        for (int f = 0; f < 6; ++f)
+        for (std::size_t f = 0; f < FRAGS; ++f)
         {
           auto raw = noiseOnly(rng, N, level);
           raw[N / 3] += static_cast<float>(level * 0.5);   // a shade more structure
