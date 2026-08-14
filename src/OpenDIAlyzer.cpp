@@ -994,74 +994,6 @@ protected:
     options.precursor_stride = pass_stride_;
     options.precursor_offset = pass_offset_;
     options.precursor_keep = prefilter_keep_.empty() ? nullptr : prefilter_keep_.data();
-    // MS1 traces, once per run, before the first extraction that will score.
-    //
-    // Built here rather than inside the extractor: the streaming extractor is
-    // organised around isolation windows and MS2 cycles, MS1 has neither, and
-    // its memory behaviour is the one part of this pipeline that is measured.
-    // See Ms1Traces for why co-elution is the only MS1 quantity worth carrying.
-    if (ms1_traces_.empty() && !getFlag_("no_ms1"))
-    {
-      const auto t0 = std::chrono::steady_clock::now();
-      // Width RELATIVE to the MS2 window, because the right ratio is an
-      // empirical question and both of my confident answers were wrong.
-      //
-      // It shipped at 2x on an unmeasured assumption. I then set it to 1x on a
-      // consistency argument -- the two traces being correlated should sample
-      // one ion population -- and that cost 76 identifications on
-      // S08/lib_targets (1306 -> 1230). The consistency argument is sound about
-      // what the correlation MEANS and wrong about what it is worth; MS1 ions
-      // are not mobility-selected by an isolation window, so the precursor's
-      // MS1 mobility spread is genuinely wider than its fragments'.
-      //
-      // The NaN handling is NOT part of this knob and stays fixed: a precursor
-      // with no library 1/K0 is ungated, matching MS2, rather than having every
-      // peak rejected.
-      // SIZE IT BEFORE ALLOCATING IT. Ms1Traces is a DENSE
-      // precursors x MS1-spectra float matrix (Ms1Traces.cpp:52,
-      // values_.assign(np * bins_, 0.0f)), so it grows linearly with the
-      // library and is charged before extraction begins -- it is not covered by
-      // the live-block budget.
-      //
-      // At 5,330 precursors it is 83 MB and invisible. At 4,986,319 it is
-      // 77.6 GB, which is 13% of the 588 GB peak that OOM-killed a benchmark
-      // run. Every memory figure this project published before that was
-      // measured on a library ~1000x too small to show it.
-      {
-        const std::size_t ms1_bins = source->ms1Spectra().size();
-        const double need = double(library.precursorCount()) * double(ms1_bins) * 4.0;
-        const double cap = double(options.live_memory_budget_bytes);
-        if (cap > 0.0 && need > cap)
-        {
-          std::ostringstream w;
-          w.setf(std::ios::fixed); w.precision(1);
-          w << "MS1 traces would need " << need / 1073741824.0 << " GiB ("
-            << library.precursorCount() << " precursors x " << ms1_bins
-            << " MS1 spectra x 4 B), above the " << cap / 1073741824.0
-            << " GiB budget -- SKIPPING them. var_ms1_coelution will be absent "
-               "rather than the run being killed. Raise -live_memory_gb to keep "
-               "them, or narrow the library.";
-          writeLogWarn_(w.str());
-        }
-        else
-        {
-          ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
-                                               options.precursor_im_window *
-                                                 getDoubleOption_("ms1_im_scale"));
-        }
-      }
-      const double secs = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - t0).count();
-      if (ms1_traces_.empty())
-      {
-        writeLogInfo_("MS1: the run carries no MS1 spectra, so var_ms1_coelution "
-                      "will be absent rather than zero");
-      }
-      else
-      {
-        writeLogInfo_(ms1_traces_.describe() + ", in " + std::to_string(secs) + " s");
-      }
-    }
 
     applyMassCalibration_(library, *source, options, rt_window_override);
     // The harvest records deviations against the target the extractor actually
@@ -1132,6 +1064,88 @@ protected:
     }
     options.decode_block = static_cast<std::size_t>(
       std::max(0, getIntOption_("decode_block")));
+
+    // MS1 traces are built HERE, and the position is the fix for three defects
+    // that together made MS1_COELUTION report `0 finite, 11,877 null ptr`:
+    //
+    //  1. it used to be built AFTER extractAndScore_ had already constructed the
+    //     scoring Sink, so the Sink captured options.ms1 == nullptr and kept it
+     //    for the whole run. The sink is now told once the traces exist.
+    //  2. the -live_memory_gb guard below read options.live_memory_budget_bytes
+    //     before it was assigned, so cap was always 0 and the 148 GiB matrix was
+    //     allocated whatever the user asked for. The budget is now assigned above.
+    //  3. it ran BEFORE applyMassCalibration_, so traces were matched at
+    //     uncalibrated masses -- which is also why the 62.1%-with-signal figure
+    //     must not be used to size anything.
+    // MS1 traces, once per run, before the first extraction that will score.
+    //
+    // Built here rather than inside the extractor: the streaming extractor is
+    // organised around isolation windows and MS2 cycles, MS1 has neither, and
+    // its memory behaviour is the one part of this pipeline that is measured.
+    // See Ms1Traces for why co-elution is the only MS1 quantity worth carrying.
+    if (ms1_traces_.empty() && !getFlag_("no_ms1"))
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      // Width RELATIVE to the MS2 window, because the right ratio is an
+      // empirical question and both of my confident answers were wrong.
+      //
+      // It shipped at 2x on an unmeasured assumption. I then set it to 1x on a
+      // consistency argument -- the two traces being correlated should sample
+      // one ion population -- and that cost 76 identifications on
+      // S08/lib_targets (1306 -> 1230). The consistency argument is sound about
+      // what the correlation MEANS and wrong about what it is worth; MS1 ions
+      // are not mobility-selected by an isolation window, so the precursor's
+      // MS1 mobility spread is genuinely wider than its fragments'.
+      //
+      // The NaN handling is NOT part of this knob and stays fixed: a precursor
+      // with no library 1/K0 is ungated, matching MS2, rather than having every
+      // peak rejected.
+      // SIZE IT BEFORE ALLOCATING IT. Ms1Traces is a DENSE
+      // precursors x MS1-spectra float matrix (Ms1Traces.cpp:52,
+      // values_.assign(np * bins_, 0.0f)), so it grows linearly with the
+      // library and is charged before extraction begins -- it is not covered by
+      // the live-block budget.
+      //
+      // At 5,330 precursors it is 83 MB and invisible. At 4,986,319 it is
+      // 77.6 GB, which is 13% of the 588 GB peak that OOM-killed a benchmark
+      // run. Every memory figure this project published before that was
+      // measured on a library ~1000x too small to show it.
+      {
+        const std::size_t ms1_bins = source->ms1Spectra().size();
+        const double need = double(library.precursorCount()) * double(ms1_bins) * 4.0;
+        const double cap = double(options.live_memory_budget_bytes);
+        if (cap > 0.0 && need > cap)
+        {
+          std::ostringstream w;
+          w.setf(std::ios::fixed); w.precision(1);
+          w << "MS1 traces would need " << need / 1073741824.0 << " GiB ("
+            << library.precursorCount() << " precursors x " << ms1_bins
+            << " MS1 spectra x 4 B), above the " << cap / 1073741824.0
+            << " GiB budget -- SKIPPING them. var_ms1_coelution will be absent "
+               "rather than the run being killed. Raise -live_memory_gb to keep "
+               "them, or narrow the library.";
+          writeLogWarn_(w.str());
+        }
+        else
+        {
+          ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
+                                               options.precursor_im_window *
+                                                 getDoubleOption_("ms1_im_scale"));
+        }
+      }
+      const double secs = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - t0).count();
+      if (ms1_traces_.empty())
+      {
+        writeLogInfo_("MS1: the run carries no MS1 spectra, so var_ms1_coelution "
+                      "will be absent rather than zero");
+      }
+      else
+      {
+        writeLogInfo_(ms1_traces_.describe() + ", in " + std::to_string(secs) + " s");
+      }
+    }
+    sink.ms1Available(ms1_traces_.empty() ? nullptr : &ms1_traces_);
 
     if (options.irt_slope == 0.0 && !library_rt_is_run_seconds)
     {

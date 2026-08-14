@@ -621,6 +621,14 @@ namespace ODIA
     private:
       const Library* library_;
       Options options_;
+
+    public:
+      /// Install the run's MS1 traces after construction. See
+      /// ChromatogramSink::ms1Available for why this cannot be a constructor
+      /// argument.
+      void setMs1Traces(const Ms1Traces* m) { options_.ms1 = m; }
+
+    private:
       Result result_;
     };
 
@@ -633,6 +641,10 @@ namespace ODIA
     {
     public:
       Sink(const Library& library, const Options& options) : session_(library, options) {}
+
+      /// See ChromatogramSink::ms1Available -- the traces do not exist yet when
+      /// this sink is constructed.
+      void ms1Available(const Ms1Traces* m) override { session_.setMs1Traces(m); }
       void accept(const PrecursorChromatogram& trace) override { session_.add(trace); }
       Result finish() { return session_.finish(); }
 

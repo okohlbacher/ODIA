@@ -15,8 +15,42 @@
 #include <numeric>
 #include <sstream>
 
+#include <atomic>
+
 namespace ODIA
 {
+namespace
+{
+  // MS1_COELUTION diagnosis -- see the block in scoreCandidate. Removed once the
+  // question is answered; until then these are the only evidence about WHY the
+  // one feature measured to discriminate arrives constant.
+  std::atomic<std::size_t> ms1_unavailable{0};   ///< options.ms1 null/empty, or index out of range
+  std::atomic<std::size_t> ms1_no_signal{0};     ///< every MS1 point in the candidate window is 0
+  std::atomic<std::size_t> ms1_too_short{0};     ///< fewer than 5 cycles
+  std::atomic<std::size_t> ms1_flat{0};          ///< MS1 leg has zero variance -> Pearson undefined
+  std::atomic<std::size_t> ms1_ok{0};            ///< a finite correlation was produced
+  std::atomic<std::size_t> ms1_bins_spanned{0};  ///< sum of distinct MS1 bins per candidate
+  std::atomic<std::size_t> ms1_spans{0};         ///< candidates contributing to the above
+  std::atomic<std::size_t> ms1_null{0};          ///< options.ms1 was a null pointer
+  std::atomic<std::size_t> ms1_empty{0};         ///< traces object present but empty
+  std::atomic<std::size_t> ms1_index_oob{0};     ///< precursor index past the matrix
+  std::atomic<std::size_t> ms1_degenerate_span{0};  ///< hi <= lo, candidate spans nothing
+
+  /// Distinct MS1 bins a candidate's cycles map onto. If this is ~1 the MS1 grid
+  /// is too coarse for the candidate and no correlation is definable.
+  std::size_t distinctBins_(const PrecursorChromatogram& c, std::size_t lo, std::size_t hi,
+                            const Ms1Traces& ms1)
+  {
+    std::size_t n = 0, prev = static_cast<std::size_t>(-1);
+    for (std::size_t j = lo; j <= hi; ++j)
+    {
+      const std::size_t b = ms1.binFor(c.retentionTime(static_cast<std::uint32_t>(j)));
+      if (b != prev) { ++n; prev = b; }
+    }
+    return n;
+  }
+}
+
 
   namespace
   {
@@ -1342,6 +1376,45 @@ namespace ODIA
           for (const double v : m) { if (v > 0.0) { any = true; break; } }
           if (any && f.size() >= 5) { const double c = pearson(f, m);
                                       if (std::isfinite(c)) { r = c; } }
+
+          // WHICH guard kills it? On Astral this sub-score came out constant
+          // across all 96,259 rows and was dropped as carrying no information --
+          // and it is the one feature measured to discriminate (13.7x top bin),
+          // so "it is NaN" is not a good enough answer. Atomics, not
+          // thread_local: a thread_local counter read from one thread already
+          // produced a retracted conclusion in this file once.
+          ms1_no_signal.fetch_add(any ? 0 : 1, std::memory_order_relaxed);
+          ms1_too_short.fetch_add(f.size() >= 5 ? 0 : 1, std::memory_order_relaxed);
+          if (any && f.size() >= 5)
+          {
+            // Zero variance in the MS1 leg makes Pearson undefined however much
+            // signal is present -- distinct from "no signal", and the case that
+            // fires if several MS2 cycles share one MS1 bin.
+            bool flat = true;
+            for (std::size_t k = 1; k < m.size(); ++k)
+            { if (m[k] != m[0]) { flat = false; break; } }
+            ms1_flat.fetch_add(flat ? 1 : 0, std::memory_order_relaxed);
+            ms1_ok.fetch_add(std::isfinite(pearson(f, m)) ? 1 : 0, std::memory_order_relaxed);
+            ms1_bins_spanned.fetch_add(distinctBins_(chromatogram, lo, hi, *options.ms1),
+                                       std::memory_order_relaxed);
+            ms1_spans.fetch_add(1, std::memory_order_relaxed);
+          }
+        }
+        else
+        {
+          // Split the guard. The first cut said "11,877 no MS1 available, 0
+          // everything else" while the run had just built a 148 GiB MS1 matrix
+          // over 9,983,789 precursors -- so the composite condition is useless
+          // and each term has to be counted on its own.
+          ms1_unavailable.fetch_add(1, std::memory_order_relaxed);
+          if (options.ms1 == nullptr) { ms1_null.fetch_add(1, std::memory_order_relaxed); }
+          else
+          {
+            if (options.ms1->empty()) { ms1_empty.fetch_add(1, std::memory_order_relaxed); }
+            if (i >= options.ms1->precursors())
+            { ms1_index_oob.fetch_add(1, std::memory_order_relaxed); }
+            if (!(hi > lo)) { ms1_degenerate_span.fetch_add(1, std::memory_order_relaxed); }
+          }
         }
         g.sub_scores[MS1_COELUTION] = r;
       }
@@ -1841,6 +1914,29 @@ namespace ODIA
         << pc(r.too_few_transitions[0], r.too_few_transitions[1]) << " with <2 transitions, "
         << r.too_few_cycles << " with too few cycles; "
         << r.no_hit_anywhere << " entered it and found no qualifying position";
+
+      // Why MS1_COELUTION arrives constant. It is the only sub-score measured to
+      // discriminate (13.7x top bin against 1.0x saturated for every presence
+      // statistic), so it being dropped as uninformative needs a reason on the
+      // record rather than a plausible story.
+      {
+        const std::size_t spans = ms1_spans.load(std::memory_order_relaxed);
+        w << "\n  MS1_COELUTION: " << ms1_ok.load(std::memory_order_relaxed) << " finite, "
+          << ms1_unavailable.load(std::memory_order_relaxed) << " no MS1 available, "
+          << ms1_no_signal.load(std::memory_order_relaxed) << " all-zero in the window, "
+          << ms1_too_short.load(std::memory_order_relaxed) << " under 5 cycles, "
+          << ms1_flat.load(std::memory_order_relaxed) << " flat (zero variance)"
+          << "\n    unavailable breakdown: "
+          << ms1_null.load(std::memory_order_relaxed) << " null ptr, "
+          << ms1_empty.load(std::memory_order_relaxed) << " empty, "
+          << ms1_index_oob.load(std::memory_order_relaxed) << " index past matrix, "
+          << ms1_degenerate_span.load(std::memory_order_relaxed) << " hi<=lo";
+        if (spans > 0)
+        {
+          w << "; mean distinct MS1 bins per candidate "
+            << (double(ms1_bins_spanned.load(std::memory_order_relaxed)) / double(spans));
+        }
+      }
       std::fprintf(stderr, "%s\n", w.str().c_str());
     }
 

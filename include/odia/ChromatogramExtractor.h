@@ -301,6 +301,8 @@ namespace ODIA
   /// The storage a `PrecursorChromatogram` points at is valid ONLY for the
   /// duration of `accept`. A sink that wants it afterwards must copy it, which
   /// is exactly what the collector does and what the scorer does not.
+  class Ms1Traces;
+
   class ChromatogramSink
   {
   public:
@@ -309,6 +311,16 @@ namespace ODIA
     /// Called once per extraction, before any trace, with what the whole run
     /// would produce -- including the parts that will never exist at once.
     virtual void begin(const ChromatogramLayout&) {}
+
+    /// The run's MS1 traces, once they exist, or nullptr when there are none.
+    ///
+    /// This hook exists because the traces are built INSIDE the extraction, by
+    /// which point the caller has already constructed its sink -- so a sink that
+    /// captured the pointer at construction captured a null one and kept it. That
+    /// is exactly what made MS1_COELUTION report `0 finite, 11,877 null ptr` on
+    /// every candidate while a 148 GiB matrix sat fully built beside it. Default
+    /// is a no-op: most sinks do not care.
+    virtual void ms1Available(const Ms1Traces*) {}
 
     virtual void accept(const PrecursorChromatogram&) = 0;
 
