@@ -80,7 +80,22 @@ namespace ODIA
 
         // A trace with no variation contributes nothing rather than dividing by
         // a floor and injecting a scaled copy of its own rounding.
-        if (!(mad > 0.0)) { continue; }
+        //
+        // But ZERO MAD WITH A RISE ABOVE THE MEDIAN IS SIGNAL, and the cleanest
+        // kind: a peak on a flat baseline. Skipping it outright made the
+        // excursion count zero for a noiseless trace, so the new gate rejected
+        // a perfect peak -- caught by picker_prefers_coelution_over_amplitude,
+        // whose fixture is deliberately noise-free. The old sum-based gate
+        // tolerated this by accident; an explicit signal test must not.
+        if (!(mad > 0.0))
+        {
+          if (excursions && sigma > 0.0)
+          {
+            const float* mx = std::max_element(at, at + n);
+            if (mx && double(*mx) > median) { ++*excursions; }
+          }
+          continue;
+        }
         const double scale = 1.0 / (1.4826 * mad);   // MAD -> sigma for normal noise
         double peak = 0.0;
         for (std::uint32_t i = 0; i < n && i < points; ++i)
