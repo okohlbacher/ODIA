@@ -98,8 +98,11 @@ struct LDAParams
   std::vector<std::size_t> nonpositive_features;
   unsigned seed = 42;       ///< RNG seed (fold assignment only) — determinism
   bool use_pi0 = false;     ///< Storey pi0 correction. false = HONEST/conservative (true 1% FDR,
-                            ///< fewer IDs); true = pyprophet/DIA-NN parity (more IDs, but a nominal
-                            ///< 1% is ~2% actual — matches their calibration, incl. its optimism).
+                            ///< fewer IDs); true = PYPROPHET parity (more IDs, but a nominal 1% is
+                            ///< ~2% actual). NOT DIA-NN: 1.7.x uses a plain target-decoy count
+                            ///< ratio with NO pi0 term (verified by literature survey 2026-08-15),
+                            ///< so citing DIA-NN here was wrong and is the kind of stale comment
+                            ///< that leaks into documents.
 
   /// Draw each decoy's best score from as many candidates as a TARGET has,
   /// rather than from all of its own.
