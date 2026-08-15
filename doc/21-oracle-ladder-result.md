@@ -75,3 +75,97 @@ the problem. Run it next.
 - Entrapment FDP was not reported in this run and must be checked before 6,815 is
   treated as a quality number rather than a diagnostic one.
 - 1:09:48 wall, 2.2 GB peak RSS.
+
+---
+
+## REVIEW ROUND 10 — the conclusion does not survive. The liveness result does.
+
+Codex (effort max) and kimi, both with vault access. **Verdict: red on
+"the blocker is the prior". Green on "the pipeline is not dead".**
+
+### What survives
+
+10,040 positives in, 6,815 out at nominal 1% is not something a broken pipeline
+produces. The pre-registered gate passed and outcome 1 and 2 (extraction/scoring
+bug, q-value bug) are ruled out in the strong sense. That is real and it is the
+only claim this document should have made.
+
+### What does not
+
+**1. The dilution series discriminates nothing (kimi, quantitatively).** The vault
+already measured the confound in isolation: adding 7,995 entrapment precursors to
+a 2,665-target library — **4× size at FIXED prior, no ignition question anywhere**
+— took Astral identifications **2,078 → 754 (−64%)**. My first dilution step,
+2× size, gave **6,815 → 2,306 (−66%)**. A pure size/competition effect sits almost
+exactly on my curve. Add the mechanical effect that the FDR threshold is set by
+the extreme tail of the decoy-argmax null, which grows with library size, and the
+whole series is **consistent with zero classifier-prior effect.** It is also
+consistent with a prior effect. That is the problem.
+
+**2. My "1.5% present" was wrong by 7×.** Measured: the parity library has
+**4,991,901 targets, 0.201% of them DIA-NN-confident.** The 1.5% figure came from
+the vault's S08 `v6_50k` measurement — a different library — and I carried it
+across without checking. The lowest rung (5%) is therefore **25× above** the
+production regime; the ladder never reaches the condition it claims to explain.
+(Codex flagged an inconsistency here from a different direction, reading library
+*rows* as targets; each library is half decoys, so the 50/10/5% labels are
+correct. The 1.5% was not.)
+
+**3. The full library is not a rung.** It is a different library build, not the
+same 10,040 positives plus absent assays. It should never have been in the same
+table.
+
+**4. Outcome 4 was never tested.** The full-library run identified nothing in
+pass 1, so its pass 2 was uncalibrated — the converged RT refiner ran only inside
+the oracle run. **Nobody applied the oracle-fitted map, or DIA-NN's empirical
+RTs, to the full library and re-ran.** "Not an RT consequence" is overreach.
+
+**5. "68% recovery" is a ceiling wearing a capability costume.** The vault:
+*"an offline ROC measuring recall of another tool's IDs is a ceiling, not a
+result"* — and that reference list has been measured wrong in both directions
+(1,230 omitted real IDs, 205 non-IDs). The 32% missed is a mixture of "ODIA
+failed" and "DIA-NN was wrong" and this design cannot split it. The honest
+wording is **"re-detected comparator-selected precursors"**, not "identified".
+
+**6. The oracle library is the maximally abundance-selected subset of the run**,
+and at ~100% prior the classifier trains almost-supervised. That is exactly where
+memorisation of target/decoy construction asymmetry is invisible to decoy FDR —
+and one such asymmetry is already proven live here: ODIA's decoys carry the
+target's precursor m/z.
+
+**7. Entrapment FDP — the one measurement that cuts through all of it — was not
+run.** So "the FDR estimator works" is asserted, not shown, and 6,815 is a
+diagnostic count.
+
+**8. A pre-registered reporting requirement was dropped.** `doc/16` §1 says
+*"report target excess in the top score percentiles, not group counts."* This
+document reported ID counts and group counts.
+
+**9. An unexplained 8× asymmetry (kimi).** Oracle: 49,907 groups / 10,040 targets
+≈ **5 per target**. Full library: 84,950 groups against an estimated ~150k present
+precursors ≈ **0.57 per present target**. "Same binary, only the library changes"
+should not do that. Either the picker is library-size-dependent — in which case
+"only the library changes" is false in effect — or most present precursors in the
+full library **never got a candidate at all**, making the zero partly an
+extraction-opportunity result rather than a classifier result. This needs an
+answer before any outcome table is believed.
+
+**10. Prevalence is not the classifier prior** (codex). 10,040 targets produced
+49,907 peak groups, so the true-event fraction at the classifier input is at most
+~20%, not 100%.
+
+### The experiment that actually separates them (kimi)
+
+A **two-arm crossed** design, plus one number per rung that no new code requires:
+
+- **Fixed size, varying prior:** pad to constant N (~200,000 entries) with absent
+  entrapment assays; 10,040 / 2,008 / 402 positives → 5% / 1% / 0.2% at identical
+  size and identical decoy-null width.
+- **Fixed prior, varying size:** subsample the parity library to 100k / 1M / 10M,
+  holding the present rate constant.
+- **At every rung report target excess in the top score percentiles and the
+  iteration-0 seed count** — that single number distinguishes outcome 2
+  (scores separate, q does not → competition) from outcome 3 (no separable seed →
+  prior) directly.
+
+Plus: entrapment FDP at every rung, and state the key space of every count.
