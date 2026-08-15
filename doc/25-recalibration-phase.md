@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # The full recalibration phase
 
 Plan, 2026-08-15, from review round 12 (codex effort max, kimi, both with vault).

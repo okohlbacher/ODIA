@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # The known-good configuration (2026-08-15)
 
 The first configuration that identifies at proteome scale. Recorded so it is not

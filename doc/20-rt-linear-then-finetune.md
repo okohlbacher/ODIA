@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # Linear anchor, then fine-tune the nonlinearity — measured
 
 Status: MEASURED 2026-08-14, both instruments. Answers the question directly:

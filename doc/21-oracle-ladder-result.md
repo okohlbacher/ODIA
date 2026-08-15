@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # The oracle ladder: the whole pipeline works. The blocker is the prior.
 
 Measured 2026-08-15, Astral. This is the discrimination `doc/16` §1 was written

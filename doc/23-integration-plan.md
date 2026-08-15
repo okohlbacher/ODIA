@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # Integrating the previous project: what to port, and the stepped plan
 
 Written 2026-08-15 from the predecessor's handoff (`odia-v0.4.0`, commit

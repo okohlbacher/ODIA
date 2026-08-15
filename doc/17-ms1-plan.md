@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # The MS1 arm: rebuild plan
 
 Status: PLAN. Written 2026-08-14 after adversarial review by Codex `gpt-5.6-sol`

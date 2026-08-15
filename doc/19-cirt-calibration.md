@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # CiRT-seeded calibration and fine-tuning
 
 Status: PLAN + first implementation, 2026-08-14. Supersedes `doc/18` §5's

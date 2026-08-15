@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # Phases 3+4: integrated RT recalibration, fine-tuning and m/z calibration
 
 Status: PLAN, not implemented. Written 2026-08-14 after adversarial review by

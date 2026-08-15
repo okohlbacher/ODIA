@@ -1,3 +1,5 @@
+> **SUPERSEDED BY doc/26-PLAN.md (2026-08-15).** Kept as the working record. Where this document and doc/26 disagree, doc/26 wins — it carries the corrections this one predates.
+
 # The joint reference map: one anchor structure for calibration and fine-tuning
 
 Status: **v1 REJECTED by review round 7 (codex at effort max, kimi). v2 below.**
