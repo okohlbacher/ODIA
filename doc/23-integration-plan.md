@@ -65,7 +65,10 @@ where our time goes.** Same instrumentation, same question.
   `VAR_` test) — the identical class as our `ENTRAP_` starts-with failure that hid
   14.7% of the library. **Grep for every prefix test we have.**
 - `-fdr_pi0` named as one of "the two most seductive fake gains", resting on a
-  uniformity assumption the data violates. **Our `lda.h` uses pi0 by default.**
+  uniformity assumption the data violates. **~~Our `lda.h` uses pi0 by default.~~
+  WRONG — `lda.h:100` is `use_pi0 = false` and it was off in the 3,625 run.**
+  So our 5.98% FDP is NOT π₀-mediated, which removes the easy explanation and
+  leaves decoy exchangeability and the GBT leaf floor as the S1 suspects.
 
 **P4 — the prefilter, with explicit caution.** It made the predecessor's search
 tractable (7.15M → 423k). But this project measured that **growing the budget

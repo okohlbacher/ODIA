@@ -173,14 +173,25 @@ still open.
 ### 6.3 FDR — the finding that bears directly on our 5.98%
 
 **DIA-NN's FDR estimate is a plain target-decoy count ratio with NO π₀
-correction**, claimed conservative by construction. **V2 applies Storey π₀ by
-default** (`lda.h:227`), and V1's handoff independently names `-fdr_pi0` one of
-"the two most seductive fake gains… resting on a uniformity assumption this data
-violates."
+correction**, claimed conservative by construction. That much is verified.
 
-Two independent lines now point at π₀ as a prime suspect for our FDP being 6×
-nominal while DIA-NN achieves 0.914% on the same file. **This is the first
-concrete, testable hypothesis for S1** and it costs one rerun with π₀ disabled.
+**~~V2 applies Storey π₀ by default~~ — RETRACTED, and it was wrong.**
+`lda.h:100` reads `bool use_pi0 = false`, commented *"false = HONEST/conservative
+(true 1% FDR, fewer IDs); true = pyprophet/DIA-NN parity"*. The known-good
+invocation sets no π₀ flag, so **π₀ was OFF in the 3,625 run.** I asserted the
+opposite from the survey finding without checking the code, and briefly recorded
+it as the leading hypothesis for our FDP.
+
+**This makes the problem worse, not better.** Our 5.98% was produced with the
+conservative setting already chosen, so the miscalibration is intrinsic to the
+estimator or its inputs — not a switch left on. Remaining suspects for S1:
+decoy non-exchangeability (our decoys keep the target's precursor m/z), the GBT
+leaf floor (V1's `min_child_rows` defect is "an overfitting surface in exactly the
+score tail that sets the FDR threshold"), and the winner's-curse null width.
+
+One further defect this surfaced: the `lda.h:101` comment claims π₀-true gives
+*"pyprophet/DIA-NN parity"*. DIA-NN 1.7.x has **no π₀** — that is PyProphet only,
+and the comment should not leak into the paper.
 
 Structural evidence of DIA FDR failure, verified:
 
