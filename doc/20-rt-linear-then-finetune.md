@@ -197,3 +197,34 @@ curvature of δ; do not constrain δ itself.
 The architecture, the CiRT seed, and the direction of §2's result for the
 *specific* estimator tested. Everything quantitative needs re-measuring on an
 independent iRT axis with frozen artifacts and identical evaluation rows.
+
+---
+
+## 6. §1 RE-MEASURED on independent axes — kimi confirmed, quantified
+
+Reproduced 2026-08-15 (`bench/axis_recheck.py`), same reports, same q≤0.01 filter,
+identical precursors, only the iRT axis changed:
+
+| axis | Astral | S08 |
+|---|---|---|
+| ODIA parity-lib iRT (**what §1 used**) | 135.2 s | **174.6 s** |
+| DIA-NN report `iRT` | 90.8 s | **20.8 s** |
+| DIA-NN `Predicted.iRT` | 88.9 s | **11.8 s** |
+
+**S08's nonlinearity is ~90% our own predictor's error.** 174.6 s → 11.8 s on an
+independent axis is inside a ±60 s window, i.e. not worth correcting per-run at
+all. §1's "sharp +120 s last-decile jump" is our predictor failing at extreme iRT
+rank.
+
+**Astral retains a real ~89 s chromatographic nonlinearity** — but its shape is a
+**frown** (−4 −43 −32 −20 +4 +18 +35 +48 +40 −35), not §1's "flat middle, sag
+late, jump at the end". The physical story in §1 is wrong on both instruments.
+
+**Consequence for priorities:** on S08 the fine-tuning prize is mostly recoverable
+by **improving the iRT predictor**, not by per-run refinement — and peptdeep is
+already in the tree and beat everything in the frozen work. That is a cheaper and
+more portable lever than the per-run monotone fit, and it was invisible while the
+measurement used our own predictor as its x-axis.
+
+§5.2's caveat stands and is now measured: **predictor-axis-dependent, re-measure
+whenever the library generator changes.**
