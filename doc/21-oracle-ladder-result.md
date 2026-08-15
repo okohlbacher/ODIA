@@ -210,3 +210,56 @@ recorded as ruled out.** It is not ruled out.
 
 Next: count distinct precursors in that 56, and trace the q-value path for them.
 That is a debugging question with a definite answer, not another experiment.
+
+---
+
+## THE MECHANISM, exactly (`lda.h:209-265`)
+
+The q-value estimator is p-value based with the **Käll +1 finite-sample
+correction** on the decoy count:
+
+```
+    dr  = (decoys_above + 1) / Ndec
+    tr  =  targets_above     / Ntar
+    q   = pi0 * dr / tr
+```
+
+At the extreme tail `decoys_above = 0`, so
+
+```
+    q_min  =  pi0 * (Ntar / Ndec) * (1 / targets_above_the_top_decoy)
+```
+
+Full-library run: `1 × (41,922 / 43,028) × (1/27)` = **0.0361**, against **0.0365
+measured.** The mechanism is exact.
+
+| run | targets above the top decoy | q floor | IDs at 1% |
+|---|---|---|---|
+| oracle | 5,357 | 0.00019 | 6,815 |
+| dilute_10 | 1,268 | 0.0008 | 807 |
+| **full library** | **27** | **0.0365** | **0** |
+
+### This is CORRECT behaviour, not a defect
+
+**~100 clean targets is the hard minimum for 1% FDR to be reachable at all**
+(q_min ≈ 1/N). With 27, the estimator cannot certify 1% and refuses — which is
+what the +1 correction is for. Twenty-seven observations with zero decoys do not
+support a 1% claim, and an estimator that returned one would be lying.
+
+So the full-library zero is not an estimator bug, not a q-value path bug, and not
+"the classifier never ignited". **The discriminant produced a real but 27-strong
+clean seed, and 27 is below the statistical floor for the claim being made.**
+
+### What this changes
+
+- **Outcome 2 is ruled out properly this time** — the q-value path is correct and
+  its behaviour is derived from first principles above, not asserted.
+- **The target is now a NUMBER, not a direction.** Any intervention — Option E
+  seeding, MS1 orthogonality, competition control — has to get
+  *targets-above-the-top-decoy* from 27 to ≳100 on the full library. That is a
+  cheap thing to measure on existing outputs after any change, with no FDR run
+  required.
+- **The prior-versus-competition question is unchanged and still unseparated.**
+  This explains why 27 yields zero; it does not explain why there are only 27.
+  Kimi's crossed design (fixed size / varying prior, fixed prior / varying size)
+  remains the experiment that answers it.
