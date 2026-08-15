@@ -118,6 +118,13 @@ struct GH
 {
   double g = 0.0;
   double h = 0.0;
+  /// Rows in this bin. Needed to enforce min_child_rows PER CHILD: without it
+  /// `nL` below has nothing to accumulate, which is exactly how the predecessor
+  /// left the same guard dead (its handoff, open defect 2: "nL is declared,
+  /// never incremented, discarded with (void)nL ... leaves of ~4 rows are
+  /// possible -- an overfitting surface in exactly the score tail that sets the
+  /// FDR threshold").
+  std::size_t n = 0;
 };
 
 /// One level-wise regression tree over pre-binned features.
@@ -387,6 +394,7 @@ private:
             const std::size_t k = base + f * n_bins_max + brow[f];
             h[k].g += gi;
             h[k].h += hi_;
+            h[k].n += 1;
           }
         }
       }
@@ -395,7 +403,8 @@ private:
       {
         const gbt_detail::GH* hc = scratch.data() + static_cast<std::size_t>(c) * hist_size;
         const std::size_t* nr = node_rows_c.data() + static_cast<std::size_t>(c) * n_at_level;
-        for (std::size_t k = 0; k < hist_size; ++k) { H[k].g += hc[k].g; H[k].h += hc[k].h; }
+        for (std::size_t k = 0; k < hist_size; ++k)
+        { H[k].g += hc[k].g; H[k].h += hc[k].h; H[k].n += hc[k].n; }
         for (std::size_t k = 0; k < n_at_level; ++k) { node_rows[k] += nr[k]; }
       }
 
@@ -425,9 +434,16 @@ private:
           {
             GL += H[fb + b].g;
             HL += H[fb + b].h;
-            (void)nL;
+            nL += H[fb + b].n;
             const double GR = G - GL, HR = Hs - HL;
             if (HL < params_.min_child_weight || HR < params_.min_child_weight) { continue; }
+            // PER-CHILD row floor, now actually enforced. The parent check below
+            // (node_rows >= 2*min_child_rows) permits a 39/1 split; this forbids
+            // it. A leaf of a handful of rows is fitted noise, and it lands in
+            // the score tail that sets the FDR threshold.
+            const std::size_t nR = node_rows[slot] - nL;
+            if (nL < static_cast<std::size_t>(params_.min_child_rows) ||
+                nR < static_cast<std::size_t>(params_.min_child_rows)) { continue; }
             const double gain = 0.5 * (GL * GL / (HL + params_.lambda) +
                                        GR * GR / (HR + params_.lambda) - parent_obj);
             // Strictly greater: ties keep the lowest (feature, bin), which is what makes the fit
