@@ -2589,7 +2589,14 @@ protected:
     {
       if (p.decoy[i]) { continue; }
       const auto name = library.strings().get(p.protein_group[i]);
-      (name.rfind(prefix, 0) == 0 ? lib_entrap : lib_target)++;
+      // SUBSTRING, not prefix. Entrapment accessions are UniProt-style --
+      // `sp|ENTRAP_Q38Q39|ERF27_ARATH` -- so the marker sits INSIDE the name and
+      // a starts-with test matches nothing. 1,467,560 entrapment rows (14.7% of
+      // the parity library) were invisible to this check, and the tool reported
+      // "matched NO library precursor" on a library that was 14.7% entrapment.
+      // FDP was therefore never measurable here: the full-library run's real FDP
+      // is 5.98% against a nominal 1%.
+      (name.find(prefix) != std::string::npos ? lib_entrap : lib_target)++;
     }
     if (lib_entrap == 0)
     {
@@ -2624,7 +2631,9 @@ protected:
       {
         if (kv.second > q) { continue; }
         const auto name = library.strings().get(p.protein_group[kv.first]);
-        (name.rfind(prefix, 0) == 0 ? e : t)++;
+        // Substring, matching the library-side count above -- entrapment
+        // accessions are `sp|ENTRAP_...|...`, so a starts-with test never fires.
+        (name.find(prefix) != std::string::npos ? e : t)++;
       }
       // FDP among the reported TARGET discoveries.
       //
