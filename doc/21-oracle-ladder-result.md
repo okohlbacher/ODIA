@@ -169,3 +169,44 @@ A **two-arm crossed** design, plus one number per rung that no new code requires
   prior) directly.
 
 Plus: entrapment FDP at every rung, and state the key space of every count.
+
+---
+
+## THE PRE-REGISTERED NUMBER, finally measured (`bench/tail_excess.py`)
+
+`doc/16` §1 required *"target excess in the top score percentiles, not group
+counts"*, and this document dropped it. Kimi caught that. Measured now, on
+existing outputs, no new runs:
+
+| run | IDs | top 0.1% targets/decoys | T/D | **targets above the single best decoy** |
+|---|---|---|---|---|
+| oracle | 6,815 | 50 / 0 | ∞ | **5,357** |
+| dilute_10 | 807 | 18 / 0 | ∞ | **1,268** |
+| **full library** | **0** | **81 / 4** | **20.25** | **56** |
+
+**The full-library run HAS a separable tail.** 95.3% target fraction at the top
+0.1%, and 56 targets outscore all 43,028 of its decoys — while accepting nothing
+at 1% FDR.
+
+**So outcome 3 as I stated it — "no separable seed" — is wrong.** The seed is not
+absent; it is small. Seed size tracks the outcome monotonically across all three
+runs (5,357 → 6,815 IDs; 1,268 → 807; 56 → 0).
+
+That leaves two live readings, and this measurement does not yet separate them:
+
+- **the seed is small because the prior is low** (few present peptides → few
+  strong candidates), or
+- **the seed is small because competition destroyed it** — best-of-N over a
+  larger library both raises the decoy tail and lets absent-but-lucky targets
+  outrank present ones.
+
+**And one anomaly demands an answer before either:** 56 peak-group rows clear the
+entire decoy distribution, yet zero precursors are accepted at q ≤ 0.01. q is a
+per-precursor quantity computed on the best row per group, so 56 rows may be
+fewer distinct precursors — but not zero. Either the per-precursor collapse is
+severe, or the q-value path behaves differently at this scale. **This is
+outcome 2 territory — "scores separate but q-values do not follow" — which I
+recorded as ruled out.** It is not ruled out.
+
+Next: count distinct precursors in that 56, and trace the q-value path for them.
+That is a debugging question with a definite answer, not another experiment.
