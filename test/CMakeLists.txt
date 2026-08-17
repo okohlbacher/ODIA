@@ -39,6 +39,16 @@ set(ODIA_RT_MODEL_PATH
     "$ENV{ODIA_OPENMS}/share/OpenMS/models/peptdeep_rt_dynamic.onnx"
     CACHE FILEPATH "PeptDeep RT model")
 
+# Derived from the RT path, NOT from $ENV{ODIA_OPENMS} again: the environment is
+# read at configure time, so a `cmake .` in a shell that has not sourced
+# scripts/env.sh silently bakes "/share/OpenMS/models/..." into every test that
+# refers to it -- which is exactly what happened, and it fails at RUN time with
+# a missing-file error that looks like a broken model rather than a broken path.
+string(REPLACE "peptdeep_rt_dynamic.onnx" "peptdeep_ms2_dynamic.onnx"
+       ODIA_MS2_MODEL_PATH "${ODIA_RT_MODEL_PATH}")
+string(REPLACE "peptdeep_rt_dynamic.onnx" "peptdeep_ccs_dynamic.onnx"
+       ODIA_CCS_MODEL_PATH "${ODIA_RT_MODEL_PATH}")
+
 # --------------------------------------------------------------------- library
 # Fixtures are derived, not committed; scripts/make_fixtures.sh builds them onto
 # node-local scratch. Skip these tests where they are absent rather than fail.
@@ -46,17 +56,32 @@ set(ODIA_FIXTURE_DIR "$ENV{ODIA_SCRATCH}/fixtures"
     CACHE PATH "Directory holding the assay-library fixtures")
 
 if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.parquet")
+  # -decoys none keeps this a READER test. Decoy completion has its own test.
   add_test(NAME library_parquet
            COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/diann_library_small.parquet"
-                                -stop_after library)
+                                -stop_after library -decoys none)
+  # 904, not 500: the fixture is a truncated real library, so its 5 decoys are
+  # an artefact of where the cut fell. A decoy set that small cannot support an
+  # FDR estimate, so the reader now discards and regenerates it (495 targets,
+  # 409 decoys -- the rest collide with an existing target under mutation).
   set_tests_properties(library_parquet PROPERTIES
     PASS_REGULAR_EXPRESSION "precursors:[ ]+500")
+
+  # Decoy completion, on its own. A library with a TOKEN decoy set -- which is
+  # what DIA-NN's empirical library has, 365 for 37,193 targets -- must have it
+  # replaced, not topped up: appendDecoys keys on the decoy it would generate,
+  # so a foreign one is invisible and the target gets a second.
+  add_test(NAME library_partial_decoys_replaced
+           COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/diann_library_small.parquet"
+                                -stop_after library)
+  set_tests_properties(library_partial_decoys_replaced PROPERTIES
+    PASS_REGULAR_EXPRESSION "495 target / 409 decoy")
 endif()
 
 if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
   add_test(NAME library_tsv
            COMMAND OpenDIAlyzer -tr "${ODIA_FIXTURE_DIR}/diann_library_small.tsv"
-                                -stop_after library)
+                                -stop_after library -decoys none)
   set_tests_properties(library_tsv PROPERTIES
     PASS_REGULAR_EXPRESSION "precursors:[ ]+500")
 
@@ -158,6 +183,46 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
                    -DRT_MODEL=${ODIA_RT_MODEL_PATH}
                    -DIRT_STANDARDS=${CMAKE_CURRENT_SOURCE_DIR}/../data/irt_standards.tsv
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_invariants.cmake)
+endif()
+
+# The free-cysteine RT correction is a table of measured constants (doc/30), and
+# a table of constants is exactly the kind of thing that drifts unnoticed. This
+# also guards the self-gating property that lets it default to on: an alkylated
+# library must be bit-identical whether the flag is set or not.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
+   AND EXISTS "${ODIA_RT_MODEL_PATH}")
+  add_test(NAME free_cysteine_correction
+           COMMAND ${CMAKE_COMMAND}
+                   -DTOOL=$<TARGET_FILE:DIALibraryGenerator>
+                   -DPYTHON=${ODIA_PYTHON}
+                   -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_free_cysteine.py
+                   -DFASTA=${ODIA_FIXTURE_DIR}/adv_proteins.fasta
+                   -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
+                   -DRT_MODEL=${ODIA_RT_MODEL_PATH}
+                   -DMS2_MODEL=${ODIA_MS2_MODEL_PATH}
+                   -DCCS_MODEL=${ODIA_CCS_MODEL_PATH}
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/free_cysteine.cmake)
+endif()
+
+# IM and CCS are different quantities in different units, and a library that
+# swapped them would still look plausible. Guards presence, physical range,
+# mutual consistency under Mason-Schamp, and survival of the TSV round trip --
+# the interchange path DIA-NN reads, since it rejects our Parquet outright
+# (DIA-NN 2.0 requires a 'Flags' column we do not write).
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
+   AND EXISTS "${ODIA_RT_MODEL_PATH}")
+  add_test(NAME mobility_units
+           COMMAND ${CMAKE_COMMAND}
+                   -DGEN=$<TARGET_FILE:DIALibraryGenerator>
+                   -DTOOL=$<TARGET_FILE:OpenDIAlyzer>
+                   -DPYTHON=${ODIA_PYTHON}
+                   -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_mobility.py
+                   -DFASTA=${ODIA_FIXTURE_DIR}/adv_proteins.fasta
+                   -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
+                   -DRT_MODEL=${ODIA_RT_MODEL_PATH}
+                   -DMS2_MODEL=${ODIA_MS2_MODEL_PATH}
+                   -DCCS_MODEL=${ODIA_CCS_MODEL_PATH}
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/mobility.cmake)
 endif()
 
 # Malformed numbers must be reported, not silently accepted.

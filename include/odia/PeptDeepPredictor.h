@@ -44,11 +44,21 @@ namespace ODIA
     /// 4585/s at 64. Each session costs a copy of the weights and an arena,
     /// so the count is capped by the caller rather than defaulted to the core
     /// count.
+    /// @param gpu_device which CUDA device. -1 (default) PROBES: it tries each
+    ///        visible device in turn and keeps the first that actually
+    ///        constructs a session. Probing rather than trusting device 0 is
+    ///        not defensive programming -- GPU 0 is dead on both of this
+    ///        project's GPU nodes, so a hard-coded 0 falls back to CPU and the
+    ///        build silently takes 25 minutes instead of 4.
     explicit PeptDeepPredictor(const std::string& model_path,
                                bool prefer_gpu = true,
                                int intra_op_threads = 0,
-                               int sessions = 1);
+                               int sessions = 1,
+                               int gpu_device = -1);
     ~PeptDeepPredictor();
+
+    /// Which CUDA device the session ended up on, or -1 on CPU.
+    int device() const;
 
     /// How many sessions batches are actually spread across (at least 1).
     std::size_t sessionCount() const;

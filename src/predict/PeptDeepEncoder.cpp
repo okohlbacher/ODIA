@@ -168,6 +168,18 @@ namespace ODIA
 
   std::int64_t PeptDeepEncoder::instrumentIndex(const std::string& name)
   {
+    // AlphaPeptDeep's list, in its order, pinned in data/peptdeep_meta_inputs.txt
+    // against the upstream repo constants -- do not "correct" it from a comment.
+    //
+    // ThermoTOF=4 was briefly removed here on the grounds that the SHIPPED
+    // checkpoint's model_const.yaml names only QE, Lumos, timsTOF and SciexTOF.
+    // That was wrong twice over: the pin's source is the upstream constants,
+    // which are ahead of this checkpoint, and peptdeep_meta_inputs caught the
+    // change immediately -- which is what it is for. Restored.
+    //
+    // What IS true, and worth knowing before selecting one: max_instrument_num
+    // is 8, so slots 4-7 exist in the embedding, but the checkpoint we load
+    // lists four instruments, so index 4 is untrained FOR THIS MODEL.
     static const std::map<std::string, std::int64_t> known{
       {"QE", 0}, {"LUMOS", 1}, {"TIMSTOF", 2}, {"SCIEXTOF", 3}, {"THERMOTOF", 4},
     };

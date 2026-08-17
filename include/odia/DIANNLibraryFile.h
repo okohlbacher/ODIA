@@ -30,12 +30,20 @@ namespace ODIA
       static constexpr const char* DECOY = "Decoy";
       static constexpr const char* RT = "RT";
       static constexpr const char* IM = "IM";
-      /// Predicted collision cross-section, square angstroms.
+      /// Predicted collision cross-section, in square angstroms.
       ///
-      /// Its own column, not IM. DIA-NN's IM is 1/K0; converting to it needs
-      /// the Mason-Schamp relation with the drift gas and the instrument's
-      /// calibration, which is done downstream where the instrument is known.
-      /// A consumer that wants ion mobility must convert this, deliberately.
+      /// Its own column, and NOT interchangeable with IM: `IM` is 1/K0 in
+      /// Vs/cm^2 (Bruker's convention, ~0.6-1.6 for tryptic peptides), CCS is
+      /// A^2 (~300-700). The two are related by Mason-Schamp through the drift
+      /// gas and the instrument's calibration.
+      ///
+      /// Both are now written and both are read. A library carrying only one
+      /// gets the other filled by `completeMobility` on load, so a consumer
+      /// never has to know which the producer chose. Verified against 37,193
+      /// MEASURED 1/K0 values on S08: our derived mobility sits at 2.8%
+      /// relative error, and the fitted coefficient is within 2.0% of the
+      /// textbook constant, which is what establishes the units agree with
+      /// DIA-NN's (doc/32).
       static constexpr const char* CCS = "CCS";
       static constexpr const char* PRECURSOR_MZ = "Precursor.Mz";
       static constexpr const char* PRODUCT_MZ = "Product.Mz";
@@ -52,6 +60,13 @@ namespace ODIA
     /// Rows are grouped into precursors by a change in Precursor.Id, so the
     /// input must keep a precursor's transitions together -- which DIA-NN does.
     static void load(const std::string& filename, Library& library);
+
+    /// Fill in whichever of 1/K0 and CCS the file omitted, from the other.
+    ///
+    /// Idempotent, and a no-op where both or neither are present. Public
+    /// because a caller that builds a library in memory rather than reading
+    /// one wants the same completion.
+    static void completeMobility(Library& library);
 
     static void loadTSV(const std::string& filename, Library& library);
     static void loadParquet(const std::string& filename, Library& library);
@@ -117,6 +132,13 @@ namespace ODIA
     /// Hash a FASTA by content. Throws if it cannot be read.
     static Fingerprint fingerprintFasta(const std::string& fasta);
 
+    /// FNV-1a over a file's CONTENT, as 16 hex digits. Empty path -> "bundled".
+    ///
+    /// Used to identify PREDICTOR MODELS in the cache key. A path is not an
+    /// identity: a changed model at the same path silently collides, and the
+    /// same model staged elsewhere silently misses.
+    static std::string hashFile(const std::string& path);
+
     /// Write with a fingerprint recorded in the file's metadata. Parquet only:
     /// TSV has nowhere to put it, so a TSV library is never cache-eligible.
     static void storeParquet(const std::string& filename, const Library& library,
@@ -149,8 +171,12 @@ namespace ODIA
     ///
     /// `loadParquet` detects the layout from the schema (Product.Mz being a
     /// list) and reads either, so old files keep working.
+    /// @param config_json when non-empty, embedded verbatim as the schema
+    /// metadata key `odia.config_json`: the recipe that produced the library,
+    /// travelling with it. Readers ignore unknown keys, so this is additive.
     static void storeParquetCompact(const std::string& filename, const Library& library,
-                                    const Fingerprint& fp);
+                                    const Fingerprint& fp,
+                                    const std::string& config_json = "");
 
   };
 

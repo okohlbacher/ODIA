@@ -196,10 +196,34 @@ namespace ODIA
     };
   } // namespace
 
+  void DIANNLibraryFile::completeMobility(Library& library)
+  {
+    auto& p = library.precursors();
+    const std::size_t n = library.precursorCount();
+    p.im.resize(n, std::nanf(""));
+    p.ccs.resize(n, std::nanf(""));
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      const bool has_im = !std::isnan(p.im[i]);
+      const bool has_ccs = !std::isnan(p.ccs[i]);
+      if (has_im == has_ccs) { continue; }        // both, or neither: nothing to do
+      const double mz = fromFixed(p.mz[i]);
+      const int z = p.charge[i];
+      if (has_ccs) { p.im[i] = static_cast<float>(mobilityFromCCS(p.ccs[i], mz, z)); }
+      else         { p.ccs[i] = static_cast<float>(ccsFromMobility(p.im[i], mz, z)); }
+    }
+  }
+
   void DIANNLibraryFile::load(const std::string& filename, Library& library)
   {
     if (filename.ends_with(".parquet")) { loadParquet(filename, library); }
     else { loadTSV(filename, library); }
+    // A library that carries only one of the two mobility quantities gets the
+    // other derived, so a consumer never has to know which the producer chose.
+    // Measured need: our own generated library reached DIA-NN with 1/K0 absent
+    // for every precursor, and DIA-NN's `iIM` was 0 on 100% of a diaPASEF run's
+    // identifications (doc/32).
+    completeMobility(library);
     // The interning index answered "have I seen this string" while reading and
     // is never consulted again -- handles resolve through the arena's entries.
     // Held for the library's lifetime it is one hash node per distinct string
@@ -492,6 +516,28 @@ namespace ODIA
     else { storeTSV(filename, library); }
   }
 
+  std::string DIANNLibraryFile::hashFile(const std::string& path)
+  {
+    // ponytail: empty means the bundled OpenMS model, which is pinned and
+    // read-only, so its identity is the install's. Hash it explicitly if a
+    // build ever ships more than one.
+    if (path.empty()) { return "bundled"; }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) { throw std::runtime_error("cannot read model: " + path); }
+    std::uint64_t h = 1469598103934665603ull;
+    std::vector<char> buf(1 << 20);
+    while (in)
+    {
+      in.read(buf.data(), std::streamsize(buf.size()));
+      const std::streamsize got = in.gcount();
+      for (std::streamsize i = 0; i < got; ++i)
+      { h ^= static_cast<unsigned char>(buf[std::size_t(i)]); h *= 1099511628211ull; }
+    }
+    std::ostringstream hex;
+    hex << std::hex << std::setw(16) << std::setfill('0') << h;
+    return hex.str();
+  }
+
   DIANNLibraryFile::Fingerprint
   DIANNLibraryFile::fingerprintFasta(const std::string& fasta)
   {
@@ -662,7 +708,8 @@ namespace ODIA
 
   void DIANNLibraryFile::storeParquetCompact(const std::string& filename,
                                              const Library& library,
-                                             const Fingerprint& fp)
+                                             const Fingerprint& fp,
+                                             const std::string& config_json)
   {
     const auto& p = library.precursors();
     const auto& t = library.transitions();
@@ -750,10 +797,12 @@ namespace ODIA
       arrow::field(Columns::FRAGMENT_CHARGE, arrow::list(arrow::uint8())),
       arrow::field(Columns::FRAGMENT_SERIES_NUMBER, arrow::list(arrow::uint8())),
     });
+    std::vector<std::string> md_keys{
+      "odia.fingerprint", "odia.target_fingerprint", "odia.layout",
+      "odia.decoy_semantics", "odia.decoy_method",
+      "odia.fasta_sha", "odia.fasta_bytes", "odia.params"};
     schema = schema->WithMetadata(arrow::key_value_metadata(
-      {"odia.fingerprint", "odia.target_fingerprint", "odia.layout",
-       "odia.decoy_semantics", "odia.decoy_method",
-       "odia.fasta_sha", "odia.fasta_bytes", "odia.params"},
+      md_keys,
       // decoy_semantics is stated because a consumer CANNOT infer it and one
       // already got it wrong: OpenSwathAssayGenerator recomputed fragments from
       // Modified.Sequence, found the decoys identical to their targets, and
@@ -763,6 +812,15 @@ namespace ODIA
       {fp.key(), fp.targetKey(), "compact-v1",
        "target-sequence-with-shifted-fragments", fp.decoy_method,
        fp.fasta_hash, std::to_string(fp.fasta_bytes), fp.params}));
+    // The recipe travels with the library. Appended rather than folded into the
+    // list above so the existing keys keep their positions for any reader that
+    // indexes them.
+    if (!config_json.empty())
+    {
+      auto md = schema->metadata()->Copy();
+      md->Append("odia.config_json", config_json);
+      schema = schema->WithMetadata(md);
+    }
 
     auto table = arrow::Table::Make(schema,
       {a_id, a_seq, a_pg, a_z, a_dec, a_rt, a_im, a_ccs, a_pmz,

@@ -1,7 +1,12 @@
 # Assert that the Parquet and TSV readers agree, and that a TSV round-trip
 # preserves precursor count, transition count and the interned string set.
 function(summarise input outvar)
-  execute_process(COMMAND ${TOOL} -tr ${input} -stop_after library
+  # -decoys none: this test measures READER/WRITER fidelity. With decoy
+  # completion active the fixture's 5-decoy set is discarded and regenerated on
+  # load, and dropDecoys does not release interned strings, so the arena count
+  # is inflated on the first pass and not on the second -- a 9-string
+  # "difference" that is arena residue, not lost content.
+  execute_process(COMMAND ${TOOL} -tr ${input} -stop_after library -decoys none
                   OUTPUT_VARIABLE out ERROR_VARIABLE err RESULT_VARIABLE rc)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "OpenDIAlyzer failed on ${input}:\n${err}")
@@ -22,7 +27,8 @@ if(NOT from_parquet STREQUAL from_tsv)
 endif()
 
 execute_process(COMMAND ${TOOL} -tr ${FIXTURES}/diann_library_small.parquet
-                        -stop_after library -out_lib ${WORKDIR}/roundtrip.tsv
+                        -stop_after library -decoys none
+                        -out_lib ${WORKDIR}/roundtrip.tsv
                 RESULT_VARIABLE rc ERROR_VARIABLE err OUTPUT_QUIET)
 if(NOT rc EQUAL 0)
   message(FATAL_ERROR "writing the library failed:\n${err}")

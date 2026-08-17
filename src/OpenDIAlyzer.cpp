@@ -4,6 +4,7 @@
 #include <OpenMS/APPLICATIONS/TOPPBase.h>
 
 #include <odia/DIANNLibraryFile.h>
+#include <odia/DIANNLibraryFile.h>
 #include <odia/LibraryGenerator.h>
 #include <odia/Library.h>
 #include <fstream>
@@ -25,6 +26,7 @@
 
 #include <fstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <chrono>
 #include <cmath>
@@ -76,6 +78,21 @@ protected:
                           "Decoy construction. Applied to a library read with -tr "
                           "as well, if it has none already.", false);
     setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
+
+    registerStringOption_("fixed_modifications", "<list>", "Carbamidomethyl (C)",
+                          "Fixed modifications applied to every matching residue when GENERATING "
+                          "a library, comma-separated, in OpenMS UniMod naming (e.g. "
+                          "\"Carbamidomethyl (C)\"). Pass an empty string for none. This is a "
+                          "property of the SAMPLE -- of how the cysteines were alkylated at the "
+                          "bench -- not of the search engine, so it has to be stated per run. It "
+                          "was previously hard-coded and unreachable, and on the Astral benchmark "
+                          "the hard-coded value was wrong: DIA-NN searched the same data CAM-FREE "
+                          "(100% of 21,355 precursor and 12,399 cysteine-spanning fragment m/z), "
+                          "so a quarter of the search space extracted from empty m/z -- "
+                          "var_library_corr 0.014 against 0.743, usable_fragments 7 of 12, those "
+                          "7 being exactly the fragments that do not span a cysteine. doc/27.",
+                          false);   // NOT required -- TOPPBase forbids a required option
+                                    // with a non-empty default and throws at startup.
 
     registerStringOption_("library_charges", "<list>", "1,2,3,4",
                           "Precursor charge states to generate, comma-separated. MEASURED, not "
@@ -427,6 +444,22 @@ protected:
                        "How many transitions must show that excursion. Two matches the picker's "
                        "own 'at least 2 fragments present' bar: one transition above noise is a "
                        "spike, not a peak group.", false, true);
+    registerInputFile_("cirt_standards", "<file>", "",
+                       "CiRT standards for the INITIAL calibration: endogenous peptides "
+                       "(Parker et al., Mol Cell Proteomics 2015) present in most human "
+                       "samples, so unlike the Biognosys kit nothing has to be spiked in. "
+                       "Defaults to data/cirt_standards.tsv, 113 peptides spanning "
+                       "iRT -57..134.\n\nThe file's iRT column is NOT fitted against -- it "
+                       "orders the peptides and is a sanity check. The seed pairs each "
+                       "standard's own LIBRARY iRT with its OBSERVED apex, so there is no "
+                       "CiRT-scale-to-library-scale conversion to get wrong.\n\nMEASURED "
+                       "CAUTION: doc/26 A6 recorded the CiRT line as WORSE than the raw "
+                       "library iRT (p50 42.0 against 36.7 s, decile bias to -102 s) and the "
+                       "cause was never established. That predates the carbamidomethyl mass "
+                       "fix and the removal of FDR-gated anchors, so it may no longer hold, "
+                       "but it has not been re-established either.", false);
+    setValidFormats_("cirt_standards", {"tsv"}, false);
+
     registerStringOption_("rt_seed", "<mode>", "off",
                           "Seed pass 1's retention-time map, instead of spreading the library "
                           "evenly over the run. prefilter: sweep the run with "
@@ -445,7 +478,7 @@ protected:
                           "clearly better. An uninformative seed is worse than none -- it points "
                           "pass 1 confidently at the wrong retention times, where 'no map' at "
                           "least searches everywhere.", false, true);
-    setValidStrings_("rt_seed", {"off", "prefilter"});
+    setValidStrings_("rt_seed", {"off", "prefilter", "cirt"});
     registerIntOption_("rt_seed_min_contiguity", "<cycles>", 3,
                        "How many CONSECUTIVE cycles of its own isolation window a precursor "
                        "must hold a near-complete fragment match for its retention time to be "
@@ -620,6 +653,38 @@ protected:
                           "the window pass 2 uses, so a narrow first pass finds "
                           "nothing to calibrate from. 0 means the whole run.",
                           false, true);
+    registerStringOption_("anchor_selection", "<mode>", "rt_consistency",
+                          "How pass 1 chooses the anchors the retention-time map is fitted "
+                          "from. `rt_consistency` (default) uses NO q-value: it seeds from "
+                          "cross-charge agreement -- the same modified sequence seen at two "
+                          "or more charges must elute at one time, and those charge states "
+                          "are extracted independently, so their agreement is evidence about "
+                          "the RUN and not about the prediction -- then grows the set by "
+                          "relative residual against the current map. `qvalue` restores the "
+                          "old FDR gate at -anchor_q.\n\nFDR belongs AFTER recalibration "
+                          "and AFTER the final extraction. Gating anchors on q produced four "
+                          "measured failures: anchors were an FDR-accepted sample so every "
+                          "statistic on them was conditioned on the outcome (sizing a window "
+                          "that way cost half a run); a wrong prediction manufactures a false "
+                          "peak AT the prediction which then passes FDR and teaches the "
+                          "refiner that no correction is needed (76.5% of cysteine anchors "
+                          "were false); pass-1 q-values are themselves wrong by 3-9x here "
+                          "(entrapment FDP 3.4-8.6% at nominal 1%); and the ladder rests on "
+                          "about ten decoys, so the anchor set inherits its instability.",
+                          false);
+    setValidStrings_("anchor_selection", {"rt_consistency", "qvalue"});
+
+    registerDoubleOption_("anchor_cross_charge_tol", "<s>", 15.0,
+                          "Two charge states of one modified sequence count as agreeing, and "
+                          "so seed the map, when their apices fall within this many seconds. "
+                          "Prediction-independent by construction.", false);
+
+    registerDoubleOption_("anchor_grow_mads", "<k>", 3.0,
+                          "Grow the anchor set to every precursor whose best-scoring "
+                          "candidate lies within k robust sigmas (MAD) of the current "
+                          "residual median, then refit, until the spread stops shrinking. "
+                          "RELATIVE, so it adapts to how good the axis already is.", false);
+
     registerDoubleOption_("anchor_q", "<q>", 0.05,
                           "q-value below which a pass-1 identification is used as a "
                           "calibration anchor. Lenient on purpose -- pass 1 is "
@@ -1341,8 +1406,23 @@ protected:
           return INPUT_FILE_CORRUPT;
         }
       }
-      else if (getStringOption_("rt_seed") == "prefilter")
+      else if (getStringOption_("rt_seed") == "prefilter" ||
+               getStringOption_("rt_seed") == "cirt")
       {
+        if (getStringOption_("rt_seed") == "cirt")
+        {
+          const std::size_t n = markCirtStandards_(library);
+          if (n == 0)
+          {
+            writeLogError_("-rt_seed cirt found NONE of the CiRT standards in this "
+                           "library. Refusing rather than silently seeding from "
+                           "everything, which is a different method wearing the same "
+                           "flag.");
+            return INPUT_FILE_CORRUPT;
+          }
+          writeLogInfo_("CiRT seed: matched " + std::to_string(n) +
+                        " library precursors to the standards");
+        }
         const auto rc = seedRtFromPrefilter_(library, run);
         if (rc != EXECUTION_OK) { return rc; }
       }
@@ -1469,6 +1549,7 @@ protected:
 
     // Anchors: the best group of each confidently identified target, paired
     // with the library RT it came from.
+    anchor_selection_legacy_ = (getStringOption_("anchor_selection") == "qvalue");
     const double anchor_q = getDoubleOption_("anchor_q");
     std::vector<std::pair<double, double>> anchors;
     // (precursor index, observed apex RT) for the retention-time refiner. The
@@ -1482,7 +1563,24 @@ protected:
         library.precursorCount(), nullptr);
       for (const auto& g : pass1.groups)
       {
-        if (g.decoy || g.qvalue > anchor_q) { continue; }
+        // NO Q-VALUE GATE unless the legacy mode is requested.
+        //
+        // FDR belongs AFTER recalibration and AFTER the final extraction, not
+        // inside the loop that produces the axis. Gating anchors on q caused
+        // four separate measured failures (doc/28 revision 2):
+        //   * anchors were an FDR-ACCEPTED sample, so every statistic on them
+        //     was conditioned on the outcome -- sizing a window that way cost
+        //     half a run;
+        //   * a wrong prediction manufactures a false peak AT the prediction,
+        //     which passes FDR, becomes an anchor, and teaches the refiner that
+        //     no correction is needed (76.5% of cysteine anchors were false);
+        //   * pass-1 q-values are themselves wrong by 3-9x here (entrapment FDP
+        //     3.4-8.6% at nominal 1%);
+        //   * the ladder rests on O(10) decoys, so the anchor set inherits its
+        //     instability.
+        // Decoys are still excluded -- that is a LABEL, not a q-value.
+        if (g.decoy) { continue; }
+        if (anchor_selection_legacy_ && g.qvalue > anchor_q) { continue; }
         auto*& b = best[g.precursor];
         // By dscore, NOT by qvalue.
         //
@@ -1505,6 +1603,126 @@ protected:
           anchors.emplace_back(static_cast<double>(original_irt[i]),
                                static_cast<double>(best[i]->apex_rt));
           refine_rows.emplace_back(i, static_cast<double>(best[i]->apex_rt));
+        }
+      }
+
+      // RT-CONSISTENCY SELECTION, replacing the FDR gate (doc/28 revision 2).
+      //
+      // Two stages, and the ORDER is the point:
+      //
+      //  (1) SEED, prediction-independent. The same modified sequence seen at
+      //      two or more charge states must elute at one time. Charge states
+      //      are separate library entries extracted independently, so their
+      //      agreement is evidence about the RUN, not about the prediction.
+      //      This is what stops the self-confirming loop: a wrong prediction
+      //      can manufacture a false peak at the prediction for ONE charge, but
+      //      not the same false time for two.
+      //
+      //  (2) GROW, relative. Keep every precursor whose residual against the
+      //      seed's own linear fit lies within k robust sigmas of the residual
+      //      median. Relative, so it adapts to how good the axis already is
+      //      rather than encoding a width someone chose.
+      //
+      // A precursor rejected here is not "not identified" -- nothing is being
+      // identified yet. It is only "not trusted to position the axis".
+      if (!anchor_selection_legacy_ && anchors.size() > 32)
+      {
+        const auto& pr = library.precursors();
+        const double cc_tol = getDoubleOption_("anchor_cross_charge_tol");
+        const double grow_k = getDoubleOption_("anchor_grow_mads");
+
+        // (1) cross-charge seed
+        std::unordered_map<std::uint32_t, std::vector<std::size_t>> by_seq;
+        for (std::size_t i = 0; i < best.size(); ++i)
+        {
+          if (best[i] != nullptr && std::isfinite(original_irt[i]))
+          { by_seq[pr.modified_sequence[i]].push_back(i); }
+        }
+        std::vector<char> seeded(best.size(), 0);
+        std::size_t n_seed = 0;
+        for (const auto& [handle, idx] : by_seq)
+        {
+          (void)handle;
+          if (idx.size() < 2) { continue; }
+          for (std::size_t a = 0; a < idx.size(); ++a)
+          {
+            for (std::size_t b = a + 1; b < idx.size(); ++b)
+            {
+              if (std::fabs(static_cast<double>(best[idx[a]]->apex_rt) -
+                            static_cast<double>(best[idx[b]]->apex_rt)) <= cc_tol)
+              { seeded[idx[a]] = seeded[idx[b]] = 1; }
+            }
+          }
+        }
+        for (const char c : seeded) { n_seed += (c != 0); }
+
+        if (n_seed >= 32)
+        {
+          // Robust line through the seed only.
+          std::vector<double> sx, sy;
+          for (std::size_t i = 0; i < best.size(); ++i)
+          {
+            if (!seeded[i]) { continue; }
+            sx.push_back(static_cast<double>(original_irt[i]));
+            sy.push_back(static_cast<double>(best[i]->apex_rt));
+          }
+          const double mx = median_(sx), my = median_(sy);
+          std::vector<double> slopes;
+          slopes.reserve(sx.size());
+          for (std::size_t i = 0; i < sx.size(); ++i)
+          {
+            const double dx = sx[i] - mx;
+            if (std::fabs(dx) > 1e-9) { slopes.push_back((sy[i] - my) / dx); }
+          }
+          const double m = slopes.empty() ? 1.0 : median_(slopes);
+          const double c = my - m * mx;
+
+          // (2) grow by RELATIVE residual over every precursor, seeded or not.
+          std::vector<double> resid;
+          resid.reserve(best.size());
+          for (std::size_t i = 0; i < best.size(); ++i)
+          {
+            if (best[i] == nullptr || !std::isfinite(original_irt[i])) { continue; }
+            resid.push_back(static_cast<double>(best[i]->apex_rt) -
+                            (m * static_cast<double>(original_irt[i]) + c));
+          }
+          const double med = median_(resid);
+          std::vector<double> ad;
+          ad.reserve(resid.size());
+          for (const double r : resid) { ad.push_back(std::fabs(r - med)); }
+          const double mad = 1.4826 * std::max(median_(ad), 1.0);
+          const double keep = grow_k * mad;
+
+          std::vector<std::pair<double, double>> kept_anchors;
+          std::vector<std::pair<std::size_t, double>> kept_rows;
+          for (std::size_t i = 0; i < best.size(); ++i)
+          {
+            if (best[i] == nullptr || !std::isfinite(original_irt[i])) { continue; }
+            const double r = static_cast<double>(best[i]->apex_rt) -
+                             (m * static_cast<double>(original_irt[i]) + c);
+            if (std::fabs(r - med) > keep) { continue; }
+            kept_anchors.emplace_back(static_cast<double>(original_irt[i]),
+                                      static_cast<double>(best[i]->apex_rt));
+            kept_rows.emplace_back(i, static_cast<double>(best[i]->apex_rt));
+          }
+
+          std::ostringstream a;
+          a.setf(std::ios::fixed); a.precision(1);
+          a << "anchor selection: RT consistency, NO q-value. "
+            << n_seed << " cross-charge seeds (within " << cc_tol << " s), "
+            << "grew to " << kept_anchors.size() << " of " << anchors.size()
+            << " scored precursors at " << grow_k << " x MAD (" << keep << " s)";
+          writeLogInfo_(a.str());
+          if (kept_anchors.size() >= 32)
+          { anchors.swap(kept_anchors); refine_rows.swap(kept_rows); }
+          else
+          { writeLogInfo_("RT-consistency selection kept too few; using all scored precursors"); }
+        }
+        else
+        {
+          writeLogInfo_("too few cross-charge seeds (" + std::to_string(n_seed) +
+                        "); anchor selection falls back to every scored precursor, "
+                        "still WITHOUT a q-value gate");
         }
       }
 
@@ -2092,6 +2310,52 @@ protected:
   /// everywhere. Decoys carry no true retention time by construction, so a
   /// decoy fit as tight as the target fit means the tightness came from the
   /// fitting, not from the run.
+  /// Load the CiRT standards and mark the library precursors that carry them.
+  /// Returns the number matched. The iRT column of the file is NOT fitted
+  /// against: the seed pairs each standard's own LIBRARY iRT with its OBSERVED
+  /// apex, so no CiRT-scale-to-library-scale conversion exists to get wrong.
+  std::size_t markCirtStandards_(const ODIA::Library& library)
+  {
+    cirt_seed_idx_.clear();
+    std::string path = getStringOption_("cirt_standards");
+    if (path.empty())
+    {
+      for (const auto& c : {std::filesystem::path("data/cirt_standards.tsv"),
+                            std::filesystem::path(ODIA_DATA_DIR) / "cirt_standards.tsv"})
+      { if (std::filesystem::exists(c)) { path = c.string(); break; } }
+    }
+    if (path.empty()) { return 0; }
+    std::ifstream in(path);
+    if (!in) { writeLogWarn_("cannot read CiRT standards: " + path); return 0; }
+    std::unordered_set<std::string> want;
+    std::string line;
+    while (std::getline(in, line))
+    {
+      if (line.empty() || line[0] == '#') { continue; }
+      const auto tab = line.find('\t');
+      if (tab == std::string::npos) { continue; }
+      std::string seq = line.substr(0, tab);
+      if (seq == "Sequence") { continue; }
+      want.insert(seq);
+    }
+    const auto& p = library.precursors();
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      std::string seq(library.strings().get(p.modified_sequence[i]));
+      // strip modification annotations: the CiRT list is bare sequence
+      std::string bare;
+      int depth = 0;
+      for (const char c : seq)
+      {
+        if (c == '(') { ++depth; }
+        else if (c == ')') { depth = std::max(0, depth - 1); }
+        else if (depth == 0) { bare += c; }
+      }
+      if (want.count(bare)) { cirt_seed_idx_.insert(i); }
+    }
+    return cirt_seed_idx_.size();
+  }
+
   ExitCodes seedRtFromPrefilter_(ODIA::Library& library, const std::string& run)
   {
     ODIA::PrecursorPrefilter::Options po;
@@ -2154,6 +2418,12 @@ protected:
       {
         if (ev[i].contiguity < k || !(ev[i].contiguous_rt >= 0.0f)) { continue; }
         if (!std::isfinite(p.irt[i])) { continue; }
+        // CiRT mode fits the seed from the standards ONLY. They are endogenous
+        // (Parker et al., MCP 2015), so nothing is spiked, and they are chosen
+        // to span the gradient -- which is what a seed needs. Their DECOYS
+        // remain the control, so the "decoys must be measurably worse" gate
+        // below still runs on a matched set.
+        if (!cirt_seed_idx_.empty() && !cirt_seed_idx_.count(i)) { continue; }
         (p.decoy[i] ? dec : tgt).push_back({double(p.irt[i]),
                                             double(ev[i].contiguous_rt)});
       }
@@ -2742,6 +3012,7 @@ protected:
   {
     const int max_rounds = std::max(0, getIntOption_("refine_rounds"));
     if (max_rounds == 0) { return; }
+    anchor_selection_legacy_ = (getStringOption_("anchor_selection") == "qvalue");
     const double anchor_q = getDoubleOption_("anchor_q");
     const int min_anchors = std::max(1, getIntOption_("min_anchors"));
 
@@ -2762,7 +3033,24 @@ protected:
         library.precursorCount(), nullptr);
       for (const auto& g : scored.groups)
       {
-        if (g.decoy || g.qvalue > anchor_q) { continue; }
+        // NO Q-VALUE GATE unless the legacy mode is requested.
+        //
+        // FDR belongs AFTER recalibration and AFTER the final extraction, not
+        // inside the loop that produces the axis. Gating anchors on q caused
+        // four separate measured failures (doc/28 revision 2):
+        //   * anchors were an FDR-ACCEPTED sample, so every statistic on them
+        //     was conditioned on the outcome -- sizing a window that way cost
+        //     half a run;
+        //   * a wrong prediction manufactures a false peak AT the prediction,
+        //     which passes FDR, becomes an anchor, and teaches the refiner that
+        //     no correction is needed (76.5% of cysteine anchors were false);
+        //   * pass-1 q-values are themselves wrong by 3-9x here (entrapment FDP
+        //     3.4-8.6% at nominal 1%);
+        //   * the ladder rests on O(10) decoys, so the anchor set inherits its
+        //     instability.
+        // Decoys are still excluded -- that is a LABEL, not a q-value.
+        if (g.decoy) { continue; }
+        if (anchor_selection_legacy_ && g.qvalue > anchor_q) { continue; }
         auto*& b = best[g.precursor];
         if (b == nullptr || g.dscore > b->dscore) { b = &g; }
       }
@@ -3053,9 +3341,50 @@ protected:
         ODIA::DIANNLibraryFile::load(tr, library);
 
         // Decoys for a supplied library too, not only for a generated one. A
-        // library without them cannot be scored, and appendDecoys is idempotent
-        // so one that already has them is left alone.
+        // library without them cannot be scored.
+        //
+        // The test is idempotency, NOT `decoyCount() == 0`. DIA-NN's empirical
+        // library -- its --gen-spec-lib output at 1% FDR -- carries a TOKEN
+        // decoy set: 365 against 37,193 targets. The old guard read that as
+        // "already has decoys" and generated none, leaving a library whose
+        // target/decoy ratio cannot support an FDR estimate at all. appendDecoys
+        // tracks which targets already have one, so calling it unconditionally
+        // completes a partial set and leaves a complete one untouched.
         const auto method = ODIA::parseDecoyMethod(getStringOption_("decoys"));
+        // A PARTIAL decoy set is the dangerous case, and it is the one DIA-NN's
+        // empirical library presents: 365 decoys against 37,193 targets, a ratio
+        // that cannot support an FDR estimate. Topping it up does not work
+        // either -- appendDecoys keys on the decoy IT would generate, so a
+        // foreign decoy it cannot reproduce is invisible and the target gets a
+        // SECOND one. Measured on the adversarial fixture: 1 target / 1 decoy
+        // became 1 target / 2 decoys.
+        //
+        // So a partial set is discarded and rebuilt, which also gives the decoy
+        // population one known provenance instead of two mixed ones.
+        if (method != ODIA::DecoyMethod::None)
+        {
+          const std::size_t decoys = library.decoyCount();
+          const std::size_t targets = library.precursorCount() - decoys;
+          // Not `decoys < targets`: appendDecoys legitimately cannot decoy
+          // every target -- a mutation that collides with an existing target is
+          // skipped -- so a freshly generated library sits at ~83% and that test
+          // would regenerate it on EVERY load, which is not idempotent and cost
+          // 9 interned strings per round trip. Half is far below any real set
+          // and far above DIA-NN's empirical 1%.
+          if (decoys > 0 && decoys * 2 < targets)
+          {
+            const auto dropped = library.dropDecoys();
+            writeLogWarn_("the library carried " + std::to_string(dropped) +
+                          " decoys for " + std::to_string(targets) +
+                          " targets -- too few to estimate an FDR from. Discarded "
+                          "and regenerated, so the decoys have one provenance.");
+          }
+        }
+        // ONLY when there are none. appendDecoys keys on the decoy it would
+        // generate itself, so it cannot recognise a foreign one: called on a
+        // library that already has a complete decoy set it appends a second,
+        // ODIA-flavoured decoy per target. Measured on adv_types: 1 target /
+        // 1 decoy became 1 target / 2 decoys.
         if (method != ODIA::DecoyMethod::None && library.decoyCount() == 0)
         {
           std::size_t skipped = 0;
@@ -3084,6 +3413,45 @@ protected:
       else
       {
         ODIA::DigestParams params;
+        // FIXED MODIFICATIONS, and why this is a CLI option rather than a
+        // hard-coded default.
+        //
+        // It used to be neither: `LibraryGenerator.h` defaulted to
+        // "Carbamidomethyl (C)" and nothing could override it. On the Astral
+        // benchmark that was WRONG -- DIA-NN searched the same data CAM-FREE
+        // (its library is 100% CAM-free on 21,355 precursor and 12,399
+        // cysteine-spanning fragment m/z), so a quarter of ODIA's search space
+        // extracted from m/z where there is no signal: `library_corr` 0.014
+        // against 0.743, and `usable_fragments` 7 of 12 -- exactly the
+        // fragments that do NOT span a cysteine. See doc/27.
+        //
+        // An empty list means no fixed modification. The alkylating agent is a
+        // property of the sample, not of the search engine, so it must be
+        // stated per run.
+        {
+          const std::string fm = getStringOption_("fixed_modifications");
+          params.fixed_modifications.clear();
+          std::string tok;
+          std::istringstream fs(fm);
+          while (std::getline(fs, tok, ','))
+          {
+            const auto b = tok.find_first_not_of(" \t");
+            if (b == std::string::npos) { continue; }
+            const auto e = tok.find_last_not_of(" \t");
+            params.fixed_modifications.push_back(tok.substr(b, e - b + 1));
+          }
+          std::ostringstream fo;
+          fo << "fixed modifications: ";
+          if (params.fixed_modifications.empty()) { fo << "NONE"; }
+          else
+          {
+            for (std::size_t i = 0; i < params.fixed_modifications.size(); ++i)
+            {
+              fo << (i ? ", " : "") << params.fixed_modifications[i];
+            }
+          }
+          writeLogInfo_(fo.str());
+        }
         params.missed_cleavages = static_cast<std::size_t>(getIntOption_("missed_cleavages"));
         params.precursor_mz_min = getDoubleOption_("precursor_mz_min");
         params.precursor_mz_max = getDoubleOption_("precursor_mz_max");
@@ -3182,28 +3550,18 @@ protected:
           return INPUT_FILE_NOT_FOUND;
         }
         {
-          std::ostringstream ps;
-          ps.setf(std::ios::fixed); ps.precision(3);
-          ps << "v1"
-             << ";len=" << params.min_length << "-" << params.max_length
-             << ";mc=" << params.missed_cleavages
-             << ";z=";
-          for (const int z : params.charges) { ps << z << "."; }
-          ps << ";pmz=" << params.precursor_mz_min << "-" << params.precursor_mz_max
-             << ";fmz=" << params.fragment_mz_min << "-" << params.fragment_mz_max
-             << ";fz=" << params.max_fragment_charge
-             << ";frag=" << params.min_fragments << "-" << params.max_fragments
-             << ";varmod=" << params.max_variable_modifications
-             << ";nme=" << (params.n_terminal_methionine_excision ? 1 : 0)
-             << ";rdc=" << params.reserved_doubly_charged
-             << ";rt=" << getStringOption_("rt_model")
-             << ";frgmodel=" << getStringOption_("ms2_model")
-             << ";ccsmodel=" << getStringOption_("ccs_model")
-             << ";nce=" << getDoubleOption_("nce")
-             << ";inst=" << getStringOption_("instrument");
-          // The TARGET key omits the decoy method on purpose: no part of the
-          // inference depends on it, so a method change must not discard it.
-          fp.target_params = ps.str();
+          // ONE definition, shared with DIALibraryGenerator
+          // (LibraryGenerator::fingerprintParams). A second, independently
+          // assembled string is how two tools silently disagree about what
+          // "the same library" means, and a miss regenerates for hours.
+          // Models identified by CONTENT: a changed model at the same path
+          // would otherwise collide, and the same model staged elsewhere miss.
+          fp.target_params = ODIA::LibraryGenerator::fingerprintParams(
+            params,
+            ODIA::DIANNLibraryFile::hashFile(getStringOption_("rt_model")),
+            ODIA::DIANNLibraryFile::hashFile(getStringOption_("ms2_model")),
+            ODIA::DIANNLibraryFile::hashFile(getStringOption_("ccs_model")),
+            getDoubleOption_("nce"), getStringOption_("instrument"));
           fp.decoy_method = getStringOption_("decoys");
           fp.params = fp.target_params + ";decoy=" + fp.decoy_method;
         }
@@ -3343,8 +3701,9 @@ protected:
           {
             const auto t_rt = std::chrono::steady_clock::now();
             const auto unpredicted =
-              ODIA::LibraryGenerator::predictRetentionTimes(library, rt_model, true,
-                                                           inference_sessions);
+              ODIA::LibraryGenerator::predictRetentionTimes(
+                library, rt_model, true, inference_sessions,
+                params.free_cysteine_rt_correction);
             const auto rt_ms = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - t_rt).count();
             std::ostringstream rt;
@@ -3481,7 +3840,8 @@ protected:
             const auto t_ccs = std::chrono::steady_clock::now();
             const auto unpredicted =
               ODIA::LibraryGenerator::predictCollisionCrossSections(library, ccs_model, true,
-                                                                   inference_sessions);
+                                                                   inference_sessions,
+                                                                   params.derive_ion_mobility);
             const auto ccs_ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t_ccs).count();
             std::ostringstream ccs;
@@ -3657,7 +4017,27 @@ private:
 
   /// p95 residual of an ACCEPTED retention-time seed, seconds; 0 when none was
   /// accepted. Sizes pass 1's window -- see runScoreWorkflow_.
+  /// Median of a vector, by partial sort. Used by the RT-consistency anchor
+  /// selection, which must be robust: its whole purpose is to survive the
+  /// wrong peaks a not-yet-calibrated axis produces.
+  static double median_(std::vector<double>& v)
+  {
+    if (v.empty()) { return 0.0; }
+    const std::size_t n = v.size() / 2;
+    std::nth_element(v.begin(), v.begin() + n, v.end());
+    return v[n];
+  }
+
+  /// Library precursor indices of the CiRT standards, when -rt_seed cirt is
+  /// active. Empty otherwise, which leaves the seed fitting from everything.
+  std::unordered_set<std::size_t> cirt_seed_idx_;
+
   double seed_p95_seconds_ = 0.0;
+
+  /// Legacy FDR-gated anchor selection. FALSE by default: FDR belongs after
+  /// recalibration and after the final extraction, never inside the loop that
+  /// produces the axis (doc/28 revision 2).
+  bool anchor_selection_legacy_ = false;
 
   /// The prefilter's verdict, in full-library indexing. A member because the
   /// extractor holds a bare pointer into it for the whole of pass 2.

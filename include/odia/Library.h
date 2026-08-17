@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -48,6 +50,44 @@ namespace ODIA
   inline constexpr double fromFixed(MzFixed v)
   {
     return static_cast<double>(v) * MZ_QUANTUM;
+  }
+
+  /// Nitrogen, the drift gas every timsTOF in reach runs, and the drift-tube
+  /// temperature its calibration assumes.
+  inline constexpr double DRIFT_GAS_MASS = 28.0134;
+  inline constexpr double DRIFT_GAS_TEMPERATURE_K = 305.0;
+
+  /// Mason-Schamp, reduced: 1/K0 = CCS * sqrt(mu * T) / (18509 * z), with
+  /// mu the reduced mass of the ion and the drift gas.
+  ///
+  /// The two quantities are NOT interchangeable and this is not a unit
+  /// conversion: CCS is a property of the ion, 1/K0 is what one instrument
+  /// measures for it under its own calibration. ODIA used to emit angstroms
+  /// and stop for exactly that reason. It now emits both, because the
+  /// alternative measured worse: shipping no mobility at all costs a diaPASEF
+  /// consumer the entire mobility dimension, whereas the derived value is good
+  /// to 2.9% against 37,193 measured 1/K0 values on S08 -- and every consumer
+  /// recalibrates mobility against its own run regardless (doc/32).
+  ///
+  /// Fitted against those measurements, the coefficient comes out 1039.07
+  /// where this formula gives 18509/sqrt(305) = 1059.82 -- 2.0% apart, which is
+  /// inside the run-to-run calibration spread and is why the textbook constant
+  /// is used rather than a number fitted to one file.
+  inline double mobilityFromCCS(double ccs, double mz, int charge)
+  {
+    if (charge <= 0) { return std::numeric_limits<double>::quiet_NaN(); }
+    const double m_ion = mz * charge;
+    const double mu = m_ion * DRIFT_GAS_MASS / (m_ion + DRIFT_GAS_MASS);
+    return ccs * std::sqrt(mu * DRIFT_GAS_TEMPERATURE_K) / (18509.0 * charge);
+  }
+
+  /// The inverse, for a library that carries 1/K0 but no CCS.
+  inline double ccsFromMobility(double one_over_k0, double mz, int charge)
+  {
+    if (charge <= 0) { return std::numeric_limits<double>::quiet_NaN(); }
+    const double m_ion = mz * charge;
+    const double mu = m_ion * DRIFT_GAS_MASS / (m_ion + DRIFT_GAS_MASS);
+    return one_over_k0 * 18509.0 * charge / std::sqrt(mu * DRIFT_GAS_TEMPERATURE_K);
   }
 
   enum class FragmentType : std::uint8_t

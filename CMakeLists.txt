@@ -133,6 +133,7 @@ endif()
 # built and shipped outside the OpenMS source tree.
 # ---------------------------------------------------------------------------
 set(ODIA_TOOLS
+  DIALibraryGenerator
   ODIAInfo
   OpenDIAlyzer
 )

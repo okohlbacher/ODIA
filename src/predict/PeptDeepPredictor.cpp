@@ -35,13 +35,14 @@ namespace ODIA
     }
     Ort::MemoryInfo memory{Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)};
     Provider provider = Provider::CPU;
+    int device = -1;
     std::vector<std::string> input_names;
     std::vector<std::string> output_names;
   };
 
   PeptDeepPredictor::PeptDeepPredictor(const std::string& model_path,
                                        bool prefer_gpu, int intra_op_threads,
-                                       int sessions)
+                                       int sessions, int gpu_device)
     : impl_(std::make_unique<Impl>())
   {
     if (intra_op_threads > 0) { impl_->options.SetIntraOpNumThreads(intra_op_threads); }
@@ -62,15 +63,31 @@ namespace ODIA
 
       if (cuda_available)
       {
-        try
+        // PROBE the devices rather than trusting device 0. On this project's
+        // GPU nodes device 0 is dead, and AppendExecutionProvider_CUDA happily
+        // accepts it -- the failure only surfaces when the session is built.
+        // A silent fall back to CPU turns a 4-minute library into a 25-minute
+        // one with nothing in the log to say why.
+        const int first = gpu_device >= 0 ? gpu_device : 0;
+        const int last  = gpu_device >= 0 ? gpu_device : 7;
+        for (int dev = first; dev <= last; ++dev)
         {
-          OrtCUDAProviderOptions cuda{};
-          impl_->options.AppendExecutionProvider_CUDA(cuda);
-          impl_->provider = Provider::CUDA;
-        }
-        catch (const Ort::Exception&)
-        {
-          impl_->provider = Provider::CPU;
+          try
+          {
+            Ort::SessionOptions probe;
+            probe.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            OrtCUDAProviderOptions cuda{};
+            cuda.device_id = dev;
+            probe.AppendExecutionProvider_CUDA(cuda);
+            Ort::Session test(impl_->env, model_path.c_str(), probe);   // the real check
+            OrtCUDAProviderOptions keep{};
+            keep.device_id = dev;
+            impl_->options.AppendExecutionProvider_CUDA(keep);
+            impl_->provider = Provider::CUDA;
+            impl_->device = dev;
+            break;
+          }
+          catch (const Ort::Exception&) { /* dead or absent: try the next */ }
         }
       }
     }
@@ -154,6 +171,8 @@ namespace ODIA
       }
     }
   }
+
+  int PeptDeepPredictor::device() const { return impl_->device; }
 
   std::size_t PeptDeepPredictor::sessionCount() const
   {

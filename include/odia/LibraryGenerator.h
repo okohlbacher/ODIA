@@ -46,12 +46,44 @@ namespace ODIA
     std::size_t min_length = 7;
     std::size_t max_length = 30;
 
-    std::vector<int> charges{2, 3};
+    /// MEASURED, not chosen: against DIA-NN's 12,308 confident precursors on
+    /// Astral, a 2,3 library covers 92.76% and every one of the 891 it misses
+    /// is charge 1 (193) or charge 4 (698); 1,2,3,4 covers 100.00%. A precursor
+    /// the library cannot express is a CEILING on identifications, not a tuning
+    /// knob, which is why the default is the one that reaches parity.
+    std::vector<int> charges{1, 2, 3, 4};
 
     /// UniMod-style names as OpenMS knows them, e.g. "Carbamidomethyl (C)".
     std::vector<std::string> fixed_modifications{"Carbamidomethyl (C)"};
     std::vector<std::string> variable_modifications{};
     std::size_t max_variable_modifications = 1;
+
+    /// Add a measured offset to the predicted RT of peptides carrying an
+    /// UNMODIFIED cysteine (doc/30).
+    ///
+    /// AlphaPeptDeep and DIA-NN's predictor were both trained on corpora in
+    /// which essentially every cysteine was carbamidomethylated, so the
+    /// modification is confounded with the residue and free cysteine cannot be
+    /// represented. Free cysteine is more hydrophobic than CAM-cysteine, so it
+    /// elutes later than either model predicts -- by +0.90 min per cysteine on
+    /// Astral and +0.74 min on S08, and DIA-NN's own predictor misses it by
+    /// +0.90 and +1.03 min on the same peptides. Not an ODIA defect, but ODIA
+    /// pays for it because it windows on the library RT.
+    ///
+    /// Self-gating, and therefore safe to leave on: the count is of cysteines
+    /// that carry NO modification, so a carbamidomethylated library gets no
+    /// correction at all and a library with variable alkylation gets it only
+    /// where it applies.
+    bool free_cysteine_rt_correction = true;
+
+    /// Also emit 1/K0, derived from the predicted CCS (doc/32).
+    ///
+    /// CCS remains the authoritative value; this adds the nominal mobility a
+    /// timsTOF would report for it. Off means the library carries angstroms
+    /// only, which is what ODIA did before and which costs a diaPASEF consumer
+    /// the entire mobility dimension -- DIA-NN saw `iIM` = 0 for 100% of its
+    /// identifications when searching our library against S08.
+    bool derive_ion_mobility = true;
 
     /// Digest the sequence again with the initiator methionine removed.
     ///
@@ -72,9 +104,30 @@ namespace ODIA
     int max_fragment_charge = 2;
 
     /// A precursor with fewer usable fragments than this is not searchable.
-    std::size_t min_fragments = 4;
+    ///
+    /// Three, not four, to match DIA-NN: its predicted library from the same
+    /// FASTA carries precursors with as few as 3 transitions, and the extra
+    /// requirement was most of our 0.6% precursor surplus (4,984,739 against
+    /// 4,954,236). A precursor the reference engine will search and we will not
+    /// is a ceiling on identifications, not a quality filter.
+    std::size_t min_fragments = 3;
     /// Cap per precursor, taken in descending fragment m/z.
     std::size_t max_fragments = 12;
+
+    /// Smallest predicted intensity, relative to the precursor's base peak,
+    /// that may enter the library.
+    ///
+    /// The guard used to be `intensity > 0`, which admits denormals. Measured
+    /// on the shipped S08 library: 1,980 of 5,000 precursors' transitions had a
+    /// stored intensity of median 2.0e-07 against a library median of 0.255 --
+    /// six orders of magnitude down, i.e. numerical noise. Only 13.6% of them
+    /// were ever observed, against 81.8% for ordinary picks, and 1,081 of them
+    /// were b2+, which was most of our b2+ over-representation.
+    ///
+    /// It also made the library non-reproducible: on the H100 those values come
+    /// out as tiny positives and on CPU as exact zeros, so the same config
+    /// produced different libraries on different hardware.
+    double min_relative_intensity = 1e-4;
 
     /// Reserve this many of the cap for doubly-charged fragments, if the
     /// precursor has any worth keeping.
@@ -126,10 +179,38 @@ namespace ODIA
     ///
     /// @returns the number of precursors whose iRT could not be predicted;
     ///          theirs are left NaN rather than given a made-up value.
+    /// The canonical content-affecting parameter string for the library cache.
+    ///
+    /// ONE definition, called by every tool that builds a library. It used to
+    /// be assembled inline in OpenDIAlyzer; a second tool assembling its own
+    /// would silently disagree about what "the same library" is, and a
+    /// fingerprint miss regenerates for hours without saying why.
+    /// @returns the TARGET key: everything content-affecting EXCEPT the decoy
+    /// method, which callers append as ";decoy=<method>" for the full key. No
+    /// part of the inference depends on the decoy method, so changing it must
+    /// not discard a library.
+    static std::string fingerprintParams(const DigestParams& p,
+                                         const std::string& rt_model,
+                                         const std::string& ms2_model,
+                                         const std::string& ccs_model,
+                                         double nce, const std::string& instrument);
+
     static std::size_t predictRetentionTimes(Library& library,
                                              const std::string& rt_model_path,
                                              bool prefer_gpu = true,
-                                             unsigned sessions = 0);
+                                             unsigned sessions = 0,
+                                             bool free_cysteine_rt_correction = true);
+
+    /// The measured free-cysteine offset, in the RT model's own normalised
+    /// units, for a peptide with @p free_cysteines unmodified cysteines.
+    ///
+    /// Bucketed rather than linear because the effect saturates, and stated in
+    /// rt_norm rather than minutes because minutes are gradient-dependent.
+    /// Fitted on Astral (Orbitrap, 8.5-37.9 min) and S08 (timsTOF, 7-30 min)
+    /// and cross-validated by holding each out: fitting on S08 and applying to
+    /// Astral takes the cysteine-peptide residual p95 from 3.193 to 2.416 min,
+    /// and the reverse takes S08 from 3.327 to 2.678 min. See doc/30.
+    static float freeCysteineRtOffset(std::size_t free_cysteines);
 
     /// Replace placeholder intensities with predicted ones, and re-choose the
     /// fragments now that there is a basis for ranking.
@@ -204,7 +285,8 @@ namespace ODIA
     static std::size_t predictCollisionCrossSections(Library& library,
                                                     const std::string& ccs_model_path,
                                                     bool prefer_gpu = true,
-                                                    unsigned sessions = 0);
+                                                    unsigned sessions = 0,
+                                                    bool derive_mobility = true);
 
     /// Append a decoy for every target currently in @p library.
     ///

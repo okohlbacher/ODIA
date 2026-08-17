@@ -11,6 +11,7 @@
 #include <OpenMS/CHEMISTRY/Residue.h>
 #include <OpenMS/FORMAT/FASTAFile.h>
 
+#include <iostream>
 #include <algorithm>
 #include <thread>
 #include <fstream>
@@ -329,6 +330,14 @@ namespace ODIA
     /// 16 is the knee. Going on to 32 buys 6% more speed for 83% more memory,
     /// which on a shared node is how a library build starts failing in the
     /// allocator instead of finishing slightly later.
+    void writeDeviceLine(const char* stage, const PeptDeepPredictor& p)
+    {
+      std::cerr << "[" << stage << "] provider "
+                << (p.provider() == PeptDeepPredictor::Provider::CUDA ? "CUDA" : "CPU")
+                << " device " << p.device()
+                << " sessions " << p.sessionCount() << "\n";
+    }
+
     int inferenceSessions(unsigned requested)
     {
       const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
@@ -337,9 +346,38 @@ namespace ODIA
     }
   } // namespace
 
+  float LibraryGenerator::freeCysteineRtOffset(std::size_t free_cysteines)
+  {
+    // Pooled medians of (observed - predicted)/slope over the two benchmarks.
+    // Nothing beyond three: 3+ carried 58 peptides on Astral and none on S08,
+    // and the effect has plainly saturated by then.
+    switch (free_cysteines)
+    {
+      case 0:  return 0.0f;
+      case 1:  return 0.0343f;
+      case 2:  return 0.0645f;
+      default: return 0.0580f;
+    }
+  }
+
+  namespace
+  {
+    /// Cysteines carrying no modification -- the ones the RT model cannot see.
+    std::size_t freeCysteines(const AASequence& peptide)
+    {
+      std::size_t n = 0;
+      for (std::size_t i = 0; i < peptide.size(); ++i)
+      {
+        if (peptide[i].getOneLetterCode() == "C" && !peptide[i].isModified()) { ++n; }
+      }
+      return n;
+    }
+  } // namespace
+
   std::size_t LibraryGenerator::predictRetentionTimes(Library& library,
                                                       const std::string& rt_model_path,
-                                                      bool prefer_gpu, unsigned sessions)
+                                                      bool prefer_gpu, unsigned sessions,
+                                                      bool free_cysteine_rt_correction)
   {
     // One prediction per distinct sequence. The RT model has no charge input,
     // so predicting per precursor would repeat identical work for every charge
@@ -369,13 +407,23 @@ namespace ODIA
     if (unique_peptides.empty()) { return library.precursorCount(); }
 
     PeptDeepPredictor predictor(rt_model_path, prefer_gpu, 1, inferenceSessions(sessions));
+    // State the device: a silent CPU fallback turns a 4-minute stage
+    // into a 25-minute one with nothing in the log to explain it.
+    writeDeviceLine("RT", predictor);
     std::vector<PeptDeepPredictor::Failure> failures;
     const auto predicted = predictor.predictRT(unique_peptides, &failures);
 
     std::map<std::uint32_t, float> by_handle;
     for (std::size_t slot = 0; slot < predicted.size(); ++slot)
     {
-      by_handle.emplace(slot_handle[slot], predicted[slot]);
+      float value = predicted[slot];
+      // Applied here, in the model's own units, so that any downstream affine
+      // rescale to an iRT gauge carries it through unchanged.
+      if (free_cysteine_rt_correction && !std::isnan(value))
+      {
+        value += freeCysteineRtOffset(freeCysteines(unique_peptides[slot]));
+      }
+      by_handle.emplace(slot_handle[slot], value);
     }
 
     std::size_t unpredicted = 0;
@@ -403,6 +451,9 @@ namespace ODIA
     if (n == 0) { return 0; }
 
     PeptDeepPredictor predictor(ms2_model_path, prefer_gpu, 1, inferenceSessions(sessions));
+    // State the device: a silent CPU fallback turns a 4-minute stage
+    // into a 25-minute one with nothing in the log to explain it.
+    writeDeviceLine("MS2", predictor);
 
     // The new transition arrays are built alongside the old ones and swapped in
     // at the end. Editing in place is not possible: a precursor's fragment
@@ -470,6 +521,14 @@ namespace ODIA
         enumerateAllFragments(peptides[i - base], params, charges[i - base], fragments);
 
         const std::size_t residues = peptides[i - base].size();
+        // Base-peak relative, so one absolute threshold cannot be right for a
+        // strong precursor and wrong for a weak one.
+        float peak = 0.0f;
+        for (std::size_t q = 0; q < spectrum.positions; ++q)
+        {
+          for (std::size_t ch = 0; ch < 4; ++ch) { peak = std::max(peak, spectrum.at(q, ch)); }
+        }
+        const float floor = peak * static_cast<float>(params.min_relative_intensity);
         ranked.clear();
         for (const auto& f : fragments)
         {
@@ -490,9 +549,12 @@ namespace ODIA
           }
           if (position >= spectrum.positions) { continue; }
           const float intensity = spectrum.at(position, channel);
-          // A predicted zero is a fragment the model says is not there. Keeping
-          // it would fill the cap with assays that cannot be extracted.
-          if (!(intensity > 0.0f)) { continue; }
+          // A predicted zero is a fragment the model says is not there, and a
+          // predicted 1e-7 is the same statement in floating point. Ranking on
+          // `> 0` filled spare slots with denormal noise (see
+          // min_relative_intensity); the floor is relative to this precursor's
+          // own base peak, because the spectrum is base-peak normalised.
+          if (!(intensity > floor)) { continue; }
           ranked.emplace_back(intensity, f);
         }
 
@@ -587,6 +649,9 @@ namespace ODIA
     }
 
     PeptDeepPredictor predictor(rt_model_path, prefer_gpu);
+    // State the device: a silent CPU fallback turns a 4-minute stage
+    // into a 25-minute one with nothing in the log to explain it.
+    writeDeviceLine("IRT-FIT", predictor);
     // Tolerate a standard that cannot be encoded rather than abandoning the
     // calibration: with eleven points, losing one to an exotic modification
     // should cost precision, not the whole line. Their entries come back NaN
@@ -650,14 +715,18 @@ namespace ODIA
 
   std::size_t LibraryGenerator::predictCollisionCrossSections(
     Library& library, const std::string& ccs_model_path, bool prefer_gpu,
-    unsigned sessions)
+    unsigned sessions, bool derive_mobility)
   {
     auto& p = library.precursors();
     const std::size_t n = library.precursorCount();
     p.ccs.assign(n, std::numeric_limits<float>::quiet_NaN());
+    if (derive_mobility) { p.im.assign(n, std::numeric_limits<float>::quiet_NaN()); }
     if (n == 0) { return 0; }
 
     PeptDeepPredictor predictor(ccs_model_path, prefer_gpu, 1, inferenceSessions(sessions));
+    // State the device: a silent CPU fallback turns a 4-minute stage
+    // into a 25-minute one with nothing in the log to explain it.
+    writeDeviceLine("CCS", predictor);
 
     // Blocked, as the MS2 pass is: the whole proteome at once would hold every
     // parsed AASequence live alongside the library.
@@ -682,7 +751,15 @@ namespace ODIA
       for (std::size_t i = base; i < last; ++i)
       {
         p.ccs[i] = ccs[i - base];
-        if (std::isnan(p.ccs[i])) { ++unpredicted; }
+        if (std::isnan(p.ccs[i])) { ++unpredicted; continue; }
+        // Derive 1/K0 alongside. CCS stays the authoritative value -- this is
+        // the nominal mobility a timsTOF would report for it, which is what a
+        // diaPASEF consumer needs to use the mobility dimension at all.
+        if (derive_mobility)
+        {
+          p.im[i] = static_cast<float>(
+            mobilityFromCCS(p.ccs[i], fromFixed(p.mz[i]), p.charge[i]));
+        }
       }
     }
     return unpredicted;
@@ -885,3 +962,57 @@ namespace ODIA
   }
 
 } // namespace ODIA
+
+namespace ODIA
+{
+  std::string LibraryGenerator::fingerprintParams(const DigestParams& p,
+                                                  const std::string& rt_model,
+                                                  const std::string& ms2_model,
+                                                  const std::string& ccs_model,
+                                                  double nce,
+                                                  const std::string& instrument)
+  {
+    std::ostringstream ps;
+    ps.imbue(std::locale::classic());          // a cache key must not follow the locale
+    ps.setf(std::ios::fixed); ps.precision(3);
+    auto join = [](const std::vector<std::string>& v) {
+      std::string j;
+      for (const auto& m : v) { j += m; j += "."; }
+      return j.empty() ? std::string("none") : j;
+    };
+    // v2: v1 omitted the enzyme and the variable-modification IDENTITIES (it
+    // carried only their maximum count), so two libraries digested differently
+    // shared a key. Bumping misses every v1 cache once, which is the safe
+    // direction.
+    ps << "v2"
+       << ";enz=" << p.enzyme
+       << ";len=" << p.min_length << "-" << p.max_length
+       << ";mc=" << p.missed_cleavages
+       << ";z=";
+    for (const int z : p.charges) { ps << z << "."; }
+    ps << ";pmz=" << p.precursor_mz_min << "-" << p.precursor_mz_max
+       << ";fmz=" << p.fragment_mz_min << "-" << p.fragment_mz_max
+       << ";fz=" << p.max_fragment_charge
+       << ";frag=" << p.min_fragments << "-" << p.max_fragments
+       << ";varmod=" << p.max_variable_modifications
+       << ";varmods=" << join(p.variable_modifications)
+       // Fixed modifications change every precursor and fragment mass. Without
+       // this, flipping the alkylation silently reuses a library built with the
+       // other one -- the stale-cache collision that would make a CAM-free run
+       // reproduce the CAM-inclusive result (doc/27).
+       << ";fixmod=" << join(p.fixed_modifications)
+       << ";nme=" << (p.n_terminal_methionine_excision ? 1 : 0)
+       // Changes the stored RT of every free-cysteine peptide, so a library
+       // built with it is not the same library.
+       << ";fcys=" << (p.free_cysteine_rt_correction ? 1 : 0)
+       << ";im=" << (p.derive_ion_mobility ? 1 : 0)
+       << ";minint=" << p.min_relative_intensity
+       << ";rdc=" << p.reserved_doubly_charged
+       << ";rt=" << rt_model
+       << ";frgmodel=" << ms2_model
+       << ";ccsmodel=" << ccs_model
+       << ";nce=" << nce
+       << ";inst=" << instrument;
+    return ps.str();
+  }
+}

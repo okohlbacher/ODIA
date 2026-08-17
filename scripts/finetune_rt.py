@@ -189,6 +189,13 @@ def main():
                          "point of a curve is to see where it stops improving and "
                          "whether it turns back up; a single end-point number "
                          "cannot show either.")
+    ap.add_argument("--rt-max-minutes", type=float, default=0.0, metavar="MINUTES",
+                    help="Gradient end for the rt_norm denominator (rt_norm = rt / this, "
+                         "minimum pinned to 0 as alphabase does). Pass the RUN's gradient "
+                         "end, not the training subset's maximum -- a subset-dependent "
+                         "denominator makes every fine-tune define a different target "
+                         "space and breaks the inverse at deployment. Defaults to the "
+                         "maximum over ALL supplied identifications, held-out included.")
     ap.add_argument("--converge-tol", type=float, default=0.1/60.0, metavar="MINUTES",
                     help="Early-stop when a --curve checkpoint improves the held-out "
                          "residual by less than this. A DELTA criterion: 'is the residual "
@@ -250,9 +257,32 @@ def main():
     if args.evaluate and len(test_df) < 50:
         raise SystemExit("too few peptides to hold any out; drop --evaluate")
 
-    lo, hi = float(train_df["rt"].min()), float(train_df["rt"].max())
+    # THE NORMALISATION CONVENTION, and why `lo` is pinned to 0.
+    #
+    # AlphaPeptDeep's AlphaRTModel trains on `rt_norm`, and alphabase's
+    # `_normalize_rt` produces it as `rt / max_rt` -- `_min_max_rt_norm` is
+    # False by default, so the MINIMUM IS 0, not the observed minimum.
+    #
+    # This used to read `lo = train_df["rt"].min()`, which was wrong twice:
+    #   * it shifted the target away from the space the pretrained weights
+    #     live in, so transfer learning had to relearn an offset instead of
+    #     refining chemistry (the paper's 500-peptide result, R^2 0.927 ->
+    #     0.986, depends on that transfer);
+    #   * `lo`/`hi` came from the sampled TRAINING SUBSET, so every run defined
+    #     a different target space and the inverse applied at deployment did
+    #     not match the one used at training.
+    # Symptom on record: held-out sd 0.4149 min inside the experiment while the
+    # exported ONNX was no better than stock on real data.
+    #
+    # `hi` is a per-run constant (this run's gradient end) and is written to
+    # the sidecar. It is allowed to be per-run because the same value is used
+    # forward and backward; only a SUBSET-dependent value is illegal.
+    lo = 0.0
+    hi = float(args.rt_max_minutes) if args.rt_max_minutes > 0 else float(df["rt"].max())
     if not hi > lo:
         raise SystemExit("every identification has the same retention time")
+    if float(train_df["rt"].min()) < 0.0:
+        raise SystemExit("negative retention times: the rt column is not run minutes")
 
     import os as _os, torch as _torch
     _cuda = _torch.cuda.is_available()
