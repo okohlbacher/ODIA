@@ -154,7 +154,12 @@ protected:
   ExitCodes main_(int, const char**) override
   {
     ODIA::DigestParams p;                       // defaults live in DigestParams
-    std::string decoys = "mutate", rt_model, ms2_model, ccs_model, instrument = "QE";
+    // DEFAULT: no decoys. A generated library is an interchange artefact, and the
+    // consumer decides its own null -- DIA-NN's README is explicit that it
+    // "will search these decoys in addition to the regular decoys it generates",
+    // so shipping ours DOUBLED its decoy population and made its FDR far more
+    // conservative. ODIA appends its own on load when a library has none.
+    std::string decoys = "none", rt_model, ms2_model, ccs_model, instrument = "QE";
     double nce = 30.0;
     // RAW MODEL UNITS are the pipeline domain (doc/28): the library carries the
     // RT model's own 0..1 output and the per-run map takes it to seconds. The
@@ -251,9 +256,11 @@ protected:
       ODIA::LibraryGenerator::predictCollisionCrossSections(library, ccs_model, true, threads,
                                                     p.derive_ion_mobility);
       std::size_t skipped = 0;
-      const auto method = decoys == "none" ? ODIA::DecoyMethod::None
-                        : decoys == "pseudo_reverse" ? ODIA::DecoyMethod::PseudoReverse
-                                                     : ODIA::DecoyMethod::Mutate;
+      // parseDecoyMethod, NOT a second hand-rolled ternary chain. This used to
+      // enumerate the methods itself and silently mapped every name it did not
+      // know to Mutate, so "reverse" and "shuffle" produced mutation decoys and
+      // the three libraries came out byte-identical.
+      const auto method = ODIA::parseDecoyMethod(decoys);
       // Same fragment bar as the targets: applying it to one class only is an
       // anti-conservative FDR.
       const auto made = ODIA::LibraryGenerator::appendDecoys(library, method, &skipped,

@@ -14,19 +14,34 @@ namespace ODIA
 
   /// How decoy precursors are constructed.
   ///
-  /// Kept selectable rather than fixed. DIA-NN's mutation scheme is the default
-  /// (D7), but its own documentation identifies it as the weak point of the FDR
-  /// model -- the decoy keeps the target's precursor m/z, iRT and library
-  /// intensity pattern, so it is searched in the same isolation window over the
-  /// same RT range with the same expected shape, and only fragment masses
-  /// differ. Phase 3 needs to be able to measure that against the alternative
-  /// under entrapment rather than inherit it.
+  /// The families attested in the DIA literature, selectable because the choice
+  /// is a modelling decision with no settled answer and the tools disagree:
+  /// DIA-NN 2.x defaults to SHUFFLING (its Generic mode; the precursor mass is
+  /// deliberately left unchanged), DIA-NN 1.7.12-1.8 to two-residue MUTATION,
+  /// the OpenSWATH lineage to shuffling with an anti-similarity filter
+  /// (Schubert et al., Nat Protoc 2015, citing Rost et al. 2014: decoys "need
+  /// to represent the targets well but at the same time they have to be
+  /// different from the target assays"), and mProphet to REVERSAL.
+  ///
+  /// Every method here leaves the precursor m/z, RT, ion mobility and fragment
+  /// intensities equal to the target's and changes only fragment masses, which
+  /// is what DIA-NN does in both its 1.x mutation and its 2.x Generic mode.
   enum class DecoyMethod
   {
     None,
-    Mutate,        ///< DIA-NN: substitute one residue near each terminus
-    PseudoReverse  ///< reverse all but the C-terminal residue
+    Mutate,         ///< DIA-NN 1.7.12-1.8: substitute one residue near each terminus
+    PseudoReverse,  ///< reverse the interior, both termini fixed
+    Reverse,        ///< reverse the whole sequence
+    Shuffle         ///< permute the interior; DIA-NN 2.x's default family
   };
+
+  /// Residues held fixed at each terminus by PseudoReverse and Shuffle.
+  ///
+  /// One each, matching DIA-NN's --dg-keep-nterm / --dg-keep-cterm defaults.
+  /// It matters when the targets share terminal residues by construction --
+  /// synthetic peptides, or a protease that fixes the C-terminus.
+  inline constexpr std::size_t DECOY_KEEP_NTERM = 1;
+  inline constexpr std::size_t DECOY_KEEP_CTERM = 1;
 
   DecoyMethod parseDecoyMethod(const std::string& s);
 

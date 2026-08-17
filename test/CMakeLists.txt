@@ -225,6 +225,24 @@ if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/mobility.cmake)
 endif()
 
+# The decoy methods must actually be different methods. They were not: the
+# generator hand-rolled its own name lookup and mapped every unknown name to
+# Mutate, so three of the four produced identical libraries in silence.
+if(EXISTS "${ODIA_FIXTURE_DIR}/adv_proteins.fasta" AND ODIA_PYTHON
+   AND EXISTS "${ODIA_RT_MODEL_PATH}")
+  add_test(NAME decoy_methods_distinct
+           COMMAND ${CMAKE_COMMAND}
+                   -DGEN=$<TARGET_FILE:DIALibraryGenerator>
+                   -DPYTHON=${ODIA_PYTHON}
+                   -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/check_decoy_methods.py
+                   -DFASTA=${ODIA_FIXTURE_DIR}/adv_proteins.fasta
+                   -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
+                   -DRT_MODEL=${ODIA_RT_MODEL_PATH}
+                   -DMS2_MODEL=${ODIA_MS2_MODEL_PATH}
+                   -DCCS_MODEL=${ODIA_CCS_MODEL_PATH}
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/decoy_methods.cmake)
+endif()
+
 # Malformed numbers must be reported, not silently accepted.
 if(EXISTS "${ODIA_FIXTURE_DIR}/adv_badnumbers.tsv")
   add_test(NAME adversarial_badnumbers

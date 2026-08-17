@@ -19,6 +19,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -160,7 +161,22 @@ namespace ODIA
   {
     if (s == "none") { return DecoyMethod::None; }
     if (s == "pseudo_reverse") { return DecoyMethod::PseudoReverse; }
+    if (s == "reverse") { return DecoyMethod::Reverse; }
+    if (s == "shuffle") { return DecoyMethod::Shuffle; }
     return DecoyMethod::Mutate;
+  }
+
+  std::string_view toString(DecoyMethod m)
+  {
+    switch (m)
+    {
+      case DecoyMethod::None: return "none";
+      case DecoyMethod::Mutate: return "mutate";
+      case DecoyMethod::PseudoReverse: return "pseudo_reverse";
+      case DecoyMethod::Reverse: return "reverse";
+      case DecoyMethod::Shuffle: return "shuffle";
+    }
+    return "mutate";
   }
 
   LibraryGenerator::Stats LibraryGenerator::generate(const std::string& fasta_file,
@@ -841,12 +857,76 @@ namespace ODIA
         tokens[c_pos].text = std::string(1, mutateResidue(tokens[c_pos].residue));
         for (const auto& tok : tokens) { decoy_sequence += tok.text; }
       }
-      else // PseudoReverse: reverse everything but the C-terminal residue
+      else if (method == DecoyMethod::Reverse)
       {
-        std::vector<Token> reordered(tokens.begin(), tokens.end() - 1);
-        std::reverse(reordered.begin(), reordered.end());
-        reordered.push_back(tokens.back());
+        // The whole sequence, termini included. mProphet's original recipe.
+        // Cheap and always defined, but a palindromic peptide maps to itself,
+        // which the caller catches as a collision below.
+        for (auto it = tokens.rbegin(); it != tokens.rend(); ++it)
+        { decoy_sequence += it->text; }
+      }
+      else if (method == DecoyMethod::PseudoReverse)
+      {
+        // Interior reversed, BOTH termini fixed -- the OpenSWATH and DIA-NN
+        // reading of "pseudo-reverse". Holding the C-terminus matters for a
+        // tryptic library, where every peptide ends in K or R and reversing it
+        // would make the decoy population trivially separable from the targets.
+        const std::size_t keep_n = DECOY_KEEP_NTERM, keep_c = DECOY_KEEP_CTERM;
+        if (tokens.size() <= keep_n + keep_c + 1) { ++skipped; continue; }
+        std::vector<Token> reordered(tokens.begin(), tokens.begin() + keep_n);
+        std::vector<Token> mid(tokens.begin() + keep_n, tokens.end() - keep_c);
+        std::reverse(mid.begin(), mid.end());
+        reordered.insert(reordered.end(), mid.begin(), mid.end());
+        reordered.insert(reordered.end(), tokens.end() - keep_c, tokens.end());
         for (const auto& tok : reordered) { decoy_sequence += tok.text; }
+      }
+      else // Shuffle
+      {
+        // Permute the interior, termini fixed, and keep permuting until the
+        // sequence actually changed. DIA-NN 2.x's Generic mode is this family.
+        //
+        // The permutation is DETERMINISTIC -- seeded from the sequence itself --
+        // because a library is a cache key. A std::random_device here would make
+        // two runs of the same config produce different decoys, so the
+        // fingerprint would promise reproducibility the file cannot deliver.
+        const std::size_t keep_n = DECOY_KEEP_NTERM, keep_c = DECOY_KEEP_CTERM;
+        if (tokens.size() <= keep_n + keep_c + 1) { ++skipped; continue; }
+        std::vector<Token> mid(tokens.begin() + keep_n, tokens.end() - keep_c);
+
+        std::uint64_t seed = 1469598103934665603ull;      // FNV-1a of the sequence
+        for (const char ch : sequence) { seed = (seed ^ static_cast<std::uint8_t>(ch)) * 1099511628211ull; }
+        std::mt19937_64 rng(seed);
+
+        std::vector<Token> best;
+        for (int attempt = 0; attempt < 20; ++attempt)
+        {
+          std::shuffle(mid.begin(), mid.end(), rng);
+          std::string candidate;
+          for (const auto& tok : mid) { candidate += tok.text; }
+          std::string original;
+          for (auto it = tokens.begin() + keep_n; it != tokens.end() - keep_c; ++it)
+          { original += it->text; }
+          if (candidate != original) { best = mid; break; }
+        }
+        // A run of identical residues cannot be shuffled into anything else.
+        // DIA-NN falls back to mutation in that case; so do we, rather than
+        // emitting a decoy identical to its target.
+        if (best.empty())
+        {
+          std::size_t n_pos = tokens.size();
+          for (std::size_t k = keep_n; k + keep_c < tokens.size(); ++k)
+          { if (!tokens[k].modified) { n_pos = k; break; } }
+          if (n_pos == tokens.size()) { ++skipped; continue; }
+          tokens[n_pos].text = std::string(1, mutateResidue(tokens[n_pos].residue));
+          for (const auto& tok : tokens) { decoy_sequence += tok.text; }
+        }
+        else
+        {
+          std::vector<Token> reordered(tokens.begin(), tokens.begin() + keep_n);
+          reordered.insert(reordered.end(), best.begin(), best.end());
+          reordered.insert(reordered.end(), tokens.end() - keep_c, tokens.end());
+          for (const auto& tok : reordered) { decoy_sequence += tok.text; }
+        }
       }
 
       // Recompute every fragment from the decoy sequence rather than shifting

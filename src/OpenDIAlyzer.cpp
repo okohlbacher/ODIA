@@ -75,9 +75,18 @@ protected:
     setValidFormats_("fasta", {"fasta"}, false);
 
     registerStringOption_("decoys", "<method>", "mutate",
-                          "Decoy construction. Applied to a library read with -tr "
-                          "as well, if it has none already.", false);
-    setValidStrings_("decoys", {"mutate", "pseudo_reverse", "none"});
+                          "Decoy construction, applied to a library read with -tr "
+                          "as well if it has none already. mutate: substitute one "
+                          "residue near each terminus (DIA-NN 1.7.12-1.8). "
+                          "shuffle: permute the interior, termini fixed (DIA-NN "
+                          "2.x Generic, and the OpenSWATH lineage's choice). "
+                          "pseudo_reverse: reverse the interior, termini fixed. "
+                          "reverse: reverse the whole sequence (mProphet). All of "
+                          "them leave precursor m/z, RT, mobility and fragment "
+                          "intensities at the target's and change only fragment "
+                          "masses.", false);
+    setValidStrings_("decoys",
+                     {"mutate", "shuffle", "pseudo_reverse", "reverse", "none"});
 
     registerStringOption_("fixed_modifications", "<list>", "Carbamidomethyl (C)",
                           "Fixed modifications applied to every matching residue when GENERATING "
