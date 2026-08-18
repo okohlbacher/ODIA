@@ -2610,6 +2610,28 @@ protected:
     external_irt_ = true;
     scoring_rt_is_run_seconds_ = true;
     seed_p95_seconds_ = line.p95_residual;
+
+    // DISCARD the calibrations the blind search fitted. Both are cached on
+    // first fit (`mass_model_known_`, `mobility_model_known_`) so the two real
+    // passes share one model -- correct when the first fit came from the full
+    // library, wrong now that a 708-precursor sub-search runs before it.
+    //
+    // Measured: pass 1 and pass 2 reported the seed's mass correction
+    // (-8.94926 ppm at 503.974 Th) byte-identically, and pass 2's mobility
+    // calibration reported the seed's 213 target / 205 control anchors and
+    // refused every charge for want of 120. The same run before this seed
+    // existed probed 1,952 precursors and removed 75% of the mean squared 1/K0
+    // error out of fold. S08 is diaPASEF, so that correction is a separation
+    // dimension, not a refinement.
+    //
+    // The seed's own extraction still needs its models, which is why these are
+    // cleared here rather than never set.
+    mass_model_known_ = false;
+    mass_model_ = ODIA::MassCalibration::Model{};
+    mobility_model_known_ = false;
+    mobility_model_ = ODIA::MobilityCalibration::Model{};
+    mobility_anchors_.clear();
+    mobility_anchors_expected_ = false;
     return EXECUTION_OK;
   }
 
