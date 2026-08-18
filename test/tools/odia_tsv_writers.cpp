@@ -122,7 +122,7 @@ namespace
   {
     std::ofstream out(path);
     if (!out) { throw std::runtime_error("cannot open " + path); }
-    out << "Precursor.Id\tTransition.Index\tProduct.Mz\tRT\tIntensity\n";
+    out << "Precursor.Id\tDecoy\tTransition.Index\tProduct.Mz\tRT\tIntensity\n";
 
     const auto& p = library.precursors();
     const auto& t = library.transitions();
@@ -138,7 +138,8 @@ namespace
         const std::uint32_t n = chromatograms.count[tr];
         for (std::uint32_t j = 0; j < n; ++j)
         {
-          out << id << '\t' << tr << '\t' << ODIA::fromFixed(t.product_mz[tr]) << '\t'
+          out << id << '\t' << (p.decoy[i] ? '1' : '0') << '\t'
+              << tr << '\t' << ODIA::fromFixed(t.product_mz[tr]) << '\t'
               << chromatograms.retentionTime(tr, j) << '\t'
               << chromatograms.intensity[b + j] << '\n';
         }

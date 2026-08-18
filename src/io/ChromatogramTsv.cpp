@@ -14,7 +14,15 @@ namespace ODIA
                             const Chromatograms& chromatograms)
   {
     TextWriter out(path);
-    out.put("Precursor.Id\tTransition.Index\tProduct.Mz\tRT\tIntensity\n");
+    // Decoy is NOT optional. A decoy precursor reconstructs the SAME
+    // Precursor.Id as its target (DIA-NN's convention is sequence + charge, and
+    // a decoy carries its target's sequence), so without this column a consumer
+    // joining on Precursor.Id silently sums the target's transitions and its
+    // decoy's into one trace. Measured 2026-08-18: a 1,000-precursor dump came
+    // back with 24 fragments per precursor against 12 in the library, and every
+    // trace statistic taken from it -- baseline, prominence, per-fragment apex
+    // agreement -- was computed over target+decoy and was wrong.
+    out.put("Precursor.Id\tDecoy\tTransition.Index\tProduct.Mz\tRT\tIntensity\n");
 
     const auto& p = library.precursors();
     const auto& t = library.transitions();
@@ -25,6 +33,7 @@ namespace ODIA
       // library writer does so the two files join on it.
       const auto seq = library.strings().get(p.modified_sequence[i]);
       const std::string id = std::string(seq) + std::to_string(static_cast<int>(p.charge[i]));
+      const char decoy_flag = p.decoy[i] ? '1' : '0';
       for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
       {
         const std::uint32_t tr = p.transition_begin[i] + k;
@@ -40,6 +49,7 @@ namespace ODIA
         for (std::uint32_t j = 0; j < n; ++j)
         {
           out.put(id); out.put('\t');
+          out.put(decoy_flag); out.put('\t');
           out.integer(tr); out.put('\t');
           out.number(product_mz, 6); out.put('\t');
           out.number(chromatograms.retentionTime(tr, j), 6); out.put('\t');
