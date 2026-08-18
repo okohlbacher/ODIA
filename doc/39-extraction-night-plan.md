@@ -133,3 +133,65 @@ real co-isolated signal that no box tightening can reject.
   against DIA-NN's 0.868. Still not adopted as a default: needs Astral, and
   needs the entrapment FDP measured alongside, because everything that has
   raised sensitivity today has also raised FDP.
+
+## Iteration 2: the selection-bias control, and where the deficit actually is
+
+Codex attacked the comparison itself: the precursors were chosen BY DIA-NN and
+aligned on DIA-NN's OWN apex, estimated from the same signal being plotted, so
+its 1.00 at zero is close to built in. Real concern, and testable.
+
+**Measured: alignment bias is empirically nil here.**
+
+| aligned on | tool | apex | baseline | prominence |
+|---|---|---:|---:|---:|
+| DIA-NN's apex | DIA-NN | 16,783 | 1,144 | 0.937 |
+| DIA-NN's apex | ODIA | 6,515 | 1,137 | 0.834 |
+| ODIA's apex | DIA-NN | 16,806 | 1,144 | 0.937 |
+| ODIA's apex | ODIA | 6,538 | 1,138 | 0.835 |
+
+Swapping the anchor moves nothing, because on precursors both tools identify the
+apexes agree: **median difference 0.0 s, p90 |diff| 2.8 s, 96% within 10 s.**
+Our retention-time determination is not the problem, and the comparison is fair.
+
+**The deficit is uniform, not concentrated in the hard cases:**
+
+| group | tool | apex | baseline | prominence | gap |
+|---|---|---:|---:|---:|---:|
+| SHARED (297, both identify) | DIA-NN | 16,783 | 1,144 | 0.937 | |
+| | ODIA | 6,515 | 1,137 | 0.834 | **0.103** |
+| HARD (703, DIA-NN only) | DIA-NN | 4,595 | 836 | 0.826 | |
+| | ODIA | 3,280 | 1,011 | 0.697 | **0.129** |
+
+Three things follow.
+
+1. **ODIA is ~0.10-0.13 prominence below DIA-NN everywhere.** It is not that hard
+   precursors are specially bad for us; we are uniformly slightly worse, and on
+   bright precursors that costs nothing because both tools clear their
+   thresholds anyway.
+2. **The hard set is genuinely dim for BOTH tools** -- DIA-NN's own apex falls
+   16,783 -> 4,595 (3.7x). These are low-abundance precursors, not ones DIA-NN
+   finds easy.
+3. **The mechanism is now arithmetic.** DIA-NN identifies the hard set at
+   prominence 0.826 -- almost exactly what ODIA achieves on the SHARED set
+   (0.834). On those same hard precursors ODIA delivers 0.697. So our constant
+   ~0.13 deficit is precisely what pushes a dim precursor below the bar that
+   DIA-NN still clears. Closing the deficit, not lowering a threshold, is the
+   fix.
+
+On SHARED precursors our baseline EQUALS DIA-NN's (1,137 vs 1,144); on HARD it
+is 1.21x worse (1,011 vs 836). So the interferent floor bites hardest exactly
+where the signal is weakest, which is consistent with a persistent co-isolated
+species rather than a detector floor.
+
+Absolute apex values are NOT comparable between the tools (DIA-NN reads 2.6x
+ours on SHARED, 1.4x on HARD); `--xic` scaling is unknown. Only the ratio
+statistics are used above.
+
+### Next
+
+- The ~0.13 prominence deficit is now the single number to attack. Candidates in
+  order: per-fragment apex spread (a sum over fragments whose apexes disagree is
+  flatter than each fragment); the interferent floor on dim precursors; whether
+  DIA-NN drops interfered fragments before summing (its log reports "Removing
+  interfering precursors").
+- `-mass_width_from_ids apply` still needs Astral before it can be a default.
