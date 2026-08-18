@@ -389,3 +389,61 @@ than reject outright -- a ranker degrades gracefully under distribution shift, a
 threshold calibrated on the first 20,000 arrivals does not. The documented risk
 is the semi-supervised loop failing to ignite at low true-positive rates
 (`lda.h:807-813`), which must be measured rather than assumed away.
+
+## Iteration 7: RETRACT "83.6% of true positives" as a production figure
+
+Codex found what kimi and I both missed. Three problems, the third decisive.
+
+**1. The "independent cross-validation" was a coincidence of unequal
+populations.** My fixture measured *of DIA-NN-positive precursors, 16.4% exceed
+tau*. The C++ sweep measured *of ALL 529,262 library targets -- mostly ballast
+that is genuinely absent from the sample -- 16.4% formed candidates*. Different
+denominators, different estimands. Equal percentages validate nothing.
+
+**2. Warm-up inflates the C++ number.** With 481,883 decoys and 529,262 targets
+interleaved, roughly 20,000 x 529,262/481,883 ~ 22,000 targets are admitted
+UNCONDITIONALLY before the null is ready. Steady-state target admission is then
+(86,832-21,970)/(529,262-21,970) ~ **12.8%**, not 16.4%.
+
+**3. The fixture does not reproduce deployed decisions.** All 297 SHARED
+precursors were identified by the production run, so every one of them PASSED the
+real Gate C. Yet only 38.0% clear the fixture's tau. That is a direct
+contradiction and it means the fixture's threshold is too high, most likely
+because its decoys are paired with KNOWN-PRESENT targets and therefore inherit
+parent-signal leakage, while production calibrates from library decoys whose
+parents are mostly absent.
+
+### What is retracted
+
+- **"Gate C rejects 83.6% of true positives"** as a statement about production.
+  Not established.
+- **"The gate admits only 38.0% of the precursors ODIA itself identifies"** --
+  kimi's "strongest, tool-independent" point. It is a fixture artefact; those
+  precursors demonstrably passed the real gate.
+- The claimed independent confirmation between the two 16.4% figures.
+
+### What survives
+
+- **836 of 1,000 reference-positive precursors fail this fixture-calibrated
+  threshold** -- true as stated, 95% binomial interval 81.3-85.9%, and not
+  explicable by DIA-NN false positives (10 false among the 1,000 would move it
+  to ~83.4-84.4%).
+- **The statistic separates weakly**: target median 4.94 vs decoy median 3.20,
+  d' ~ 0.67, AUC ~ 0.68. This comes from the two distributions, not from tau, so
+  the fixture's threshold error does not touch it. A d' of 0.67 is a usable
+  feature and a poor gate at ANY operating point.
+- **Decoy generation is not the cause** (iteration 6) -- that measurement is
+  about fragment overlap and tau shifts within the fixture, and its conclusion
+  (0.8 points) is unaffected.
+- The 5.0% decoy admission was always tautological -- those same decoys defined
+  their own 95th percentile.
+
+### The measurement that would settle it
+
+Per-precursor C++ versus Python concordance, not aggregate percentages:
+instrument the real gate to log (precursor, statistic, tau, admitted) and join
+against the fixture. That also yields the production false-negative rate
+directly, which is the number I claimed and do not have.
+
+**Implementing gate-as-feature is deferred until that exists.** Building on an
+unvalidated 83.6% is how the last four retractions happened.
