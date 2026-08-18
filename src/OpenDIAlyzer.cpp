@@ -1488,7 +1488,15 @@ protected:
         if (rc != EXECUTION_OK) { return rc; }
         return writeScoreResult_(scored, out, library);
       }
-      const auto rc = runExtraction_(library, run, out_chrom, &chromatograms);
+      // external_irt_, NOT the default false. When -irt_slope/-irt_intercept or
+      // a seed supplied the map it was already APPLIED to library.irt above, so
+      // the library carries run seconds; letting the extractor map it again
+      // composes the two. Measured: every one of 600 precursors was reported
+      // "predicted to elute outside the run" and the chromatogram dump came out
+      // empty (header only). extractAndScore_ two lines up has always passed
+      // external_irt_; only this -out_chrom path did not.
+      const auto rc = runExtraction_(library, run, out_chrom, &chromatograms,
+                                     0.0, external_irt_);
       if (rc != EXECUTION_OK) { return rc; }
       return runScoring_(library, chromatograms, out);
     }
