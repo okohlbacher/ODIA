@@ -300,7 +300,19 @@ namespace
       /// extraction losses, not picking losses, and they were pooled with
       /// picker rejects under `precursors_without_candidate`.
       std::size_t no_points[2] = {0, 0};   ///< [0] target, [1] decoy        ///< pointCount(0) < 3
-      std::size_t empty_trace[2] = {0, 0};   ///< [0] target, [1] decoy      ///< extracted, but the summed trace is 0
+      /// THREE different gates shared this counter and only the last is what
+      /// the name says. Every log before 2026-08-18 therefore reported Gate C
+      /// rejections as "empty trace" -- doc/34's "84.5% of targets had an
+      /// all-zero trace" was in fact 84.5% rejected by Gate C, a completely
+      /// different statement, and Gate C is ON by default (gate_alpha 0.05).
+      /// Kept as the sum so older numbers stay comparable; read the three below.
+      std::size_t empty_trace[2] = {0, 0};   ///< [0] target, [1] decoy
+      /// Co-elution evidence below the (1-alpha) quantile of the decoy null.
+      std::size_t gate_c[2] = {0, 0};
+      /// Too few transitions showing a noise excursion (the -gate_alpha 0 path).
+      std::size_t few_excursions[2] = {0, 0};
+      /// The summed trace really is zero -- nothing extracted at all.
+      std::size_t zero_trace[2] = {0, 0};
       std::size_t too_few_transitions[2] = {0, 0};   ///< [0] target, [1] decoy
       /// Entered the loop, computed correlations, and found no qualifying
       /// position anywhere in the window.
@@ -806,6 +818,9 @@ namespace
         }
         for (int c = 0; c < 2; ++c) { t.no_points[c] += r->no_points[c]; }
         for (int c = 0; c < 2; ++c) { t.empty_trace[c] += r->empty_trace[c]; }
+        for (int c = 0; c < 2; ++c) { t.gate_c[c] += r->gate_c[c]; }
+        for (int c = 0; c < 2; ++c) { t.few_excursions[c] += r->few_excursions[c]; }
+        for (int c = 0; c < 2; ++c) { t.zero_trace[c] += r->zero_trace[c]; }
         t.too_few_at_apex += r->too_few_at_apex;
       }
       return t;
@@ -873,18 +888,18 @@ namespace
                                          options.gate_smooth_half);
       if (!null_calib_.admit(m, is_decoy, options.gate_calibration_n,
                              options.gate_alpha))
-      { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+      { ++rejects_.empty_trace[is_decoy]; ++rejects_.gate_c[is_decoy]; ++result.precursors_without_candidate; return; }
     }
     else if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)
     {
       if (excursions < options.empty_trace_min_transitions)
-      { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+      { ++rejects_.empty_trace[is_decoy]; ++rejects_.few_excursions[is_decoy]; ++result.precursors_without_candidate; return; }
     }
     else
     {
       const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
       if (window_total <= 0.0)
-      { ++rejects_.empty_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+      { ++rejects_.empty_trace[is_decoy]; ++rejects_.zero_trace[is_decoy]; ++result.precursors_without_candidate; return; }
     }
 
     std::vector<MassAnchor> staged_anchors;
@@ -1885,6 +1900,9 @@ namespace
       w << "picker rejections, target/decoy (decoy:target ratio):"
         << "\n  no points (<3)      " << pc(r.no_points[0], r.no_points[1])
         << "\n  empty trace         " << pc(r.empty_trace[0], r.empty_trace[1])
+        << "\n    of which gate C   " << pc(r.gate_c[0], r.gate_c[1])
+        << "\n    too few excursions" << pc(r.few_excursions[0], r.few_excursions[1])
+        << "\n    truly zero trace  " << pc(r.zero_trace[0], r.zero_trace[1])
         << "\n  precursors reached  " << pc(r.reached[0], r.reached[1])
         << "\n  scan positions      " << pc(r.scans[0], r.scans[1])
         << "\n  <2 fragments        " << pc(r.too_few_present[0], r.too_few_present[1])
