@@ -539,6 +539,14 @@ add_test(NAME entrapment_fdp_matches_claimed_fdr COMMAND odia_entrapment)
 # gradient is wrong however well it fits.
 add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
 
+# The CiRT seed's LINE fit, in the regime doc/19 §3 budgets for: ~50% of apexes
+# placed on interference by a blind search over an uncalibrated run. Also pins
+# the refusal half of the contract -- noise must produce a residual large enough
+# to trip both the decoy control and the 10%-of-run abort. What shipped before
+# accepted a statistic that passed 81% of decoys, so the fit was never the thing
+# being checked.
+add_test(NAME robust_line_survives_half_wrong_anchors COMMAND odia_robust_line)
+
 # The retention-time axis of a precursor that falls in more than one isolation
 # window. Data-free: two overlapping windows and four cycles each, built in the
 # test. Nothing in the suite constructed a Chromatograms before this.

@@ -31,6 +31,12 @@ namespace ODIA
   std::vector<PrecursorPrefilter::Evidence>
   PrecursorPrefilter::measure(const Library& library, SpectrumSource& source,
                               const Options& options, Stats& stats)
+  { return measure(library, source, options, stats, nullptr); }
+
+  std::vector<PrecursorPrefilter::Evidence>
+  PrecursorPrefilter::measure(const Library& library, SpectrumSource& source,
+                              const Options& options, Stats& stats,
+                              const std::vector<char>* consider)
   {
     const auto t0 = std::chrono::steady_clock::now();
     const auto& p = library.precursors();
@@ -42,6 +48,7 @@ namespace ODIA
     std::vector<std::vector<Frag>> want(n_prec);
     for (std::size_t i = 0; i < n_prec; ++i)
     {
+      if (consider && !(*consider)[i]) { continue; }
       const std::uint32_t b = p.transition_begin[i], n = p.transition_count[i];
       std::vector<Frag> f;
       f.reserve(n);
@@ -137,6 +144,7 @@ namespace ODIA
           auto& idx = window_index[w];
           for (std::size_t i = 0; i < n_prec; ++i)
           {
+            if (consider && !(*consider)[i]) { continue; }
             if (!info[si].window.contains(fromFixed(p.mz[i]))) { continue; }
             for (const auto& fr : want[i])
             { idx.push_back({fr.mz, static_cast<std::uint32_t>(i), p.im[i]}); }

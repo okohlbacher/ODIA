@@ -154,6 +154,23 @@ namespace ODIA
     };
 
     /// Sweep the run and score every precursor. Does not select.
+    /// Restrict the work to these precursors (1 = consider), or null for all.
+    ///
+    /// NOT an optimisation detail -- it is the difference between seeding from
+    /// the CiRT standards and doing a whole-library blind search and then
+    /// throwing 99.99% of it away. With -rt_seed cirt only 708 of 9,617,705
+    /// precursors are ever read out of the result, but every one of the
+    /// 9,617,705 was measured: the per-window index is rebuilt by scanning all
+    /// of them and sorting ~115M fragment entries, once per isolation window.
+    /// Measured before this existed: 4h11 and still running, single-threaded.
+    ///
+    /// Indices are NOT renumbered -- the returned Evidence vector stays the
+    /// size of the library so every downstream index remains valid; entries
+    /// outside the subset are simply left at their default.
+    static std::vector<Evidence> measure(const Library& library, SpectrumSource& source,
+                                         const Options& options, Stats& stats,
+                                         const std::vector<char>* consider);
+
     static std::vector<Evidence> measure(const Library& library, SpectrumSource& source,
                                          const Options& options, Stats& stats);
 

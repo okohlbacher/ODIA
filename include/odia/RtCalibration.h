@@ -46,6 +46,49 @@ namespace ODIA::Calibration
                                         double loess_span = 0.0,
                                         const std::string& interpolation = "akima");
 
+  /// A robust straight line through dirty anchors, by Theil-Sen plus one
+  /// inlier-restricted least-squares refit.
+  ///
+  /// LINEAR, and deliberately so. doc/20 measured both options from a blind
+  /// CiRT search and a monotone PCHIP LOST 5-7 percentage points at +/-60 s on
+  /// both instruments (Astral 65.5% -> 58.9%, S08 81.2% -> 76.7%): ~30 anchors
+  /// cannot constrain a curve, so the fit chases anchor noise. The
+  /// nonlinearity is real and worth +5.1 pp (Astral) to +12.6 pp (S08) -- but
+  /// only from THOUSANDS of identifications, which is fine-tuning's job, not
+  /// the seed's. Fitting the curve here is the measured mistake.
+  ///
+  /// RANSAC rather than Theil-Sen, decided by measurement rather than by the
+  /// slash in doc/19 §3's "RANSAC / Theil-Sen". A blind search over an
+  /// uncalibrated run places apexes on interference, and doc/20 records how
+  /// many survive: 24 inliers on Astral, 47 on S08, from ~149 precursors. That
+  /// is 68-84% wrong, well past Theil-Sen's 29.3% breakdown -- and past it
+  /// Theil-Sen degrades QUIETLY (3.7% slope error, 221 s p95 on the synthetic
+  /// 50% case) rather than failing, which is the worst behaviour for a number
+  /// the seed then gates on.
+  struct Line
+  {
+    double slope = 0.0;
+    double intercept = 0.0;
+    /// Residuals of the INLIERS in the units of the anchors' second element.
+    double p95_residual = 0.0;
+    double median_abs_residual = 0.0;
+    std::size_t inliers = 0;
+    /// Consensus size as a fraction of the anchors offered. A tight residual
+    /// over a small consensus is what coincidence looks like.
+    double inlier_fraction = 0.0;
+    bool ok = false;
+  };
+
+  /// @param anchors (library RT, observed RT) pairs.
+  /// @param max_pairs cap on the Theil-Sen pair count; above it the pairs are
+  ///        strided deterministically rather than sampled at random, so the
+  ///        answer does not move between runs.
+  /// @param inlier_tolerance consensus half-width in the anchors' y units;
+  ///        0 uses 2% of the observed y span.
+  Line fitRobustLine(const std::vector<std::pair<double, double>>& anchors,
+                     double inlier_tolerance = 0.0,
+                     std::size_t max_pairs = 4000000);
+
   /// The identity map, for when there are no anchors to fit.
   OpenMS::TransformationDescription identity();
 

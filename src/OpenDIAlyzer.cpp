@@ -499,6 +499,20 @@ protected:
     registerDoubleOption_("rt_seed_ppm", "<ppm>", 15.0,
                           "Fragment tolerance for the seeding sweep. Wide on purpose: no mass "
                           "calibration exists yet at this point in the run.", false, true);
+    registerDoubleOption_("rt_seed_max_residual_frac", "<frac>", 0.10,
+                          "ABORT the run if the accepted seed's p95 residual exceeds this "
+                          "fraction of the run's retention-time span. A seed whose residual is "
+                          "a tenth of the gradient does not restrict anything: pass 1 then "
+                          "extracts essentially the whole run for every precursor, which is a "
+                          "15.6x point count, ~931 GiB and four hours on S08 (doc/34) for a "
+                          "result the tool itself labels a smoke test. Failing in 3 minutes is "
+                          "strictly better than failing in 6 hours. Set 0 to disable the check.",
+                          false, true);
+    registerFlag_("allow_uncalibrated", "Proceed even when no retention-time map could be "
+                  "fitted, spreading the library evenly over the run. This is a SMOKE TEST "
+                  "mode: with no map, RT_DELTA carries no information and is dropped, pass 1 "
+                  "covers the whole gradient, and identifications measure nothing about the "
+                  "scorer. Off by default so the failure is loud and immediate.", true);
     registerOutputFile_("out_rt_map", "<file>", "",
                         "Write the fitted retention-time map, so a later run on the same "
                         "instrument and gradient can be seeded with -rt_map_in instead of "
@@ -1432,9 +1446,29 @@ protected:
           writeLogInfo_("CiRT seed: matched " + std::to_string(n) +
                         " library precursors to the standards");
         }
-        const auto rc = seedRtFromPrefilter_(library, run);
+        const auto rc = getStringOption_("rt_seed") == "cirt"
+                          ? seedRtFromCirtSearch_(library, run)
+                          : seedRtFromPrefilter_(library, run);
         if (rc != EXECUTION_OK) { return rc; }
       }
+    }
+
+    // The gate the whole seed exists for. Reaching pass 1 with no map means
+    // every precursor is searched over the entire gradient -- doc/34 measured
+    // what that costs on S08 (111.5 G points, 931 GiB live, 4 h) and what it
+    // buys (nothing: var_rt_delta is dropped as uninformative, and the run is a
+    // smoke test). Refusing here is not conservatism, it is the cheaper failure.
+    if (!external_irt_ && !getFlag_("allow_uncalibrated"))
+    {
+      writeLogError_(
+        "No retention-time map was established, so pass 1 would search the WHOLE "
+        "gradient for every precursor. On S08 that is 15.6x the extracted points, "
+        "~931 GiB live and about four hours, for a result with no RT feature -- the "
+        "tool would label its own output a smoke test. Refusing now instead.\n"
+        "  Supply -irt_slope/-irt_intercept, or -rt_map_in from an earlier run on "
+        "this gradient, or fix the seed (-rt_seed cirt needs the standards to be "
+        "findable in this run). Pass -allow_uncalibrated to run anyway.");
+      return UNEXPECTED_RESULT;
     }
 
     // Pass 2 has scored peak groups to measure the 1/K0 axis at, so `auto`
@@ -2365,6 +2399,220 @@ protected:
     return cirt_seed_idx_.size();
   }
 
+  /// doc/19's step 1-2, which was designed, measured, and then never wired in.
+  ///
+  /// What shipped instead reused `PrecursorPrefilter::measure`'s CONTIGUITY
+  /// statistic as the anchor source. That statistic saturates: on S08 it passed
+  /// 286 targets and 286 decoys at >= 3 cycles -- 81% of each class -- so both
+  /// fits described noise (p95 602.5 s vs 601.3 s) and the decoy control
+  /// correctly refused every threshold. Decoys are peptides that are not in the
+  /// sample; when 81% of them show contiguous near-complete fragment matches,
+  /// the statistic is counting coincidence. doc/19 §1 had already recorded that
+  /// 5M precursors over ~380-980 Th saturate the m/z axis and that no
+  /// unsupervised matching statistic survives its own control.
+  ///
+  /// The measured method is different in kind: search the standards BLIND with
+  /// the real extractor and picker -- co-elution across fragments, not fragment
+  /// presence -- and fit a robust LINE to (library RT, observed apex). It is
+  /// affordable for exactly the reason doc/19 gives: it is a few hundred
+  /// precursors, not 10^7.
+  ExitCodes seedRtFromCirtSearch_(ODIA::Library& library, const std::string& run)
+  {
+    std::vector<std::size_t> keep(cirt_seed_idx_.begin(), cirt_seed_idx_.end());
+    std::sort(keep.begin(), keep.end());
+    ODIA::Library seed_lib = library.subsetByIndex(keep);
+    // The extractor slices isolation windows by binary search, so the subset
+    // has to carry its own m/z order rather than inherit the parent's.
+    seed_lib.sortByPrecursorMz();
+
+    std::size_t n_t = 0, n_d = 0;
+    for (std::size_t i = 0; i < seed_lib.precursorCount(); ++i)
+    { (seed_lib.precursors().decoy[i] ? n_d : n_t)++; }
+    {
+      std::ostringstream m;
+      m << "CiRT seed: blind search over " << seed_lib.precursorCount()
+        << " standards (" << n_t << " target / " << n_d << " decoy control), "
+           "whole gradient, no calibration -- affordable because it is "
+        << seed_lib.precursorCount() << " precursors and not "
+        << library.precursorCount() << ".";
+      writeLogInfo_(m.str());
+    }
+
+    ODIA::PeakGroupScorer::Result scored;
+    {
+      // The sub-library's RT column is the library's own scale, and no map
+      // exists yet -- which is the point of a blind search. 0 means the whole
+      // run.
+      const bool saved = scoring_rt_is_run_seconds_;
+      scoring_rt_is_run_seconds_ = false;
+      const auto rc = extractAndScore_(seed_lib, run, 0.0, false, scored);
+      scoring_rt_is_run_seconds_ = saved;
+      if (rc != EXECUTION_OK) { return rc; }
+    }
+
+    // The sub-library search reports "identified NOTHING at 1% FDR", and that
+    // is expected rather than a failure: a few hundred precursors cannot
+    // support a target-decoy threshold. The seed never reads a q-value -- it
+    // ranks candidates by dscore and fits their apexes, and the decoy control
+    // below is what stands in for the FDR the sub-search cannot compute.
+    //
+    // Best candidate per precursor by dscore. NOT by q-value: q is broadcast
+    // across a precursor's candidates, so comparing it picks whichever the sort
+    // left first -- the same defect the mobility path already avoids.
+    std::vector<const ODIA::PeakGroupScorer::PeakGroup*> best(
+      seed_lib.precursorCount(), nullptr);
+    double rt_lo = std::numeric_limits<double>::max();
+    double rt_hi = std::numeric_limits<double>::lowest();
+    for (const auto& g : scored.groups)
+    {
+      if (g.precursor >= best.size()) { continue; }
+      // Every candidate, target and decoy, bounds the run: interference is
+      // found across the whole gradient, so this is the extraction's own
+      // estimate of how long the run is, rather than a number we have to be
+      // told.
+      rt_lo = std::min(rt_lo, double(g.apex_rt));
+      rt_hi = std::max(rt_hi, double(g.apex_rt));
+      const auto*& b = best[g.precursor];
+      if (b == nullptr || g.dscore > b->dscore) { b = &g; }
+    }
+    const double run_span = (rt_hi > rt_lo) ? (rt_hi - rt_lo) : 0.0;
+
+    std::vector<std::pair<double, double>> tgt, dec;
+    for (std::size_t i = 0; i < best.size(); ++i)
+    {
+      if (best[i] == nullptr) { continue; }
+      const double lib_rt = double(seed_lib.precursors().irt[i]);
+      if (!std::isfinite(lib_rt)) { continue; }
+      (seed_lib.precursors().decoy[i] ? dec : tgt)
+        .push_back({lib_rt, double(best[i]->apex_rt)});
+    }
+
+    const auto line = ODIA::Calibration::fitRobustLine(tgt);
+    const auto null = ODIA::Calibration::fitRobustLine(dec);
+    {
+      std::ostringstream m;
+      m.setf(std::ios::fixed); m.precision(2);
+      m << "CiRT seed fit (Theil-Sen + inlier refit), run span "
+        << std::setprecision(1) << run_span << " s:";
+      m << "\n  targets: " << tgt.size() << " anchors";
+      if (line.ok)
+      { m << ", " << line.inliers << " inliers ("
+          << std::setprecision(0) << (100.0 * line.inlier_fraction)
+          << "% consensus), RT = " << std::setprecision(2)
+          << line.intercept << " + " << line.slope << " x libRT, p95 |resid| "
+          << std::setprecision(1) << line.p95_residual << " s, median "
+          << line.median_abs_residual << " s"; }
+      else { m << " -- TOO FEW to fit"; }
+      m << "\n  decoy control: " << dec.size() << " anchors";
+      if (null.ok)
+      { m << ", p95 |resid| " << std::setprecision(1) << null.p95_residual << " s"; }
+      else { m << " -- not fittable, so the control CANNOT be evaluated"; }
+      writeLogInfo_(m.str());
+    }
+
+    if (!line.ok)
+    {
+      writeLogError_("CiRT seed: too few standards were found to fit a line. The "
+                     "standards must be present, abundant and spread over the "
+                     "gradient for this to work; if this library or run does not "
+                     "carry them, seed from -irt_slope/-irt_intercept instead.");
+      return UNEXPECTED_RESULT;
+    }
+
+    // The decoy control, unchanged in spirit from the refused version: a fit
+    // from peptides that are not in the sample must be MEASURABLY worse. What
+    // changed is that the anchors now come from co-elution rather than from a
+    // saturating presence statistic, so the control can actually separate.
+    //
+    // "Not fittable" is not a pass -- a check that could not run has not been
+    // passed, and this is exactly where a rising bar pushes the decoys.
+    // Two different things can make the control not produce a line, and
+    // conflating them is a bug this gate shipped with: it inherited the
+    // prefilter path's rule that "not fittable" is never a pass. There, a
+    // rising contiguity threshold STARVED the decoys, so an unfittable control
+    // meant too small a sample -- correctly refused. Here the decoys are
+    // searched blind exactly like the targets, so the sample size is fixed by
+    // the standards list, and an unfittable control means RANSAC looked at a
+    // full-sized null and found no trend in it. That is the strongest pass
+    // available, and refusing it rejected a seed measured at p95 23.6 s on a
+    // 1,384 s run.
+    //
+    // So the sample size is checked FIRST, and only then the fit.
+    constexpr std::size_t MIN_CONTROL = 100;
+    if (dec.size() < MIN_CONTROL)
+    {
+      std::ostringstream m;
+      m << "CiRT seed REFUSED: only " << dec.size() << " decoy anchors, below "
+        << MIN_CONTROL << ". The control cannot be evaluated at this size, and "
+           "a check that could not run has not been passed.";
+      writeLogError_(m.str());
+      return UNEXPECTED_RESULT;
+    }
+    if (!null.ok)
+    {
+      std::ostringstream m;
+      m << "CiRT seed: decoy control PASSED decisively -- " << dec.size()
+        << " anchors and no line survives the consensus floor, i.e. the null "
+           "has no trend to find.";
+      writeLogInfo_(m.str());
+    }
+    else if (!(null.p95_residual > 1.25 * line.p95_residual))
+    {
+      std::ostringstream m;
+      m.setf(std::ios::fixed); m.precision(1);
+      m << "CiRT seed REFUSED: the decoy control fits as well as the targets ("
+        << null.p95_residual << " s vs " << line.p95_residual << " s, needs > "
+        << 1.25 * line.p95_residual << " s). The tightness came from the "
+           "fitting, not from the run.";
+      writeLogError_(m.str());
+      return UNEXPECTED_RESULT;
+    }
+
+    // The user's gate: a seed whose residual is a large fraction of the
+    // gradient restricts nothing, and pass 1 then costs what doc/34 measured.
+    const double max_frac = getDoubleOption_("rt_seed_max_residual_frac");
+    if (max_frac > 0.0 && run_span > 0.0)
+    {
+      const double frac = line.p95_residual / run_span;
+      if (frac > max_frac)
+      {
+        std::ostringstream m;
+        m.setf(std::ios::fixed); m.precision(1);
+        m << "CiRT seed REFUSED: p95 residual " << line.p95_residual
+          << " s is " << std::setprecision(1) << (100.0 * frac)
+          << "% of the " << run_span << " s run, over the "
+          << (100.0 * max_frac) << "% allowed by -rt_seed_max_residual_frac. "
+             "A window this wide does not restrict pass 1, so the run would "
+             "cost the unseeded price for a seeded result. Aborting here "
+             "instead of hours from now.";
+        writeLogError_(m.str());
+        return UNEXPECTED_RESULT;
+      }
+      std::ostringstream m;
+      m.setf(std::ios::fixed); m.precision(1);
+      m << "CiRT seed ACCEPTED: p95 residual " << line.p95_residual << " s = "
+        << (100.0 * frac) << "% of the run, decoy control "
+        << null.p95_residual << " s (" << std::setprecision(2)
+        << (null.p95_residual / line.p95_residual) << "x worse).";
+      writeLogInfo_(m.str());
+    }
+
+    // LINEAR here, monotone later. doc/20 measured that a curve fitted from
+    // this many anchors generalises WORSE (-5 to -7 pp at +/-60 s), and that the
+    // nonlinearity is worth +5.1 to +12.6 pp once thousands of identifications
+    // exist. refineToConvergence_ is where that is earned.
+    auto& irt = library.precursors().irt;
+    for (std::size_t i = 0; i < irt.size(); ++i)
+    {
+      if (std::isfinite(irt[i]))
+      { irt[i] = static_cast<float>(line.slope * double(irt[i]) + line.intercept); }
+    }
+    external_irt_ = true;
+    scoring_rt_is_run_seconds_ = true;
+    seed_p95_seconds_ = line.p95_residual;
+    return EXECUTION_OK;
+  }
+
   ExitCodes seedRtFromPrefilter_(ODIA::Library& library, const std::string& run)
   {
     ODIA::PrecursorPrefilter::Options po;
@@ -2377,7 +2625,25 @@ protected:
 
     ODIA::PrecursorPrefilter::Stats ps;
     auto source = ODIA::openRun(run);
-    const auto ev = ODIA::PrecursorPrefilter::measure(library, *source, po, ps);
+
+    // In CiRT mode measure ONLY the standards. Everything else was measured and
+    // then discarded: the anchor loop below keeps just cirt_seed_idx_, so 708 of
+    // 9,617,705 precursors were ever read, while the per-window target index was
+    // built by scanning all of them and sorting their fragments once per
+    // isolation window. That cost 4h11 single-threaded on an idle 384-core node.
+    //
+    // The set already contains the standards' DECOYS -- a decoy row stores its
+    // target's sequence -- so the "decoys must be measurably worse" control
+    // below still runs on a matched set.
+    std::vector<char> consider;
+    if (!cirt_seed_idx_.empty())
+    {
+      consider.assign(library.precursorCount(), 0);
+      for (const auto i : cirt_seed_idx_)
+      { if (i < consider.size()) { consider[i] = 1; } }
+    }
+    const auto ev = ODIA::PrecursorPrefilter::measure(
+      library, *source, po, ps, consider.empty() ? nullptr : &consider);
 
     const auto& p = library.precursors();
     const std::size_t min_run =
@@ -2391,6 +2657,11 @@ protected:
       ODIA::PrecursorPrefilter::Options hist = po;
       hist.keep_fraction = 1.0;                       // discards nothing
       ODIA::PrecursorPrefilter::select(library, ev, hist, ps);
+      if (!consider.empty())
+      {
+        writeLogInfo_("CiRT seed: measured " + std::to_string(cirt_seed_idx_.size()) +
+                      " standards, not the whole library");
+      }
     }
     {
       std::ostringstream h;

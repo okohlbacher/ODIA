@@ -265,6 +265,22 @@ namespace ODIA
     /// depends on how decoys are made.
     std::size_t dropDecoys();
 
+    /// A new library holding only @p keep, in the order given, with their
+    /// transitions gathered and the string arena carried over whole.
+    ///
+    /// Exists for the CiRT seed. doc/19's enabling property is SMALLNESS: a
+    /// few hundred precursors can be searched blind over the entire gradient,
+    /// which is exactly what is unaffordable for 10^7. Searching them means
+    /// running the real extractor and picker over them, and those take a
+    /// Library -- so the subset has to BE one, not a mask the callers of
+    /// extraction would each have to honour.
+    ///
+    /// The arena is copied rather than re-interned: handles stay valid, the
+    /// cost is one arena (~32 MB on our libraries) against the correctness of
+    /// every string handle in the gathered precursors, and a seed library is
+    /// short-lived.
+    Library subsetByIndex(const std::vector<std::size_t>& keep) const;
+
     /// First precursor with m/z >= @p mz_low, for window slicing.
     ///
     /// Throws if the library is not sorted. Returning 0 instead would be

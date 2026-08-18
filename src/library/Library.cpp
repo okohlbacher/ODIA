@@ -257,6 +257,67 @@ namespace ODIA
     return removed;
   }
 
+  Library Library::subsetByIndex(const std::vector<std::size_t>& keep) const
+  {
+    Library out;
+    // The arena first: every handle copied below indexes into it.
+    out.strings_ = strings_;
+    const std::size_t n = precursorCount();
+    out.precursors_.mz.reserve(keep.size());
+    out.precursors_.irt.reserve(keep.size());
+    out.precursors_.im.reserve(keep.size());
+    out.precursors_.ccs.reserve(keep.size());
+    out.precursors_.charge.reserve(keep.size());
+    out.precursors_.decoy.reserve(keep.size());
+    out.precursors_.modified_sequence.reserve(keep.size());
+    out.precursors_.protein_group.reserve(keep.size());
+    out.precursors_.transition_begin.reserve(keep.size());
+    out.precursors_.transition_count.reserve(keep.size());
+
+    for (const std::size_t i : keep)
+    {
+      // An out-of-range index would read past the arrays and produce a library
+      // that looks valid. Refuse instead -- the caller built this list from a
+      // set of its own and a mismatch is a bug there, not bad input.
+      if (i >= n)
+      {
+        throw std::out_of_range("Library::subsetByIndex: precursor " +
+                                std::to_string(i) + " of " + std::to_string(n));
+      }
+      out.precursors_.mz.push_back(precursors_.mz[i]);
+      out.precursors_.irt.push_back(precursors_.irt[i]);
+      out.precursors_.im.push_back(precursors_.im[i]);
+      out.precursors_.ccs.push_back(precursors_.ccs.empty()
+                                      ? std::numeric_limits<float>::quiet_NaN()
+                                      : precursors_.ccs[i]);
+      out.precursors_.charge.push_back(precursors_.charge[i]);
+      out.precursors_.decoy.push_back(precursors_.decoy[i]);
+      out.precursors_.modified_sequence.push_back(precursors_.modified_sequence[i]);
+      out.precursors_.protein_group.push_back(precursors_.protein_group[i]);
+
+      const std::uint32_t begin = precursors_.transition_begin[i];
+      const std::uint32_t count = precursors_.transition_count[i];
+      out.precursors_.transition_begin.push_back(
+        static_cast<std::uint32_t>(out.transitions_.product_mz.size()));
+      out.precursors_.transition_count.push_back(count);
+      for (std::uint32_t k = 0; k < count; ++k)
+      {
+        const std::uint32_t s = begin + k;
+        out.transitions_.product_mz.push_back(transitions_.product_mz[s]);
+        out.transitions_.library_intensity.push_back(transitions_.library_intensity[s]);
+        out.transitions_.type.push_back(transitions_.type[s]);
+        out.transitions_.ordinal.push_back(transitions_.ordinal[s]);
+        out.transitions_.charge.push_back(transitions_.charge[s]);
+        out.transitions_.loss.push_back(transitions_.loss[s]);
+      }
+    }
+    // Gathering destroys m/z order even when `keep` was ascending, because the
+    // source order is by m/z only if the source was sorted. Say so rather than
+    // inherit a stale flag; every window slice depends on it.
+    out.sorted_by_mz_ = false;
+    return out;
+  }
+
   void Library::sortByPrecursorMz()
   {
     const std::size_t n = precursorCount();

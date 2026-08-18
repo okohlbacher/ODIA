@@ -335,6 +335,162 @@ namespace ODIA::Calibration
     return fitTrafo_(interpolation, std::move(anchors), p95_resid, loess_span);
   }
 
+  namespace
+  {
+    double quantileOfSorted(const std::vector<double>& v, double q)
+    {
+      if (v.empty()) { return 0.0; }
+      const double pos = q * double(v.size() - 1);
+      const std::size_t lo = std::size_t(pos);
+      const std::size_t hi = std::min(lo + 1, v.size() - 1);
+      return v[lo] + (pos - double(lo)) * (v[hi] - v[lo]);
+    }
+
+    double medianOf(std::vector<double> v)
+    {
+      if (v.empty()) { return 0.0; }
+      std::sort(v.begin(), v.end());
+      return quantileOfSorted(v, 0.5);
+    }
+  } // namespace
+
+  Line fitRobustLine(const std::vector<std::pair<double, double>>& anchors,
+                     double inlier_tolerance, std::size_t max_pairs)
+  {
+    Line out;
+    // Two points define a line but say nothing about whether it is the right
+    // one, and the caller gates on the residual -- which is identically zero
+    // for two points. Refuse below a count where the residual means something.
+    if (anchors.size() < 8) { return out; }
+
+    double x_lo = anchors[0].first, x_hi = anchors[0].first;
+    double y_lo = anchors[0].second, y_hi = anchors[0].second;
+    for (const auto& a : anchors)
+    {
+      x_lo = std::min(x_lo, a.first);  x_hi = std::max(x_hi, a.first);
+      y_lo = std::min(y_lo, a.second); y_hi = std::max(y_hi, a.second);
+    }
+    const double x_span = x_hi - x_lo;
+    const double y_span = y_hi - y_lo;
+    if (!(x_span > 0.0) || !(y_span > 0.0)) { return out; }
+
+    // RANSAC, not Theil-Sen, and the difference is not academic here.
+    // Theil-Sen's breakdown point is 29.3%; doc/20 records 24 inliers on Astral
+    // and 47 on S08 from a ~149-precursor blind search, i.e. 68-84% of the
+    // anchors are wrong. That is past breakdown, and a Theil-Sen fit on the
+    // synthetic 50% case lands 3.7% off in slope with a 221 s p95 -- it
+    // degrades quietly rather than failing, which is the worst behaviour for a
+    // quantity the seed then gates on.
+    //
+    // The consensus band. An apex on interference is uniform over the gradient,
+    // so it agrees with a candidate line only by coincidence; a real one sits
+    // within chromatographic jitter of it. 2% of the observed span is ~36 s on
+    // a 1800 s run -- wide enough for jitter, far narrower than the ~600 s
+    // scatter a wrong anchor set produces.
+    const double tol = inlier_tolerance > 0.0 ? inlier_tolerance : 0.02 * y_span;
+    // Pairs too close in x give a slope dominated by y noise; such a line would
+    // be scored on its consensus like any other and can win by accident.
+    const double min_gap = 0.05 * x_span;
+
+    const std::size_t n = anchors.size();
+    const std::size_t all_pairs = n * (n - 1) / 2;
+    // EXHAUSTIVE over pairs where affordable, strided above the cap. Both are
+    // deterministic -- random sampling would move the seed, and therefore every
+    // downstream number, between runs of the same input.
+    const std::size_t stride =
+      all_pairs > max_pairs ? (all_pairs / max_pairs) + 1 : 1;
+
+    double best_slope = 0.0, best_intercept = 0.0, best_sse = 0.0;
+    std::size_t best_count = 0;
+    std::size_t seen = 0;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      for (std::size_t j = i + 1; j < n; ++j, ++seen)
+      {
+        if (seen % stride != 0) { continue; }
+        const double dx = anchors[j].first - anchors[i].first;
+        if (std::fabs(dx) < min_gap) { continue; }
+        const double m = (anchors[j].second - anchors[i].second) / dx;
+        const double b = anchors[i].second - m * anchors[i].first;
+
+        std::size_t count = 0;
+        double sse = 0.0;
+        for (const auto& a : anchors)
+        {
+          const double r = a.second - (m * a.first + b);
+          if (std::fabs(r) <= tol) { ++count; sse += r * r; }
+        }
+        // Ties broken by tightness, so the winner is reproducible rather than
+        // whichever pair the loop reached first.
+        if (count > best_count || (count == best_count && count > 0 && sse < best_sse))
+        { best_count = count; best_sse = sse; best_slope = m; best_intercept = b; }
+      }
+    }
+    // A consensus smaller than chance is not a trend, and RANSAC will always
+    // find SOME consensus: it maximises over every candidate line, so pure
+    // noise still yields the luckiest few points that happen to line up.
+    // Measured on the synthetic noise case, that is ~10 of 120 anchors with a
+    // 32 s p95 -- a residual small enough to pass a 10%-of-run gate while
+    // meaning nothing. The residual therefore cannot be the only guard.
+    //
+    // An anchor uncorrelated with the library value lands in a band of width
+    // 2*tol somewhere in y_span, so chance alone supplies n * 2*tol/y_span
+    // inliers. Requiring 3x that separates the real case (52% consensus) from
+    // the noise case (~10%) with room to spare.
+    const double by_chance = double(n) * 2.0 * tol / y_span;
+    const std::size_t floor_count =
+      std::max<std::size_t>(8, static_cast<std::size_t>(3.0 * by_chance) + 1);
+    if (best_count < floor_count) { return out; }
+
+    // Least squares on the consensus set. RANSAC finds WHICH anchors are real;
+    // it is a poor estimator of the line itself, because the winning line is
+    // defined by two of them.
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+    std::size_t k = 0;
+    for (const auto& a : anchors)
+    {
+      if (std::fabs(a.second - (best_slope * a.first + best_intercept)) > tol)
+      { continue; }
+      sx += a.first; sy += a.second;
+      sxx += a.first * a.first; sxy += a.first * a.second;
+      ++k;
+    }
+    if (k >= 8)
+    {
+      const double den = double(k) * sxx - sx * sx;
+      if (std::fabs(den) > 0.0)
+      {
+        best_slope = (double(k) * sxy - sx * sy) / den;
+        best_intercept = (sy - best_slope * sx) / double(k);
+      }
+    }
+
+    // Residuals over the CONSENSUS, recomputed after the refit. Including the
+    // outliers would report the quality of the anchor set rather than of the
+    // map, and the map is what the caller is deciding about.
+    std::vector<double> inlier_resid;
+    inlier_resid.reserve(n);
+    for (const auto& a : anchors)
+    {
+      const double r = std::fabs(a.second - (best_slope * a.first + best_intercept));
+      if (r <= tol) { inlier_resid.push_back(r); }
+    }
+    if (inlier_resid.size() < 8) { return out; }
+    std::sort(inlier_resid.begin(), inlier_resid.end());
+    out.slope = best_slope;
+    out.intercept = best_intercept;
+    out.p95_residual = quantileOfSorted(inlier_resid, 0.95);
+    out.median_abs_residual = quantileOfSorted(inlier_resid, 0.5);
+    out.inliers = inlier_resid.size();
+    // The consensus FRACTION is what separates a real trend from coincidence,
+    // and the caller needs it: a line supported by 20 of 350 anchors can have a
+    // tiny residual and mean nothing. The seed's decoy control exists because
+    // this number alone is not decisive either.
+    out.inlier_fraction = double(inlier_resid.size()) / double(n);
+    out.ok = true;
+    return out;
+  }
+
   TransformationDescription identity() { return identityTrafo_(); }
 
   double invertAt(const TransformationDescription& map, double rt, double lo, double hi)
