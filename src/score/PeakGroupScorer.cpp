@@ -759,6 +759,8 @@ namespace
       std::vector<double> decoy_stats;
       double tau = 0.0;
       bool ready = false;
+      std::FILE* log = nullptr;
+      std::mutex log_mu;
       std::size_t admitted_uncalibrated = 0;
 
       /// Returns true if the precursor should be admitted.
@@ -780,6 +782,26 @@ namespace
           return true;                 // admit while the null is being built
         }
         return stat >= tau;
+      }
+
+      /// Record one decision. The path is passed in rather than stored because
+      /// this struct is a file-scope singleton declared before Options is in
+      /// scope here; the file is opened on first use and closed at exit.
+      void note(const std::string& path, std::uint32_t precursor, bool is_decoy,
+                double stat, bool admitted, bool was_ready)
+      {
+        if (path.empty()) { return; }
+        std::lock_guard<std::mutex> g(log_mu);
+        if (log == nullptr)
+        {
+          log = std::fopen(path.c_str(), "w");
+          if (log == nullptr) { return; }
+          std::fprintf(log, "precursor\tdecoy\tstatistic\ttau\ttau_ready\tadmitted\n");
+        }
+        std::fprintf(log, "%u\t%d\t%.6g\t%.6g\t%d\t%d\n",
+                     precursor, is_decoy ? 1 : 0, stat, tau,
+                     was_ready ? 1 : 0, admitted ? 1 : 0);
+        std::fflush(log);
       }
     };
     NullCalibration null_calib_;
@@ -886,8 +908,13 @@ namespace
       //     C co-elution     4.8%       100.0%
       const double m = coelutionEvidence(chromatogram, points,
                                          options.gate_smooth_half);
-      if (!null_calib_.admit(m, is_decoy, options.gate_calibration_n,
-                             options.gate_alpha))
+      const bool was_ready = null_calib_.ready;
+      const bool admitted = null_calib_.admit(m, is_decoy,
+                                              options.gate_calibration_n,
+                                              options.gate_alpha);
+      null_calib_.note(options.gate_log_path, static_cast<std::uint32_t>(i),
+                       is_decoy, m, admitted, was_ready);
+      if (!admitted)
       { ++rejects_.empty_trace[is_decoy]; ++rejects_.gate_c[is_decoy]; ++result.precursors_without_candidate; return; }
     }
     else if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)

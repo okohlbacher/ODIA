@@ -513,6 +513,16 @@ protected:
                   "mode: with no map, RT_DELTA carries no information and is dropped, pass 1 "
                   "covers the whole gradient, and identifications measure nothing about the "
                   "scorer. Off by default so the failure is loud and immediate.", true);
+    registerOutputFile_("gate_log", "<file>", "",
+                        "Write every Gate C decision: precursor, decoy flag, the co-elution "
+                        "statistic, the threshold in force, whether that threshold was "
+                        "calibrated yet, and the verdict. Diagnostic only -- it changes no "
+                        "behaviour.\n\nThe gate's false-NEGATIVE rate on real targets has "
+                        "never been measured: -gate_alpha bounds DECOY admission by "
+                        "construction and nothing bounds target rejection. Reconstructions "
+                        "outside the tool cannot settle it, because a precursor the run "
+                        "identifies has by definition already passed the gate.", false, true);
+    setValidFormats_("gate_log", {"tsv"}, false);
     registerOutputFile_("out_rt_map", "<file>", "",
                         "Write the fitted retention-time map, so a later run on the same "
                         "instrument and gradient can be seeded with -rt_map_in instead of "
@@ -3269,6 +3279,7 @@ protected:
     options.apex_evidence = getDoubleOption_("apex_evidence");
     options.empty_trace_sigma = getDoubleOption_("empty_trace_sigma");
     options.gate_alpha = getDoubleOption_("gate_alpha");
+    options.gate_log_path = getStringOption_("gate_log");
     options.gate_calibration_n =
       static_cast<std::size_t>(std::max(100, getIntOption_("gate_calibration_n")));
     options.empty_trace_min_transitions =

@@ -263,6 +263,20 @@ namespace ODIA
       /// calibrating on the null rather than assuming a distribution.
       double gate_alpha = 0.05;
 
+      /// Write every Gate C decision here: precursor, decoy flag, the
+      /// statistic, tau in force, whether tau was ready, and the verdict.
+      /// Empty disables it.
+      ///
+      /// The gate's false-NEGATIVE rate on real targets has never been
+      /// measured -- alpha bounds decoy admission by construction and nothing
+      /// bounds target rejection. A Python re-implementation on a fixture put
+      /// it near 84%, but that fixture could not reproduce deployed decisions:
+      /// every precursor the production run identified had by definition passed
+      /// the real gate, yet only 38% of them cleared the fixture's tau.
+      /// Aggregate percentages cannot settle this; these per-precursor
+      /// decisions from the deployed code can.
+      std::string gate_log_path;
+
       /// Decoy statistics to collect before the threshold is fixed. Those
       /// precursors are admitted unconditionally and scored normally; 20,000
       /// against a ~10M library is 0.2%.
