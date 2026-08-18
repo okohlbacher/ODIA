@@ -244,3 +244,68 @@ the alternative rather than found the cause.
 Standing items 1 (`-mass_width_from_ids apply`, real: 3x lower baseline) and the
 mobility default (confirmed correct) survive as improvements on their own terms,
 but neither is the explanation for the missing third.
+
+## Iteration 5: Gate C measured directly. It rejects 83.6% of TRUE positives.
+
+With the target/decoy split now trustworthy, `coelutionEvidence` was ported
+faithfully (sqrt, robust z per transition against its own MAD, sum, smooth over
+2*half+1, take the max) and evaluated on the fixture. Every one of these 1,000
+targets is a precursor DIA-NN identifies at q <= 0.01, and every decoy is ODIA's
+own generated decoy for it.
+
+```
+  targets  n=1000  median statistic 4.94
+  decoys   n=1000  median statistic 3.20
+  tau = 95th percentile of decoys = 13.24     (alpha = 0.05)
+
+  targets ADMITTED  16.4%          decoys admitted  5.0%
+    SHARED (both tools find)  median 9.96   admitted 38.0%
+    HARD   (DIA-NN only)      median 4.08   admitted  7.3%
+```
+
+**Cross-validated independently.** The alpha sweep on the 1,011,145-precursor
+library formed candidates for 86,832 of 529,262 targets = **16.4%**. This
+fixture, a different library and a different code path, gives targets >= tau =
+**16.4%**. Two independent measurements, same number.
+
+### What is wrong with Gate C
+
+1. **It rejects 83.6% of known-true precursors.** Not marginal ones -- these are
+   all DIA-NN identifications at 1% FDR.
+2. **Its statistic barely separates the classes.** Target median 4.94 against
+   decoy median 3.20: a factor of 1.54, with heavily overlapping distributions.
+   A threshold at the decoy 95th percentile therefore sits at 13.24, which is
+   2.7x ABOVE the target median. Rejecting most targets is the arithmetic
+   consequence, not a tuning accident.
+3. **`alpha` is documented as "the false-admit rate, by construction"** and it is
+   -- for decoys. Nothing in the design bounds the false-REJECT rate on targets,
+   and nobody measured it until now. It is 83.6%.
+
+### What follows
+
+Tuning alpha treats the symptom: at alpha=0.50 the sweep recovered 4,178 IDs but
+at 43.7% entrapment FDP. The statistic is what fails, so the options are
+
+- **use the statistic as a FEATURE, not a hard cut** -- let the classifier weigh
+  it against the other 14 sub-scores, where a 1.54x separation is worth
+  something rather than fatal (this is also what OpenSWATH does: candidate
+  formation applies no correlation gate at all, and library correlation enters
+  only as a score -- deep-research, verified 3-0 against the OpenMS 3.6 source);
+- or **replace the statistic** with one that separates better before any
+  thresholding is considered.
+
+Both are scoring-side changes. Extraction has now been excluded twice: our
+traces are cleaner than DIA-NN's (iteration 4) and our apexes agree with its to
+a median of 0.0 s (iteration 2).
+
+### Caveats on this measurement
+
+- The statistic was re-implemented in Python from the C++; it is a faithful port
+  but not the same code.
+- The fixture's traces span +/-60 s around DIA-NN's apex, narrower than
+  production's window, so absolute values are not production's.
+- Production calibrates tau from the first 20,000 decoys across the whole
+  library, a more diverse population than these 1,000 matched decoys.
+
+None of these affect the target-versus-decoy comparison, which is the point, and
+the independent 16.4% agreement argues the port is sound.
