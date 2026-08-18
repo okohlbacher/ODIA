@@ -309,3 +309,83 @@ a median of 0.0 s (iteration 2).
 
 None of these affect the target-versus-decoy comparison, which is the point, and
 the independent 16.4% agreement argues the port is sound.
+
+## Iteration 6: decoy generation is NOT the problem; the gate is, and here is the arithmetic
+
+### Decoy generation: hypothesis REFUTED by measurement
+
+The standing suspicion -- DIA-NN-style mutation changes only two residues, so a
+decoy keeps most of its target's b/y series and re-extracts its signal, inflating
+the null -- is **false for the transitions that are actually extracted**:
+
+```
+1,000 target/decoy pairs
+  decoy fragments shared with its target: median 0.0%, p90 0.0%
+  940 of 1,000 pairs share NO fragment m/z at all
+  correlation(shared fraction, decoy statistic) = +0.085
+
+  tau from ALL decoys                   13.24  -> targets admitted 16.4%
+  tau from decoys sharing NO fragments   12.63 -> targets admitted 17.2%
+```
+
+Mutation does change two residues, but each library entry stores its own top-12
+fragments by predicted intensity, and the target's twelve and the decoy's twelve
+essentially never coincide. **Switching to shuffle or reverse decoys would move
+tau by 5% and target admission by 0.8 points.** Worklist item 6 is closed
+negative, and the same reasoning retracts my earlier explanation for why the
+RT-seed decoy control failed on DIA-NN's library -- that was also premised on
+shared fragments, and it is wrong.
+
+What IS confirmed in code (kimi): the decoy inherits its target's precursor m/z,
+iRT, IM, CCS and charge (`LibraryGenerator.cpp:1014-1024`), so it is extracted in
+the same isolation window at the same retention time and therefore sees the same
+CO-ISOLATED INTERFERENCE. That, not shared fragments, is why the decoy median
+sits at 3.20 rather than at a noise floor. The null is elevated by shared
+interference, which is arguably correct behaviour for a null.
+
+### The gate's arithmetic, from kimi
+
+Fitting log-normals to the measured medians and the 16.4% admission:
+
+```
+  sigma ~ 0.645 (one sigma is a 1.9x fold change)
+  d' = 0.43/0.645 = 0.67      AUC = 0.68
+  to admit 90% of targets, decoy admission must rise to ~73%
+```
+
+**5% decoy admission and 84% target rejection are the same fact.** d' = 0.67
+describes a usable FEATURE and an indefensible GATE; there is no operating point
+that both bounds compute and retains targets.
+
+### The strongest evidence is tool-independent
+
+Kimi's sharpest point: forget DIA-NN. **The gate admits only 38.0% of the
+precursors ODIA ITSELF identifies.** The pipeline rejects 62% of its own output
+before scoring it. No cross-tool comparison is needed to see that is wrong.
+
+### Two further code facts
+
+- **The gate was validated on SYNTHETIC data only** (`PeakGroupScorer.cpp:864-871`
+  records the Astral measurement it replaced, and the "100% present-precursor
+  retention" claim comes from inserted signal). It has never been checked
+  against real targets on a real run until tonight.
+- **My warm-up premise was wrong.** Precursors reach the gate in RETENTION-TIME
+  order, not m/z order -- `ChromatogramExtractor.cpp:307` says so outright. So
+  tau is calibrated from the ~20,000 earliest-eluting decoys and applied to late
+  eluters, and every target emitted before the null is ready is admitted
+  unconditionally, i.e. early-RT precursors are gate-free. That is an RT-dependent
+  sensitivity artefact in the final report.
+- **Kimi also claims tau is nondeterministic** because `admit` runs under a mutex
+  with multi-threaded emission. That CONTRADICTS a measurement of my own: the
+  emit loop calling `sink.accept` runs on the driver thread outside
+  `pool_impl.run`, which is exactly why the sink was 52.6% of pass 1 (doc/34).
+  Recorded as unresolved; I side with serial until someone measures tau twice.
+
+### Decision
+
+Demote the statistic to a sub-score. It is already computed per precursor, so it
+is a free 20th feature. If compute must be bounded, rank and cap (top-K) rather
+than reject outright -- a ranker degrades gracefully under distribution shift, a
+threshold calibrated on the first 20,000 arrivals does not. The documented risk
+is the semi-supervised loop failing to ignite at low true-positive rates
+(`lda.h:807-813`), which must be measured rather than assumed away.
