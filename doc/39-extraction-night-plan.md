@@ -195,3 +195,52 @@ statistics are used above.
   DIA-NN drops interfered fragments before summing (its log reports "Removing
   interfering precursors").
 - `-mass_width_from_ids apply` still needs Astral before it can be a default.
+
+## Iteration 4: the trace comparison, redone target-only
+
+`-out_chrom` had no Decoy column and a decoy reconstructs its target's
+Precursor.Id, so every ODIA trace statistic in iterations 1-3 was computed over
+target+decoy against DIA-NN's target-only XICs. **Exactly 50.0% of the rows
+(1,015,290 of 2,030,581) were decoy.** Fixed in `2438328`; re-measured:
+
+| group | tool | apex | baseline | prominence | frag spread p75 | frags on apex | n frag |
+|---|---|---:|---:|---:|---:|---:|---:|
+| SHARED (297) | DIA-NN | 16,783 | 1,144 | 0.937 | 1.4 s | 83.3% | 10 |
+| SHARED | **ODIA** | 5,031 | **518** | **0.908** | 9.0 s | 66.7% | 12 |
+| HARD (703) | DIA-NN | 4,595 | 836 | 0.826 | 13.2 s | 55.6% | 10 |
+| HARD | **ODIA** | 2,008 | **434** | **0.793** | 17.3 s | 33.3% | 12 |
+
+### What this retracts
+
+- **"Our baseline is 1.7-2.8x DIA-NN's."** FALSE, and backwards. Target-only our
+  baseline is **518 against DIA-NN's 1,144** on shared precursors and **434
+  against 836** on hard ones -- we are 1.9-2.2x CLEANER. Every "interferent
+  floor" conclusion built on that number is withdrawn, including the reading of
+  the `aggregate=max` result.
+- **"A constant ~0.13 prominence deficit."** The real gap is **0.029 on shared
+  and 0.033 on hard** -- four times smaller, i.e. we are within ~3% of DIA-NN.
+- **"We use 24 fragments to DIA-NN's 10."** We use 12 to its 10. The 24 was
+  target+decoy.
+- **"41.7% of our fragments peak at the apex against DIA-NN's 83.3%."** The true
+  figure is 66.7%.
+
+### What survives, and is now the whole remaining gap
+
+**Per-fragment apex agreement.** 66.7% vs 83.3% on shared, 33.3% vs 55.6% on
+hard -- a real 17-22 point deficit, with spread 9.0 s against 1.4 s. Our summed
+trace is nearly as good as DIA-NN's (prominence within 3%) while our INDIVIDUAL
+fragments scatter far more about the apex. That pattern is per-fragment noise,
+not systematic misplacement: a sum over noisy-but-unbiased fragments still peaks
+in the right place.
+
+### The consequence for the whole investigation
+
+**Extraction quality is not what loses the 11,145 precursors.** Our traces are
+cleaner than DIA-NN's, our prominence is within 3%, our apexes agree with its to
+a median of 0.0 s. The loss therefore sits where iteration 0 first put it --
+Gate C and the scoring that follows -- and the extraction detour has ruled out
+the alternative rather than found the cause.
+
+Standing items 1 (`-mass_width_from_ids apply`, real: 3x lower baseline) and the
+mobility default (confirmed correct) survive as improvements on their own terms,
+but neither is the explanation for the missing third.
