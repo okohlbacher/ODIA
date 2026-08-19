@@ -1171,7 +1171,16 @@ namespace
       // With the constant, a decoy in an empty window got
       // log(apex / 1e-6) ~ 16-25 and outranked a real target on a real
       // baseline -- the floor did not guard the ratio, it inverted it.
-      const double floor_bg = std::max(background, 0.01 * cand.apex_value);
+      // The 0.01 fraction caps the ratio at 100:1, and MEASURED on S08 every
+      // real peak is above that: of 21,055 known-present precursors, log_sn
+      // took 10 distinct values and its p10, p50 and p90 were all exactly
+      // log(100) = 4.605. The floor that stopped decoys scoring high also
+      // removed the entire dynamic range where present precursors live, making
+      // this a constant for the class it is supposed to discriminate.
+      // `std::min(10.0, ...)` below already bounds the runaway case, so the
+      // fraction is now a knob rather than a hard 1%.
+      const double floor_bg =
+        std::max(background, options.log_sn_floor_frac * cand.apex_value);
       g.sub_scores[LOG_SN] = floor_bg > 0.0
         ? std::min(10.0, std::log(std::max(1e-12, cand.apex_value) / floor_bg))
         : 0.0;

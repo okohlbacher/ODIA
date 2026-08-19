@@ -447,6 +447,17 @@ protected:
                           "admitted 90.1% (sum>0), 99.0% (3 sigma), 4.8% (this), real peaks kept "
                           "100% in all three. It has never been checked against real targets on "
                           "a real run.", false, true);
+    registerDoubleOption_("log_sn_floor_frac", "<frac>", 0.01,
+                          "Background floor for var_log_sn, as a fraction of the candidate "
+                          "apex. It CAPS the reported signal-to-noise at 1/frac, so the "
+                          "historical 0.01 caps at 100:1.\n\nMeasured on S08: all 21,055 "
+                          "known-present precursors sat at that cap -- var_log_sn took 10 "
+                          "distinct values and its p10, p50 and p90 were all exactly "
+                          "log(100) = 4.605. The floor introduced to stop a decoy in an empty "
+                          "window scoring log(apex/1e-6) also removed the whole dynamic range "
+                          "where real peaks live, leaving the feature constant for the class "
+                          "it exists to discriminate. 0.001 caps at 1000:1; the min(10.0) "
+                          "clamp bounds the runaway case either way.", false, true);
     registerStringOption_("gate_mode", "<mode>", "quantile",
                           "How a precursor is admitted to candidate formation.\n\n"
                           "'quantile' is Gate C: admit above the (1-gate_alpha) quantile of "
@@ -3444,6 +3455,7 @@ protected:
     options.empty_trace_sigma = getDoubleOption_("empty_trace_sigma");
     options.gate_alpha = getDoubleOption_("gate_alpha");
     options.gate_mode = getStringOption_("gate_mode");
+    options.log_sn_floor_frac = getDoubleOption_("log_sn_floor_frac");
     options.gate_k = getDoubleOption_("gate_k");
     options.gate_log_path = getStringOption_("gate_log");
     options.gate_calibration_n =

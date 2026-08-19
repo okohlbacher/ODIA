@@ -265,6 +265,14 @@ namespace ODIA
       /// off, because tau is fixed from the first `gate_calibration_n` decoys
       /// and precursors arrive in retention-time order, so the calibration
       /// sample is the earliest eluters. The construction is what breaks it.
+      /// Background floor for var_log_sn, as a fraction of the candidate apex.
+      /// It caps the reported ratio at 1/frac, so 0.01 caps at 100:1 -- and
+      /// measured on S08, ALL 21,055 known-present precursors sat at that cap
+      /// (10 distinct values, p10 = p50 = p90 = log(100) = 4.605). The feature
+      /// was therefore a constant for present precursors. 0.001 caps at 1000:1;
+      /// `min(10.0, ...)` bounds the runaway case regardless.
+      double log_sn_floor_frac = 0.01;
+
       double gate_alpha = 0.05;
 
       /// "quantile" (default) is Gate C: a run-wide decoy-null quantile.
