@@ -514,6 +514,17 @@ protected:
     registerDoubleOption_("rt_seed_ppm", "<ppm>", 15.0,
                           "Fragment tolerance for the seeding sweep. Wide on purpose: no mass "
                           "calibration exists yet at this point in the run.", false, true);
+    registerIntOption_("im_seed_min_anchors", "<n>", 100,
+                       "Standards that must carry an observed 1/K0 before the CiRT blind "
+                       "search's GLOBAL mobility offset is applied to the library ahead of "
+                       "pass 1. Set 0 to disable.\n\nThis is a single constant on purpose. "
+                       "The full per-charge, m/z-shaped calibration needs "
+                       "-min_anchors_per_charge (120) per charge and the seed cannot supply "
+                       "that -- it is why pass 1 logs the correction as DEFERRED. But pass 1 "
+                       "is where the candidate gate first rejects, so deferring means gating "
+                       "on an uncorrected mobility axis. One number from ~200 anchors removes "
+                       "most of the clipping; the per-charge refinement is still earned in "
+                       "pass 2 from thousands.", false, true);
     registerDoubleOption_("rt_seed_max_residual_frac", "<frac>", 0.10,
                           "ABORT the run if the accepted seed's p95 residual exceeds this "
                           "fraction of the run's retention-time span. A seed whose residual is "
@@ -2643,6 +2654,89 @@ protected:
     external_irt_ = true;
     scoring_rt_is_run_seconds_ = true;
     seed_p95_seconds_ = line.p95_residual;
+
+    // A GLOBAL 1/K0 offset from the same blind search, applied to the library
+    // before pass 1 ever extracts.
+    //
+    // The extractor already centres its mobility window on
+    // `lib_im + mobility_model->offsetFor(...)`, but that model is fitted FROM
+    // pass-1 peak groups, so pass 1 itself is logged "DEFERRED -- this pass
+    // extracts on the library's 1/K0". Pass 1 is where Gate C first rejects
+    // 3.77M targets, so the correction arrives one pass after the decision it
+    // would change. Measured on a 1,000-precursor fixture, emulating pass 2's
+    // fitted correction: apex intensity +79% on precursors both tools find and
+    // +24% on the hard ones, with baseline up only 34%, and trace prominence
+    // going 0.908 -> 0.937, i.e. exactly DIA-NN's.
+    //
+    // A single constant is deliberate. 213 target anchors cannot support a
+    // per-charge m/z-interpolated model -- that is why the full calibration
+    // refuses them -- but they support one number comfortably, and at a median
+    // +0.0183 against a 0.025 half-window one number removes most of the
+    // clipping. The per-charge refinement is still earned in pass 2 from
+    // thousands of anchors.
+    {
+      std::vector<double> d_t, d_d;
+      for (std::size_t i = 0; i < best.size(); ++i)
+      {
+        if (best[i] == nullptr) { continue; }
+        const double lib = double(seed_lib.precursors().im[i]);
+        const double obs = double(best[i]->observed_im);
+        if (!std::isfinite(lib) || !std::isfinite(obs) || lib <= 0.0) { continue; }
+        (seed_lib.precursors().decoy[i] ? d_d : d_t).push_back(obs - lib);
+      }
+      const std::size_t need =
+        static_cast<std::size_t>(std::max(0, getIntOption_("im_seed_min_anchors")));
+      if (d_t.size() < need)
+      {
+        std::ostringstream m;
+        m << "mobility seed: only " << d_t.size() << " standards carried an observed "
+             "1/K0, below -im_seed_min_anchors " << need << ", so pass 1 extracts on the "
+             "library's own mobility.";
+        writeLogInfo_(m.str());
+      }
+      else
+      {
+        std::sort(d_t.begin(), d_t.end());
+        const double med = d_t[d_t.size() / 2];
+        std::vector<double> ad;
+        ad.reserve(d_t.size());
+        for (const double v : d_t) { ad.push_back(std::abs(v - med)); }
+        std::sort(ad.begin(), ad.end());
+        const double mad = 1.4826 * ad[ad.size() / 2];
+        // Never shift by more than the window itself -- a correction that large
+        // is a failed measurement, not a calibration, and moving the window a
+        // full width off is strictly worse than leaving it alone.
+        const double cap = getDoubleOption_("precursor_im_window");
+        std::ostringstream m;
+        m.setf(std::ios::fixed); m.precision(4);
+        m << "mobility seed: " << d_t.size() << " standards, median offset " << med
+          << " 1/K0 (robust sigma " << mad << ")";
+        if (!d_d.empty())
+        {
+          std::sort(d_d.begin(), d_d.end());
+          m << ", decoy control median " << d_d[d_d.size() / 2];
+        }
+        if (std::abs(med) > cap)
+        {
+          m << " -- REFUSED, |offset| exceeds the " << cap << " extraction half-width, "
+               "which is a failed measurement rather than a calibration.";
+          writeLogWarn_(m.str());
+        }
+        else
+        {
+          auto& im = library.precursors().im;
+          std::size_t moved = 0;
+          for (std::size_t i = 0; i < im.size(); ++i)
+          {
+            if (std::isfinite(im[i]) && im[i] > 0.0f)
+            { im[i] = static_cast<float>(double(im[i]) + med); ++moved; }
+          }
+          m << " -- APPLIED to " << moved << " precursors, so pass 1 extracts on a "
+               "corrected mobility axis instead of deferring to pass 2.";
+          writeLogInfo_(m.str());
+        }
+      }
+    }
 
     // DISCARD the calibrations the blind search fitted. Both are cached on
     // first fit (`mass_model_known_`, `mobility_model_known_`) so the two real
