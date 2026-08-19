@@ -103,6 +103,33 @@ change and is untested here.
 
 ## Per-feature discriminative power, on KNOWN-PRESENT precursors
 
+> **CORRECTED.** The first version of this table used an AUC with ORDINAL ranks
+> from a stable sort, which breaks ties in favour of the first array and biases
+> heavily-tied features DOWNWARD. Codex caught it via an internal inconsistency
+> -- var_usable_fragments was reported at AUC 0.353 while its distribution had
+> present >= decoy, which cannot both be true. Recomputed with average ranks:
+>
+> | feature | corrected | as first reported |
+> |---|---:|---:|
+> | log_sn | **0.502** | 0.004 |
+> | im_spread | **0.500** | 0.000 |
+> | usable_fragments | **0.620** | 0.353 |
+> | fragment_coverage | **0.823** | 0.781 |
+> | peak_width_ratio | 0.337 | 0.241 |
+>
+> So log_sn and im_spread are not INVERTED, they are exactly uninformative --
+> which is what a constant should score. usable_fragments is mildly INFORMATIVE
+> and was never dead. fragment_coverage is the second-strongest feature, not the
+> third. Untied features (corr_sum, xcorr_*, library_*, rt_delta) are unchanged
+> to three decimals, and the headline -- classifier 0.901 against corr_sum 0.906
+> -- is unaffected, DScore being effectively tie-free.
+>
+> Corrected ranking: corr_sum 0.906, fragment_coverage 0.823,
+> xcorr_coelution 0.811, xcorr_shape 0.764, library_rmsd 0.747,
+> library_dotprod 0.708, library_corr 0.688, intensity_score 0.630,
+> usable_fragments 0.620. Dead: log_sn 0.502, im_spread 0.500, ms1_coelution
+> all-NaN. Lower-is-better and fine: rt_delta 0.311, peak_width_ratio 0.337.
+
 Measured on the 14,081-ID full run, positive class = DIA-NN's 21,055 confirmed
 present precursors (using all targets gives ~0.5 for everything -- 99% of them
 are absent, which is the prevalence trap this project keeps falling into).
