@@ -96,3 +96,58 @@ interferer dominate. That is OpenSWATH's actual rule (verified 3-0 against the
 OpenMS 3.6 source: a detectable local maximum in at least ONE detecting
 transition, no fragment-count or correlation gate at formation). It is a larger
 change and is untested here.
+
+---
+
+# Sub-score audit, and a negative result on var_log_sn
+
+## Per-feature discriminative power, on KNOWN-PRESENT precursors
+
+Measured on the 14,081-ID full run, positive class = DIA-NN's 21,055 confirmed
+present precursors (using all targets gives ~0.5 for everything -- 99% of them
+are absent, which is the prevalence trap this project keeps falling into).
+
+| strong | AUC | weak / inverted | AUC |
+|---|---:|---|---:|
+| **corr_sum** | **0.906** | mass_spread | 0.553 |
+| xcorr_coelution | 0.810 | candidate_margin | 0.548 |
+| fragment_coverage | 0.781 | im_delta | 0.513 |
+| xcorr_shape | 0.764 | mass_accuracy | 0.490 |
+| library_rmsd | 0.747 | yseries_score | 0.465 |
+| library_dotprod | 0.708 | usable_fragments | 0.353 |
+| library_corr | 0.688 | rt_delta | 0.311 |
+| intensity_score | 0.630 | peak_width_ratio | 0.241 |
+
+`rt_delta` and `peak_width_ratio` are lower-is-better and therefore fine.
+
+**The 19-feature classifier scores AUC 0.901 -- WORSE than corr_sum alone at
+0.906.** Four features explain why:
+
+| feature | state |
+|---|---|
+| `ms1_coelution` | all-NaN; the CiRT seed's 708-precursor MS1 traces persisted (fixed, 9a496fa) |
+| `log_sn` | constant: TEN distinct values over 21,055 present precursors, p10 = p50 = p90 = log(100) |
+| `im_spread` | literal constant: ONE distinct value across both classes |
+| `usable_fragments` | pinned at 12, as its own comment admits |
+
+## var_log_sn: un-saturating it changes nothing
+
+`floor_bg = max(background, frac * apex)` caps signal-to-noise at 1/frac, and
+every real peak exceeds 100:1, so the historical 0.01 pinned the feature. Swept
+on the 1M fixture:
+
+| frac | cap | distinct var_log_sn values | IDs |
+|---|---:|---:|---:|
+| 0.01 (default) | 100:1 | 2,406 | 1,650 |
+| 0.001 | 1000:1 | **11,023** | **1,644** |
+
+The feature genuinely un-saturated -- 4.6x the distinct values -- and
+identifications did not move (-6, 0.4%). **Default left at 0.01.**
+
+The lesson is about prioritisation: a feature can be visibly broken and still not
+be a lever, because its information is already carried by correlated features
+(intensity_score, corr_sum) or because the classifier cannot exploit it. Repair
+work on the remaining dead features should be ordered by measured effect, not by
+how broken they look. On that basis `ms1_coelution` is the one worth having --
+doc/17 records it at 13.7x enrichment in its top bin, and unlike log_sn it was
+returning NaN rather than a constant, so the classifier never saw it at all.
