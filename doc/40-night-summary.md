@@ -132,3 +132,86 @@ over a join or a normalisation that had not been validated.
 - The ODIA + DIA-NN-library arm of the 2x2 was stopped at 7h43, still in pass 1
   at 52% with 170 GiB, against 2h02 for the whole ourlib run. Cause not
   diagnosed.
+
+---
+
+# Adversarial review of the FDR finding, and what it narrows
+
+Codex reviewed the tail analysis. Its verdict, with my audit of the parts that
+were cheap to test.
+
+## What survives
+
+**The tail non-exchangeability is established.** At top-1,000, seven of the eight
+entrapment-or-decoy hits are entrapments; under the pooled null (p0 = 0.13691)
+that is `P(Binom(8, 0.137) >= 7) = 6.4e-6`. The 44.1x point estimate has an exact
+95% interval of **5.7x to ~1,990x** -- imprecise upward, but the lower bound
+excludes exchangeability decisively. One decoy is enough.
+
+**The entrapment hits are genuinely absent peptides.** Audited on codex's
+suggestion:
+
+```
+  287 entrapment hits in the top 14,167
+  269 distinct stripped sequences        (they do NOT collapse to a few peaks)
+    8 also occur as a human sequence     (I/L collapsed) -- physically present
+  FDP reported 11.8%  ->  11.4% excluding those 8
+```
+
+So codex's alternative #1 (shared or indistinguishable peptides) is worth 0.4
+percentage points, and #5 (contamination or carryover concentrating in a few
+sequences) is refuted -- 269 distinct sequences from 287 hits, the most repeated
+appearing 3 times as charge states.
+
+## What is corrected
+
+**"Exchangeable in the bulk" was sloppy.** AUC 0.510 is not evidence of
+exchangeability: its null SE is ~3.6e-4, so 0.510 is many sigma from 0.5. AUC
+also measures average pairwise ordering and is largely blind to an extreme-tail
+defect. The bulk statement should be dropped; only the tail measurement carries.
+
+**"The classifier is fine" is unsupported.** Good tail behaviour at top-1,000 is
+consistent with a classifier that is fine AND with one that is poor but
+occasionally lucky. The right claim is narrower: the ranking is USABLE in the
+region a threshold occupies.
+
+**"Only threshold placement, not the classifier or candidate formation" does not
+follow.** Those are not mutually exclusive, and nothing measured separates them.
+
+## What remains unproven
+
+**Entrapment peptides are demonstrably non-exchangeable with DECOYS. Whether they
+correctly model FALSE HUMAN targets is not established**, and that is what an
+FDP estimate actually requires. Codex's three surviving alternatives, none
+cheaply testable:
+
+- near-human spectral matches (plant-human homologs, near-isobaric precursors
+  sharing intense fragments) may occur at a different rate in Arabidopsis than
+  among absent human candidates;
+- different effective search opportunity -- raw precursor counts do not control
+  length, charge, m/z, mobility, window coverage, predicted RT or fragment
+  count, and a small covariate shift becomes large after extreme-tail selection;
+- false human targets are themselves special (isoforms, homologs, wrong
+  charge/modification forms) and may be harder or easier than Arabidopsis. The
+  direction is not identifiable from this experiment.
+
+So the honest form of the finding is:
+
+> Constructed decoys and entrapment peptides have severely non-exchangeable
+> score tails (>= 5.7x, likely ~44x at top-1,000). Target-decoy therefore
+> under-counts false positives at the operating point, by an amount that
+> entrapment estimates at ~12x but which is not itself calibrated.
+
+The direction is solid. The magnitude is an estimate with assumptions, and
+"11.5% FDP" should be quoted with them.
+
+## Consequence for the plan
+
+Recommendation 1 stands but its wording changes: **report the entrapment FDP
+alongside the q-value** rather than replacing the q-value with it. Users get a
+number whose assumptions are visible, and the comparison across gate settings
+becomes meaningful without asserting that entrapment is ground truth.
+
+The stratified audit codex proposes -- match entrapment and decoys on charge,
+length, m/z, RT, IM and fragment count before comparing tails -- is the next
+real measurement, and it needs no new run.
