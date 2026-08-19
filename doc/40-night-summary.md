@@ -215,3 +215,53 @@ becomes meaningful without asserting that entrapment is ground truth.
 The stratified audit codex proposes -- match entrapment and decoys on charge,
 length, m/z, RT, IM and fragment count before comparing tails -- is the next
 real measurement, and it needs no new run.
+
+## The stratified audit: covariate shift does NOT explain the tail
+
+Codex's alternative #3 was that entrapment and decoy populations differ in
+length, charge, m/z or fragment count, and that a small covariate shift becomes
+enormous after extreme-tail selection. Tested by stratifying on
+(charge, m/z quartile, length tercile) and comparing observed entrapment hits
+against what exchangeability WITHIN each stratum predicts:
+
+```
+  populations   H 735,739 (m/z 523.3, z 2.85, len 13)
+                E 128,528 (m/z 532.3, z 2.83, len 13)
+                D 840,324 (m/z 521.8, z 2.87, len 13)
+
+  top 14,167, 17 strata:
+    observed entrapment hits                278
+    expected if exchangeable within strata   20.2
+    STRATIFIED excess                       13.8x     (unstratified 13.7x)
+```
+
+**Stratification changes nothing** -- 13.7x becomes 13.8x. The three covariates
+are already near-identical between the populations, and the tail excess survives
+conditioning on them.
+
+Three of codex's five alternatives are now refuted:
+
+| # | alternative | verdict |
+|---|---|---|
+| 1 | shared or indistinguishable peptides | worth 0.4 percentage points (8 of 287) |
+| 3 | different effective search opportunity | refuted: 13.7x -> 13.8x stratified |
+| 5 | contamination or carryover in few sequences | refuted: 269 distinct sequences from 287 hits |
+| 2 | near-human spectral matches | OPEN, not cheaply testable |
+| 4 | false human targets are themselves special | OPEN, not identifiable from this experiment |
+
+The finding is therefore considerably stronger than when the review began,
+though the two surviving alternatives still prevent calling entrapment a
+calibrated estimate of false-human-target behaviour.
+
+## A further inconsistency found while doing this
+
+**Decoy Precursor.Id differs between the library and the output TSVs.** The
+library writes `AAAA...LER2_decoy`; the scored-peak-group TSV writes the bare
+target ID `PGQHPAASPTHPSAIR4` and relies on its `Decoy` column. Joining a
+library against an output on `Precursor.Id` therefore silently matches ZERO
+decoys -- which is exactly what happened here, and cost an iteration to notice.
+
+This is the same class as the `-out_chrom` defect fixed in 2438328, and the
+analyses in this document are unaffected because all of them keyed on the Decoy
+column. But the inconsistency is a trap for anyone joining the two files, and
+one of the two conventions should win.
