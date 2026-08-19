@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -259,14 +260,12 @@ namespace ODIA
       /// (1-alpha) quantile of the run's OWN decoy null. 0 disables it and
       /// falls back to the excursion gate.
       ///
-      /// alpha IS the false-admit rate, by construction -- that is the point of
-      /// calibrating on the null rather than assuming a distribution.
-      /// 0 disables Gate C and falls through to the excursion gate. DEFAULT
-      /// CHANGED 2026-08-19 from 0.05: -gate_log over 885,045 decisions of the
-      /// DEPLOYED gate found targets admitted 16.0% and decoys 16.5% -- it
-      /// admits decoys more often than targets, rejecting ~84% of both and
-      /// separating neither. See -gate_alpha's help for the full record.
-      double gate_alpha = 0.0;
+      /// alpha was documented as "the false-admit rate, by construction". It is
+      /// NOT, in deployment: measured, 0.05 produced 16.5% decoy admission, 3.3x
+      /// off, because tau is fixed from the first `gate_calibration_n` decoys
+      /// and precursors arrive in retention-time order, so the calibration
+      /// sample is the earliest eluters. The construction is what breaks it.
+      double gate_alpha = 0.05;
 
       /// Write every Gate C decision here: precursor, decoy flag, the
       /// statistic, tau in force, whether tau was ready, and the verdict.
@@ -638,6 +637,19 @@ namespace ODIA
       }
 
     private:
+      /// Gate C's decoy null, OWNED BY THIS SESSION.
+      ///
+      /// It used to be a file-scope singleton, so tau was calibrated once per
+      /// PROCESS and pass 2 inherited pass 1's threshold -- pass 1 extracts
+      /// wide, pass 2 narrow, and the statistic is a max over the window, so
+      /// pass 2's values are systematically smaller than the tau they were
+      /// compared against. An epoch counter was tried first and is not
+      /// sufficient: with two Sessions constructed up front, the first one
+      /// calibrates under the second's epoch and the second then inherits its
+      /// tau, which is the original bug. Ownership is the only version that
+      /// cannot be defeated by construction order.
+      struct GateNull;
+      std::shared_ptr<GateNull> gate_null_;
       const Library* library_;
       Options options_;
 

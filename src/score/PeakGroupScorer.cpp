@@ -724,25 +724,6 @@ namespace
 
   namespace
   {
-    /// Bumped by every Session. NullCalibration is a file-scope singleton --
-    /// Session is declared in the header and cannot hold a type defined in
-    /// this translation unit's anonymous namespace -- so instead of moving it,
-    /// each Session marks a new epoch and the calibration resets when it sees
-    /// one. Without this, tau is computed ONCE PER PROCESS and pass 2 inherits
-    /// the threshold pass 1 calibrated: pass 1 extracts wide and pass 2 narrow,
-    /// the statistic is a max over the window, so pass 2's values are
-    /// systematically smaller than the tau they are compared against.
-    std::atomic<unsigned> g_calibration_epoch{0};
-  }
-
-  PeakGroupScorer::Session::Session(const Library& library, const Options& options)
-    : library_(&library), options_(options)
-  {
-    g_calibration_epoch.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  namespace
-  {
     // thread_local for speed -- these increment once per scan position, so a
     // shared atomic would serialise the hottest loop in the scorer. But a
     // thread_local counter that is REPORTED from one thread reports one
@@ -767,13 +748,12 @@ namespace
     ///
     /// Admitting the first tranche costs nothing at this scale: 20,000 against
     /// a 9,983,789-precursor library is 0.2%, and they are scored normally.
-    struct NullCalibration
+    struct NullCalibrationBody
     {
       std::mutex mu;
       std::vector<double> decoy_stats;
       double tau = 0.0;
       bool ready = false;
-      unsigned epoch = 0;
       std::FILE* log = nullptr;
       std::mutex log_mu;
       std::size_t admitted_uncalibrated = 0;
@@ -782,8 +762,6 @@ namespace
       bool admit(double stat, bool is_decoy, std::size_t n_needed, double alpha)
       {
         std::lock_guard<std::mutex> g(mu);
-        const unsigned now = g_calibration_epoch.load(std::memory_order_relaxed);
-        if (epoch != now) { epoch = now; decoy_stats.clear(); tau = 0.0; ready = false; }
         if (!ready)
         {
           if (is_decoy) { decoy_stats.push_back(stat); }
@@ -821,7 +799,6 @@ namespace
         std::fflush(log);
       }
     };
-    NullCalibration null_calib_;
 
     std::mutex rejects_registry_mutex_;
     std::vector<PickerRejects*> rejects_registry_;
@@ -864,6 +841,13 @@ namespace
       }
       return t;
     }
+  }
+
+  struct PeakGroupScorer::Session::GateNull : NullCalibrationBody {};
+
+  PeakGroupScorer::Session::Session(const Library& library, const Options& options)
+    : gate_null_(std::make_shared<GateNull>()), library_(&library), options_(options)
+  {
   }
 
   void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram)
@@ -925,11 +909,11 @@ namespace
       //     C co-elution     4.8%       100.0%
       const double m = coelutionEvidence(chromatogram, points,
                                          options.gate_smooth_half);
-      const bool was_ready = null_calib_.ready;
-      const bool admitted = null_calib_.admit(m, is_decoy,
+      const bool was_ready = gate_null_->ready;
+      const bool admitted = gate_null_->admit(m, is_decoy,
                                               options.gate_calibration_n,
                                               options.gate_alpha);
-      null_calib_.note(options.gate_log_path, static_cast<std::uint32_t>(i),
+      gate_null_->note(options.gate_log_path, static_cast<std::uint32_t>(i),
                        is_decoy, m, admitted, was_ready);
       if (!admitted)
       { ++rejects_.empty_trace[is_decoy]; ++rejects_.gate_c[is_decoy]; ++result.precursors_without_candidate; return; }
