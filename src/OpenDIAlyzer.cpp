@@ -505,6 +505,17 @@ protected:
                        "How many transitions must show that excursion. Two matches the picker's "
                        "own 'at least 2 fragments present' bar: one transition above noise is a "
                        "spike, not a peak group.", false, true);
+    registerIntOption_("min_library_fragments", "<n>", 3,
+                       "Drop library precursors carrying fewer than <n> fragments, applied to "
+                       "targets AND decoys. The decoy builder already refuses to go below the "
+                       "target bar, but the target side never re-checks after the MS2 model's "
+                       "intensity floor prunes fragments, so the S08 library holds 366,084 "
+                       "targets (7.3%) at 0-2 fragments against ZERO decoys there -- a null "
+                       "drawn from precursors with strictly more evidence than the targets it "
+                       "prices. It is also where the library correlation is degenerate: two "
+                       "points always give |r| = 1. Measured, that class supplied 1,214 of "
+                       "14,081 accepted identifications at an entrapment FDP of 78.4%, against "
+                       "5.0% for the 12-fragment class. 0 disables.", false, true);
     registerInputFile_("cirt_standards", "<file>", "",
                        "CiRT standards for the INITIAL calibration: endogenous peptides "
                        "(Parker et al., Mol Cell Proteomics 2015) present in most human "
@@ -3802,6 +3813,8 @@ protected:
     ODIA::DIANNLibraryFile::Fingerprint generated_fp;
     std::string stop_after = getStringOption_("stop_after");
     const bool sort_library = getFlag_("sort_library");
+    const auto min_library_fragments =
+      static_cast<std::uint32_t>(std::max(0, getIntOption_("min_library_fragments")));
 
     if (tr.empty() == fasta.empty())
     {
@@ -4433,6 +4446,51 @@ protected:
     library.shrinkToFit();
 
     reportLibrary_(library, load_ms);
+
+    // LABEL SYMMETRY. `appendDecoys` refuses to build a decoy below the
+    // fragment-count bar its target cleared, but the target side never
+    // re-checks after the MS2 model's intensity floor prunes fragments
+    // (LibraryGenerator.cpp:617-626 commits `ranked.size()` unconditionally).
+    // The two rules disagree, and the S08 library records the disagreement:
+    //
+    //     fragments        0        1        2        3
+    //     targets      5,285  202,178  158,621  148,227
+    //     decoys           0        0        0  148,227
+    //
+    // 366,084 targets (7.3%) therefore live in a fragment-count regime where
+    // NO decoy exists, and 4,991,901 - 4,625,804 = 366,097 missing decoys is
+    // that same population. Those targets are scored against a null drawn
+    // entirely from precursors with more evidence than they have -- exactly
+    // the anti-conservative mode D7 rule 2 names, and the one the decoy-based
+    // q-value cannot see. It is also the regime where the library correlation
+    // is degenerate (see pearsonShrunk), so the two defects compound: a
+    // two-fragment target got a mathematically guaranteed |r| = 1 and had no
+    // decoy anywhere near it to price that against.
+    //
+    // Applied to BOTH classes, so this narrows the search symmetrically rather
+    // than trading one asymmetry for another.
+    if (min_library_fragments > 0)
+    {
+      const auto& p_lib = library.precursors();
+      std::vector<std::size_t> keep;
+      keep.reserve(library.precursorCount());
+      std::size_t dropped_t = 0, dropped_d = 0;
+      for (std::size_t i = 0; i < library.precursorCount(); ++i)
+      {
+        if (p_lib.transition_count[i] >= min_library_fragments) { keep.push_back(i); }
+        else if (p_lib.decoy[i]) { ++dropped_d; }
+        else { ++dropped_t; }
+      }
+      if (dropped_t || dropped_d)
+      {
+        library = library.subsetByIndex(keep);
+        writeLogInfo_("-min_library_fragments " + std::to_string(min_library_fragments) +
+                      " dropped " + std::to_string(dropped_t) + " targets and " +
+                      std::to_string(dropped_d) + " decoys carrying fewer fragments; " +
+                      std::to_string(library.precursorCount()) + " precursors remain");
+      }
+    }
+
 
     if (stop_after == "extract")
     {

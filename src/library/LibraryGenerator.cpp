@@ -614,6 +614,18 @@ namespace ODIA
         }
         if (ranked.size() > params.max_fragments) { ranked.resize(params.max_fragments); }
 
+        // The same bar `enumerateFragments` applied BEFORE prediction. The
+        // base-peak intensity floor above can prune a precursor below it, and
+        // until now nothing re-checked, so the count committed here was
+        // whatever survived. That is where the S08 library's 366,084 targets
+        // with 0-2 fragments came from -- and `appendDecoys` then refused to
+        // build decoys for them, because it does apply the bar. The result was
+        // 7.3% of targets competing against a null that contained nothing like
+        // them. Emptied rather than kept: a precursor below the bar its decoy
+        // would have to clear is not searchable, and `-min_library_fragments`
+        // drops it symmetrically at load.
+        if (ranked.size() < params.min_fragments) { ranked.clear(); }
+
         for (const auto& [intensity, f] : ranked)
         {
           built.product_mz.push_back(toFixed(f.mz));
