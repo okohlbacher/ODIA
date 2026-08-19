@@ -540,6 +540,21 @@ protected:
     registerDoubleOption_("rt_seed_ppm", "<ppm>", 15.0,
                           "Fragment tolerance for the seeding sweep. Wide on purpose: no mass "
                           "calibration exists yet at this point in the run.", false, true);
+    registerDoubleOption_("im_seed_window_scale", "<x>", 3.0,
+                          "Widen the mobility window by this factor FOR THE CiRT BLIND SEARCH "
+                          "ONLY, so the seed's 1/K0 offset is not truncated by the window it "
+                          "exists to correct.\n\nThe extractor accumulates the "
+                          "intensity-weighted mobility that becomes `observed_im` only over "
+                          "peaks inside +/-precursor_im_window of the LIBRARY value. If the "
+                          "library is systematically off, the observable mass is asymmetric and "
+                          "the centroid is pulled toward the window centre, so the measured "
+                          "offset is biased toward zero. Measured on S08: the seed reported "
+                          "+0.0044 through a +/-0.025 window while the same run's pass-2 "
+                          "calibration, fitted from thousands of anchors, found +0.0199 -- a "
+                          "4.5x attenuation. 1 disables the widening.\n\nThe seed is a few "
+                          "hundred precursors, so a wider window there costs almost nothing; "
+                          "the full library still extracts at -precursor_im_window, recentred.",
+                          false, true);
     registerIntOption_("im_seed_min_anchors", "<n>", 100,
                        "Standards that must carry an observed 1/K0 before the CiRT blind "
                        "search's GLOBAL mobility offset is applied to the library ahead of "
@@ -1164,7 +1179,9 @@ protected:
     options.max_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_precursors")));
     options.use_ion_mobility = !getFlag_("no_ion_mobility");
-    options.precursor_im_window = getDoubleOption_("precursor_im_window");
+    options.precursor_im_window = seed_im_window_ > 0.0
+                                    ? seed_im_window_
+                                    : getDoubleOption_("precursor_im_window");
     // The width measurement reads the ppm planes, so asking for it turns them
     // on. Making the user pass two flags that only work together is a way of
     // producing runs that silently measured nothing.
@@ -2515,7 +2532,10 @@ protected:
       // run.
       const bool saved = scoring_rt_is_run_seconds_;
       scoring_rt_is_run_seconds_ = false;
+      seed_im_window_ = getDoubleOption_("precursor_im_window")
+                        * std::max(1.0, getDoubleOption_("im_seed_window_scale"));
       const auto rc = extractAndScore_(seed_lib, run, 0.0, false, scored);
+      seed_im_window_ = 0.0;
       scoring_rt_is_run_seconds_ = saved;
       if (rc != EXECUTION_OK) { return rc; }
     }
@@ -3444,6 +3464,15 @@ protected:
   bool scoring_rt_is_run_seconds_ = false;
   /// Guards the one-shot conversion of an externally supplied iRT map.
   bool external_irt_ = false;
+  /// Non-zero only while the CiRT blind search runs, widening the mobility
+  /// window for that search alone. The seed measures its 1/K0 offset from
+  /// `observed_im`, which the extractor accumulates ONLY over peaks inside
+  /// +/-precursor_im_window of the library value -- so a seed measured through
+  /// the production window is truncated by the very window it exists to
+  /// correct, and the offset comes back attenuated toward zero. Measured: the
+  /// seed reported +0.0044 where the same run's full pass-2 calibration, fitted
+  /// from thousands of anchors, found +0.0199.
+  double seed_im_window_ = 0.0;
   std::size_t pass_offset_ = 0;
 
   /// Refit the retention-time map and the discriminant, alternately, until the
