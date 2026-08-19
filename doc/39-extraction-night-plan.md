@@ -510,3 +510,26 @@ gate does not separate the classes it is thresholding. The remaining questions
 are engineering ones -- runtime with ~6x more scored precursors, and whether the
 semi-supervised loop ignites (`lda.h:807-813`) -- not whether the gate is worth
 keeping.
+
+## Iteration 9: the alpha sweep's "off" row was mislabelled
+
+Removing Gate C needs no code change, but it does need two flags, not one. The
+gate chain is:
+
+```cpp
+if (gate_alpha > 0)                                   -> Gate C
+else if (noise_normalised_picking && empty_trace_sigma > 0) -> excursion gate
+else                                                  -> window_total <= 0
+```
+
+`-gate_alpha 0` alone therefore falls through to the EXCURSION gate
+(`empty_trace_min_transitions = 2`), not to no gate. The sweep in the earlier
+iteration ran `-gate_alpha 0` with `empty_trace_sigma` at its default 3.0, so
+its "off" row -- 7,855 IDs at 59.2% FDP -- measured the excursion gate, not the
+absence of one. **That row is mislabelled in every summary I have given.**
+
+A true no-gate is `-gate_alpha 0 -empty_trace_sigma 0`, which reaches the
+minimal "is there any signal at all" check. Running now; it is ~3x slower than
+the gated configurations (39% of spectra at 18:43 against ~15 min end-to-end),
+which is itself the first measurement of what removing the gate costs in
+runtime.
