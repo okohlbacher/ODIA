@@ -533,3 +533,64 @@ minimal "is there any signal at all" check. Running now; it is ~3x slower than
 the gated configurations (39% of spectra at 18:43 against ~15 min end-to-end),
 which is itself the first measurement of what removing the gate costs in
 runtime.
+
+## Iteration 10: removing the gate recovers precursors the FDR cannot then defend
+
+True no-gate (`-gate_alpha 0 -empty_trace_sigma 0`), same 1,011,145-precursor
+library, 27:12 wall, 16.7 GiB:
+
+```
+  candidates formed for 9,668 of the 11,145 missing precursors (86.7%)
+  identified 6,854 at a nominal 1% FDR, of which 1,236 are from the 11,145
+```
+
+Against Gate C at alpha=0.05: 1,518 candidates (13.6%) and 245 recovered. So
+removing the gate does what the mechanism predicted -- **6.4x the candidates and
+5.0x the recovery of known-true precursors.**
+
+The full curve, with entrapment FDP measured on each:
+
+| config | IDs | entrapment | FDP | est. TRUE IDs |
+|---|---:|---:|---:|---:|
+| Gate C alpha=0.05 | 1,650 | 66 | 23.7% | 1,259 |
+| Gate C alpha=0.20 | 1,823 | 50 | **16.2%** | 1,528 |
+| Gate C alpha=0.50 | 4,178 | 308 | 43.7% | 2,352 |
+| excursion gate | 7,855 | 785 | 59.2% | **3,205** |
+| true no gate | 6,854 | 660 | 57.0% | 2,947 |
+
+### The conclusion the night actually supports
+
+**Gate choice moves along a sensitivity/purity curve. It is not a free win, and
+it is not the lever.** Removing Gate C recovers real precursors -- 1,236 against
+245 -- and by estimated true identifications the ungated configurations are 2-2.5x
+better than the default. But every configuration reports a nominal 1% FDR while
+delivering 16-59%, so the number the tool prints is not defensible at any point
+on the curve.
+
+That means the ranking above cannot be used to choose. Comparing configurations
+"at 1% FDR" is meaningless when the actual FDP varies 3.6-fold between them; the
+apparent winner is partly just the one that lies most.
+
+**The binding defect is the FDR, not the gate.** doc/36 measured 11.76% FDP on
+the production run and identified the mechanism: the classifier separates
+CONSTRUCTED decoys from targets far better than it separates false targets from
+true ones, so the decoy null sits below the false-target null and the tail
+contains almost no decoys at any threshold where entrapment peptides pass.
+Nothing about candidate formation changes that.
+
+### Revised recommendation
+
+1. **Fix the FDR first.** Until an entrapment-validated 1% means 1%, no gate
+   setting can be chosen on evidence. The decoy-vs-entrapment AUC test (doc/36)
+   is the next measurement and it is one join.
+2. **Then** revisit the gate, where the honest options are the excursion gate or
+   none -- Gate C itself is indefensible either way, since iteration 8 showed it
+   admits decoys (16.5%) slightly MORE often than targets (16.0%).
+3. The extraction improvements stand independently: `-mass_width_from_ids apply`
+   (3x lower baseline, blocked on Astral) and the mobility default (confirmed,
+   do not widen).
+
+### Cost, for the record
+
+No gate costs 1.8x wall time (27:12 against ~15 min) and 16.7 GiB at this scale.
+Codex predicted CPU rather than memory would bind, and that is what happened.
