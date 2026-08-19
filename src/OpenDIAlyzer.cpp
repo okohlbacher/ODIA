@@ -2805,6 +2805,15 @@ protected:
     mobility_model_ = ODIA::MobilityCalibration::Model{};
     mobility_anchors_.clear();
     mobility_anchors_expected_ = false;
+    // The MS1 traces too, and this one was MISSED when the others were cleared.
+    // `Ms1Traces` is DENSE and indexed by precursor, and it is built once
+    // (`if (ms1_traces_.empty())`), so the seed's 708-precursor structure
+    // survived into the full-library passes and every precursor past index 708
+    // reported "no MS1 available". Measured on S08: MS1_COELUTION went from
+    // 896,437 finite values before the blind search existed to 2,187 after --
+    // a sub-score doc/17 records at 13.7x enrichment in its top bin, silently
+    // dead for every run since.
+    ms1_traces_ = ODIA::Ms1Traces{};
     return EXECUTION_OK;
   }
 
