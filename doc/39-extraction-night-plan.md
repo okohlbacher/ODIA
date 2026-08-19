@@ -447,3 +447,66 @@ directly, which is the number I claimed and do not have.
 
 **Implementing gate-as-feature is deferred until that exists.** Building on an
 unvalidated 83.6% is how the last four retractions happened.
+
+## Iteration 8: the deployed gate measured. It does not discriminate at all.
+
+`-gate_log` on the 1,011,145-precursor library (481,883 decoys, so tau
+calibrates), 885,045 decisions:
+
+```
+  warm-up (tau not yet ready)  42,521  (4.8%)   -- 22,521 targets, 20,000 decoys
+  calibrated decisions        842,524
+  tau in force                 10.6317  (constant, as designed)
+
+  POST-CALIBRATION ADMISSION
+    targets  16.0%   (n = 439,312)
+    decoys   16.5%   (n = 403,212)
+```
+
+**Decoys are admitted MORE often than targets.** The gate has no discriminative
+power on the population it actually runs against. It rejects ~84% of targets and
+~83.5% of decoys -- it discards signal and noise in equal measure and achieves
+nothing in exchange.
+
+**alpha does not deliver its stated rate.** 0.05 nominal, 16.5% measured: 3.3x
+off. tau is calibrated from the first 20,000 decoys, which -- because precursors
+arrive in RETENTION-TIME order -- are the earliest-eluting ones, then applied to
+a population whose statistic distribution differs. The header's claim that
+"alpha IS the false-admit rate, by construction" is false in production, and the
+construction is what breaks it.
+
+Codex predicted ~21,970 warm-up targets from the decoy:target ratio; measured
+22,521.
+
+### The Python port is validated
+
+The fixture probe returned C++ medians of 4.943 (targets) and 3.196 (decoys)
+against the port's 4.94 and 3.20. Codex's port-artefact objection is closed.
+
+### Why the fixture could not see any of this
+
+The fixture had 1,000 decoys against `gate_calibration_n = 20000`, so **tau never
+became ready and all 2,000 decisions were warm-up free passes**. There was no
+gate in that run at all. The tau I compared against was one I computed myself and
+the deployed code never used -- which is precisely why 297 precursors that passed
+production appeared to fail it. Codex's diagnosis was right in every particular.
+
+### Where this leaves the 83.6%
+
+Retracted for good. The correct statement is stronger and simpler:
+
+> Gate C admits 16.0% of targets and 16.5% of decoys. It is not a filter, it is
+> an 84% across-the-board loss with no selectivity.
+
+The known-true subset is consistent: of the 11,145 precursors DIA-NN identifies
+that production missed, 1,518 (13.6%) formed a candidate at alpha=0.05 -- i.e.
+real precursors fare no better than decoys, and slightly worse.
+
+### Decision
+
+Remove the gate from candidate formation and demote the statistic to a
+sub-score. The evidence no longer rests on a disputed false-negative rate: the
+gate does not separate the classes it is thresholding. The remaining questions
+are engineering ones -- runtime with ~6x more scored precursors, and whether the
+semi-supervised loop ignites (`lda.h:807-813`) -- not whether the gate is worth
+keeping.
