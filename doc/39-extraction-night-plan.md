@@ -660,3 +660,79 @@ ourlib arm's 2h02 for the whole run. Cause not diagnosed; the composed iRT map
 and the 120 s pass-1 window are the two differences. It was stopped because the
 machine is better used and because any ODIA identification count is currently
 uninterpretable at 16-59% FDP.
+
+## Iteration 12: the tail. This is the answer, and it corrects iteration 11.
+
+The same three AUCs on the GATED production run (14,167 IDs, measured FDP 11.76%):
+
+```
+  human vs decoys 0.529 | human vs entrapment 0.520 | entrapment vs decoys 0.510
+  (ungated, for comparison: 0.527 / 0.511 / 0.516)
+```
+
+Gated and ungated rank identically, so candidate density is NOT what breaks the
+classifier -- which was the question iteration 11 posed. But the conclusion I
+was about to draw from it, "ranking is the whole problem", is **wrong**, and it
+is wrong for exactly the reason codex gave when defending Gate C: a global AUC
+describes the whole distribution, and FDR depends only on the extreme tail.
+
+Measured in the tail of the gated run:
+
+| top N | human | entrapment | decoy | FDP |
+|---:|---:|---:|---:|---:|
+| 1,000 | 992 | 7 | 1 | **4.0%** |
+| 5,000 | 4,951 | 43 | 6 | **4.9%** |
+| **14,167** (where q<=0.01 lands) | 13,755 | **282** | **130** | **11.5%** |
+| 30,000 | 23,539 | 1,256 | 5,205 | 29.0% |
+| 100,000 | 56,180 | 6,423 | 37,397 | 58.7% |
+
+**The classifier ranks well where it matters.** The top 1,000 are 99.2% human at
+4.0% FDP. AUC 0.529 is a statement about 1.7 million mostly-absent precursors,
+not about the region any threshold sits in.
+
+### The actual defect: decoys vanish from the tail, entrapment does not
+
+If decoys and entrapment peptides were exchangeable -- which is what target-decoy
+FDR assumes -- their ratio anywhere in the ranking would match their library
+ratio, 733,780 : 4,625,804 = 0.159. Observed:
+
+| top N | entrapment/decoy | vs 0.159 expected |
+|---:|---:|---:|
+| 1,000 | 7.00 | **44.1x** |
+| 5,000 | 7.17 | **45.2x** |
+| 14,167 | 2.17 | **13.7x** |
+| 30,000 | 0.24 | 1.5x |
+| 100,000 | 0.17 | 1.1x |
+
+**In the bulk they are exchangeable (1.1x at top-100,000, AUC 0.510). In the tail
+they are not, by up to 45x.** The global AUC could not see this and neither could
+I in iteration 11.
+
+That is precisely doc/36's mechanism, now measured rather than argued:
+constructed decoys are easy for the classifier to reject, so almost none reach
+the tail (130 in the top 14,167), while real-but-absent peptides do (282, which
+scaled by 1/r = 5.7 implies ~1,614 false humans). Target-decoy therefore counts
+130 where the truth is ~1,614 -- a 12x under-estimate, and the reported 1%
+against a real 11.5% follows arithmetically.
+
+### What this means for everything measured tonight
+
+- **The FDR is under-calibrated by ~12x at the operating point**, because the
+  decoy null is exchangeable with false targets in the bulk but not in the tail.
+- **The score quality supports roughly 5,000 identifications at ~5% FDP**, not
+  14,167 at a claimed 1%. The classifier is not the problem; where the threshold
+  is placed is.
+- **Every gate configuration tonight was thresholding on a mis-calibrated
+  q-value**, which is why the sweep's "IDs at 1% FDR" column was never
+  comparable across rows.
+
+### Revised recommendation, final for the night
+
+1. **Calibrate the threshold against entrapment, not against decoys** -- or
+   report both. The entrapment population already exists in the library, and
+   this measurement is one join over an existing TSV.
+2. **Then** revisit the gate. Its removal recovers real candidates (86.7% vs
+   13.6%) and that gain is real; it was invisible tonight only because the FDP
+   it was judged by was itself wrong.
+3. Extraction items stand: `-mass_width_from_ids apply` (Astral pending),
+   mobility default confirmed.
