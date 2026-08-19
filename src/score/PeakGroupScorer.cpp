@@ -722,9 +722,23 @@ namespace
     return names;
   }
 
+  namespace
+  {
+    /// Bumped by every Session. NullCalibration is a file-scope singleton --
+    /// Session is declared in the header and cannot hold a type defined in
+    /// this translation unit's anonymous namespace -- so instead of moving it,
+    /// each Session marks a new epoch and the calibration resets when it sees
+    /// one. Without this, tau is computed ONCE PER PROCESS and pass 2 inherits
+    /// the threshold pass 1 calibrated: pass 1 extracts wide and pass 2 narrow,
+    /// the statistic is a max over the window, so pass 2's values are
+    /// systematically smaller than the tau they are compared against.
+    std::atomic<unsigned> g_calibration_epoch{0};
+  }
+
   PeakGroupScorer::Session::Session(const Library& library, const Options& options)
     : library_(&library), options_(options)
   {
+    g_calibration_epoch.fetch_add(1, std::memory_order_relaxed);
   }
 
   namespace
@@ -759,6 +773,7 @@ namespace
       std::vector<double> decoy_stats;
       double tau = 0.0;
       bool ready = false;
+      unsigned epoch = 0;
       std::FILE* log = nullptr;
       std::mutex log_mu;
       std::size_t admitted_uncalibrated = 0;
@@ -767,6 +782,8 @@ namespace
       bool admit(double stat, bool is_decoy, std::size_t n_needed, double alpha)
       {
         std::lock_guard<std::mutex> g(mu);
+        const unsigned now = g_calibration_epoch.load(std::memory_order_relaxed);
+        if (epoch != now) { epoch = now; decoy_stats.clear(); tau = 0.0; ready = false; }
         if (!ready)
         {
           if (is_decoy) { decoy_stats.push_back(stat); }

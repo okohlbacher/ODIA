@@ -261,7 +261,12 @@ namespace ODIA
       ///
       /// alpha IS the false-admit rate, by construction -- that is the point of
       /// calibrating on the null rather than assuming a distribution.
-      double gate_alpha = 0.05;
+      /// 0 disables Gate C and falls through to the excursion gate. DEFAULT
+      /// CHANGED 2026-08-19 from 0.05: -gate_log over 885,045 decisions of the
+      /// DEPLOYED gate found targets admitted 16.0% and decoys 16.5% -- it
+      /// admits decoys more often than targets, rejecting ~84% of both and
+      /// separating neither. See -gate_alpha's help for the full record.
+      double gate_alpha = 0.0;
 
       /// Write every Gate C decision here: precursor, decoy flag, the
       /// statistic, tau in force, whether tau was ready, and the verdict.

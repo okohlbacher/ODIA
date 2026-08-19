@@ -422,16 +422,29 @@ protected:
                        "one feature of fifteen and cannot carry the improvement. Kept "
                        "for experiments.",
                        false, true);
-    registerDoubleOption_("gate_alpha", "<alpha>", 0.05,
+    registerDoubleOption_("gate_alpha", "<alpha>", 0.0,
                           "Gate C: admit a precursor when its co-elution evidence reaches the "
-                          "(1-alpha) quantile of the run's OWN decoy null. alpha IS the "
-                          "false-admit rate by construction, which is the point of calibrating "
-                          "on the null rather than assuming a distribution -- assuming one is "
-                          "what made the previous gate's '3 sigma' mean 81% instead of 0.1%. "
-                          "\n\nMeasured at real dimensions (12 traces x 200 cycles, Poisson "
-                          "noise) against both predecessors on identical traces: absent "
-                          "precursors admitted 90.1% (sum>0), 99.0% (3 sigma), 4.8% (this). "
-                          "Real peaks kept: 100% in all three. 0 disables it.", false, true);
+                          "(1-alpha) quantile of the run's OWN decoy null. 0 disables it and "
+                          "falls through to the excursion gate, which is now the default.\n\n"
+                          "DEFAULT CHANGED 2026-08-19, from 0.05 to 0, on a measurement of the "
+                          "DEPLOYED gate rather than of a synthetic fixture. -gate_log over "
+                          "885,045 decisions on a library large enough for the threshold to "
+                          "calibrate (481,883 decoys):\n"
+                          "    tau 10.6317   targets admitted 16.0%   decoys admitted 16.5%\n"
+                          "The gate admits DECOYS MORE OFTEN THAN TARGETS. It rejects ~84% of "
+                          "both and separates neither, so it is a flat 84% loss bought for "
+                          "nothing. Its statistic separates the classes by d' ~ 0.67 (AUC 0.68) "
+                          "-- a usable feature, an indefensible threshold at any operating "
+                          "point.\n\nalpha ALSO does not deliver its stated rate: 0.05 nominal "
+                          "produced 16.5% decoy admission, 3.3x off, because tau is calibrated "
+                          "from the first -gate_calibration_n decoys and precursors arrive in "
+                          "RETENTION-TIME order, so the sample is the earliest-eluting ones and "
+                          "the threshold is then applied to a different distribution.\n\n"
+                          "The prior justification quoted here was measured on SYNTHETIC data, "
+                          "where 'present' meant signal was inserted; it had never been checked "
+                          "against real targets on a real run. For the record it read: absent "
+                          "precursors admitted 90.1% (sum>0), 99.0% (3 sigma), 4.8% (this), "
+                          "real peaks kept 100% in all three.", false, true);
     registerIntOption_("gate_calibration_n", "<n>", 20000,
                        "Decoy statistics to collect before Gate C's threshold is fixed. Those "
                        "precursors are admitted unconditionally and scored normally; 20,000 "
@@ -3575,6 +3588,14 @@ protected:
   {
     std::ofstream out(path);
     if (!out) { throw std::runtime_error("cannot open " + path); }
+    // Precursor.Id here is sequence + charge, so a DECOY carries its TARGET's
+    // id -- the library, by contrast, suffixes decoy ids with "_decoy". Joining
+    // a library against this file on Precursor.Id alone therefore matches ZERO
+    // decoys, silently. Within this file the Decoy column disambiguates, which
+    // is why the format is left alone; across files, join on (Precursor.Id,
+    // Decoy) or strip the suffix. Measured 2026-08-19: an analysis that joined
+    // on the id alone lost all 840,324 decoys and reported a covariate table
+    // with an empty decoy row.
     out << "Precursor.Id\tDecoy\tRT\tLeft.RT\tRight.RT\tApex.Intensity"
            "\tDScore\tQValue\tPEP\tMass.Ppm\tMass.Ppm.N";
     for (const auto& n : ODIA::PeakGroupScorer::subScoreNames()) { out << '\t' << n; }
