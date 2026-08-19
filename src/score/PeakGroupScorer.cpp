@@ -789,9 +789,14 @@ namespace
         std::lock_guard<std::mutex> g(log_mu);
         if (log == nullptr)
         {
-          log = std::fopen(path.c_str(), "w");
+          // APPEND, not truncate. Each Session owns its own calibration and so
+          // opens this file independently; with "w" the second pass wiped the
+          // first pass's decisions and the log appeared to contain a single tau.
+          // The header is written only into an empty file.
+          log = std::fopen(path.c_str(), "a");
           if (log == nullptr) { return; }
-          std::fprintf(log, "precursor\tdecoy\tstatistic\ttau\ttau_ready\tadmitted\n");
+          if (std::ftell(log) == 0)
+          { std::fprintf(log, "precursor\tdecoy\tstatistic\ttau\ttau_ready\tadmitted\n"); }
         }
         std::fprintf(log, "%u\t%d\t%.6g\t%.6g\t%d\t%d\n",
                      precursor, is_decoy ? 1 : 0, stat, tau,
