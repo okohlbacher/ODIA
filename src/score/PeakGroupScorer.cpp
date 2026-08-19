@@ -437,40 +437,43 @@ namespace
       return d > 0.0 ? num / d : 0.0;
     }
 
-    /// Pearson correlation shrunk by its own null expectation.
+    /// Library correlation, refusing to report one it cannot estimate.
     ///
-    /// Under the null E[r^2] = 1/(n-1): two points give |r| = 1 ALWAYS, three
-    /// give 0.71 on average. `library_intensity` and `corrected` are indexed by
-    /// the precursor's transition count, and 6.89% of the S08 library's targets
-    /// carry three or fewer fragments -- for those the raw r is not evidence,
-    /// it is arithmetic.
+    /// `pearson` guards only n < 2, so at n = 2 it returns +-1 ALWAYS -- two
+    /// points are collinear by construction. The S08 library carries 366,084
+    /// targets with 0-2 fragments, and MEASURED on the full run the score was
+    /// monotonically INVERTED in the evidence behind it:
     ///
-    /// MEASURED on the full S08 run before this correction, median var_library_corr
-    /// and median DScore by usable-fragment count:
+    ///     usable fragments      2       3       4      12
+    ///     var_library_corr   1.0000  1.0000  1.0000  0.6667
+    ///     frac exactly 1.0    79.7%   63.8%   51.8%    5.6%
+    ///     median DScore      14.389   1.760   0.734  -0.273
     ///
-    ///     fragments      2       3       4      12
-    ///     library_corr   1.0000  1.0000  1.0000  0.6667
-    ///     frac == 1.0    79.7%   63.8%   51.8%   5.6%
-    ///     DScore         14.389  1.760   0.734  -0.273
+    /// The first attempt at this shrank r^2 by its null expectation 1/(n-1).
+    /// That is the textbook correction and it was WRONG HERE, because it
+    /// assumes the feature's working range sits well above the null. It does
+    /// not: on the baseline run the median library correlation at twelve
+    /// fragments is 0.0137, far below the 1/sqrt(n-1) = 0.302 cutoff, so the
+    /// shrinkage zeroed 66.7% of the twelve-fragment population -- the very
+    /// population that carries the identifications -- while claiming not to.
     ///
-    /// The score was monotonically INVERTED in the amount of evidence backing
-    /// it: the fewer fragments a precursor had, the higher it ranked. Of the
-    /// 14,081 identifications the Gate C run accepted at nominal 1% FDR, 1,214
-    /// came from the two-fragment class at an entrapment FDP of 78.4%, against
-    /// 5.0% for the twelve-fragment class.
-    ///
-    /// The shrinkage is 0 at n = 2 by construction and ~4.5% at n = 12, so it
-    /// removes the degeneracy without materially moving the population that
-    /// carries the identifications.
-    double pearsonShrunk(const std::vector<double>& a, const std::vector<double>& b)
+    /// What is actually degenerate is the SAMPLE SIZE, not the correlation.
+    /// `corrected` clamps a fragment below its own local background to exactly
+    /// 0, so the informative points are the non-zero ones; a precursor with two
+    /// of those cannot support a correlation however many transitions it
+    /// nominally has. Below four, report no evidence rather than arithmetic.
+    /// Above it, the correlation is passed through untouched.
+    double libraryCorrelation(const std::vector<double>& observed,
+                              const std::vector<double>& library_intensity)
     {
-      const std::size_t n = std::min(a.size(), b.size());
-      if (n < 3) { return 0.0; }
-      const double r = pearson(a, b);
-      const double null = 1.0 / static_cast<double>(n - 1);
-      const double r2 = r * r;
-      if (!(r2 > null)) { return 0.0; }
-      return (r < 0.0 ? -1.0 : 1.0) * std::sqrt((r2 - null) / (1.0 - null));
+      const std::size_t n = std::min(observed.size(), library_intensity.size());
+      std::size_t informative = 0;
+      for (std::size_t i = 0; i < n; ++i)
+      {
+        if (observed[i] > 0.0) { ++informative; }
+      }
+      if (informative < 4) { return 0.0; }
+      return pearson(observed, library_intensity);
     }
 
     /// Candidates detected by CO-ELUTION rather than by amplitude.
@@ -1180,7 +1183,7 @@ namespace
       // classifier would learn the sign either way, but a human reading a
       // weight vector should not have to remember which column is inverted.
       g.sub_scores[XCORR_COELUTION] = -coelution;
-      g.sub_scores[LIBRARY_CORR] = pearsonShrunk(corrected, library_intensity);
+      g.sub_scores[LIBRARY_CORR] = libraryCorrelation(corrected, library_intensity);
       g.sub_scores[LIBRARY_DOTPROD] = dotProduct(corrected, library_intensity);
 
       // D6: the old group/window area ratio carried no library or

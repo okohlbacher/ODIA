@@ -1554,6 +1554,8 @@ protected:
       }
     }
 
+    applyFragmentFloor_(library);
+
     // The gate the whole seed exists for. Reaching pass 1 with no map means
     // every precursor is searched over the entire gradient -- doc/34 measured
     // what that costs on S08 (111.5 G points, 931 GiB live, 4 h) and what it
@@ -2466,6 +2468,71 @@ protected:
   /// Returns the number matched. The iRT column of the file is NOT fitted
   /// against: the seed pairs each standard's own LIBRARY iRT with its OBSERVED
   /// apex, so no CiRT-scale-to-library-scale conversion exists to get wrong.
+  /// Drop library precursors below the fragment-count bar, from BOTH classes.
+  ///
+  /// Called AFTER the retention-time seed, not before it. The seed is run-level
+  /// calibration from the CiRT standards and has no business depending on a
+  /// search-time filter -- but it did: the standards are extracted as their own
+  /// m/z-sorted sub-library, so removing four of them re-sliced the isolation
+  /// windows, moved the decoy anchors, and turned a control that had been
+  /// unfittable (the strongest pass available, see seedRtFromCirtSearch_) into
+  /// one fitting as tightly as the targets, 26.0 s against 26.1 s. The seed
+  /// then correctly refused itself and the run aborted at 5:44. Measured on the
+  /// same build with the filter off: p95 23.8 s, control still unfittable.
+  ///
+  /// LABEL SYMMETRY. `appendDecoys` refuses to build a decoy below the
+  /// fragment-count bar its target cleared, but the target side never
+  /// re-checks after the MS2 model's intensity floor prunes fragments
+  /// (LibraryGenerator.cpp:617-626 commits `ranked.size()` unconditionally).
+  /// The two rules disagree, and the S08 library records the disagreement:
+  ///
+  ///     fragments        0        1        2        3
+  ///     targets      5,285  202,178  158,621  148,227
+  ///     decoys           0        0        0  148,227
+  ///
+  /// 366,084 targets (7.3%) therefore live in a fragment-count regime where
+  /// NO decoy exists, and 4,991,901 - 4,625,804 = 366,097 missing decoys is
+  /// that same population. Those targets are scored against a null drawn
+  /// entirely from precursors with more evidence than they have -- exactly
+  /// the anti-conservative mode D7 rule 2 names, and the one the decoy-based
+  /// q-value cannot see. It is also the regime where the library correlation
+  /// is degenerate (see libraryCorrelation), so the two defects compound: a
+  /// two-fragment target got a mathematically guaranteed |r| = 1 and had no
+  /// decoy anywhere near it to price that against.
+  ///
+  /// Applied to BOTH classes, so this narrows the search symmetrically rather
+  /// than trading one asymmetry for another.
+  void applyFragmentFloor_(ODIA::Library& library)
+  {
+    const auto min_library_fragments =
+      static_cast<std::uint32_t>(std::max(0, getIntOption_("min_library_fragments")));
+    if (min_library_fragments == 0) { return; }
+
+    const auto& p = library.precursors();
+    std::vector<std::size_t> keep;
+    keep.reserve(library.precursorCount());
+    std::size_t dropped_t = 0, dropped_d = 0;
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      if (p.transition_count[i] >= min_library_fragments) { keep.push_back(i); }
+      else if (p.decoy[i]) { ++dropped_d; }
+      else { ++dropped_t; }
+    }
+    if (!dropped_t && !dropped_d) { return; }
+
+    const bool was_sorted = library.isSortedByMz();
+    library = library.subsetByIndex(keep);
+    // subsetByIndex clears the flag because a gather need not preserve order.
+    // It does here -- `keep` is ascending -- but the extractor slices windows
+    // by binary search, so restore the invariant explicitly rather than rely on
+    // that.
+    if (was_sorted) { library.sortByPrecursorMz(); }
+    writeLogInfo_("-min_library_fragments " + std::to_string(min_library_fragments) +
+                  " dropped " + std::to_string(dropped_t) + " targets and " +
+                  std::to_string(dropped_d) + " decoys carrying fewer fragments; " +
+                  std::to_string(library.precursorCount()) + " precursors remain");
+  }
+
   std::size_t markCirtStandards_(const ODIA::Library& library)
   {
     cirt_seed_idx_.clear();
@@ -4446,51 +4513,6 @@ protected:
     library.shrinkToFit();
 
     reportLibrary_(library, load_ms);
-
-    // LABEL SYMMETRY. `appendDecoys` refuses to build a decoy below the
-    // fragment-count bar its target cleared, but the target side never
-    // re-checks after the MS2 model's intensity floor prunes fragments
-    // (LibraryGenerator.cpp:617-626 commits `ranked.size()` unconditionally).
-    // The two rules disagree, and the S08 library records the disagreement:
-    //
-    //     fragments        0        1        2        3
-    //     targets      5,285  202,178  158,621  148,227
-    //     decoys           0        0        0  148,227
-    //
-    // 366,084 targets (7.3%) therefore live in a fragment-count regime where
-    // NO decoy exists, and 4,991,901 - 4,625,804 = 366,097 missing decoys is
-    // that same population. Those targets are scored against a null drawn
-    // entirely from precursors with more evidence than they have -- exactly
-    // the anti-conservative mode D7 rule 2 names, and the one the decoy-based
-    // q-value cannot see. It is also the regime where the library correlation
-    // is degenerate (see pearsonShrunk), so the two defects compound: a
-    // two-fragment target got a mathematically guaranteed |r| = 1 and had no
-    // decoy anywhere near it to price that against.
-    //
-    // Applied to BOTH classes, so this narrows the search symmetrically rather
-    // than trading one asymmetry for another.
-    if (min_library_fragments > 0)
-    {
-      const auto& p_lib = library.precursors();
-      std::vector<std::size_t> keep;
-      keep.reserve(library.precursorCount());
-      std::size_t dropped_t = 0, dropped_d = 0;
-      for (std::size_t i = 0; i < library.precursorCount(); ++i)
-      {
-        if (p_lib.transition_count[i] >= min_library_fragments) { keep.push_back(i); }
-        else if (p_lib.decoy[i]) { ++dropped_d; }
-        else { ++dropped_t; }
-      }
-      if (dropped_t || dropped_d)
-      {
-        library = library.subsetByIndex(keep);
-        writeLogInfo_("-min_library_fragments " + std::to_string(min_library_fragments) +
-                      " dropped " + std::to_string(dropped_t) + " targets and " +
-                      std::to_string(dropped_d) + " decoys carrying fewer fragments; " +
-                      std::to_string(library.precursorCount()) + " precursors remain");
-      }
-    }
-
 
     if (stop_after == "extract")
     {
