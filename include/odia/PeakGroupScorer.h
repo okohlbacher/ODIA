@@ -267,6 +267,18 @@ namespace ODIA
       /// sample is the earliest eluters. The construction is what breaks it.
       double gate_alpha = 0.05;
 
+      /// "quantile" (default) is Gate C: a run-wide decoy-null quantile.
+      /// "prominence" admits per precursor from the statistic's OWN noise
+      /// model, with no null, no calibration sample and no dependence on
+      /// library composition or arrival order.
+      std::string gate_mode = "quantile";
+
+      /// Look-elsewhere threshold in sigma for gate_mode = "prominence".
+      /// k = Phi^-1((1-alpha_P)^(1/M_eff)); at alpha_P = 0.05 that is 3.1 at
+      /// M_eff 50, 3.3 at 100, 3.5 at 200. A starting point for a sweep, not a
+      /// derived constant.
+      double gate_k = 3.3;
+
       /// Write every Gate C decision here: precursor, decoy flag, the
       /// statistic, tau in force, whether tau was ready, and the verdict.
       /// Empty disables it.

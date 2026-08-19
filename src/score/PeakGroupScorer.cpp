@@ -102,8 +102,13 @@ namespace
     /// The threshold is NOT set here. It is calibrated from the decoy null,
     /// because assuming a Gaussian null is exactly what made Gate B's 3 sigma
     /// mean 81% instead of 0.1%.
+    /// @param contributing if non-null, receives how many transitions actually
+    ///        contributed a z-scored trace. The statistic is a SUM of robust
+    ///        z-scores over those transitions, so its null scale is
+    ///        sqrt(contributing / w) -- which is what lets a threshold be set
+    ///        from a noise model instead of from a run-wide decoy quantile.
     double coelutionEvidence(const PrecursorChromatogram& c, std::size_t points,
-                             std::size_t half)
+                             std::size_t half, std::size_t* contributing = nullptr)
     {
       if (points == 0) { return 0.0; }
       std::vector<double> s(points, 0.0);
@@ -126,6 +131,7 @@ namespace
         // A transition with no spread contributes NOTHING rather than being
         // given an invented scale. It cannot vote for or against co-elution.
         if (!(mad > 0.0)) { continue; }
+        if (contributing != nullptr) { ++*contributing; }
         const double scale = 1.0 / (1.4826 * mad);
         for (std::uint32_t i = 0; i < n && i < points; ++i)
         { s[i] += (y[i] - median) * scale; }
@@ -912,12 +918,52 @@ namespace
       //     A sum>0         90.1%       100.0%
       //     B 3sigma        99.0%       100.0%
       //     C co-elution     4.8%       100.0%
+      std::size_t contributing = 0;
       const double m = coelutionEvidence(chromatogram, points,
-                                         options.gate_smooth_half);
-      const bool was_ready = gate_null_->ready;
-      const bool admitted = gate_null_->admit(m, is_decoy,
-                                              options.gate_calibration_n,
-                                              options.gate_alpha);
+                                         options.gate_smooth_half, &contributing);
+      bool was_ready = true;
+      bool admitted = true;
+      if (options.gate_mode == "prominence")
+      {
+        // PER-PRECURSOR admission, from the statistic's own noise model rather
+        // than from a run-wide decoy quantile.
+        //
+        // coelutionEvidence sums robust z-scores across `contributing`
+        // transitions and averages over a window of w = 2*half+1 cycles, so
+        // under white noise its null is N(0, contributing/w) and the scale is
+        // sqrt(contributing/w). A threshold of k sigma therefore needs no null,
+        // no calibration sample, and no dependence on library composition or
+        // arrival order -- the three things measured wrong about the quantile
+        // mode (alpha 0.05 delivering 15.3% decoy admission because tau is
+        // fixed from the earliest-eluting 20,000 decoys).
+        //
+        // k is a LOOK-ELSEWHERE threshold, not a significance level: the
+        // statistic is a maximum over ~M_eff independent positions, so for a
+        // per-precursor false-proposal rate alpha_P,
+        //     k = Phi^-1( (1-alpha_P)^(1/M_eff) )
+        // which for alpha_P = 0.05 gives 3.1 at M_eff 50, 3.3 at 100, 3.5 at
+        // 200. The default is the M_eff = 100 value. It is a starting point for
+        // a sweep, not a derived constant -- prominence after smoothing does
+        // not follow the point-height Gaussian model and real interference is
+        // heavy-tailed and structured.
+        //
+        // This admits candidates; it does NOT assert the precursor is present.
+        // Structured interference that is itself peak-shaped passes at any k,
+        // and must be separated downstream by co-elution, library agreement,
+        // mass accuracy, retention time and mobility. `max_candidates` remains
+        // the resource bound.
+        const double w = double(2 * options.gate_smooth_half + 1);
+        const double sigma = contributing > 0
+                               ? std::sqrt(double(contributing) / w) : 0.0;
+        admitted = sigma > 0.0 && m >= options.gate_k * sigma;
+      }
+      else if (options.gate_alpha > 0.0)
+      {
+        was_ready = gate_null_->ready;
+        admitted = gate_null_->admit(m, is_decoy,
+                                     options.gate_calibration_n,
+                                     options.gate_alpha);
+      }
       gate_null_->note(options.gate_log_path, static_cast<std::uint32_t>(i),
                        is_decoy, m, admitted, was_ready);
       if (!admitted)

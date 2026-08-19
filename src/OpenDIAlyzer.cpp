@@ -447,6 +447,32 @@ protected:
                           "admitted 90.1% (sum>0), 99.0% (3 sigma), 4.8% (this), real peaks kept "
                           "100% in all three. It has never been checked against real targets on "
                           "a real run.", false, true);
+    registerStringOption_("gate_mode", "<mode>", "quantile",
+                          "How a precursor is admitted to candidate formation.\n\n"
+                          "'quantile' is Gate C: admit above the (1-gate_alpha) quantile of "
+                          "the run's own decoy null. Measured defects -- the threshold depends "
+                          "on library composition and on ARRIVAL ORDER (precursors reach it in "
+                          "retention-time order, so it is calibrated on the earliest eluters), "
+                          "and alpha does not deliver its stated rate: 0.05 nominal gave 15.3% "
+                          "decoy admission.\n\n"
+                          "'prominence' admits per precursor at -gate_k sigma of the "
+                          "statistic's OWN noise model. coelutionEvidence sums robust z-scores "
+                          "over the contributing transitions and averages over "
+                          "2*gate_smooth_half+1 cycles, so its null scale is "
+                          "sqrt(contributing/w) and a k-sigma cut needs no null at all. This "
+                          "is a candidate PROPOSAL rule, not a presence test: peak-shaped "
+                          "interference passes at any k and must be separated downstream. "
+                          "-max_candidates remains the resource bound.", false, true);
+    setValidStrings_("gate_mode", {"quantile", "prominence"});
+    registerDoubleOption_("gate_k", "<sigma>", 3.3,
+                          "Look-elsewhere threshold for -gate_mode prominence. The statistic "
+                          "is a MAXIMUM over ~M_eff independent positions, so for a "
+                          "per-precursor false-proposal rate alpha_P, "
+                          "k = Phi^-1((1-alpha_P)^(1/M_eff)): at alpha_P 0.05 that is 3.1 at "
+                          "M_eff 50, 3.3 at 100, 3.5 at 200. The default is the M_eff=100 "
+                          "value. Treat it as the centre of a sweep -- prominence after "
+                          "smoothing does not follow the point-height Gaussian model, and real "
+                          "interference is heavy-tailed and structured.", false, true);
     registerIntOption_("gate_calibration_n", "<n>", 20000,
                        "Decoy statistics to collect before Gate C's threshold is fixed. Those "
                        "precursors are admitted unconditionally and scored normally; 20,000 "
@@ -3388,6 +3414,8 @@ protected:
     options.apex_evidence = getDoubleOption_("apex_evidence");
     options.empty_trace_sigma = getDoubleOption_("empty_trace_sigma");
     options.gate_alpha = getDoubleOption_("gate_alpha");
+    options.gate_mode = getStringOption_("gate_mode");
+    options.gate_k = getDoubleOption_("gate_k");
     options.gate_log_path = getStringOption_("gate_log");
     options.gate_calibration_n =
       static_cast<std::size_t>(std::max(100, getIntOption_("gate_calibration_n")));
