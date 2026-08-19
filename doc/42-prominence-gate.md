@@ -178,3 +178,88 @@ work on the remaining dead features should be ordered by measured effect, not by
 how broken they look. On that basis `ms1_coelution` is the one worth having --
 doc/17 records it at 13.7x enrichment in its top bin, and unlike log_sn it was
 returning NaN rather than a constant, so the classifier never saw it at all.
+
+---
+
+# Kimi's review: the sub-score comparison was circular, and corr_sum is load-bearing four times over
+
+## The evaluation was selection-biased
+
+The positive class was "precursors DIA-NN confirmed". DIA-NN's acceptance is
+dominated by co-elution correlation, and `corr_sum` is our closest relative of
+that statistic -- it IS the picker's own detection statistic. So corr_sum's 0.906
+partly measures how well corr_sum predicts what a co-elution-based engine
+accepts, not how well it detects presence. **Any feature that could recover
+precursors DIA-NN MISSED is penalised by this metric**, and the 0.901-vs-0.906
+gap is close to a tautology.
+
+Having escaped the prevalence trap, the audit walked into a selection trap.
+
+## corr_sum enters the pipeline FOUR times
+
+Verified in code by kimi:
+
+| # | as | where |
+|---|---|---|
+| 1 | the candidate gate | `min_corr_score`, `PeakGroupScorer.cpp:520` |
+| 2 | the feature `var_corr_sum` | `:1127` |
+| 3 | `candidate_margin` -- literally its first difference | `:1477-1495` |
+| 4 | **the semi-supervised loop's seed mask** | `seed_mask` admits only CORR_SUM, `:1653-1657` |
+
+Iteration-0 positives are targets whose corr_sum-ranked row clears q <= 0.15, so
+**the positive class the model trains on was selected by corr_sum**. The loop
+does not fail to ignite -- it ignites onto its own seed and re-expresses it. That
+is a sharper diagnosis than "label contamination" and it is structural.
+
+Kimi also puts effective dimensionality at ~5-6, not 19: library_corr,
+library_dotprod, library_rmsd, intensity_score and yseries_score all read the
+same background-corrected area vector.
+
+And it exonerates the dead features: constant and all-NaN columns are zeroed in
+place (`fitAndAssign_ :1551-1584`) and LDA z-scores with NaN -> 0 = mean
+(`lda.h:412-461`). They are inert, not noise.
+
+## var_log_sn: closed, negative
+
+Kimi's disambiguator -- standalone AUC of the UNSATURATED feature against
+confirmed-present precursors:
+
+| config | distinct values among present | standalone AUC |
+|---|---:|---:|
+| 0.01 (saturated) | 7 | 0.500 |
+| 0.001 (unsaturated) | 61 | **0.494** |
+
+8.7x the dynamic range, AUC unmoved at ~0.5. By the stated criterion the feature
+is genuinely weak and the null result was foreordained -- it is NOT independent
+evidence of the distillation problem. **Default stays at 0.01 and log_sn needs no
+further work.**
+
+## The two experiments that would settle the rest
+
+1. **Ablation.** Retrain with `corr_sum` AND `candidate_margin` excluded.
+   Drops to ~0.65 -> the other features genuinely carry little against these
+   labels. Stays >= 0.89 -> the loop was merely picking corr_sum first and the
+   classifier was never the bottleneck. Then re-run the winner against
+   ENTRAPMENT positives rather than DIA-NN's set, which removes the selection
+   bias entirely.
+2. **The swap.** Feed DIA-NN's `--xic` traces through OUR scorer, using the
+   aligned 1,000-precursor dump that already exists. If ODIA-scored-on-DIA-NN-
+   traces recovers the identification gap, extraction limits us; if it does not,
+   scoring does.
+
+## A concrete extraction mechanism kimi found
+
+The mobility correction is clamped at +/-0.030 while the extraction half-window
+is +/-0.025, and `ChromatogramExtractor.h:519-521` records that +/-0.025 rejects
+**28.3% of target anchors even when calibration is correct**. The window is
+centred on the PRECURSOR's corrected 1/K0, identically for every fragment
+(`:986-993`). Fragments whose true 1/K0 sits off the precursor's are therefore
+asymmetrically clipped -- which halves intensity while preserving prominence
+shape, and bites the HARD group first. That is exactly the pattern measured:
+apex 0.54x of DIA-NN's, prominence matching on SHARED (0.937) but not HARD
+(0.808 vs 0.826).
+
+Testable from data already on disk: `collect_im_residuals` is on by default, so
+the per-fragment 1/K0 residual distribution can be read directly. Wider than
+~0.01 confirms the mechanism and implies the fix -- widen the window, or centre
+it per fragment rather than per precursor.
