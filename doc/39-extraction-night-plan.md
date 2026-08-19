@@ -594,3 +594,69 @@ Nothing about candidate formation changes that.
 
 No gate costs 1.8x wall time (27:12 against ~15 min) and 16.7 GiB at this scale.
 Codex predicted CPU rather than memory would bind, and that is what happened.
+
+## Iteration 11: the null is VALID. The classifier is the thing that fails.
+
+The decoy-vs-entrapment AUC test (doc/36's "decisive number", kimi's prediction
+">= 0.8"), run on the ungated 1M-library output. Best DScore per precursor;
+entrapment = Arabidopsis, which cannot be in a human sample.
+
+```
+  decoys 329,518   entrapment targets 50,065   human targets 294,658
+  medians   decoy -0.261   entrapment -0.227   human -0.201
+
+  AUC human targets vs decoys      0.527   <- what the classifier trains on
+  AUC human targets vs entrapment  0.511   <- what FDR actually needs
+  AUC ENTRAPMENT vs DECOYS         0.516   <- a valid null needs ~0.500
+```
+
+**Kimi's prediction is refuted.** Constructed decoys and real-but-absent
+entrapment peptides are indistinguishable to the classifier (0.516). The decoy
+null is therefore VALID in this regime -- decoy construction is not what breaks
+the FDR here.
+
+**What is broken is the classifier itself.** AUC 0.527 for targets against
+decoys is barely above chance. With no gate the scorer receives ~1M candidates
+of which ~2.1% are true, and the semi-supervised loop does not bootstrap -- the
+exact failure documented at `lda.h:807-813` ("fails to ignite at low
+true-positive rates") and the risk codex named when arguing against removing the
+gate. A 57% FDP follows directly: if the scores are nearly random, a q-value cut
+selects nearly randomly.
+
+### The synthesis, and it is not comfortable
+
+- **Gate C on**: admits decoys (16.5%) slightly more than targets (16.0%). It
+  discriminates nothing, and costs 84% of everything.
+- **Gate C off**: candidates recover 6.4x, but the classifier collapses to
+  AUC 0.527 and the FDP goes to 57%.
+
+Neither configuration works, for DIFFERENT reasons, and that is why every point
+on the sweep curve reports 1% and delivers 16-59%. The gate is not the lever and
+neither is its removal; **the scoring stage cannot rank candidates**, and that is
+upstream of both.
+
+This also refines doc/36, which attributed the production 11.76% FDP to the
+classifier learning decoy CONSTRUCTION signature. In the ungated regime it
+learns no signature at all -- there is nothing to learn from. Whether the gated
+production run behaves the same way is a separate measurement (its classifier
+sees a smaller, more enriched candidate set) and is the obvious next step.
+
+### Revised worklist
+
+1. **Measure the same three AUCs on the GATED production run.** If the gated
+   classifier also sits near 0.5, ranking is the whole problem and every gate
+   experiment tonight was measuring noise. If it is meaningfully higher, then
+   candidate density is what kills it and top-K capping (codex's suggestion)
+   becomes the right shape.
+2. Only then decide the gate.
+3. Extraction items unchanged: `-mass_width_from_ids apply` pending Astral;
+   mobility default confirmed.
+
+### Housekeeping
+
+The ODIA + DIA-NN-library arm of the 2x2 was STOPPED at 7h43, still in pass 1 at
+52% of spectra with 170 GiB resident -- roughly 15 h for pass 1 alone against the
+ourlib arm's 2h02 for the whole run. Cause not diagnosed; the composed iRT map
+and the 120 s pass-1 window are the two differences. It was stopped because the
+machine is better used and because any ODIA identification count is currently
+uninterpretable at 16-59% FDP.
