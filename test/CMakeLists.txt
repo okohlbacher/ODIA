@@ -547,6 +547,14 @@ add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
 # being checked.
 add_test(NAME robust_line_survives_half_wrong_anchors COMMAND odia_robust_line)
 
+# A subset must outlive the library it came from. `StringArena::Entry` is a raw
+# pointer into the arena's blocks, so the old wholesale arena copy left the
+# subset resolving into the PARENT's storage -- correct until the parent dies.
+# `-min_library_fragments` is written `library = library.subsetByIndex(...)`,
+# which kills the parent, and the run segfaulted 52 s in. The test destroys the
+# parent before reading a single string.
+add_test(NAME library_subset_outlives_parent COMMAND odia_library_subset)
+
 # The retention-time axis of a precursor that falls in more than one isolation
 # window. Data-free: two overlapping windows and four cycles each, built in the
 # test. Nothing in the suite constructed a Chromatograms before this.

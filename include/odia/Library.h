@@ -118,6 +118,29 @@ namespace ODIA
   public:
     static constexpr std::uint32_t npos = 0xFFFFFFFFu;
 
+    StringArena() = default;
+    StringArena(StringArena&&) = default;
+    StringArena& operator=(StringArena&&) = default;
+
+    /// NOT copyable, and the compiler has to say so.
+    ///
+    /// `Entry::data` is a raw pointer into `blocks_`. A default copy allocates
+    /// fresh blocks and then copies `entries_` VERBATIM, so every handle in the
+    /// copy resolves into the SOURCE arena's storage. The copy is correct for
+    /// exactly as long as the source outlives it and wrong the instant it does
+    /// not -- silently, because the memory is still mapped until the source's
+    /// blocks are freed.
+    ///
+    /// `Library::subsetByIndex` copied the arena this way. It survived because
+    /// its only caller held the parent alive for the subset's whole lifetime.
+    /// The first caller to write `library = library.subsetByIndex(...)` -- the
+    /// `-min_library_fragments` filter -- destroyed the parent through the
+    /// move-assign and took the arena with it, and the next `strings().get()`
+    /// segfaulted inside memcpy. Re-intern into a fresh arena instead; that is
+    /// also what makes a subset's arena hold only the strings the subset uses.
+    StringArena(const StringArena&) = delete;
+    StringArena& operator=(const StringArena&) = delete;
+
     /// Returns a handle for @p s, storing it only if it is new.
     std::uint32_t intern(std::string_view s);
 

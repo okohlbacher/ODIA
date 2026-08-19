@@ -1,6 +1,7 @@
 // Copyright (c) 2026, Oliver Kohlbacher and the ODIA authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+#include <unordered_map>
 #include <odia/Library.h>
 
 #include <algorithm>
@@ -260,9 +261,22 @@ namespace ODIA
   Library Library::subsetByIndex(const std::vector<std::size_t>& keep) const
   {
     Library out;
-    // The arena first: every handle copied below indexes into it.
-    out.strings_ = strings_;
+    // Handles are RE-INTERNED, not copied. `StringArena::Entry` holds a raw
+    // pointer into the arena's own blocks, so copying the arena produces
+    // entries that resolve into THIS library's storage -- fine while the parent
+    // outlives the subset, a segfault the moment it does not. Re-interning also
+    // means the subset carries only the strings it actually uses, which for the
+    // -min_library_fragments filter is the point.
     const std::size_t n = precursorCount();
+    std::unordered_map<std::uint32_t, std::uint32_t> remap;
+    const auto rehome = [&](std::uint32_t h) {
+      if (h == StringArena::npos) { return h; }
+      const auto it = remap.find(h);
+      if (it != remap.end()) { return it->second; }
+      const std::uint32_t fresh = out.strings_.intern(strings_.get(h));
+      remap.emplace(h, fresh);
+      return fresh;
+    };
     out.precursors_.mz.reserve(keep.size());
     out.precursors_.irt.reserve(keep.size());
     out.precursors_.im.reserve(keep.size());
@@ -292,8 +306,8 @@ namespace ODIA
                                       : precursors_.ccs[i]);
       out.precursors_.charge.push_back(precursors_.charge[i]);
       out.precursors_.decoy.push_back(precursors_.decoy[i]);
-      out.precursors_.modified_sequence.push_back(precursors_.modified_sequence[i]);
-      out.precursors_.protein_group.push_back(precursors_.protein_group[i]);
+      out.precursors_.modified_sequence.push_back(rehome(precursors_.modified_sequence[i]));
+      out.precursors_.protein_group.push_back(rehome(precursors_.protein_group[i]));
 
       const std::uint32_t begin = precursors_.transition_begin[i];
       const std::uint32_t count = precursors_.transition_count[i];
