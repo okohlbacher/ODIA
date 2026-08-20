@@ -77,3 +77,41 @@ third of the shortfall and something else explains the remaining ~2x.
 - Aggregation. `Max` loses to `Sum` at every width tested.
 - Mobility window width. At a corrected centre, +/-0.025 beats +/-0.0304 and
   +/-0.050; widening only ever compensated for a centring error.
+
+## The sensitivity gap splits in half: detection and ranking, ~equally
+
+Partitioning DIA-NN's 33,749 confident precursors through v3's pipeline:
+
+                                 stage    count   % of truth
+              not in our library at all        0         0.0%
+      dropped by -min_library_fragments      168         0.5%
+      eligible, but NO candidate formed   11,655        34.5%
+         candidate formed, not accepted   10,281        30.5%
+                    ACCEPTED at q<=0.01   11,645        34.5%
+
+Three things follow.
+
+**Library coverage is not a factor.** Zero of DIA-NN's confident precursors are
+absent from our library. Whatever else is wrong, we are searching for the right
+things.
+
+**The fragment floor costs 0.5%.** 168 precursors, against halving the FDP.
+That is the whole price of doc/43's fix measured against the truth set.
+
+**The remaining loss is two roughly equal halves.** 34.5% never form a candidate
+at all -- a DETECTION loss, and the independently measured Gate C rejection of
+31.8% on a truth-only library accounts for nearly all of it. 30.5% do form a
+candidate and are then not accepted -- a RANKING loss, which no gate change can
+touch.
+
+That is the argument for doing both, and against expecting either alone to
+close a 2.6x gap. If Gate C were perfect and nothing else changed, the ceiling
+is 21,926 of 33,749 (65%) -- still well short of DIA-NN, because the 10,281
+detected-but-unranked would remain unconverted. Conversely, a perfect scorer on
+today's candidate set cannot exceed that same 21,926.
+
+Ordering, on this evidence: the gate first, because it is one flag on an
+experiment already queued (`run_full_v6.sh`) and because its 31.8% is the single
+largest named loss anywhere in the pipeline; then the ranking half, where the
+sub-score audit says corr_sum at AUC 0.909 is carrying the classifier almost
+alone and every other live feature is between 0.62 and 0.83.
