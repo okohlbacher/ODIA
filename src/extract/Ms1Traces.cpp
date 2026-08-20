@@ -79,8 +79,14 @@ namespace ODIA
     std::sort(idx.begin(), idx.end(),
               [](const Target& a, const Target& b) { return a.mz < b.mz; });
 
+    // CAPPED. The first version pushed one double per (peak, target) match over
+    // the whole run and reached 591 GB RSS against v3's 116 GB peak, blowing
+    // through -live_memory_gb on a shared node. The median of a bounded prefix
+    // is the same number to far more precision than it is worth: this is a
+    // diagnostic, not a fit.
+    static constexpr std::size_t RESID_CAP = 1u << 21;   // 2M samples, 16 MB
     std::vector<double> resid;
-    if (observed_ppm_median != nullptr) { resid.reserve(1u << 20); }
+    if (observed_ppm_median != nullptr) { resid.reserve(RESID_CAP); }
     std::vector<SpectrumPeaks> block;
     const std::size_t STEP = 64;
     for (std::size_t b = 0; b < ms1.size(); b += STEP)
@@ -110,7 +116,7 @@ namespace ODIA
                                         static_cast<double>(it->im));
               if (!(d <= im_window)) { continue; }
             }
-            if (observed_ppm_median != nullptr)
+            if (observed_ppm_median != nullptr && resid.size() < RESID_CAP)
             {
               // Residual against the CALIBRATED target, so a correct offset
               // centres this on 0 and a wrong one does not.
