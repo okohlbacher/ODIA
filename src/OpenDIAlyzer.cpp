@@ -1952,7 +1952,7 @@ protected:
     // did not work.
     if (pass1.identified_at_1pct == 0)
     {
-      writeLogWarn_("pass 1 identified nothing at 1% FDR, so its q<=" +
+      writeLogWarn_("pass 1 identified nothing at q <= 0.01, so its q<=" +
                     std::to_string(getDoubleOption_("anchor_q")) +
                     " anchors are not evidence of anything. Not fitting a "
                     "retention-time map from them; returning pass 1's scores.");
@@ -3700,7 +3700,7 @@ protected:
 
       std::ostringstream m;
       m << "refine round " << round << ": " << anchors.size() << " anchors, p95 "
-        << p95 << " s, " << scored.identified_at_1pct << " identified at 1% FDR";
+        << p95 << " s, " << scored.identified_at_1pct << " identified at q <= 0.01";
       if (scored.identified_at_1pct > best_ids)
       {
         best_ids = scored.identified_at_1pct;
@@ -3783,7 +3783,27 @@ protected:
         << " decoy groups\n";
     if (scored.fdr_valid)
     {
-      msg << "  identified " << scored.identified_at_1pct << " precursors at 1% FDR\n";
+      // "at q <= 0.01", NOT "at 1% FDR". The two are not the same number here and
+      // saying so was an overclaim in every run this tool has produced. Measured
+      // by entrapment on S08 with the 9.6M library (doc/46), nominal q maps to
+      // empirical false-discovery proportion as:
+      //
+      //     nominal 0.1%  ->  4.36%   (43.6x)
+      //     nominal 1.0%  ->  5.72%   ( 5.7x)
+      //     nominal 5.0%  -> 10.72%   ( 2.1x)
+      //
+      // and a TRUE 1% costs everything -- nominal 0.00029, 117 identifications.
+      // The failure is worst in the tail, where confident identifications are
+      // claimed. DIA-NN shows the same on this library (7.42% at its nominal 1%)
+      // and Wen et al. 2025 reports it across DIA tools, so this is a field-wide
+      // property rather than an ODIA defect -- but ours is measured, and the
+      // threshold applied is a q-value, so that is what the line now says.
+      //
+      // The ratio itself is deliberately NOT printed: it is a property of
+      // sample x library x gate x binary, measured once from 130 entrapment
+      // hits, and quoting it in a run that has no entrapment library would be a
+      // stronger claim than the q-value it replaced.
+      msg << "  identified " << scored.identified_at_1pct << " precursors at q <= 0.01\n";
       // Zero identifications from a run that produced peak groups and trained a
       // classifier is a failure, and until now it was reported as a result.
       //
@@ -3797,7 +3817,7 @@ protected:
       if (scored.identified_at_1pct == 0 && !scored.groups.empty())
       {
         std::ostringstream z;
-        z << "identified NOTHING at 1% FDR from " << scored.groups.size()
+        z << "identified NOTHING at q <= 0.01 from " << scored.groups.size()
           << " peak groups (" << scored.target_groups << " target, "
           << scored.decoy_groups << " decoy). The scorer ran and the classifier "
           << "trained; the target-decoy threshold then rejected everything. Do not "
