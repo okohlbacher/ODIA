@@ -198,3 +198,29 @@ Also withdrawn: "31 accepted below 7 fragments at 0.0%". With zero entrapment
 hits the Poisson upper bound on that band is about 3/(0.1723 x 31) ~ 56%. That
 is small-sample silence, not purity, and it should not have been tabulated as
 though it were a result.
+
+## ATTRIBUTION (full_v5): the fragment floor earns nearly all of it
+
+kimi was right that v3 bundled three changes, so v5 repeats v3 with the mobility
+seed disabled (`-im_seed_min_anchors 1000000`; note the help text claimed 0
+disables it and is backwards -- fixed in 43fcf9f).
+
+                                    IDs  entrap     FDP   est. true  DIA-NN rec.
+    v2  no floor, no seed        14,081     300  12.63%      12,040       11,000
+    v5  floor, seed OFF          13,268     130   5.72%      12,387       11,420
+    v3  floor + mobility seed    13,526     129   5.56%      12,652       11,645
+
+The floor alone takes FDP from 12.63% to 5.72% and adds 347 estimated true
+identifications. The mobility seed adds 258 identifications and 0.16 points on
+top of that. So the headline improvement is the label-symmetry fix, and the
+bundle worry -- correctly raised -- does not change the conclusion.
+
+**But it does correct a reading taken from pass 1.** The seed is worth +43% of
+pass-1 identifications (11,787 against 8,217) and only +2% of final ones. Pass 2
+measures ion mobility from scored peak groups and recovers almost all of what
+the seed provides early, so the seed buys a head start rather than an outcome.
+Any future judgement of a calibration change from pass-1 counts will overstate
+it by an order of magnitude on this evidence.
+
+Cost: v5 3h00 / 124 GB, v3 3h12 / 116 GB -- the seed is not what makes these
+runs longer than v2's 2h04; the live MS1 traces are.
