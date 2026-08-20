@@ -76,8 +76,16 @@ namespace ODIA
     /// diaPASEF this matters -- an MS1 frame is a merged stack of TIMS scans, so
     /// without it the trace collects whatever shares the m/z anywhere in the
     /// mobility range.
+    /// @param ppm_offset  the fitted mass deviation to centre the search on,
+    ///        in ppm, exactly as the fragment axis is centred. 0 reproduces the
+    ///        old uncalibrated behaviour.
+    /// @param observed_ppm_median  optional out-param receiving the median
+    ///        residual against the CALIBRATED target, so the applied offset can
+    ///        be checked rather than assumed: a correct offset centres it on 0.
     static Ms1Traces build(const Library& library, SpectrumSource& source,
-                           double fragment_ppm, double im_window);
+                           double fragment_ppm, double im_window,
+                           double ppm_offset = 0.0,
+                           double* observed_ppm_median = nullptr);
 
   private:
     std::vector<float> times_;

@@ -1319,9 +1319,29 @@ protected:
         }
         else
         {
+          double ms1_resid = std::numeric_limits<double>::quiet_NaN();
           ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                                options.precursor_im_window *
-                                                 getDoubleOption_("ms1_im_scale"));
+                                                 getDoubleOption_("ms1_im_scale"),
+                                               extracted_ppm_offset_, &ms1_resid);
+          {
+            // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
+            // which is a hypothesis: the instrument need not err identically on
+            // the two. If the residual does not sit near 0 the borrowed centre
+            // is wrong and this line is how we find out.
+            std::ostringstream m;
+            m.setf(std::ios::fixed); m.precision(3);
+            m << "MS1 mass axis centred on " << extracted_ppm_offset_
+              << " ppm (borrowed from the fragment fit); median residual against "
+                 "that centre " << ms1_resid << " ppm";
+            if (std::isfinite(ms1_resid) && std::abs(ms1_resid) > 3.0)
+            {
+              m << " -- FAR FROM ZERO, so the fragment offset is not the MS1 offset "
+                   "and var_ms1_coelution is measured through a mis-centred window";
+              writeLogWarn_(m.str());
+            }
+            else { writeLogInfo_(m.str()); }
+          }
         }
       }
       const double secs = std::chrono::duration<double>(
