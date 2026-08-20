@@ -264,3 +264,54 @@ capability difference against DIA-NN still standing after tonight.
 
 What remains: the detection bucket (42.5%, `run_full_v6` testing it now) and
 cross-precursor interference correction.
+
+## The library-competitor design is refuted too: at 9.6M precursors, everything is contested
+
+Second prototype, before building. For each fragment of each of 998 targets and
+998 decoys, count OTHER library precursors in the same isolation window
+(+/-12.5 Th) with a fragment within 10 ppm whose predicted RT maps within 60 s
+of the candidate's apex and whose predicted 1/K0 is within 0.025. Then score
+co-elution over the UNCONTESTED fragments only.
+
+    contested fraction, median          1.000 target   1.000 decoy   AUC 0.603
+    mean uncontested / total fragments  1.9 / 11.7
+    precursors with >= 4 uncontested    312 of 2,000
+    on those 312: corr ALL              AUC 0.8574
+                  corr UNCONTESTED      AUC 0.8788
+
+Every fragment is contested, in both classes. The m/z axis is saturated at this
+library size -- doc/19 recorded exactly that ("5M precursors over ~380-980 Th
+saturate the m/z axis and no unsupervised matching statistic survives its own
+control"), and this design was drawn without connecting it. The +0.021 AUC on
+the 312-precursor remainder is real, is the same size as the classifier
+headroom, and is measured on a selected 16% minority.
+
+So a BINARY contested/uncontested split cannot work here. Interference
+correction needs to know which competitors are actually PRESENT in this run, not
+which ones the library permits.
+
+## Which leaves iteration, and makes the case for it concrete
+
+"Present in this run" is available without circularity if it comes from a
+PREVIOUS pass: pass 1's identifications say which competing precursors are real,
+and a decoy cannot fake having been identified. Weight each fragment's
+contamination by the competitors that were actually identified near that RT and
+mobility, then recompute the co-elution features in pass 2 on the down-weighted
+set.
+
+That is the missing capability, stated in a form that survives both refutations
+above:
+
+  * it is not per-precursor pruning, because the weight comes from other
+    precursors' evidence, not from this one's own correlations;
+  * it is not library structure, because it counts identified competitors, not
+    permitted ones.
+
+It also explains the architectural difference the plan file already names:
+DIA-NN refits across ~12 passes against retained chromatograms; we do 2 and
+re-extract from the raw file each time. The interference correction is the
+reason to iterate, not iteration for its own sake.
+
+Prerequisite, already scoped in the plan file and never built: retain peak
+groups between passes (~120 B each against tens of kB per trace) so the second
+pass can rescore without re-extracting.
