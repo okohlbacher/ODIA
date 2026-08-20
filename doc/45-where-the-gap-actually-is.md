@@ -115,3 +115,58 @@ experiment already queued (`run_full_v6.sh`) and because its 31.8% is the single
 largest named loss anywhere in the pipeline; then the ranking half, where the
 sub-score audit says corr_sum at AUC 0.909 is carrying the classifier almost
 alone and every other live feature is between 0.62 and 0.83.
+
+## The definitive partition, against DIA-NN's own 39,149 on OUR library
+
+The earlier table used `truth_ids.txt` (33,749), which is a DIA-NN run on a
+DIFFERENT library and overlaps ours on only 29,275. `dn_xic_report.parquet` is
+the run on OUR library -- 39,149 precursors at q <= 1% -- and is the right
+reference. Matching each to v3's candidate list, with a 15 s tolerance on
+DIA-NN's reported apex:
+
+    bucket                                        count       %   cause
+    accepted by ODIA                             11,773   30.1%   --
+    right peak, correctly picked, scored too low  7,229   18.5%   SCORING
+    right peak present, wrong one picked            730    1.9%   picking
+    candidate formed, none near DIA-NN's RT       2,777    7.1%   picking/detection
+    no candidate formed at all                   16,640   42.5%   DETECTION
+
+Of the 10,736 rejected precursors for which we DID form a candidate, 7,959
+(74.1%) have one within 15 s of DIA-NN's apex, and in 7,229 of those (90.8%) it
+is already the best-scoring candidate we hold. Sanity: 96.4% of ACCEPTED
+precursors have their best candidate at DIA-NN's RT, so the measure behaves.
+
+**7,229 precursors are located correctly, picked correctly, and not promoted.**
+Nothing upstream is at fault for them. That is 18.5% of DIA-NN's set sitting in
+our own output at the right retention time, and it is the cleanest scoring
+target we have ever had -- no gate change, no picker change and no extraction
+change can reach it.
+
+What they look like (medians, against accepted truth and decoys):
+
+                            accepted   rejected   decoy
+    var_library_corr           0.734      0.040   0.000
+    var_xcorr_shape            0.599      0.227   0.211
+    var_corr_sum               8.482      4.279   2.805
+    var_ms1_coelution          0.991      0.028  -0.107
+    var_peak_width_ratio       0.355      1.000   1.000
+    var_rt_delta              13.107     19.133  29.911
+    var_im_delta               0.008      0.009   0.024
+
+Decoy-like on every co-elution and shape feature; POSITION-wise as good as the
+accepted set (`im_delta` 0.009 against 0.008) and clearly better than decoys
+(`rt_delta` 19.1 against 29.9). We put the peptide in the right place and then
+cannot tell its trace from noise. DIA-NN can.
+
+Note also that `var_log_sn` is 4.605 for all three groups and
+`var_usable_fragments` is 12.000 for all three -- two of nineteen features are
+constants across the exact comparison they exist to make.
+
+## Revised ordering
+
+The detection bucket is still the largest (42.5%) and `run_full_v6` is testing
+it. But the 18.5% scoring bucket is the better-defined problem: the inputs are
+already correct, so any improvement is attributable, and it needs no 3 h run to
+iterate -- the candidates and their sub-scores are already on disk in
+`sub_v3.tsv`. A classifier experiment can be run offline against the exact rows
+that fail.
