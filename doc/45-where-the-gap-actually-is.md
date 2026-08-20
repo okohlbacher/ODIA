@@ -170,3 +170,49 @@ already correct, so any improvement is attributable, and it needs no 3 h run to
 iterate -- the candidates and their sub-scores are already on disk in
 `sub_v3.tsv`. A classifier experiment can be run offline against the exact rows
 that fail.
+
+## The features are the ceiling, not the classifier
+
+The 7,229 correctly-located, correctly-picked, unpromoted precursors invite an
+obvious response: train a better scorer. Measured, that response is wrong.
+
+Trained on v3's own sub-score matrix, positives = DIA-NN's 22,509 confident
+precursors on our library, negatives = 120,000 sampled decoys, 5-fold
+cross-validated so nothing is fitted on its own test rows:
+
+                                      AUC   promoted at decoy FDR 1%
+    production DScore                0.9156                   13,609
+    CV supervised GBT, same features 0.9388                   13,848
+                                                     headroom +239 (+1.8%)
+
+The supervised model is handed DIA-NN's answer key as its training labels --
+an advantage production cannot have, since its own trainer is semi-supervised
+on target/decoy alone. Even so it recovers 1.8%. That is an UPPER BOUND on
+everything classifier-side: model family, hyperparameters, training procedure,
+the semi-supervised seed, all of it. There is nothing there.
+
+So the 18.5% bucket is not reachable by scoring as currently defined. What is
+missing is INPUTS.
+
+The sub-score profile says which kind. Those precursors are decoy-like on every
+co-elution and shape feature and positionally correct on rt_delta and im_delta:
+we put the peptide in the right place and its fragments do not co-elute. For a
+weak precursor sharing an isolation window with an abundant one, that is what
+contaminated fragments look like -- and every co-elution feature we compute uses
+ALL of a precursor's fragments, contaminated ones included. One interfered
+fragment out of twelve drags corr_sum and xcorr_shape toward the decoy
+distribution regardless of how clean the other eleven are.
+
+DIA-NN has explicit interference correction (vault: *DIA-NN interference
+correction*). ODIA has none. That is the single named capability difference left
+standing after tonight, now that extraction cleanliness, mass tolerance,
+aggregation, mobility window width and FDR calibration have all been excluded
+by measurement.
+
+The direction, therefore, is per-fragment interference handling: identify which
+fragments of a precursor are contaminated and exclude or down-weight them before
+the co-elution features are computed, rather than after. Candidate primitives
+already discussed and never built: codex's per-transition union picking
+(doc/42), and `var_im_spread`, which is built, correct and shipped OFF because
+it cost 60 identifications when the FDP was 12.63% and unmeasurable -- a
+judgement made against a purity signal we did not have then and do have now.
