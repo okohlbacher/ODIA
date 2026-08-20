@@ -339,3 +339,38 @@ reason to iterate, not iteration for its own sake.
 Prerequisite, already scoped in the plan file and never built: retain peak
 groups between passes (~120 B each against tens of kB per trace) so the second
 pass can rescore without re-extracting.
+
+## The MS1 axis was mis-centred by 9 ppm, and the absence conclusion rested on it
+
+kimi (review 46) challenged the interference direction on the grounds that the
+7,229 look ABSENT rather than interfered: ms1_coelution -0.093 against 0.473 for
+accepted and -0.124 for the 801,458 bulk non-identifications, i.e.
+indistinguishable from precursors nobody claims are there. MS1 sits at the
+precursor m/z, a far sparser space than the fragment bins, so a present but
+fragment-contaminated peptide should still show its monoisotope. The argument is
+sound and would retire this whole direction.
+
+Except the measurement was broken. `Ms1Traces::build` matched on the library's
+THEORETICAL precursor m/z with no calibration offset, while the fragment axis is
+centred on the fitted deviation. Instrumented (6b1b2fa), the run now reports:
+
+    MS1 mass axis centred on -8.949 ppm (borrowed from the fragment fit);
+    median residual against that centre -0.378 ppm
+
+So the MS1 error IS the fragment error, and the uncalibrated window was centred
+0 ppm away from a signal sitting at -8.949 ppm with a +/-10 ppm half-width --
+89% of the way to the edge. Bright precursors survive that. Weak ones do not,
+and weak ones are precisely the population the absence conclusion is about.
+
+`var_ms1_coelution` therefore cannot support "absent" in any run before
+6b1b2fa, including the AUC 0.757 that justified its 47 GB. Both numbers need
+re-measuring on v7.
+
+kimi's other correction stands regardless and is recorded here because it
+weakens a claim made in this document: `im_delta` is computed INSIDE the
++/-0.025 extraction acceptance window, so it is caged in [0, 0.025] by
+construction, and the decoy median of 0.024 sitting at the window edge shows the
+cage IS the dynamic range. "im_delta 0.009 against accepted 0.008" is close to
+content-free as presence evidence. Of the two positional pillars in the
+partition above, only rt_delta survives scrutiny, and it too is measured inside
+a +/-60 s cage.
