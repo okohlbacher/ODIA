@@ -80,12 +80,46 @@ accuracy: 12 ppm". The dump above was extracted at 3.6 ppm. DIA-NN extracts
 through a window three times wider than ours -- admitting strictly more
 interference -- and still doubles our coherence.
 
-## What is still open
+## CORRECTION: the headline overstated the gap for production
 
-The first factorial never tested the cell that matches DIA-NN: WIDE window with
-MAX aggregation. At 3.6 ppm there is little to choose between peaks inside the
-tolerance, so `max` was tested where it cannot help; at 12 ppm the choice is the
-whole point. `-fragment_ppm 12 -aggregate max` is running.
+The dump above was extracted at **3.6 ppm**, chosen for that comparison script.
+**Production runs at 10 ppm.** So 0.167 is not ODIA's production coherence, and
+the sweep says so. Identity-matched, common-pair-set, against the same DIA-NN
+number throughout:
+
+    arm                          n    ODIA   DIA-NN   median diff   ODIA wins
+    3.6 ppm, +/-0.025          987   0.167    0.310        -0.088       18.3%
+    12 ppm,  +/-0.025          987   0.215    0.310        -0.030       34.4%
+    10 ppm,  +/-0.050        1,000   0.253    0.310        -0.030       30.1%
+
+The full sweep, with the zero fraction that explains it:
+
+    arm                        coherence   % zeros
+    3.6 ppm, +/-0.025 (dump)       0.160     45.3%
+    10 ppm,  +/-0.025              0.206     22.7%
+    12 ppm sum, +/-0.025           0.208     19.7%
+    12 ppm MAX, +/-0.025           0.144     19.7%
+    3.6 ppm, +/-0.050              0.200     30.3%
+    10 ppm,  +/-0.050              0.242     12.8%
+    10 ppm,  IM off                0.194      5.0%
+
+So the acceptance was too TIGHT, not too loose, and the sparsity was the
+symptom: widening m/z alone takes the zero fraction from 45.3% to ~20%, which
+is DIA-NN's own 22.9%. Mobility at +/-0.025 is also too tight; +/-0.050 composes
+with the wider m/z for the best arm measured. Turning the mobility filter OFF is
+worse than +/-0.050, so the filter earns its place -- it is mis-sized, not
+wrong. `Max` is worse than `Sum` at every width tested, so the aggregation
+comment's argument does not survive measurement.
+
+The honest statement is therefore: at production settings the gap is 0.215
+against 0.310, and a one-line window change takes us to 0.253. Not the 0.167
+this document led with.
+
+**This is a coherence result, not an identification result.** Wider windows
+admit more interference by construction, and doc/38 and doc/43 are both records
+of a change that improved a trace statistic and cost identifications. Nothing
+here should reach production until a full run measures identifications at
+MATCHED empirical FDP.
 
 Still uncontrolled, from the reviews:
 
