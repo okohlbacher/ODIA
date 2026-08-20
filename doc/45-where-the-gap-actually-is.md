@@ -408,3 +408,49 @@ ppm and keeps all three as features rather than replacing the base. For us
 anything below ~4 ppm is inside the noise. The untested arm is a mild tightening
 to ~6 ppm, kept ALONGSIDE the 10-12 ppm sum rather than instead of it, which is
 one extraction and costs minutes.
+
+## v7: the MS1 calibration measured, verdict PENDING
+
+`run_full_v7.sh` = v3's exact configuration on the 6b1b2fa binary. 3h20 wall,
+122 GB (v3: 3h12, 116 GB).
+
+**What is settled, because it does not depend on a threshold:**
+
+                                       v3 (uncalibrated)   v7 (calibrated)
+    MS1 mass axis centre                       0.000 ppm        -8.949 ppm
+    median residual against that centre               --        -0.426 ppm
+    MS1_COELUTION finite                       7,629,945         8,370,104   +9.7%
+    mean distinct MS1 bins per candidate           108.6             116.3   +7.1%
+    all-zero in window                             2,452             2,394
+    precursors with any MS1 signal             8,293,585         8,291,142   +-0
+
+Centring recovers 740,159 candidates that had no usable MS1 co-elution value
+and makes the surviving traces 7% denser. The PRESENCE fraction does not move,
+and that is expected rather than disappointing: with the window at +/-10 ppm and
+the true centre at -8.949, real signal was still INSIDE the window, just at 89%
+of the way to its edge. What the edge cost was hits, not precursors -- per-hit
+scatter is 4.04 ppm, so the -10 ppm boundary sat at -0.26 sigma and clipped
+roughly 40% of them. Checking the presence fraction alone would have said the
+fix did nothing.
+
+**What is NOT settled.** Identifications at nominal 1%: 13,335 against v3's
+13,526, i.e. -1.4%. That number is not the verdict and must not be quoted as
+one. doc/46 measured that nominal 1% lands at a DIFFERENT empirical FDP in
+different arms (5.08% against 5.72% for two gates), and the MS1 change moves the
+score distribution, so the two runs are near-certainly at different true FDPs.
+The comparison has to be at MATCHED entrapment FDP, which needs the per-precursor
+TSV on /scratch, which needs a Kerberos ticket that expired at 17:39:59.
+
+Note the sign flipped between passes -- pass 1 was +2.4% (12,067 against 11,787)
+and the final is -1.4%. That is the third instance today of pass-1 counts failing
+to predict the final result (the mobility seed went +43% -> +2%, and the gate
+retest was misread from pass 1 as a loss when it is a +11.7% win at matched FDP).
+Pass-1 counts should be treated as a progress indicator and nothing else.
+
+**Queued behind the ticket, minutes each:**
+  1. v7 against v3 at matched entrapment FDP -- the verdict.
+  2. var_ms1_coelution's AUC re-measured; the recorded 0.757 was taken through
+     the mis-centred window and is void.
+  3. Whether calibrated MS1 changes the absence-vs-interference reading for the
+     10,736 -- which decides whether the interference direction is worth any
+     further work at all.
