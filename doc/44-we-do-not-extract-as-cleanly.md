@@ -141,3 +141,40 @@ about traces that do not co-elute. Every co-elution feature we have -- corr_sum
 (AUC 0.906, and the picker's own statistic), xcorr_shape, the Gate C evidence
 statistic -- is computed on these traces. A scorer cannot rank on structure that
 extraction did not deliver.
+
+## Pointwise: the dumps are on the same axis, and our windows are MIS-CENTRED
+
+kimi's mandatory test -- can we reproduce DIA-NN's points ourselves -- run by
+matching (precursor, fragment m/z, cycle RT) across 835,374 cells:
+
+    our arm                        median ratio ODIA/DIA-NN   both non-zero
+    12 ppm, MAX, +/-0.025                              0.53         588,164
+    12 ppm, SUM, +/-0.025                              1.34         588,164
+    10 ppm, SUM, IM off                                3.66         645,538
+
+Two things fall out.
+
+**The 9% points-per-trace discrepancy is not real.** Distinct RT values per
+precursor are 87.0 for BOTH tools. The tools are on the same cycle axis; the
+apparent difference came from how all-zero traces were counted. kimi flagged it
+as one tool seeing a different scan set; it is not.
+
+**DIA-NN's value sits BETWEEN our max and our sum**, nearest to summing inside a
+mobility acceptance NARROWER than our +/-0.025. But our +/-0.010 arm measured
+WORSE, with the zero fraction jumping 45.3% -> 67.4%. A narrower window cannot
+be simultaneously better for DIA-NN and worse for us unless ours is pointed
+somewhere slightly wrong: mis-centred, tightening clips real signal on one side
+while interference still enters on the other.
+
+That is consistent with what the run itself reports. The mobility seed applies
+ONE GLOBAL offset -- 0.0170 1/K0, with a robust sigma of 0.0241, i.e. a spread
+wider than the offset it is correcting -- and per-precursor ion-mobility
+calibration is DEFERRED to pass 2 ("it is measured at the peak groups this run
+scores, and none have been scored yet"). So every pass-1 candidate, which is
+what the classifier trains on, is extracted through a window centred on the
+library's predicted 1/K0 plus a constant.
+
+Predicted, and not yet tested: pass-2 traces should be measurably more coherent
+than pass-1 traces for the same precursors, because pass 2 is the first to
+centre on observed mobility. If they are not, the mis-centring hypothesis is
+wrong and the residual gap is elsewhere.
