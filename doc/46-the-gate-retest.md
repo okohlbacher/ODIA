@@ -148,3 +148,47 @@ The fix is standard and is not a new invention: group-wise or covariate-aware
 FDR, which the Percolator family already does. Each stratum gets its own null
 rather than borrowing the bulk's. On these numbers that reprices ~5,400
 identifications currently admitted at 2-3x the headline error rate.
+
+## The homology confound is ruled out: 0 of 733,780
+
+kimi (review 47) named the objection that could have voided the stratification
+table without any decoy-model failure at all: entrapment precursors sharing a
+stripped sequence with a human library member are not absent hypotheses, and
+short, low-m/z, few-fragment peptides are exactly the ones most likely to have
+an exact cross-species match. A homology-contaminated entrapment set produces
+apparent FDP concentrated at low m/z and low fragment count -- the observed
+gradient -- for a reason that has nothing to do with scoring.
+
+Audited by joining the library against itself on stripped sequence (mods
+removed), no runs required:
+
+      fragments   entrapment   shared   % shared
+            0-2       51,245        0     0.000%
+            3-6       98,024        0     0.000%
+           7-11      217,456        0     0.000%
+             12      367,055        0     0.000%
+
+       prec m/z   entrapment   shared   % shared
+        200-400      106,902        0     0.000%
+        400-600      200,305        0     0.000%
+        600-800      138,172        0     0.000%
+       800-1000      105,154        0     0.000%
+      1000-1800      183,247        0     0.000%
+
+Zero, in every stratum, against 1,325,594 distinct human stripped sequences.
+The gradient is not sequence homology.
+
+The weaker form -- near-identical peptides sharing most fragments without exact
+sequence identity -- is not tested by this join. It is however constrained by
+doc/45's competitor measurement: fragment-level overlap in this library is
+UNIVERSAL (contested fraction 1.000 at a 60 s tolerance, ~0.5 at 5 s, and within
+0.08 of each other for targets and decoys). Something universal cannot
+manufacture a gradient concentrated in particular strata.
+
+kimi's second direction remains open and cuts the other way: peptDeep-family
+predictors are trained on human data, so Arabidopsis precursors are
+out-of-distribution and systematically HARDER to identify than absent human
+peptides would be. That makes entrapment FDP an UNDER-estimate of the true
+false-target rate, differentially by stratum if the prediction degradation is
+m/z-dependent. Net sign unknown, and it does not rescue the design -- it makes
+the calibration failure worse, not better.
