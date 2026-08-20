@@ -279,6 +279,30 @@ co-elution over the UNCONTESTED fragments only.
     on those 312: corr ALL              AUC 0.8574
                   corr UNCONTESTED      AUC 0.8788
 
+**CORRECTION (codex, review 46):** the +/-60 s above is the pass-2 EXTRACTION
+window, which is a resource bound, not evidence that a competitor eluted at the
+apex. The right test is peak-width scale. Re-run properly:
+
+    RT tol   contested t/d   uncontested/total   corr ALL   corr UNCONTESTED     n
+      60 s   1.000 / 1.000          1.9 / 11.7     0.8574             0.8788   312
+      30 s             --           2.7 / 11.7     0.8507             0.8575   474
+      10 s   0.667 / 0.750          4.6 / 11.7     0.8496             0.8287   986
+       5 s   0.500 / 0.500          6.1 / 11.7     0.8402             0.8298 1,392
+
+Tightening the tolerance does cut the contested fraction from 1.000 to 0.500 --
+codex was right about the test. But as the tolerance becomes correct and the
+sample becomes REPRESENTATIVE, dropping contested fragments makes discrimination
+WORSE: 0.8287 against 0.8496 at 10 s, 0.8298 against 0.8402 at 5 s. The +0.021
+"gain" recorded below existed only on the 312-precursor minority that survived a
+wrong filter -- a small-n artifact of the same family this document spends its
+length catching, produced here by me.
+
+Note also that at 10 s DECOYS are more contested than targets (0.750 against
+0.667), which is the class-construction hazard codex predicted: the feature
+would partly encode how decoy fragments are generated rather than interference.
+
+The original text, now superseded:
+
 Every fragment is contested, in both classes. The m/z axis is saturated at this
 library size -- doc/19 recorded exactly that ("5M precursors over ~380-980 Th
 saturate the m/z axis and no unsupervised matching statistic survives its own
