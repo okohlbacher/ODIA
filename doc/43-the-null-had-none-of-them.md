@@ -134,3 +134,42 @@ worse than reported.
 - codex's frozen-model cross-over (candidate set x training set, 2x2) is still
   the only clean separation of admission effects from seed poisoning.
 - `-gate_log` cannot be joined back to precursors, which blocks the k-sweep.
+
+## VALIDATED, 2026-08-20: `run_full_v3`
+
+The question this run existed to answer was whether 6.03% survives when the
+decoy null and the classifier are REFIT on the filtered library rather than the
+filtered set being taken from an unfiltered run's output. It does, and better:
+
+                              IDs  entrap     FDP   est. true   truth rec.
+          baseline (v2)    14,081     300  12.63%      12,040       11,000
+    v3 (min_frag 3 + fix)  13,526     129   5.59%      12,648       11,645
+    DIA-NN, same library   39,211       -   7.42%      36,301            -
+
+Post-hoc filtering of v2's own output predicted 12,835 IDs at 6.03% with 11,937
+estimated true. The refit beat that on every axis, so retraining on a symmetric
+library is worth something beyond removing the rows: 4% fewer raw
+identifications, MORE true ones (+5.0%), MORE of DIA-NN's confident set
+recovered (+5.9%), and less than half the false discovery proportion. 5.59% is
+below DIA-NN's 7.42% on this library.
+
+By fragment count, the degenerate regime is simply gone:
+
+    usable_frag   accepted     FDP
+              3          3    0.0%
+            4-6         28    0.0%
+           7-11      1,302   ~14%
+             12     12,193    4.7%
+
+The two-fragment class that supplied 1,214 identifications at 78.4% FDP no
+longer exists, and the twelve-fragment core grew 11,699 -> 12,193 while getting
+cleaner, 5.0% -> 4.7%.
+
+**Cost, and where it is NOT from.** 3h12 wall and 116 GB peak, against 2h04 and
+80 GB. That is not the fragment floor -- the library it searches is SMALLER
+(9,251,621 against 9,617,705). It is `9a496fa`, the ms1_coelution repair: this
+is the first full run in which MS1 traces are actually built, 1,343 bins over
+9.25M precursors, 8,293,585 with signal (89.6%), 47,397 MiB. The baseline's
+`var_ms1_coelution` was dead, so it paid neither the memory nor the time.
+Whether that feature earns 47 GB and an hour is a separate question, and it has
+not been asked yet: its AUC in the v3 run has not been measured.
