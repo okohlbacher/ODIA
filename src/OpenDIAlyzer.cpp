@@ -580,7 +580,9 @@ protected:
     registerIntOption_("im_seed_min_anchors", "<n>", 100,
                        "Standards that must carry an observed 1/K0 before the CiRT blind "
                        "search's GLOBAL mobility offset is applied to the library ahead of "
-                       "pass 1. Set 0 to disable.\n\nThis is a single constant on purpose. "
+                       "pass 1. The guard is `anchors < n`, so a LARGE value disables the "
+                       "seed and 0 makes it unconditional -- the reverse of what this text "
+                       "said until it was checked against the code.\n\nThis is a single constant on purpose. "
                        "The full per-charge, m/z-shaped calibration needs "
                        "-min_anchors_per_charge (120) per charge and the seed cannot supply "
                        "that -- it is why pass 1 logs the correction as DEFERRED. But pass 1 "
@@ -2414,7 +2416,14 @@ protected:
       po.ppm_centre = extracted_ppm_offset_;
       po.im_window = getDoubleOption_("precursor_im_window");
       const double pw = getDoubleOption_("prefilter_rt_window");
-      po.rt_half_window = (pw > 0.0 ? pw : pass2_window) * 0.5;
+      // `pass2_window` is ALREADY a half-width -- the extractor slices
+      // `centre +/- rt_window_seconds` (ChromatogramExtractor.cpp:509-510) -- so
+      // halving it again made the default prefilter judge support over half the
+      // neighbourhood the search itself uses, and discard precursors on evidence
+      // the real pass would have seen. Only an explicit -prefilter_rt_window is
+      // a full width and needs halving. Found by external review; latent, because
+      // -prefilter defaults to off.
+      po.rt_half_window = pw > 0.0 ? pw * 0.5 : pass2_window;
       po.irt_slope = 1.0;          // the library is already in run seconds
       po.irt_intercept = 0.0;
       po.keep_fraction = prefilter_mode == "on" ? getDoubleOption_("prefilter_keep") : 1.0;
