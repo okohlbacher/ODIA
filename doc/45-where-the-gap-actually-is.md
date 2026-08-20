@@ -374,3 +374,37 @@ cage IS the dynamic range. "im_delta 0.009 against accepted 0.008" is close to
 content-free as presence evidence. Of the two positional pillars in the
 partition above, only rt_delta survives scrutiny, and it too is measured inside
 a +/-60 s cage.
+
+## Mass-tightening: refuted at 3.6 ppm, and the reason says where the limit is
+
+kimi (review 46, item 3) proposed the cheapest remaining idea: DIA-NN computes
+its co-elution sum at base, 0.45x and 0.2x tolerance, on the principle that "a
+real peak survives tightening; an interferent often does not". Testable with no
+new code, because the same 1,000 precursors are already dumped at several
+tolerances, all centred on the same fitted -9.6479 ppm:
+
+    tolerance          AUC (target vs decoy)   median target   median decoy
+    3.6 ppm                           0.7537           0.058          0.010
+    12 ppm                            0.7658           0.093          0.022
+    10 ppm + IM +/-0.050              0.8103           0.121          0.021
+
+    intensity survival ratio I(3.6)/I(12) around the apex: AUC 0.5720
+      (against 0.6084 for the wide intensity alone and 0.6138 for the tight)
+
+Tightening makes discrimination WORSE, and the survival ratio is a weaker
+feature than either intensity by itself. Both windows were centred identically,
+so this is not the mis-centring failure that has explained three other negatives
+tonight.
+
+**The reason matters more than the result.** The fragment mass calibration
+reports total per-hit scatter of 4.04 ppm, "dominated by irreducible
+per-fragment noise". A +/-3.6 ppm window is therefore NARROWER THAN 1 SIGMA of
+the noise on a single fragment hit, so tightening to it starves real peaks
+faster than interference -- which is what the zero fraction says directly:
+19.7% at 12 ppm against 45.3% at 3.6 ppm.
+
+So the principle is not refuted; the WIDTH is. DIA-NN tightens 12 -> 5.4 -> 2.4
+ppm and keeps all three as features rather than replacing the base. For us
+anything below ~4 ppm is inside the noise. The untested arm is a mild tightening
+to ~6 ppm, kept ALONGSIDE the 10-12 ppm sum rather than instead of it, which is
+one extraction and costs minutes.
