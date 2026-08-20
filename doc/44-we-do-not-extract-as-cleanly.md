@@ -237,3 +237,43 @@ Candidate fixes, in order of cost:
 Option 2 is the one to test first because it is one flag and it does not change
 what is estimated -- only how much of the peak is inside the window while the
 estimate is still unavailable.
+
+## RETRACTION: the mis-centring above was measured on a run that predates the seed
+
+kimi, round 45. The numbers this document used to justify widening -- "+0.0092
+to +0.0192 ... up to 76% of the half-width" -- come from `full_v2.log`'s pass-2
+calibration. **full_v2 contains ZERO `mobility seed` lines.** The mobility seed
+landed in `ca63a29` at 12:35 on 2026-08-19; the v2 log was written at 09:49,
+three hours earlier. So those residuals are the FULL, uncorrected library error,
+and production has not carried that error since.
+
+What production actually carries, from v3's own pass 2 WITH the seed in force:
+
+    centre:   0.0076 overall; scatter 0.0111 -> 0.0101 after the m/z shape
+    charge 2: 6012 anchors, +0.0056 at 357 Th to +0.0014 at 1293 Th
+    removed:  30.6% of the mean squared error out of fold (v2: 70.7%)
+    window:   the corrected residual would support +/-0.0304 -- REPORTED ONLY
+
+30.6% against v2's 70.7% is the seed having already taken most of it. The
+residual is ~0.0076 against a +/-0.025 half-width -- about 30%, not 76% -- and
+the run's own recommendation is +/-0.0304, not +/-0.05.
+
+**The coherence sweep is confounded the same way.** `run_chrom_apex36.sh` and
+`run_aggr_factorial.sh` pass no `-rt_seed` (default `off`), and
+`sub_apex.parquet` carries the raw library IM. Every arm in the table above was
+therefore extracted through the full library error. The 0.167 -> 0.253 gain from
+widening is the gain from covering an error PRODUCTION DOES NOT HAVE. It does
+not license widening the production window.
+
+So "mis-centred, not mis-sized" is not established. The seed's own robust sigma
+is 0.0241 -- per-precursor scatter about ANY global centre -- so a +/-0.025
+half-window may clip peak tails however well centred it is, which would be
+mis-SIZED. Running now (`run_seeded_centre.sh`): the same 1,000 precursors with
+the IM column pre-shifted by the seed's +0.0170, at +/-0.025, +/-0.0304 and
++/-0.05. If +/-0.025 on corrected centres reaches 0.253, fitting wins and
+widening is unnecessary.
+
+`full_v4` (+/-0.05) was KILLED rather than run to completion: its premise was
+this retracted measurement, and `-precursor_im_window` is not "pass 1 only" --
+it also feeds the prefilter, the MS1 window multiplier, and the seed's own
+refusal cap (`OpenDIAlyzer.cpp:2844`), so a twice-as-bad seed would have passed.

@@ -173,3 +173,28 @@ is the first full run in which MS1 traces are actually built, 1,343 bins over
 `var_ms1_coelution` was dead, so it paid neither the memory nor the time.
 Whether that feature earns 47 GB and an hour is a separate question, and it has
 not been asked yet: its AUC in the v3 run has not been measured.
+
+## CORRECTION: v3 is not a controlled comparison against v2
+
+`run_full_v3.sh` claims it is "IDENTICAL to the 14,081-ID full_v2 baseline
+except for the two defects fixed in 0ba7131". That is false, and kimi caught it.
+The v2 binary predates three other changes:
+
+  * `ca63a29` mobility seed -- v3 is the FIRST full run whose pass 1 extracts on
+    a seed-corrected 1/K0 axis. full_v2.log contains no `mobility seed` line.
+  * `9a496fa` MS1 traces cleared -- v3 is the first run in which
+    `var_ms1_coelution` is a LIVE feature. Measured on v3, its AUC is 0.757,
+    fifth of nineteen, so the classifier gained a real feature between runs.
+  * `dae83f0` im_seed_window_scale.
+
+So 12.63% -> 5.59% is the effect of a BUNDLE, not of the fragment floor alone.
+The direction is not in doubt -- the two-fragment class that supplied 1,214
+identifications at 78.4% FDP cannot survive a filter that removes it, and the
+post-hoc filtering of v2's own output already predicted 6.03% -- but the
+magnitude attributable to `-min_library_fragments` is not established. The
+control is one run: current binary, filtered library, mobility seed disabled.
+
+Also withdrawn: "31 accepted below 7 fragments at 0.0%". With zero entrapment
+hits the Poisson upper bound on that band is about 3/(0.1723 x 31) ~ 56%. That
+is small-sample silence, not purity, and it should not have been tabulated as
+though it were a result.
