@@ -1,4 +1,50 @@
-# We do not extract as cleanly as DIA-NN, and it is not the obvious causes
+# RESOLVED: we extract very nearly as cleanly as DIA-NN
+
+**The headline this document was written under is WRONG and is retained below
+only because the way it went wrong is the useful part.**
+
+Measured at PRODUCTION settings -- 10 ppm, +/-0.025 1/K0, and the mobility
+seed's +0.0170 applied to the centre, which is what every real run does --
+identity-matched fragments, pairs non-degenerate in both tools, 998 precursors:
+
+                                  ODIA   DIA-NN   median diff   ODIA wins
+    production (seeded, +/-0.025)  0.270    0.311        -0.010       41.6%
+    widened    (seeded, +/-0.050)  0.255    0.310        -0.034       31.4%
+
+A median paired difference of -0.010, and we are BETTER on 41.6% of precursors.
+The 0.167 against 0.310 that this document led with was an artifact of two
+choices in the MEASUREMENT, neither of which production makes:
+
+  * the dump was extracted at 3.6 ppm; production extracts at 10;
+  * the dump passed no `-rt_seed`, so it carried the full library 1/K0 error;
+    production applies the seed's +0.0170.
+
+And the centring sweep, with the IM column pre-shifted by that same +0.0170:
+
+    +/-0.025 (production width)   0.260   20.6% zeros
+    +/-0.0304                     0.258   17.7%
+    +/-0.050                      0.245   11.9%
+    +/-0.025, NOT centred         0.206   22.7%
+    +/-0.050, NOT centred         0.242   12.8%
+
+**Fitting the centre wins, and widening is not merely unnecessary but harmful
+once centred.** Correcting the centre at the existing width beats the widest
+uncorrected arm (0.260 against 0.242); widening on top of a correct centre
+monotonically loses. Every apparent gain from widening was compensation for a
+centring error the production pipeline does not have.
+
+The lesson is the one the vault already names: a dump extracted with different
+flags is a different artefact. Three documents' worth of diagnosis --
+aggregation, tolerance, window size, "mis-centred not mis-sized" -- were
+reasoning about a configuration nothing ships.
+
+What survives from below: the identity-matched, common-pair-set protocol; the
+smoothing control; the pointwise test showing both tools on the same cycle axis;
+and the observation that `Max` aggregation loses to `Sum` at every width.
+
+---
+
+# Original document (headline retracted, kept for the record)
 
 2026-08-20. 1,000 target precursors, S08 diaPASEF. DIA-NN ran with OUR library
 and `--xic 60`; ODIA re-extracted around DIA-NN's own apex (`apex_dump_36`), so
