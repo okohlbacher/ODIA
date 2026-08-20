@@ -555,6 +555,12 @@ add_test(NAME robust_line_survives_half_wrong_anchors COMMAND odia_robust_line)
 # parent before reading a single string.
 add_test(NAME library_subset_outlives_parent COMMAND odia_library_subset)
 
+# PEP must be low where the score is high. The monotonicity sweep ran from the
+# low-score end with a running max, giving every entry the worst PEP below it --
+# monotone, in the wrong direction, so a monotonicity-only check would pass it.
+# This pins the direction AND that the column keeps its range.
+add_test(NAME pep_rises_as_score_falls COMMAND odia_pep_monotone)
+
 # The retention-time axis of a precursor that falls in more than one isolation
 # window. Data-free: two overlapping windows and four cycles each, built in the
 # test. Nothing in the suite constructed a Chromatograms before this.

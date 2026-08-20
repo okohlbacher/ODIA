@@ -329,14 +329,26 @@ inline void assignQValues(std::vector<RankedGroup>& ranked, bool use_pi0)
       if (t > 0) { pep = pi0 * static_cast<double>(d) * scale / static_cast<double>(t); }
       ranked[i].pep = std::min(1.0, std::max(0.0, pep));
     }
-    // PEP must not increase with score. The list is sorted high->low, so sweep from the low-score
-    // end keeping a running max: this is the isotonic projection under the ordering constraint and
-    // removes the local-ratio noise without smoothing away the trend.
+    // PEP must not increase with score. The list is sorted high->low by score, so PEP must be
+    // NON-DECREASING IN INDEX, and the sweep therefore runs from the high-score end forwards.
+    //
+    // It ran backwards. Sweeping from the low-score end with a running max gave every entry the
+    // maximum PEP of its SUFFIX -- i.e. of everything scoring below it -- which is monotone in
+    // the wrong direction and, on a real list, catastrophic: [0.01, 0.02, 0.5, 0.9] came out
+    // [0.9, 0.9, 0.9, 0.9], so the best-scoring precursor in the run was reported with the worst
+    // PEP in the run. Found by external review.
+    //
+    // Confined to the reported PEP column: nothing thresholds on it (it reaches only the output
+    // TSV via OpenDIAlyzer.cpp), so no q-value or identification count was affected.
+    //
+    // The old comment also called this "the isotonic projection". A cumulative maximum is the
+    // greatest monotone minorant, not a least-squares isotonic regression; the claim is dropped
+    // rather than repeated.
     double running_max = 0.0;
-    for (std::size_t end = n; end > 0; --end)
+    for (std::size_t i = 0; i < n; ++i)
     {
-      running_max = std::max(running_max, ranked[end - 1].pep);
-      ranked[end - 1].pep = running_max;
+      running_max = std::max(running_max, ranked[i].pep);
+      ranked[i].pep = running_max;
     }
   }
 }
