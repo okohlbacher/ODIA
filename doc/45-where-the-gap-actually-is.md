@@ -216,3 +216,51 @@ already discussed and never built: codex's per-transition union picking
 (doc/42), and `var_im_spread`, which is built, correct and shipped OFF because
 it cost 60 identifications when the FDP was 12.63% and unmeasurable -- a
 judgement made against a purity signal we did not have then and do have now.
+
+## Naive interference pruning is refuted before implementation
+
+The obvious form of the fix above -- drop a precursor's contaminated fragments,
+then compute the co-elution features on what remains -- was prototyped offline
+on the 1,000-precursor seeded dump (998 targets, 998 decoys, real traces, +/-30 s
+around the apex, fragments dropped greedily by lowest mean correlation to the
+rest until half remain):
+
+    variant                                AUC   median target   median decoy
+    corr over ALL fragments (current)   0.8288           0.150          0.021
+    corr over consistent subset         0.8278           0.434          0.182
+    fraction consistent                 0.7465           0.083          0.000
+
+Pruning nearly triples the target median -- and triples the decoy median with
+it. Discrimination does not move (0.8288 -> 0.8278). The reason is that the
+pruning criterion IS the scored statistic: selecting a decoy's best-correlating
+fragments flatters the decoy exactly as much as it flatters a target. This is
+the same selection-on-the-response failure that invalidated the doc/42 sub-score
+audit, in a new place.
+
+So the correction cannot be per-precursor. It has to use something a decoy does
+not share, and the vault says what that is: identification-level interference
+correction requires SHARED-FRAGMENT logic -- knowing which OTHER library
+precursor owns the contaminating signal, not merely that a fragment disagrees
+with its siblings. A decoy's fragments are recomputed from a shuffled sequence,
+so they do not systematically collide with a real co-eluting peptide's fragments
+in the way a real precursor's do; that asymmetry is the only place the signal
+can come from.
+
+That is a substantial build -- a cross-precursor index over the library's
+fragment m/z within each isolation window, evaluated at the candidate's RT --
+and it should be designed before it is started. It is, however, the only
+capability difference against DIA-NN still standing after tonight.
+
+## What tonight excluded, by measurement
+
+    trace cleanliness      0.270 against DIA-NN's 0.311, matched
+    m/z tolerance          DIA-NN optimises to 12 ppm; we extract at 10
+    aggregation            Max loses to Sum at every width tested
+    mobility window width  +/-0.025 beats +/-0.0304 and +/-0.050 at a correct centre
+    FDR calibration        5.56% against DIA-NN's 7.42%; we are stricter
+    library coverage       0 of DIA-NN's confident precursors are absent
+    the classifier         +1.8% headroom with DIA-NN's own labels
+    per-precursor pruning  no gain; decoys benefit equally
+
+What remains: the detection bucket (42.5%, `run_full_v6` testing it now) and
+cross-precursor interference correction.
