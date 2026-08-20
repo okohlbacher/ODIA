@@ -178,3 +178,62 @@ Predicted, and not yet tested: pass-2 traces should be measurably more coherent
 than pass-1 traces for the same precursors, because pass 2 is the first to
 centre on observed mobility. If they are not, the mis-centring hypothesis is
 wrong and the residual gap is elsewhere.
+
+## The mis-centring is measured, and the run measures it too late
+
+The prediction above did not need a new run. The baseline's OWN pass-2 report
+quantifies exactly the error the pass-1 window carries:
+
+    ion-mobility calibration: GATE PASSED -- 3 of 4 charges corrected, mz_shaped;
+    71% of the mean squared 1/K0 error removed out of fold
+
+    charge 2: 4045 anchors, +0.0150 at 330 Th -> +0.0146 at 1293 Th;
+              1/K0-linear -0.0393 per 1/K0, i.e. a -3.9% error in the CCS->1/K0 coefficient
+    charge 3:  980 anchors, +0.0092 at 334 Th -> +0.0124 at 1066 Th; +1.5% coefficient error
+    charge 4:  129 anchors, constant +0.0192;                        +2.1% coefficient error
+
+The library's predicted 1/K0 is wrong by **+0.0092 to +0.0192**, against a
+window half-width of **+/-0.025**. That is an offset of up to 76% of the
+half-width: for a large share of precursors the true mobility sits near or
+outside the window edge, so the trace samples the shoulder of the mobility peak
+and drops out whenever the ion drifts across the boundary. That is the 45.3%
+zero fraction, and it is why NARROWING to +/-0.010 made things worse -- it
+clipped what little was inside.
+
+The correction is charge-dependent AND m/z-shaped. The mobility seed applies ONE
+global constant (+0.0170), which roughly fits charges 2 and 4 while
+over-correcting charge 3 by ~0.006. It cannot represent a -3.9% coefficient
+error in the CCS->1/K0 conversion, which is a SLOPE error, not an offset.
+
+And the ordering is the problem: the pass-1 attempt reports
+
+    ion-mobility calibration: GATE FAILED -- the gate passed, but no charge has
+    enough anchors to fit from (min_anchors_per_charge = 120)
+      residuals: 213 target ... from 343 sampled precursors
+
+so the machinery exists and is starved, while pass 2 gets 5,156 residuals and
+succeeds. Pass 1 forms all 2,835,055 peak groups and trains the classifier
+through the uncorrected window; pass 2 earns the correction afterwards.
+
+The gate's own comment defends the safe direction -- "an uncentred window keeps
+the library's own error, where a window recentred on a badly measured offset
+moves off the precursor entirely" -- and that is right as a refusal rule. It is
+not an argument for having only 213 anchors to decide on.
+
+Candidate fixes, in order of cost:
+
+1. Fit the seed offset PER CHARGE rather than globally. The CiRT seed already
+   searches 298 standards and the mobility seed already reports its own robust
+   sigma (0.0241, wider than the 0.0170 offset it applies) -- that sigma is the
+   charge and m/z spread being averaged away.
+2. Widen pass 1 only, to +/-0.05, so the uncorrected window still contains the
+   peak; the measured worst-case offset is 0.0192, which +/-0.05 covers and
+   +/-0.025 does not. The 10 ppm / +/-0.050 arm is the best coherence measured
+   (0.253 against DIA-NN's 0.310), which is consistent with this being the
+   mechanism rather than a coincidence.
+3. Lower `min_anchors_per_charge` for the pass-1 fit, or pool charges for the
+   offset while keeping the slope global. Cheapest to try, weakest justification.
+
+Option 2 is the one to test first because it is one flag and it does not change
+what is estimated -- only how much of the peak is inside the window while the
+estimate is still unavailable.
