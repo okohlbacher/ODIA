@@ -107,3 +107,44 @@ tracks the tail. Candidates, none tested: entrapment-calibrated q-values as a
 shipped output; a decoy construction whose fragments collide with real
 co-eluting peptides the way absent targets' do; or reporting empirical FDP
 alongside nominal q so the gap is visible rather than implied.
+
+## The failure is stratified, and all three axes agree
+
+v5's 13,268 accepted at nominal 1%, split by covariates. `r_s` is the
+entrapment ratio WITHIN each stratum, so composition is controlled:
+
+           charge   accepted  entrap     r_s      FDP
+                2      9,956      94  0.1731    5.51%
+                3      3,047      29  0.1732    5.55%
+                4        262       7  0.1723   15.93%
+
+        fragments   accepted  entrap     r_s      FDP
+             7-11      1,292      30  0.1774   13.40%
+               12     11,946      99  0.1713    4.88%
+
+         prec m/z   accepted  entrap     r_s      FDP
+          200-400        136       4  0.1731   17.51%
+          400-600      3,735      62  0.1728    9.77%
+          600-800      6,127      45  0.1742    4.25%
+         800-1000      2,743      17  0.1735    3.59%
+        1000-1200        484       1  0.1713    1.21%
+
+`r_s` is flat at ~0.173 everywhere, so these are real differences in error rate,
+not entrapment composition. And the three axes are correlated -- low-m/z
+precursors carry fewer in-range fragments, and charge 4 concentrates at low m/z
+-- so this is plausibly ONE axis: the less evidence a precursor carries, the
+higher its true error, and a single global threshold cannot see it. The
+4.88% / 13.40% split by fragment count is the same statement as the 3.59% /
+17.51% split by m/z.
+
+kimi advised against a fragment-count-stratified FDR last round -- one band, one
+run, n ~ 1,300, "replicate the band structure before revisiting". That advice
+was right for the evidence then. This is three independent stratifications
+agreeing, with 3,871 identifications in the low-m/z corner alone, which is a
+different situation; the replication kimi asked for should still be done on the
+Astral run before anything ships.
+
+The fix is standard and is not a new invention: group-wise or covariate-aware
+FDR, which the Percolator family already does. Each stratum gets its own null
+rather than borrowing the bulk's. On these numbers that reprices ~5,400
+identifications currently admitted at 2-3x the headline error rate.
