@@ -125,9 +125,13 @@ namespace ODIA
       // window of half-width ~75 s -- i.e. a true peak sits no closer to the
       // predicted time than a random candidate does.
       //
-      // It was also pinned in `nonpositive_features`, forcing "further is
-      // worse" onto data where true peaks sit FURTHER than decoys. A feature
-      // constrained to a sign the data contradicts can only subtract signal.
+      // It was also pinned in `nonpositive_features` -- but that clip applies
+      // to the LDA weight vector only and the default classifier is GBT, so
+      // the pin never took effect on the shipped path. Removing the feature
+      // measured as a WASH on the fixture (+20 IDs, FDP +1.03 pp, both inside
+      // noise), which is what an uninformative feature a tree ensemble already
+      // ignores should do. The removal is right because the quantity cannot
+      // discriminate, not because it was costing identifications.
 
       /// |library 1/K0 - observed 1/K0| for the precursor, or NaN where the run
       /// or the library has no mobility. Orthogonal to everything above on
