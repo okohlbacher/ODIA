@@ -34,7 +34,18 @@ FX=/scratch/kohlbach/fixtures/s08_6x60/s08_6x60.mzpeak
 [[ -f "$FX" ]] || { echo "fixture missing: $FX (rebuild: shared/libv2/build_fixture.sh)" >&2; exit 1; }
 source $R/ODIA/scripts/env.sh
 
+# Which binary, and which source. An arm that silently ran a stale build is not
+# a comparison: 'gateq' reproduced the stored baseline exactly while emitting a
+# log line the current source no longer contains, and nothing in the output said
+# so. mtime rather than an embedded SHA because the binary carries none.
+bin_sha=$(git -C $R/ODIA rev-parse --short HEAD 2>/dev/null || echo unknown)
+bin_age=$(date -r $R/build-gpu/OpenDIAlyzer '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)
+dirty=$(git -C $R/ODIA status --porcelain 2>/dev/null | wc -l)
 echo "== bench arm '$arm' on s08_6x60 (6 x 60 s, 19.0% of spectra), extra args: $*"
+echo "   binary built $bin_age   repo $bin_sha${dirty:+ (+$dirty uncommitted)}"
+if [[ -n "$(find $R/ODIA/src $R/ODIA/include -newer $R/build-gpu/OpenDIAlyzer -name '*.cpp' -o -newer $R/build-gpu/OpenDIAlyzer -name '*.h' 2>/dev/null | head -1)" ]]; then
+  echo "   WARNING: sources are NEWER than the binary -- this arm is measuring a stale build" >&2
+fi
 /usr/bin/time -v $R/build-gpu/OpenDIAlyzer \
   -in "$FX" -tr $S/human_v2.parquet \
   -irt_slope 1086.50 -irt_intercept 473.77 -rt_window_pass1 75.4069 \
