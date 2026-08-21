@@ -98,6 +98,33 @@ precursors and 81.1% of the brightest, among ones we ALREADY find. DIA-NN
 identifies all of them. Admission and discrimination are not two problems -- one
 sensitivity deficit shows up at both.
 
+## D->E is a separation problem, and it is not recoverable by fixing the null
+
+`scripts/analysis/d6_separation.py`. The 7,138 correctly-ranked true peaks that
+fail q <= 0.01, against the 626,295 decoy precursors' best scores:
+
+    accepted at q<=0.01   DScore median  9.647   decoy percentile ~100.0
+    REJECTED              DScore median  3.222   decoy percentile   98.8
+    decoy null            DScore median -0.189   p99 3.412   max 10.078
+
+The rejected true peaks outrank 98.8% of decoys -- and that is not close to
+enough. 1.2% of 626,295 is **7,516 decoys above them**, against 7,138 targets
+to be gained: accepting the bucket costs **51.3% FDP**. This is not a
+conservative threshold, and no repair of the null moves it.
+
+I nearly attributed the heavy tail to a candidate-count asymmetry -- the emitted
+rows show targets 2.735 against decoys 2.957 per precursor, 8.1% more draws in
+the decoy argmax. The code refutes it: `match_decoy_candidate_counts`
+(`lda.h:1052`) already rank-matches the decoy draw counts against the target
+distribution when the null is built, and does so one-sidedly (capping down,
+never up), so it errs toward deflating the null. The row counts are the OUTPUT,
+not the draws.
+
+So the second-largest bucket is the LEAST tractable of the four. It needs
+features the classifier does not have, and doc/45 measured that classifier
+within +1.8% of its ceiling on the present feature set. Priority stays with
+A->B -- now for a measured reason rather than because it is biggest.
+
 ## A measurement bug this turned up
 
 DIA-NN writes `C(UniMod:4)`; our library writes `C(Carbamidomethyl)`. It is the
