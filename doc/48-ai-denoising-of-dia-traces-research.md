@@ -164,3 +164,52 @@ DIA-NN interference note and the 1.7.x source reading remain the better source.
 19 verified. Primary: CANDIA (Patterns 2020), Specter (Nat Methods 2018), Siren
 (JPR 2019), DIA-NMF (EUSIPCO 2024), Alpha-XIC, DIA-BERT, Dear-DIA^XMBD, AutoMS.
 Full list and per-claim evidence in the workflow output.
+
+## CORRECTIONS after review 49. Three claims above are wrong
+
+**1. "The naming problem disappears because the dictionary is labelled" is WRONG.**
+Specter labels the COLUMNS, not the physical sources. If the true interferent is
+absent from the library, NNLS must still explain the signal, and non-negativity
+makes the redistribution one-sided: it inflates whichever columns correlate with
+the missing source -- i.e. the co-eluting same-window precursors competing with
+the query. The failure mode is not "the fit fails", it is **"the fit confidently
+assigns real signal to an absent library member"**, which MANUFACTURES false
+targets. The naming problem does not disappear; it relocates to dictionary
+completeness and coherence, and a 9.6M predicted library makes it WORSE by
+supplying interchangeable explanations. Our library is predicted from FASTA and
+contains no modified, semi-tryptic, contaminant or non-peptide species, which are
+exactly what real interferents are.
+
+Note the symmetry kimi draws: our ENTRAPMENT set is precisely this situation --
+an absent hypothesis with real interferents present -- so entrapment is the
+correct ruler for exactly this failure, and the decoy arm is the wrong one.
+
+**2. The scale is far worse than "tens of thousands".** 9.6M precursors over 24
+windows is ~400,000 library columns per isolation window, against far fewer
+observed fragment bins per scan. The unrestricted per-scan NNLS is not merely
+expensive, it is **non-unique**: rank(L) <= observed bins << columns. Every
+restriction that makes it tractable (RT gating, evidence gating) reintroduces
+selection bias and risks deleting the true explanation.
+
+**3. "Family B is the one that survives" is true of the OBJECTION, not of the
+payoff.** doc/48's own table contains NO identification claim for Specter. Its
+verified payoff is quantification, and its stated rationale for joint
+target+decoy deconvolution is protecting quantification. The identification
+evidence for known-dictionary unmixing in peptide DIA is **zero**. This document
+came within one sentence of importing Siren's MS1 number as family-B
+identification evidence; that would have been an error.
+
+**The meta-trap, which this document walked into.** "Verified 3-0" means three
+agents agreed the paper says what it says. It is not replication. Every
+surviving case is single-group, internally controlled, against baselines several
+tool generations old -- this document states that and then ranks claims as
+though verification were evidence of transfer.
+
+**And one design of ours dies here too.** The backlog's surviving direction --
+weight interference by competitors IDENTIFIED IN A PREVIOUS PASS -- is
+label-asymmetric by construction: pass-1 identifications are overwhelmingly
+targets, so targets would get cleaned while decoys kept contaminated traces.
+That is an asymmetric transform upstream of FDR, forbidden by doc/08's
+gate-safety criterion, and it would WIDEN the measured ~100x decoy/entrapment
+gap rather than close it. Any competitor set must be built by a label-blind
+rule.
