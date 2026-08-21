@@ -508,3 +508,45 @@ absence cannot be concluded from a measurement known to be uncalibrated, and
 this one failed weak precursors first -- the population the conclusion was
 about. Acting on the v3 row would have retired the correct direction on an
 artefact of our own window.
+
+## The rejected population is INTERFERED, not weak -- and the interference is DISTRIBUTED
+
+The vault's cheap-interference test (doc/BACKLOG item 2), run on 4,000
+DIA-NN-confident precursors ODIA rejects and 4,000 it accepts, each trace
+centred on the apex v7 actually picked:
+
+    group                  n   fragments   top1    top2   apex RT MAD   frag S/N
+    DIA-NN, we ACCEPT  3,998        12.0  0.225   0.383         2.8 s      19.82
+    DIA-NN, we REJECT  3,999        12.0  0.248   0.418        20.8 s      11.28
+
+**Not weakness.** The rejected precursors carry ALL TWELVE fragments with
+signal, at 0.57x the fragment signal-to-noise -- dimmer, not absent, and nowhere
+near the 10x that "below the noise floor" would need. Together with the
+calibrated-MS1 result above (they sit 0.868 above the bulk), the absence
+hypothesis is now refuted twice by independent measurements.
+
+**Interference, and DISTRIBUTED.** Their fragments apex 20.8 s apart against
+2.8 s for accepted precursors -- 7.5x -- so each fragment's trace is dominated
+by a different co-eluting species. But top-1 and top-2 area shares are nearly
+IDENTICAL between the groups (0.248/0.418 against 0.225/0.383), so it is not one
+hijacked bright fragment. There is no small set of bad fragments to drop.
+
+That independently explains the pruning refutation earlier in this document:
+per-precursor pruning failed not only because selection-on-the-response flatters
+decoys, but because the thing it was trying to select against does not exist in
+the assumed form.
+
+**Apex dispersion is not a better feature.** Measured target against decoy on
+the same dump: AUC 0.716, weaker than `var_xcorr_coelution`'s 0.810 and far
+below `var_corr_sum`'s 0.909. The reason is the useful part -- decoys sit at
+24.2 s and rejected targets at 20.8 s, so dispersion separates ACCEPTED from
+{rejected, decoy} and cannot separate rejected from decoy. It measures the same
+co-elution quality the existing features already measure better.
+
+**Where that leaves the design.** The mechanism is now specific: twelve present
+fragments, each carrying a different interferent's timing. Recovering the
+precursor's own contribution from that is DECONVOLUTION, not selection -- which
+is what DIA-NN's profile clipping does and what every selection-shaped design
+tried here has failed at. Any next proposal has to explain how it separates
+overlapping contributions within a single fragment trace, not which fragments to
+keep.
