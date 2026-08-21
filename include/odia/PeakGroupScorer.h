@@ -469,6 +469,24 @@ namespace ODIA
       /// `Session::result_.groups` safe to push to.
       std::uint8_t* terminal_reason = nullptr;
 
+      /// DIAGNOSTIC ORACLE. Per-precursor retention time, in run seconds, at
+      /// which a candidate is FORCED to exist: the admission gates are bypassed
+      /// and, if the picker finds nothing within `oracle_rt_tol` of it, a
+      /// candidate is synthesised there. NaN means no oracle for that precursor.
+      ///
+      /// This exists to answer one question and must never be a default: if
+      /// admission were perfect, how many precursors would we actually
+      /// identify? `d5_yield.py` estimates at most +40.9% by extrapolating
+      /// acceptance rates across abundance bins; this measures it instead.
+      ///
+      /// It uses the answer as input, so anything it produces is an UPPER
+      /// BOUND on a real method and its q-values are not meaningful: only
+      /// targets get injections, decoys cannot (they have no true retention
+      /// time), so the null is not comparable. Read the injected candidates'
+      /// DScore against a threshold from an UNORACLED run.
+      const float* oracle_rt = nullptr;
+      double oracle_rt_tol = 20.0;
+
       /// Half-window, in cycles, for the pairwise correlation at each position.
       std::size_t corr_half_window = 4;
 

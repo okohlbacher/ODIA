@@ -954,7 +954,10 @@ namespace
     // everything" looks like.
     //
     // -empty_trace_sigma 0 restores the old behaviour for comparison.
-    if (options.gate_alpha > 0.0)
+    // The oracle bypasses admission entirely -- that is the whole point of it.
+    const bool oracled =
+      options.oracle_rt != nullptr && std::isfinite(options.oracle_rt[i]);
+    if (options.gate_alpha > 0.0 && !oracled)
     {
       // Gate C. Co-elution evidence against a threshold calibrated from the
       // run's own decoy null. Measured at real dimensions (12 traces x 200
@@ -1082,7 +1085,63 @@ namespace
       : options.coelution_picking
       ? coelution_candidates()
       : amplitude_candidates();
-    if (candidates.empty())
+    // `candidates` is const above; the oracle needs to add to it.
+    std::vector<Candidate> forced;
+    const std::vector<Candidate>* use = &candidates;
+    if (oracled)
+    {
+      const double want = options.oracle_rt[i];
+      bool have = false;
+      for (const auto& c : candidates)
+      {
+        if (c.apex < chromatogram.cycles &&
+            std::abs(double(chromatogram.retentionTime(
+                       static_cast<std::uint32_t>(c.apex))) - want)
+              <= options.oracle_rt_tol)
+        { have = true; break; }
+      }
+      if (!have)
+      {
+        // Nearest cycle to the oracle time, with the same boundary rule the
+        // picker uses, so the synthesised group is shaped like a real one and
+        // every sub-score downstream sees what it expects.
+        std::size_t at = 0;
+        double best = std::numeric_limits<double>::infinity();
+        for (std::uint32_t j = 0; j < chromatogram.cycles; ++j)
+        {
+          const double d = std::abs(double(chromatogram.retentionTime(j)) - want);
+          if (d < best) { best = d; at = j; }
+        }
+        if (best <= options.oracle_rt_tol && at < points)
+        {
+          // The RAW sum, not add()'s `total`: with noise-normalised picking
+          // that one is in units of sigma, while findCandidatesByCorrelation
+          // takes its boundaries and apex_value from raw intensity. A
+          // synthesised group has to be measured on the same scale as a picked
+          // one or every apex-valued sub-score reads it wrong.
+          std::vector<double> raw(points, 0.0);
+          for (std::uint32_t k = 0; k < tc; ++k)
+          {
+            const std::uint32_t m = chromatogram.pointCount(k);
+            const float* pk = m ? chromatogram.trace(k) : nullptr;
+            for (std::uint32_t j = 0; j < m && j < points; ++j) { raw[j] += pk[j]; }
+          }
+          Candidate cd;
+          cd.apex = at;
+          cd.apex_value = raw[at];
+          cd.corr_sum = 0.0;
+          const double floor_value = options.boundary_fraction * raw[at];
+          std::size_t l = at, r = at;
+          while (l > 0 && raw[l - 1] > floor_value) { --l; }
+          while (r + 1 < points && raw[r + 1] > floor_value) { ++r; }
+          cd.left = l; cd.right = r;
+          forced = candidates;
+          forced.push_back(cd);
+          use = &forced;
+        }
+      }
+    }
+    if (use->empty())
     { mark(TerminalReason::NoCandidate); ++result.precursors_without_candidate; return; }
 
     // Library intensities, in the transition order the chromatograms use.
@@ -1092,7 +1151,7 @@ namespace
       library_intensity[k] = t.library_intensity[tb + k];
     }
 
-    for (const auto& cand : candidates)
+    for (const auto& cand : *use)
     {
       // Per CANDIDATE, not per mass block. The mass block below is guarded by
       // `hi > lo`, so a single-cycle candidate skips it -- and used to inherit

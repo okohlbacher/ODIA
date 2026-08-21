@@ -892,6 +892,25 @@ protected:
                           "S08's peaks are ~20-30 s.", false, true);
     registerFlag_("openswath_gauss",
                   "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
+    registerStringOption_("oracle_rt", "<file>", "",
+                          "DIAGNOSTIC ORACLE, never a production setting. A TSV of "
+                          "Precursor.Id and retention time in run seconds. For each listed "
+                          "precursor the admission gates are BYPASSED and, if the picker finds "
+                          "no candidate within -oracle_rt_tol of that time, one is synthesised "
+                          "there and scored normally.\n\n"
+                          "It answers the question the funnel raises and cannot otherwise "
+                          "settle: if admission were perfect, how many of these would we "
+                          "actually identify? doc/51 ESTIMATES at most +40.9% by extrapolating "
+                          "acceptance across abundance bins; this measures it.\n\n"
+                          "It takes the answer as input, so its output is an upper bound and "
+                          "its q-values are NOT meaningful -- only targets can be injected, "
+                          "decoys have no true retention time, and the null is therefore not "
+                          "comparable. Score the injected candidates against a threshold from "
+                          "a run without this flag.", false, true);
+    registerDoubleOption_("oracle_rt_tol", "<seconds>", 20.0,
+                          "How near an existing candidate must be to count as already found, "
+                          "and how far the synthesised one may sit from the requested time.",
+                          false, true);
     registerStringOption_("out_terminal_reasons", "<file>", "",
                           "Write one row per library precursor recording WHY it produced no "
                           "scored candidate: not_reached (never handed to the scorer -- no "
@@ -1451,6 +1470,9 @@ protected:
     // path scoring runs after extraction, and a reset there would erase the two
     // reasons only the extractor can write.
     resetTerminalReasons_(library);
+    // Re-resolved per pass rather than once, because the fragment floor SUBSETS
+    // the library and every index shifts under it. Cheap next to an extraction.
+    loadOracleRt_(library);
     ODIA::ChromatogramCollector collector;
     const auto rc = extractInto_(library, run, collector, rt_window_override,
                                  library_rt_is_run_seconds);
@@ -3558,6 +3580,48 @@ protected:
     writeLogInfo_(os.str());
   }
 
+  /// Load -oracle_rt onto library indices. Loud about what it did NOT match:
+  /// an oracle that silently covers a tenth of what was asked reads as a weak
+  /// result rather than as a broken join, and the identifier spellings differ
+  /// between tools (DIA-NN writes C(UniMod:4), we write C(Carbamidomethyl)).
+  void loadOracleRt_(const ODIA::Library& library)
+  {
+    const std::string path = getStringOption_("oracle_rt");
+    if (path.empty()) { return; }
+    std::unordered_map<std::string, float> want;
+    {
+      std::ifstream f(path);
+      if (!f) { writeLogWarn_("cannot read " + path); return; }
+      std::string line;
+      std::getline(f, line);            // header
+      while (std::getline(f, line))
+      {
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) { continue; }
+        try { want[line.substr(0, tab)] = std::stof(line.substr(tab + 1)); }
+        catch (const std::exception&) { continue; }
+      }
+    }
+    const auto& p = library.precursors();
+    oracle_rt_.assign(library.precursorCount(),
+                      std::numeric_limits<float>::quiet_NaN());
+    std::size_t hit = 0;
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      if (p.decoy[i]) { continue; }
+      std::string id(library.strings().get(p.modified_sequence[i]));
+      id += std::to_string(static_cast<int>(p.charge[i]));
+      const auto it = want.find(id);
+      if (it != want.end()) { oracle_rt_[i] = it->second; ++hit; }
+    }
+    std::ostringstream m;
+    m << "ORACLE: -oracle_rt matched " << hit << " of " << want.size()
+      << " requested precursors (" << (want.empty() ? 0.0 : 100.0 * double(hit) / double(want.size()))
+      << "%). This run's identifications are an UPPER BOUND and its q-values are "
+         "not comparable to a run without it.";
+    writeLogInfo_(m.str());
+  }
+
   /// Size and clear the terminal-reason table for the pass about to run.
   ///
   /// Called from the two entry points that drive `Session::add`, and NOT from
@@ -3657,6 +3721,8 @@ protected:
     // the table was not asked for, which is the default.
     options.terminal_reason = terminal_reasons_.empty() ? nullptr
                                                         : terminal_reasons_.data();
+    options.oracle_rt = oracle_rt_.empty() ? nullptr : oracle_rt_.data();
+    options.oracle_rt_tol = getDoubleOption_("oracle_rt_tol");
     return options;
   }
 
@@ -3799,6 +3865,7 @@ protected:
                              ODIA::PeakGroupScorer::Result& scored)
   {
     resetTerminalReasons_(library);
+    loadOracleRt_(library);
     auto options = scoringOptions_();
     options.library_rt_is_run_seconds = scoring_rt_is_run_seconds_;
     ODIA::PeakGroupScorer::Sink sink(library, options);
@@ -4742,6 +4809,9 @@ private:
   /// them -- pass 1 runs on a stride subset and its verdicts would otherwise
   /// survive into a table read as if it described the production pass.
   std::vector<std::uint8_t> terminal_reasons_;
+
+  /// -oracle_rt, indexed by library precursor. NaN where no oracle applies.
+  std::vector<float> oracle_rt_;
 
   bool mass_model_known_ = false;
 
