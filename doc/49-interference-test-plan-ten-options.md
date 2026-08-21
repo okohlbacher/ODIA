@@ -111,7 +111,33 @@ no matrix factorisation, and attacks the measured mechanism directly (twelve
 fragments each carrying a different interferent's timing). kimi keeps this one.
 Independent of O1-O4.
 
-**O6. Rank-1 residual as a feature.** Fit the best rank-1 approximation to the
+**O6. Rank-1 residual as a feature. TESTED -- weak, do not build yet.**
+
+Measured offline on the 8,000-precursor diagnostic dump (7,991 target / 7,991
+decoy), each fragment scaled to unit norm so the leading component measures
+SHAPE agreement rather than brightness:
+
+    feature                        AUC   med target   med decoy
+    rank-1 energy share          0.712        0.660       0.587
+    mean pairwise corr (ours)    0.767        0.096       0.023
+    Spearman(rank-1, pairwise) = 0.488
+
+Partly independent (rho 0.49) but WEAKER than the feature it would join. That is
+now the second structurally-motivated alternative to come in below the existing
+pairwise correlation -- apex dispersion was 0.716 against xcorr_coelution's
+0.810. **Two different functionals of the same fragment x RT matrix both lose to
+the one we already compute**, which suggests the corr_sum / xcorr family is
+close to what that matrix supports and that new features must bring information
+from OUTSIDE it (a dictionary, MS1, or another pass) to help.
+
+Not dead: the decisive test is INCREMENTAL -- does adding it raise the
+supervised ceiling of +1.8%? -- and that needs a representative population,
+which the diagnostic set (50% hard negatives by construction) is not. Run it
+after O8, on a full-run feature matrix.
+
+Original description:
+
+Fit the best rank-1 approximation Fit the best rank-1 approximation to the
 precursor's own fragment x RT matrix and score the RESIDUAL energy, not the
 fitted profile. A real precursor is rank-1 plus noise; a contaminated one is
 not. No dictionary, no naming problem, no cross-precursor cost. Must be checked
