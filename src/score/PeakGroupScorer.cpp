@@ -911,7 +911,13 @@ namespace
     const std::size_t i = chromatogram.precursor;
     const std::uint32_t tb = chromatogram.transition_begin;
     const std::uint32_t tc = chromatogram.transition_count;
-    if (tc == 0) { return; }
+    // Every return below records why. `mark` is a no-op unless
+    // -out_terminal_reasons asked for the table.
+    const auto mark = [&](TerminalReason r) {
+      if (options.terminal_reason)
+      { options.terminal_reason[i] = static_cast<std::uint8_t>(r); }
+    };
+    if (tc == 0) { mark(TerminalReason::NoTransitions); return; }
 
     const std::size_t points = chromatogram.pointCount(0);
     // The class is needed BEFORE these gates, not after: `reached` is
@@ -920,7 +926,8 @@ namespace
     // imbalance in `reached` (137/254) while scans PER PRECURSOR were identical
     // (2014 both), so the divergence happens at exactly these two returns.
     const bool is_decoy = p.decoy[chromatogram.precursor] != 0;
-    if (points < 3) { ++rejects_.no_points[is_decoy]; ++result.precursors_without_candidate; return; }
+    if (points < 3)
+    { mark(TerminalReason::FewPoints); ++rejects_.no_points[is_decoy]; ++result.precursors_without_candidate; return; }
 
     // D8: each transition standardised against its own local noise before
     // summing, so no transition dominates by being loud and none is boosted
@@ -1006,18 +1013,18 @@ namespace
       gate_null_->note(options.gate_log_path, static_cast<std::uint32_t>(i),
                        is_decoy, m, admitted, was_ready);
       if (!admitted)
-      { ++rejects_.empty_trace[is_decoy]; ++rejects_.gate_c[is_decoy]; ++result.precursors_without_candidate; return; }
+      { mark(TerminalReason::GateC); ++rejects_.empty_trace[is_decoy]; ++rejects_.gate_c[is_decoy]; ++result.precursors_without_candidate; return; }
     }
     else if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)
     {
       if (excursions < options.empty_trace_min_transitions)
-      { ++rejects_.empty_trace[is_decoy]; ++rejects_.few_excursions[is_decoy]; ++result.precursors_without_candidate; return; }
+      { mark(TerminalReason::FewExcursions); ++rejects_.empty_trace[is_decoy]; ++rejects_.few_excursions[is_decoy]; ++result.precursors_without_candidate; return; }
     }
     else
     {
       const double window_total = std::accumulate(total.begin(), total.end(), 0.0);
       if (window_total <= 0.0)
-      { ++rejects_.empty_trace[is_decoy]; ++rejects_.zero_trace[is_decoy]; ++result.precursors_without_candidate; return; }
+      { mark(TerminalReason::ZeroTrace); ++rejects_.empty_trace[is_decoy]; ++rejects_.zero_trace[is_decoy]; ++result.precursors_without_candidate; return; }
     }
 
     std::vector<MassAnchor> staged_anchors;
@@ -1075,7 +1082,8 @@ namespace
       : options.coelution_picking
       ? coelution_candidates()
       : amplitude_candidates();
-    if (candidates.empty()) { ++result.precursors_without_candidate; return; }
+    if (candidates.empty())
+    { mark(TerminalReason::NoCandidate); ++result.precursors_without_candidate; return; }
 
     // Library intensities, in the transition order the chromatograms use.
     std::vector<double> library_intensity(tc, 0.0);
@@ -1616,6 +1624,8 @@ namespace
     // sum. Computed here because it is the only place all of one precursor's
     // candidates are in hand; a per-candidate score cannot express "this
     // precursor had one obvious answer" versus "three equally plausible ones".
+    mark(result.groups.size() > first_group ? TerminalReason::Scored
+                                           : TerminalReason::AllCandidatesDropped);
     if (result.groups.size() > first_group)
     {
       double best = 0.0, second = 0.0;

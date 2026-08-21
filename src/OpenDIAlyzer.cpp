@@ -892,6 +892,18 @@ protected:
                           "S08's peaks are ~20-30 s.", false, true);
     registerFlag_("openswath_gauss",
                   "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
+    registerStringOption_("out_terminal_reasons", "<file>", "",
+                          "Write one row per library precursor recording WHY it produced no "
+                          "scored candidate: not_reached (never handed to the scorer -- no "
+                          "isolation window, or filtered upstream), no_transitions, "
+                          "few_points, gate_c, few_excursions, zero_trace, no_candidate "
+                          "(entered the picker, which returned nothing), all_candidates_dropped "
+                          "(min_fragments_at_apex discarded every one), or scored.\n\n"
+                          "The aggregate reject counters cannot be cross-tabulated against a "
+                          "list of precursors, so any statement of the form 'N% of DIA-NN's "
+                          "confident set dies at stage X' was inference rather than "
+                          "measurement -- and two of the returns in Session::add reach no "
+                          "counter at all. Records the LAST scoring pass.", false, true);
     registerFlag_("collect_mass_residuals",
                   "Keep the m/z deviation of every matched peak and report it per peak group "
                   "as Mass.Ppm. The deviation is computed anyway to test the match and has "
@@ -2472,11 +2484,14 @@ protected:
       const auto rc = extractAndScore_(library, run, pass2_window, true, scored);
       if (rc != EXECUTION_OK) { return rc; }
       refineToConvergence_(library, original_irt, scored);
+      writeTerminalReasons_(library);
       return writeScoreResult_(scored, out, library);
     }
     const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, pass2_window, true);
     if (rc != EXECUTION_OK) { return rc; }
-    return runScoring_(library, chromatograms, out);
+    const auto sc = runScoring_(library, chromatograms, out);
+    writeTerminalReasons_(library);
+    return sc;
   }
 
 
@@ -3530,6 +3545,49 @@ protected:
     writeLogInfo_(os.str());
   }
 
+  /// Size and clear the terminal-reason table for the pass about to run.
+  ///
+  /// Called from the two entry points that drive `Session::add`, and NOT from
+  /// the refine loop, which refits a matrix it already has: clearing there
+  /// would blank the table without anything to rewrite it.
+  void resetTerminalReasons_(const ODIA::Library& library)
+  {
+    if (getStringOption_("out_terminal_reasons").empty()) { return; }
+    terminal_reasons_.assign(library.precursorCount(),
+      static_cast<std::uint8_t>(ODIA::PeakGroupScorer::TerminalReason::NotReached));
+  }
+
+  /// Write the table, one row per library precursor.
+  void writeTerminalReasons_(const ODIA::Library& library)
+  {
+    const std::string path = getStringOption_("out_terminal_reasons");
+    if (path.empty() || terminal_reasons_.empty()) { return; }
+    static const char* kName[] = {
+      "not_reached", "no_transitions", "few_points", "gate_c", "few_excursions",
+      "zero_trace", "no_candidate", "scored", "all_candidates_dropped" };
+    const auto& p = library.precursors();
+    std::ofstream f(path);
+    if (!f) { writeLogWarn_("cannot write " + path); return; }
+    // Sequence + charge, the same Precursor.Id the score table writes, so the
+    // two join without a translation step.
+    f << "Precursor.Id\tDecoy\tReason\n";
+    std::size_t n[9] = {0};
+    const std::size_t rows = std::min(terminal_reasons_.size(), library.precursorCount());
+    for (std::size_t i = 0; i < rows; ++i)
+    {
+      const std::uint8_t r = terminal_reasons_[i];
+      if (r < 9) { ++n[r]; }
+      f << library.strings().get(p.modified_sequence[i])
+        << static_cast<int>(p.charge[i]) << '\t' << (p.decoy[i] ? 1 : 0) << '\t'
+        << (r < 9 ? kName[r] : "unknown") << '\n';
+    }
+    std::ostringstream m;
+    m << "terminal reasons written to " << path << ":";
+    for (std::size_t k = 0; k < 9; ++k)
+    { if (n[k]) { m << "\n  " << kName[k] << ' ' << n[k]; } }
+    writeLogInfo_(m.str());
+  }
+
   ODIA::PeakGroupScorer::Options scoringOptions_()
   {
     ODIA::PeakGroupScorer::Options options;
@@ -3574,6 +3632,10 @@ protected:
     // forever on a run with no MS1, in which case MS1_COELUTION is NaN for every
     // row and the constant-column guard drops it.
     options.ms1 = ms1_traces_.empty() ? nullptr : &ms1_traces_;
+    // Sized and cleared by the caller, once per scoring pass. Left null when
+    // the table was not asked for, which is the default.
+    options.terminal_reason = terminal_reasons_.empty() ? nullptr
+                                                        : terminal_reasons_.data();
     return options;
   }
 
@@ -3715,6 +3777,7 @@ protected:
                              double rt_window_override, bool library_rt_is_run_seconds,
                              ODIA::PeakGroupScorer::Result& scored)
   {
+    resetTerminalReasons_(library);
     auto options = scoringOptions_();
     options.library_rt_is_run_seconds = scoring_rt_is_run_seconds_;
     ODIA::PeakGroupScorer::Sink sink(library, options);
@@ -3746,6 +3809,7 @@ protected:
                         const ODIA::Chromatograms& chromatograms,
                         const std::string& out)
   {
+    resetTerminalReasons_(library);
     auto options = scoringOptions_();
     options.disabled_sub_scores = ablatedSubScores_();
     // Without this RT_DELTA is NaN and the constant-column guard drops
@@ -4651,6 +4715,13 @@ private:
   ODIA::MassCalibration::Model mass_model_;
   /// The run's MS1 precursor traces, built once before the first scoring pass.
   ODIA::Ms1Traces ms1_traces_;
+
+  /// One `PeakGroupScorer::TerminalReason` per library precursor, or empty when
+  /// -out_terminal_reasons was not given. Cleared before the pass that gets
+  /// recorded, so the table describes ONE pass rather than the union of all of
+  /// them -- pass 1 runs on a stride subset and its verdicts would otherwise
+  /// survive into a table read as if it described the production pass.
+  std::vector<std::uint8_t> terminal_reasons_;
 
   bool mass_model_known_ = false;
 

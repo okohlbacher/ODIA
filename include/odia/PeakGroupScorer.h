@@ -201,6 +201,33 @@ namespace ODIA
 
     static const std::vector<std::string>& subScoreNames();
 
+    /// Why a library precursor produced no scored candidate.
+    ///
+    /// Every precursor gets EXACTLY ONE of these, which is the whole point: the
+    /// aggregate reject counters cannot be cross-tabulated against a list of
+    /// precursors, so "41% of DIA-NN's confident set yields no candidate" could
+    /// be attributed to a stage only by inference -- and that inference had
+    /// holes. `Session::add` returns silently on `tc == 0`, and a precursor
+    /// covered by no isolation window never reaches `add` at all, so neither
+    /// appears in any counter.
+    enum class TerminalReason : std::uint8_t
+    {
+      NotReached = 0,     ///< never handed to the scorer: no isolation window, or filtered upstream
+      NoTransitions = 1,  ///< reached it with zero transitions extracted
+      FewPoints = 2,      ///< fewer than 3 points in the chromatogram
+      GateC = 3,          ///< co-elution evidence below the decoy-null quantile
+      FewExcursions = 4,  ///< too few transitions rose above their own noise
+      ZeroTrace = 5,      ///< the summed trace really is zero
+      NoCandidate = 6,    ///< entered the picker and it returned nothing
+      Scored = 7,         ///< produced at least one scored candidate
+      /// The picker returned candidates and the scorer then discarded every
+      /// one of them -- `min_fragments_at_apex` is the only rule that does
+      /// this, and it runs AFTER the candidate list is non-empty. Marking
+      /// `Scored` at the earlier point would have reported these as successes
+      /// that simply produced no output rows.
+      AllCandidatesDropped = 8,
+    };
+
     struct Options
     {
       /// Candidate peak groups kept per precursor.
@@ -422,6 +449,16 @@ namespace ODIA
       /// never connected. When this is null MS1_COELUTION is NaN for every row
       /// and the constant-column guard drops it, which is the honest behaviour.
       const Ms1Traces* ms1 = nullptr;
+
+      /// Where to record each precursor's `TerminalReason`, indexed by library
+      /// precursor index. Null disables the accounting entirely.
+      ///
+      /// Written without a lock. Sessions run one per thread and each precursor
+      /// is handled by exactly one of them, so the writes land on distinct
+      /// vector elements -- distinct memory locations under the C++ object
+      /// model, which is what makes this safe rather than merely unlikely to
+      /// collide.
+      std::uint8_t* terminal_reason = nullptr;
 
       /// Half-window, in cycles, for the pairwise correlation at each position.
       std::size_t corr_half_window = 4;
