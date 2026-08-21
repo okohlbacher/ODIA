@@ -103,7 +103,38 @@ each scan the dictionary explains. A report of dictionary completeness, which
 doc/48's correction identifies as the binding constraint on the whole family.
 Never a feature (control 4). Depends on O2.
 
-**O5. Shared-fragment arbitration, no deconvolution at all.** When two library
+**O5. Shared-fragment arbitration. TESTED -- REFUTED by saturation, like the two before it.**
+
+kimi's distinction was that a competitor should only count if it has its OWN
+EVIDENCE in this run -- a candidate peak group nearby -- rather than merely
+existing in the library. Implemented label-blind (candidacy is open to targets
+and decoys alike) over v7's 775,183 evidenced precursors, 8,381,732 fragment
+entries, competitor = same fragment m/z within 10 ppm whose own apex is within
+10 s:
+
+    mean evidence-clean fragments      0.4 of 11.6
+    corr over ALL fragments            AUC 0.767
+    corr over EVIDENCE-clean           AUC 0.841  -- on 100 of 16,000 precursors
+
+The 0.841 is NOT a result. It is computed on the 100 precursors that retained
+four or more clean fragments, which is the same selected-minority trap that
+produced the +0.021 at a 60 s competitor tolerance and evaporated at a correct
+one. **11.2 of 11.6 fragments are contested even when the competitor must have
+its own evidence.**
+
+That is the third refutation of the same shape (library competitors, evidenced
+competitors, and the pruning that preceded both), and together they say
+something structural rather than incidental: **at 9.6M library precursors with
+775k of them evidenced, every BINARY "is this fragment contested" test returns
+yes.** Saturation is the regime, not an artefact of one tolerance.
+
+The consequence is the useful part. Arbitration cannot be binary -- keep or
+drop. It has to be QUANTITATIVE: how much of this fragment's intensity is mine.
+That is deconvolution, and it is gated on O1's census showing the restricted
+system is determined. The cheap non-dictionary route out of the interference
+bucket is now closed; what remains all imports outside information at a cost.
+
+Original description: When two library
 precursors in one window share a fragment m/z within tolerance and both have
 candidates at overlapping RT, arbitrate that fragment's intensity between them
 by their OTHER, unshared fragments. This is DIA-NN's documented mechanism, needs
