@@ -454,3 +454,57 @@ Pass-1 counts should be treated as a progress indicator and nothing else.
   3. Whether calibrated MS1 changes the absence-vs-interference reading for the
      10,736 -- which decides whether the interference direction is worth any
      further work at all.
+
+## v7 RESOLVED: the absence conclusion was an artefact, and the 10,092 are PRESENT
+
+Three results from `full_v7` (v3's configuration on the calibrated-MS1 binary).
+
+**1. Calibrating the MS1 axis does not buy identifications.** At matched
+entrapment FDP:
+
+    target FDP   v3 (uncal)   v7 (cal)     delta
+         4.00%        4,564      1,490    -3,074
+         5.00%       12,582     12,035      -547
+         5.56%       13,433     13,138      -295
+         7.42%       15,036     14,980       -56
+        10.00%       16,193     16,110       -83
+
+Neutral to slightly negative everywhere, and clearly worse in the confident
+region. The fix is CORRECT -- the measured residual of -0.426 ppm against a
+-8.949 ppm centre proves the axis was mis-centred, and traces came out 9.7%
+better populated -- but correctness and identifications are different things.
+It should stay because the measurement is honest, not because it pays.
+
+**2. It does not change the feature's classifier value.** var_ms1_coelution,
+DIA-NN-confident targets against decoys: AUC 0.757 -> 0.762. The 0.757 recorded
+earlier was taken through the mis-centred window and is superseded, but it was
+not materially wrong.
+
+**3. It OVERTURNS the absence conclusion, which is the result that matters.**
+
+                              v3 (uncalibrated)   v7 (calibrated)
+    DIA-NN + we accept                    0.473             0.982
+    DIA-NN, we REJECT                    -0.093             0.151
+    not DIA-NN, bulk reject              -0.124            -0.717
+    gap (reject - bulk)                   0.031             0.868
+
+kimi (review 46) argued from the v3 row that the precursors we reject "are not
+there, and no fragment selection will find them" -- they were indistinguishable
+from the 750k precursors nobody claims are present. On a calibrated axis they
+are NOT indistinguishable: they sit 0.868 above the bulk and below the accepted
+set. They carry real MS1 presence evidence.
+
+So the population is PRESENT, positioned correctly in retention time, and its
+MS2 fragments do not co-elute. That is the interference signature, and the
+direction kimi's argument would have retired is back.
+
+**Note which statistic saw it.** The AUC moved +0.005 and the within-target
+separation moved +0.837. AUC measures targets against decoys and is blind to
+structure among targets, which is exactly where the absence question lives.
+Reporting only the AUC would have said the calibration achieved nothing.
+
+**And note why the conclusion was not drawn earlier.** The refusal was explicit:
+absence cannot be concluded from a measurement known to be uncalibrated, and
+this one failed weak precursors first -- the population the conclusion was
+about. Acting on the v3 row would have retired the correct direction on an
+artefact of our own window.
