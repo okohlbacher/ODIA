@@ -67,7 +67,34 @@ close it.
 
 ## The census that must precede any unmixing work
 
-**O1. Dictionary census and identifiability audit.** No code, one pass over the
+**O1. Dictionary census and identifiability audit. LIBRARY HALF DONE.**
+
+Measured on human_v2 (9,617,705 precursors, 93,010,926 fragments), S08's 24
+windows over 300-1800 Th, RT gating via the fitted map at t = 1000 s:
+
+    window      m/z        columns    +-60s RT    +-10s RT
+         0  300-362        895,615      97,857      15,551
+         6  675-738        551,079      61,929       9,866
+        12 1050-1112       304,905      27,682       4,540
+        18 1425-1488       155,916      17,985       2,938
+
+    mean columns per window: 400,738    max: 925,529
+
+codex predicted ~400,000 from the arithmetic; measured 400,738. Even an
+aggressive +-10 s retention-time gate leaves **2,938 columns in the sparsest
+window and 15,551 in the densest**, and the gate itself is a selection rule that
+can delete the true explanation.
+
+**Still needed: the observation count.** rank(L) is bounded by the number of
+distinct fragment m/z positions carrying signal in one scan, and
+`odia_run_info` does not report it -- it needs a small instrumented run. Until
+that number exists the verdict is only half-formed, but the shape is already
+visible: the system is plausibly determined only in the HIGH-m/z windows, and
+the low-m/z windows would need gating so tight that selection bias becomes the
+dominant concern. O2-O4 may turn out to be viable over part of the m/z range
+only, which is a materially different proposition from "Specter for ODIA".
+
+Original description: No code, one pass over the
 library plus one over a fixture run. Per scan, measure: columns after
 precursor-window filtering; columns after RT and fragment-evidence gating;
 observed non-zero fragment bins; effective rank / mutual coherence of the
