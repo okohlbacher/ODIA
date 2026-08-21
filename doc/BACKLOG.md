@@ -3590,3 +3590,37 @@ peptides. `BENCH_FIXTURES=both` now runs both on the same library.
 Still open for Astral: no ODIA baseline row yet, and its supplied RT map has a
 p95 residual of 134.5 s against S08's 37.7 s -- doc/45 flagged Astral's RT as
 worse and unexplained, and that is still unexplained.
+
+## var_rt_delta removed, and what retention time is actually for (2026-08-21)
+
+Removed (05c1c6d). A peak group has ONE retention time and its traces co-elute
+by construction, so a group-level retention-time delta cannot separate a real
+group from an interference group -- both sit wherever the signal they were
+built from sits. The measurement agreed: AUC 0.215, flat across abundance,
+worse under random decoy rows, and target/decoy row distributions identical
+(41.7 s against 42.6 s in a +-75 s window). It was pinned non-positive on top
+of that, forcing "further is worse" onto data where true peaks sit further.
+
+**Where retention time DOES carry information: between traces, not for the
+group.** A real peptide's fragments share one elution profile; an interfering
+fragment peaks somewhere else. So the useful statistic is per-FRAGMENT
+deviation from the group's own apex -- an interference detector, not a presence
+test. That is the same shape as the mass features already there
+(`var_mass_accuracy` is a weighted mean, `var_mass_spread` the scatter across
+the group's fragments), and the spread was the informative half. The
+retention-time analogue does not exist yet.
+
+Note `var_xcorr_coelution` is adjacent but not the same thing: it is a
+cross-correlation lag between fragment pairs, not each fragment's offset from
+the group apex, and it is one of the features that collapses at low abundance
+(0.696 at Q1 against 0.961 at Q5).
+
+**Consequence already handled:** RT_DELTA was the only sub-score that read the
+fitted map, so `refit()` after a new map is now bit-identical and the
+retention-time refinement loop had nothing left to do. It now says so and
+returns, guarded by `PeakGroupScorer::refitsChangeScores()` so a future
+map-dependent sub-score re-enables it by flipping one return. The map still
+centres pass 2's extraction window, which is upstream of scoring.
+
+Still owed: a benchmark arm measuring what the removal is worth, against the
+15:44 baseline that reproduces the stored one exactly.
