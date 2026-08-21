@@ -3546,3 +3546,47 @@ null raises the 1% threshold above the few real targets -- which is exactly
 "the scorer ran, the classifier trained, and the threshold rejected everything".
 The fix is to test for actual signal (e.g. a positive excursion above local
 noise in a minimum number of transitions) rather than the sign of a centred sum.
+
+## The funnel changes the priority order (2026-08-21, doc/51)
+
+Measured, full S08, DIA-NN on the same library:
+
+    A in library 39,149 -> B candidate 23,058 -> C true peak 20,315
+      -> D ranked first 19,430 -> E accepted 12,292
+
+**Closed as a direction: within-precursor ranking.** 95.6% at D. The five added
+sub-scores and the feature work aimed here; there is ~4% left in it.
+
+**Closed as a direction: repairing the decoy null to recover the FDR bucket.**
+The 7,138 correctly-ranked-and-rejected sit at the 98.8th decoy percentile;
+admitting them admits ~7,516 decoys, 51.3% FDP. `match_decoy_candidate_counts`
+already matches the draw counts, so the null is not inflated by construction.
+This bucket needs features that do not exist, not a better threshold.
+
+**Open, and now the only large tractable direction: admission (A->B, 16,091).**
+Bounded at **+40.9%** by `d5_yield.py` -- abundance-stratified, because the
+lost set is 2.7x fainter and an unstratified estimate overstates by 1.7x. That
+is 1.4x against a 3.2x gap, so admission alone does not close it either.
+
+Next: `-out_terminal_reasons` (d7349ed, fixed in 0f18071) says which stage owns
+the 16,091. Until it has run, the attribution to Gate C is withdrawn -- the
+counters cannot be cross-tabulated and two returns in `Session::add` reach no
+counter at all.
+
+Then codex's two oracles, which need no guessing:
+  * SELECTION oracle -- pick the candidate nearest DIA-NN's RT, score unchanged.
+  * ADMISSION oracle -- inject a candidate at DIA-NN's RT for the missing
+    precursors, score it normally. If they then fail q, admission is not
+    sufficient, which is what d5_yield.py predicts quantitatively.
+
+## The Astral arm was never on the same footing (2026-08-21)
+
+The Astral reference searched `shared/lib/astral_lib_own.tsv`, 10,891
+precursors; the S08 reference searched 4,986,616. Every Astral fixture number
+carries that. Re-run on the full library: DIA-NN finds **1,533**, MORE than the
+1,066 the small library gave, so the small library was also missing real
+peptides. `BENCH_FIXTURES=both` now runs both on the same library.
+
+Still open for Astral: no ODIA baseline row yet, and its supplied RT map has a
+p95 residual of 134.5 s against S08's 37.7 s -- doc/45 flagged Astral's RT as
+worse and unexplained, and that is still unexplained.
