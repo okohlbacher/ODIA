@@ -484,6 +484,8 @@ namespace ODIA
       if (options.precursor_keep != nullptr && options.precursor_keep[i] == 0)
       {
         ++st.precursors_prefiltered;
+        if (options.terminal_reason)
+        { options.terminal_reason[i] = Options::kPrefilterExcluded; }
         continue;
       }
       const double mz = fromFixed(p.mz[i]);
@@ -497,7 +499,13 @@ namespace ODIA
         const double offset_from_centre = std::abs(mz - windows[w].centre());
         if (offset_from_centre < best_offset) { best_offset = offset_from_centre; best = w; }
       }
-      if (covering == 0) { ++st.precursors_without_window; continue; }
+      if (covering == 0)
+      {
+        ++st.precursors_without_window;
+        if (options.terminal_reason)
+        { options.terminal_reason[i] = Options::kNoWindowCoverage; }
+        continue;
+      }
       if (covering > 1) { ++st.precursors_in_several_windows; }
 
       const std::size_t w = best;

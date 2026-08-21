@@ -707,6 +707,19 @@ namespace ODIA
       /// the extraction.
       const char* precursor_keep = nullptr;
 
+      /// Optional per-precursor disposition table, shared with the scorer's
+      /// `PeakGroupScorer::Options::terminal_reason` and indexed the same way.
+      ///
+      /// The extractor writes ONLY the two reasons it alone can know: a
+      /// precursor no isolation window covers, and one `precursor_keep`
+      /// dropped. Everything downstream of a chromatogram being emitted is the
+      /// scorer's to record. Null disables it.
+      std::uint8_t* terminal_reason = nullptr;
+      /// Must equal PeakGroupScorer::TerminalReason::NoWindowCoverage.
+      static constexpr std::uint8_t kNoWindowCoverage = 9;
+      /// Must equal PeakGroupScorer::TerminalReason::PrefilterExcluded.
+      static constexpr std::uint8_t kPrefilterExcluded = 10;
+
       /// Maps the library's iRT onto this run's retention time, in seconds:
       /// rt = irt_slope * irt + irt_intercept.
       ///

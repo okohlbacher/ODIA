@@ -898,7 +898,8 @@ protected:
                           "isolation window, or filtered upstream), no_transitions, "
                           "few_points, gate_c, few_excursions, zero_trace, no_candidate "
                           "(entered the picker, which returned nothing), all_candidates_dropped "
-                          "(min_fragments_at_apex discarded every one), or scored.\n\n"
+                          "(min_fragments_at_apex discarded every one), no_window_coverage, "
+                          "prefilter_excluded, or scored.\n\n"
                           "The aggregate reject counters cannot be cross-tabulated against a "
                           "list of precursors, so any statement of the form 'N% of DIA-NN's "
                           "confident set dies at stage X' was inference rather than "
@@ -1195,6 +1196,10 @@ protected:
     options.precursor_stride = pass_stride_;
     options.precursor_offset = pass_offset_;
     options.precursor_keep = prefilter_keep_.empty() ? nullptr : prefilter_keep_.data();
+    // Same buffer the scorer writes: the extractor records the two reasons only
+    // it can know, the scorer the rest, and every precursor ends with one.
+    options.terminal_reason = terminal_reasons_.empty() ? nullptr
+                                                        : terminal_reasons_.data();
 
     applyMassCalibration_(library, *source, options, rt_window_override);
     // The harvest records deviations against the target the extractor actually
@@ -1441,6 +1446,11 @@ protected:
                            double rt_window_override = 0.0,
                            bool library_rt_is_run_seconds = false)
   {
+    // Every extraction starts the table over, so it always describes the LAST
+    // pass. The scorer's entry points must NOT also reset: on the -out_chrom
+    // path scoring runs after extraction, and a reset there would erase the two
+    // reasons only the extractor can write.
+    resetTerminalReasons_(library);
     ODIA::ChromatogramCollector collector;
     const auto rc = extractInto_(library, run, collector, rt_window_override,
                                  library_rt_is_run_seconds);
@@ -1623,6 +1633,7 @@ protected:
         ODIA::PeakGroupScorer::Result scored;
         const auto rc = extractAndScore_(library, run, 0.0, external_irt_, scored);
         if (rc != EXECUTION_OK) { return rc; }
+        writeTerminalReasons_(library);
         return writeScoreResult_(scored, out, library);
       }
       // external_irt_, NOT the default false. When -irt_slope/-irt_intercept or
@@ -1635,7 +1646,9 @@ protected:
       const auto rc = runExtraction_(library, run, out_chrom, &chromatograms,
                                      0.0, external_irt_);
       if (rc != EXECUTION_OK) { return rc; }
-      return runScoring_(library, chromatograms, out);
+      const auto sc1 = runScoring_(library, chromatograms, out);
+      writeTerminalReasons_(library);
+      return sc1;
     }
 
     // The library's own retention times, kept before anything is applied to
@@ -3564,26 +3577,34 @@ protected:
     if (path.empty() || terminal_reasons_.empty()) { return; }
     static const char* kName[] = {
       "not_reached", "no_transitions", "few_points", "gate_c", "few_excursions",
-      "zero_trace", "no_candidate", "scored", "all_candidates_dropped" };
+      "zero_trace", "no_candidate", "scored", "all_candidates_dropped",
+      "no_window_coverage", "prefilter_excluded" };
+    static_assert(
+      ODIA::ChromatogramExtractor::Options::kNoWindowCoverage ==
+        static_cast<std::uint8_t>(ODIA::PeakGroupScorer::TerminalReason::NoWindowCoverage) &&
+      ODIA::ChromatogramExtractor::Options::kPrefilterExcluded ==
+        static_cast<std::uint8_t>(ODIA::PeakGroupScorer::TerminalReason::PrefilterExcluded),
+      "the extractor and the scorer must agree on the reason codes");
+    constexpr std::size_t kReasons = 11;
     const auto& p = library.precursors();
     std::ofstream f(path);
     if (!f) { writeLogWarn_("cannot write " + path); return; }
     // Sequence + charge, the same Precursor.Id the score table writes, so the
     // two join without a translation step.
     f << "Precursor.Id\tDecoy\tReason\n";
-    std::size_t n[9] = {0};
+    std::size_t n[kReasons] = {0};
     const std::size_t rows = std::min(terminal_reasons_.size(), library.precursorCount());
     for (std::size_t i = 0; i < rows; ++i)
     {
       const std::uint8_t r = terminal_reasons_[i];
-      if (r < 9) { ++n[r]; }
+      if (r < kReasons) { ++n[r]; }
       f << library.strings().get(p.modified_sequence[i])
         << static_cast<int>(p.charge[i]) << '\t' << (p.decoy[i] ? 1 : 0) << '\t'
-        << (r < 9 ? kName[r] : "unknown") << '\n';
+        << (r < kReasons ? kName[r] : "unknown") << '\n';
     }
     std::ostringstream m;
     m << "terminal reasons written to " << path << ":";
-    for (std::size_t k = 0; k < 9; ++k)
+    for (std::size_t k = 0; k < kReasons; ++k)
     { if (n[k]) { m << "\n  " << kName[k] << ' ' << n[k]; } }
     writeLogInfo_(m.str());
   }
@@ -3809,7 +3830,6 @@ protected:
                         const ODIA::Chromatograms& chromatograms,
                         const std::string& out)
   {
-    resetTerminalReasons_(library);
     auto options = scoringOptions_();
     options.disabled_sub_scores = ablatedSubScores_();
     // Without this RT_DELTA is NaN and the constant-column guard drops

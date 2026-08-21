@@ -2110,7 +2110,18 @@ namespace
     {
       const std::uint32_t tb = p.transition_begin[i];
       const std::uint32_t tc = p.transition_count[i];
-      if (tc == 0 || tb >= chromatograms.begin.size()) { continue; }
+      // The streaming path records these inside add(); this one skips before
+      // calling it, so the SAME precursor would come out NotReached here and
+      // NoTransitions there. Record it at the skip so the two paths agree.
+      if (tc == 0 || tb >= chromatograms.begin.size())
+      {
+        if (options.terminal_reason)
+        {
+          options.terminal_reason[i] =
+            static_cast<std::uint8_t>(TerminalReason::NoTransitions);
+        }
+        continue;
+      }
 
       // A window onto the flat array in the same shape the extractor hands a
       // streaming sink, so both paths run the same code on the same data.

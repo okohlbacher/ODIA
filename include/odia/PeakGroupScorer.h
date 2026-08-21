@@ -226,6 +226,13 @@ namespace ODIA
       /// `Scored` at the earlier point would have reported these as successes
       /// that simply produced no output rows.
       AllCandidatesDropped = 8,
+      /// Split out of `NotReached`, because they need opposite fixes and the
+      /// funnel question turns on which one it is: a precursor no isolation
+      /// window covers is an acquisition-scheme fact, while one the prefilter
+      /// dropped is our own choice. Written by the EXTRACTOR, which is the only
+      /// stage that knows -- see `ChromatogramExtractor::Options`.
+      NoWindowCoverage = 9,
+      PrefilterExcluded = 10,
     };
 
     struct Options
@@ -453,11 +460,13 @@ namespace ODIA
       /// Where to record each precursor's `TerminalReason`, indexed by library
       /// precursor index. Null disables the accounting entirely.
       ///
-      /// Written without a lock. Sessions run one per thread and each precursor
-      /// is handled by exactly one of them, so the writes land on distinct
-      /// vector elements -- distinct memory locations under the C++ object
-      /// model, which is what makes this safe rather than merely unlikely to
-      /// collide.
+      /// Written without a lock, and the reason is NOT that sessions are
+      /// per-thread -- a Sink owns exactly one Session and hands it to
+      /// extraction. `ChromatogramExtractor` calls `accept` from its serial
+      /// emit loop in both paths (`ChromatogramExtractor.cpp:900`, `:1279`;
+      /// the threaded phase is matching, which finishes first), so `add` runs
+      /// on one thread. That same invariant is what already makes
+      /// `Session::result_.groups` safe to push to.
       std::uint8_t* terminal_reason = nullptr;
 
       /// Half-window, in cycles, for the pairwise correlation at each position.
