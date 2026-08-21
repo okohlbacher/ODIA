@@ -20,7 +20,7 @@ Entrapment FDP is (e/r)/t over ordinary targets. r is computed on the library
 the arm ACTUALLY SEARCHED: the fragment floor changes it, and using the wrong
 one shifts the number ~0.4%. The rule used is printed so it can be checked.
 """
-import sys, os
+import re, sys, os
 import pyarrow.parquet as pq, pyarrow.compute as pc
 
 L = os.environ.get('ODIA_LIBV2', '/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/libv2')
@@ -41,11 +41,26 @@ for i, (p, g, d) in enumerate(zip(t.column('Precursor.Id').to_pylist(),
     ent[p] = any(a in arab for a in str(g).replace(';', '|').split('|') if a)
     nf[p] = int(nfr[i])
 
+# DIA-NN writes C(UniMod:4); our library writes C(Carbamidomethyl). It is the
+# only modification on either side, so matching Precursor.Id verbatim drops
+# EVERY cysteine peptide -- 3,902 of DIA-NN's 39,149 confident precursors on
+# S08, 10.0% -- and understates concordance by that much. Alias, do not strip:
+# stripping the parentheses would also merge modified and unmodified forms.
+DN_ALIAS = {'UniMod:4': 'Carbamidomethyl'}
+
+
+def dn_norm(pid):
+    return re.sub(r'\((.*?)\)',
+                  lambda m: '(' + DN_ALIAS.get(m.group(1), m.group(1)) + ')',
+                  str(pid))
+
+
 DN = set()
 try:
     rr = pq.read_table(f'{L}/dn_xic_report.parquet',
                        columns=['Precursor.Id', 'Q.Value']).to_pydict()
-    DN = {p for p, q in zip(rr['Precursor.Id'], rr['Q.Value']) if q is None or q <= 0.01}
+    DN = {dn_norm(p) for p, q in zip(rr['Precursor.Id'], rr['Q.Value'])
+          if q is None or q <= 0.01}
 except Exception:
     pass
 
