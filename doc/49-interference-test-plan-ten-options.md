@@ -137,7 +137,24 @@ kept ALONGSIDE the 10-12 ppm sum rather than replacing it, as DIA-NN does at
 base / 0.45x / 0.2x. Cheap, fixture-testable, and the failure at 3.6 ppm is
 explained by width rather than principle.
 
-**O10. Entrapment-calibrated evaluation harness.** Make control 2 mechanical:
+**O10. Entrapment-calibrated evaluation harness. DONE -- `scripts/fdp_compare.py`.**
+
+    scripts/fdp_compare.py gateC=rank_a.tsv prominence=rank_b.tsv
+
+Reports identifications at a grid of MATCHED empirical FDP targets, with the
+per-cell entrapment count and the FDP sigma beside every number, plus DIA-NN
+concordance at each depth. It computes r on the library each arm ACTUALLY
+searched and prints which rule it used. Verified against doc/46: it returns
++11.7% at 7.42%, +5.6% at 5.72%, +17.6% at 10%, reproducing the Gate C result
+that nominal q had reported as -17%.
+
+It also surfaces what the ad-hoc analyses hid -- at 2-3% FDP the cells rest on
+3/0 and 9/0 entrapment hits with sigma 2.3-3.2 pp, so the apparent -86% and -92%
+there are noise, and the tool says so.
+
+Original description:
+
+Make control 2 mechanical:
 one command that takes two run outputs and reports IDs at matched empirical FDP
 with replicated decoy tails, so no option above can be accepted on nominal q.
 Given that nominal q is 5-7x off and that the fixture attenuates FDP effects
