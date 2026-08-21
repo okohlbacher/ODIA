@@ -762,7 +762,7 @@ namespace
       "var_usable_fragments", "var_library_rmsd", "var_yseries_score",
       "var_fragment_coverage",
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
-      "var_rt_delta", "var_im_delta", "var_ms1_coelution",
+      "var_im_delta", "var_ms1_coelution",
       "var_mass_accuracy", "var_mass_spread", "var_im_spread"};
     return names;
   }
@@ -1336,17 +1336,6 @@ namespace
       g.sub_scores[CORR_SUM] = cand.corr_sum;
       g.sub_scores[PEAK_WIDTH_RATIO] = static_cast<double>(width);
 
-      // |apex - predicted|, only where both are run seconds. Before the map is
-      // fitted the library carries iRT units and this would compare two
-      // different quantities, so it stays NaN and the classifier drops it.
-      if (options.library_rt_is_run_seconds && i < p.irt.size() &&
-          std::isfinite(p.irt[i]))
-      {
-        g.sub_scores[RT_DELTA] = std::fabs(static_cast<double>(g.apex_rt) -
-                                           static_cast<double>(p.irt[i]));
-      }
-      else { g.sub_scores[RT_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
-
       // Library 1/K0 against what the run observed for this precursor. NaN
       // wherever either side lacks mobility -- an absent measurement is not a
       // zero deviation, and a placeholder here would be a feature the
@@ -1711,33 +1700,34 @@ namespace
   ///
   /// Split out of `finish()` so it can be run more than once over the SAME
   /// groups. That is what makes iteration cheap: the candidate picker is
-  /// retention-time agnostic and RT_DELTA is the only sub-score that depends on
-  /// the fitted map, so refitting the map means recomputing one column and
-  /// running this again -- not re-extracting the run.
+  /// Refit the discriminant over the groups already scored.
+  ///
+  /// This used to recompute RT_DELTA first -- the ONLY sub-score that depended
+  /// on the fitted retention-time map, which is what made "refit the map, then
+  /// rescore" cheap. RT_DELTA is gone (see the note where it was declared), so
+  /// NO sub-score depends on the map any more and re-running this after a new
+  /// map produces a bit-identical result. `refitsChangeScores()` says so, and
+  /// the retention-time refinement loop asks before spending a round.
+  ///
+  /// The map still matters upstream: it centres pass 2's extraction window.
+  /// That has already run by the time anything calls this.
   void PeakGroupScorer::refit(const Library& library, Result& result,
                               const Options& options)
   {
     if (result.groups.empty()) { return; }
-    const auto& p = library.precursors();
-
-    // One column. Everything else in sub_scores comes from the trace and is
-    // invariant under a new map.
-    for (auto& g : result.groups)
-    {
-      if (options.library_rt_is_run_seconds && g.precursor < p.irt.size() &&
-          std::isfinite(p.irt[g.precursor]))
-      {
-        g.sub_scores[RT_DELTA] = std::fabs(static_cast<double>(g.apex_rt) -
-                                           static_cast<double>(p.irt[g.precursor]));
-      }
-      else { g.sub_scores[RT_DELTA] = std::numeric_limits<double>::quiet_NaN(); }
-    }
-
     // Counters are recomputed by the fit; reset so they do not accumulate
     // across iterations.
     result.identified_at_1pct = 0;
     fitAndAssign_(library, result, options);
   }
+
+  /// Whether refitting after a new retention-time map can change any score.
+  ///
+  /// False since RT_DELTA was removed. Kept as a function rather than deleted
+  /// at the call sites so that adding a map-dependent sub-score re-enables the
+  /// loop by flipping one return, instead of by remembering that a loop was
+  /// deleted somewhere.
+  bool PeakGroupScorer::refitsChangeScores() { return false; }
 
   void PeakGroupScorer::fitAndAssign_(const Library& library, Result& result,
                                       const Options& options)
@@ -1822,19 +1812,21 @@ namespace
     // transfers in principle and covers different columns.
     // LOWER-IS-BETTER features, whose weights may never come out positive.
     //
-    // RT_DELTA and IM_DELTA were missing here, and both are stored as +|error|.
-    // Nothing stopped the semi-supervised fit assigning them a POSITIVE weight
-    // -- i.e. rewarding candidates for sitting FURTHER from their predicted
-    // retention time or mobility. That is not a theoretical risk: the initial
-    // target class is heavily contaminated on a sparse library (see the
-    // seeding note below), so a positive coefficient can be learned whenever
-    // the contaminating set happens to carry larger errors than the decoys.
+    // IM_DELTA is stored as +|error|, and nothing stopped the semi-supervised
+    // fit assigning it a POSITIVE weight -- i.e. rewarding candidates for
+    // sitting FURTHER from their predicted mobility. That is not a theoretical
+    // risk: the initial target class is heavily contaminated on a sparse
+    // library (see the seeding note below), so a positive coefficient can be
+    // learned whenever the contaminating set happens to carry larger errors
+    // than the decoys.
     //
-    // RT_DELTA has been in production with this defect. IM_DELTA acquired it
-    // tonight when the feature was finally fed, and is a credible explanation
-    // for the 12 identifications the mobility features appeared to cost.
-    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD,
-                                   RT_DELTA, IM_DELTA};
+    // RT_DELTA was pinned here too, and the pin turned out to be the wrong
+    // half of the problem: measured, true peaks sit FURTHER from the predicted
+    // retention time than decoys do (AUC 0.215), so forcing "further is worse"
+    // made a useless feature into a harmful one. The feature is now removed
+    // rather than re-signed -- a group-level retention-time delta cannot
+    // separate a real group from an interference group at all.
+    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD, IM_DELTA};
     params.match_decoy_candidate_counts = options.match_decoy_candidate_counts;
 
     // Seed the semi-supervised loop on CORR_SUM alone.

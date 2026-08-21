@@ -109,18 +109,25 @@ namespace ODIA
       /// interference need not.
       PEAK_WIDTH_RATIO,
 
-      /// |apex RT - predicted RT|, seconds, on the CALIBRATED axis.
-      ///
-      /// Absent until now because the header's own reason had not expired: with
-      /// no iRT calibration the library was spread evenly over the run and this
-      /// would have been noise. Pass 2 runs on a fitted map, so both numbers
-      /// are real -- but only then, which is why it is gated on
-      /// `library_rt_is_run_seconds` and left at NaN otherwise. That gating IS
-      /// DIA-NN's min_iter_learn schedule, arrived at from the other direction.
-      ///
-      /// mProphet ranks its equivalent last of seven at AUC 0.850. Last of
-      /// seven is not zero.
-      RT_DELTA,
+      // RT_DELTA -- |apex RT - predicted RT| -- was here and is REMOVED.
+      //
+      // A peak group has ONE retention time and its traces co-elute by
+      // construction, so a group-level retention-time delta cannot separate a
+      // real group from an interference group: both sit wherever the signal
+      // they were built from sits. Retention time is diagnostic BETWEEN traces,
+      // not for the group as a whole.
+      //
+      // Measured before removal (d9_auc_by_abundance.py, full S08): AUC 0.215
+      // against the decoy null, flat across every abundance quintile, and it
+      // got WORSE under random decoy rows (0.293 -> 0.215), so it was not an
+      // artefact of picking decoys by argmax. Target and decoy row
+      // distributions were identical -- median 41.7 s against 42.6 s, in a
+      // window of half-width ~75 s -- i.e. a true peak sits no closer to the
+      // predicted time than a random candidate does.
+      //
+      // It was also pinned in `nonpositive_features`, forcing "further is
+      // worse" onto data where true peaks sit FURTHER than decoys. A feature
+      // constrained to a sign the data contradicts can only subtract signal.
 
       /// |library 1/K0 - observed 1/K0| for the precursor, or NaN where the run
       /// or the library has no mobility. Orthogonal to everything above on
@@ -524,7 +531,8 @@ namespace ODIA
 
       /// True when `Library::precursors().irt` holds RUN SECONDS rather than
       /// library iRT units -- i.e. after the retention-time map has been fitted
-      /// and applied. RT_DELTA is only computed when this is set; before it,
+      /// and applied. It centres pass 2's extraction window; no sub-score
+      /// reads it any more (RT_DELTA was removed). Before it,
       /// the comparison would be between two different units.
       bool library_rt_is_run_seconds = false;
 
@@ -796,15 +804,21 @@ namespace ODIA
     ///
     /// The candidate picker is retention-time agnostic -- neither
     /// `findCandidates` nor `findCandidatesByCorrelation` reads the library's
-    /// iRT -- and RT_DELTA is the ONLY sub-score that depends on the fitted
-    /// map. So a new map costs one recomputed column and one refit, not a
-    /// re-extraction of the run. That is what makes iterating to convergence
-    /// affordable: DIA-NN runs twelve iterations for the same reason, against
-    /// chromatograms it has already read.
+    /// iRT -- and RT_DELTA used to be the one sub-score that depended on the
+    /// fitted map, which is what made "new map -> one recomputed column -> one
+    /// refit" cheap enough to iterate.
     ///
-    /// Recomputes RT_DELTA from the library's CURRENT irt (which must be in run
-    /// seconds), then refits the discriminant and reassigns q-values.
+    /// RT_DELTA is now REMOVED, so nothing in `sub_scores` depends on the map
+    /// and refitting after a new one is bit-identical. `refitsChangeScores()`
+    /// reports that, and the refinement loop consults it rather than spending
+    /// rounds to discover it. The map still centres pass 2's extraction window,
+    /// which is upstream of anything here.
     static void refit(const Library& library, Result& result, const Options& options);
+
+    /// Whether a new retention-time map can change any score through `refit`.
+    /// False while no sub-score reads the map; flip the one return in the .cpp
+    /// when a map-dependent sub-score is added.
+    static bool refitsChangeScores();
 
   private:
     static void fitAndAssign_(const Library& library, Result& result,

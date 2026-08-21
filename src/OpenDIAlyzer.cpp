@@ -3776,6 +3776,20 @@ protected:
   {
     const int max_rounds = std::max(0, getIntOption_("refine_rounds"));
     if (max_rounds == 0) { return; }
+    // The loop refits the map and rescores. Rescoring can only move an
+    // identification if some sub-score reads the map, and since RT_DELTA was
+    // removed none does -- so every round would refit the same matrix and
+    // return the same q-values. Say so once rather than spending rounds
+    // discovering it, and rather than leaving a loop that silently does
+    // nothing.
+    if (!ODIA::PeakGroupScorer::refitsChangeScores())
+    {
+      writeLogInfo_("retention-time refinement skipped: no sub-score depends on "
+                    "the map since RT_DELTA was removed, so refitting after a "
+                    "new map is bit-identical. The map still centres pass 2's "
+                    "extraction window, which has already run by this point.");
+      return;
+    }
     anchor_selection_legacy_ = (getStringOption_("anchor_selection") == "qvalue");
     const double anchor_q = getDoubleOption_("anchor_q");
     const int min_anchors = std::max(1, getIntOption_("min_anchors"));
