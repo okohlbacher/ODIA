@@ -5,6 +5,56 @@ external fix are marked **[you]**; the rest are mine to work through.
 
 ---
 
+## THE DEFAULT BENCHMARK: `scripts/bench.sh` (2026-08-21)
+
+One command, ~25 minutes, for iterating on performance and trying ideas:
+
+    scripts/bench.sh baseline
+    scripts/bench.sh no-floor  -min_library_fragments 0
+    scripts/bench.sh wide-im   -precursor_im_window 0.05
+
+Runs the RT-sliced S08 fixture (`s08_6x60`: 6 slices x 60 s over 487-1512 s,
+6,120 MS2 spectra = 19.0% of the file, all 24 isolation windows, ion mobility
+intact), prints the arm against stored references, and appends to
+`shared/libv2/bench_results.tsv`. Construction and evidence in doc/47.
+
+    ODIA on S08        full (v5)   fixture    ratio
+    wall               3h00        24:08      7.5x
+    peak memory        124 GB      40 GB      3.1x
+
+Reference arms, all on the same fixture:
+
+                       IDs   entrap    FDP        est.true
+    fx baseline      3,282       42   7.49 +-1.16    2,997
+    fx no-floor      2,986       44   8.64 +-1.30    2,688
+    fx DIA-NN        4,606       35   4.44 +-0.75    4,404
+
+**Three things it cannot answer**, and the script prints them after every run
+so a number cannot be quoted without them:
+
+  * **FDR / FDP acceptance.** Effects attenuate ~5x -- the fragment floor is
+    worth 6.91 pp on the full run and 1.15 pp here, against a Poisson sigma of
+    1.74. Differences under ~2.5 pp are not differences.
+  * **Where we stand against DIA-NN.** The fixture compresses the ratio from
+    2.96x to 1.40x and moves the two tools' FDP in OPPOSITE directions
+    (DIA-NN 7.42 -> 4.44, ODIA 5.72 -> 7.49).
+  * **Retention-time calibration.** The fixture cannot seed its own map -- the
+    fit collapses to a slope of 2.35 against 1086.50 -- so the map is supplied
+    and that path is untested.
+
+For any of those: `shared/libv2/run_full_v5.sh`, 3 h.
+
+DIA-NN reads the same fixture as `s08_6x60.mzML` (9:58); the Astral fixture
+`astral_7x60` (54,533 MS2, 17.9%, 150 windows) runs DIA-NN in 7 s. Rebuild
+either with `shared/libv2/build_fixture.sh`.
+
+**Open:** whether a 40% fixture removes the attenuations and at what speedup.
+The mechanism predicts the floor effect partly returns, because weak
+0-2-fragment precursors would start producing candidates again. One build, two
+runs.
+
+---
+
 ## Interference correction: the target population is real, three designs are dead, one survives (2026-08-21)
 
 Written to be picked up cold. Everything below is measured on S08 with the 9.6M
