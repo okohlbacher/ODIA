@@ -183,6 +183,65 @@ Extrapolated to the full run -- where 41% is lost to admission against 22% here
 `d5_yield.py`'s +40.9% upper bound. The bound holds and was loose, as it said
 it was.
 
+## Relaxing the gate makes it WORSE, and that unifies the whole picture
+
+`-gate_mode prominence -gate_k 3.3` on the fixture, against the matched-binary
+quantile baseline:
+
+    arm                    IDs      FDP   peak mem
+    quantile (baseline)  3,282    7.49%     40 GB
+    prominence k=3.3     1,259   10.28%     47 GB
+
+**-62% identifications and worse FDP.** At MATCHED empirical FDP
+(`fdp_compare.py`, which is the instrument that decides this) prominence loses
+at every depth: -87.8% at 2%, -85.4% at DIA-NN's 7.42% operating point, -19.2%
+at 15%. Not a nominal-q artefact.
+
+The mechanism is in the logs:
+
+                       precursors reaching the picker   peak groups     IDs
+    quantile                            393,262           1,045,098   3,282
+    prominence                        4,648,739          13,397,178   1,259
+
+Target:decoy is 1.00x in BOTH. Prominence admits decoys exactly as freely as
+targets, so 12.8x more peak groups means the decoy argmax draws from 12.8x more
+candidates, the null tail rises, and q <= 0.01 rejects nearly everything.
+
+**This is why the oracle gained and a real gate cannot.** The oracle admitted
+4,948 TARGETS -- 0.05% of the library, no decoys -- so the null never moved.
+Any admission rule that is a function of the data admits both classes, because
+a decoy that looks admissible is exactly what a decoy is for.
+
+So "Gate C owns 98.2% of the candidate loss" is true as accounting and
+ACTIONABLY FALSE as a direction. The gate is not too tight; it is doing
+necessary work, and the only way to profit at admission is a rule that is MORE
+selective -- one that admits the faint true precursors while still rejecting
+the absent ones. That is the same discrimination problem as the scoring
+deficit.
+
+**The funnel therefore collapses to one problem.** Admission, ranking and the
+threshold are three places where the same deficit shows: ODIA needs more signal
+than DIA-NN to tell a real peptide from an absent one, and at low abundance it
+does not have it.
+
+### This disagrees with doc/46 and the disagreement is not resolved
+
+doc/46 measured the gate replacement at **+11.7%** at matched FDP on the FULL
+run. This is -85% at matched FDP on the fixture. One of the two is
+regime-specific and the honest position is that we do not yet know which:
+
+* The fixture's own guardrail says it answers mechanism, not FDR -- so a
+  matched-FDP verdict measured here is exactly the kind it warns about.
+* Against that, the effect is an order of magnitude larger than the documented
+  ~5x attenuation, and the mechanism (11.8x symmetric admission) is measured
+  rather than inferred, which argues it generalises.
+* Several things changed since doc/46: label symmetry, the MS1 calibration, the
+  fragment floor. Any of them alters what an admitted decoy does to the null.
+
+A full-run prominence arm settles it. Until then doc/46's number stands as a
+full-run measurement and this one as a fixture measurement, and neither is
+promoted over the other.
+
 ## So the gap is not in any of the four buckets
 
     extraction     matched to DIA-NN            doc/44
