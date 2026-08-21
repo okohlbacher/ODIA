@@ -5,6 +5,228 @@ external fix are marked **[you]**; the rest are mine to work through.
 
 ---
 
+## Interference correction: the target population is real, three designs are dead, one survives (2026-08-21)
+
+Written to be picked up cold. Everything below is measured on S08 with the 9.6M
+`human_v2` library, DIA-NN run on the SAME library (39,149 precursors at
+q <= 0.01). Full working in doc/45 and doc/46.
+
+### Why this is worth doing at all
+
+At matched entrapment FDP we report 15,036 against DIA-NN's 39,211 -- 2.4x
+short. Everything upstream has been excluded BY MEASUREMENT, so the gap is not
+where it was assumed to be:
+
+  * trace cleanliness is MATCHED -- 0.270 against DIA-NN's 0.311 mean pairwise
+    fragment coherence, identity-matched fragments, common pair set, median
+    paired difference -0.010, and we are better on 41.6% of precursors;
+  * m/z tolerance is not too wide -- DIA-NN's own log optimises to 12 ppm
+    against our 10, i.e. it extracts through a WIDER window;
+  * `Max` aggregation loses to `Sum` at every width tested;
+  * mobility window +/-0.025 beats +/-0.0304 and +/-0.050 at a correct centre;
+  * library coverage is complete -- 0 of DIA-NN's confident precursors absent;
+  * the CLASSIFIER is at its ceiling -- a 5-fold CV supervised GBT trained with
+    DIA-NN's own labels as positives, an advantage production cannot have,
+    beats the shipped DScore by +1.8% (13,848 against 13,609 at decoy FDR 1%).
+    No model, hyperparameter or training change can reach this. The FEATURES
+    are the limit.
+
+Partition of DIA-NN's 39,149 through our pipeline:
+
+    accepted by ODIA                             11,773   30.1%
+    right peak, correctly picked, scored too low  7,229   18.5%   <- SCORING
+    right peak present, wrong one picked            730    1.9%
+    candidate formed, none near DIA-NN's RT       2,777    7.1%
+    no candidate formed at all                   16,640   42.5%   <- DETECTION
+
+### The population is PRESENT, and this was nearly got wrong
+
+The 18.5% bucket is decoy-like on every co-elution and shape feature
+(library_corr 0.040 against decoys' 0.000; xcorr_shape 0.227 against 0.211)
+while being positionally correct in retention time. The natural reading -- and
+kimi's, in review 46 -- was ABSENCE: `var_ms1_coelution` put them at -0.093
+against -0.124 for the 750k precursors nobody claims are present. MS1 sits at
+the precursor m/z, a far sparser space than fragment bins, so a present-but-
+contaminated peptide should still show its monoisotope. That argument would
+retire this whole line of work.
+
+It was wrong, and the reason is instructive. `Ms1Traces::build` matched on the
+library's THEORETICAL precursor m/z with no calibration offset while the
+fragment axis was centred on the fitted deviation. Fixed in `6b1b2fa`; the run
+now reports the centre and the residual against it:
+
+    MS1 mass axis centred on -8.949 ppm (borrowed from the fragment fit);
+    median residual against that centre -0.426 ppm
+
+So the MS1 error IS the fragment error, and the old window sat 89% of the way
+to its edge -- fine for bright precursors, fatal for weak ones, which is
+exactly the population the absence claim was about. Re-measured on the
+calibrated axis (`full_v7`):
+
+                              v3 (uncalibrated)   v7 (calibrated)
+    DIA-NN + we accept                    0.473             0.982
+    DIA-NN, we REJECT                    -0.093             0.151
+    not DIA-NN, bulk reject              -0.124            -0.717
+    gap (reject - bulk)                   0.031             0.868
+
+They are not absent. They sit 0.868 above the bulk, carrying real MS1 presence
+evidence, positioned correctly in RT, with MS2 fragments that do not co-elute.
+That is the interference signature.
+
+**Watch the statistic.** The AUC of `var_ms1_coelution` against decoys moved
++0.005 (0.757 -> 0.762) while the within-target separation moved +0.837. AUC
+compares targets to decoys and is blind to structure AMONG targets, which is
+where this question lives. Reporting the AUC alone -- the habit everywhere else
+in the sub-score audit -- would have said the calibration achieved nothing.
+
+### Three designs are dead. Do not re-propose them without new evidence
+
+**1. Per-precursor pruning** -- drop a precursor's least mutually-consistent
+fragments, rescore the rest. Prototyped on 998 real targets and 998 decoys:
+
+    corr over ALL fragments (current)   AUC 0.8288   target 0.150  decoy 0.021
+    corr over consistent subset         AUC 0.8278   target 0.434  decoy 0.182
+    fraction consistent                 AUC 0.7465   target 0.083  decoy 0.000
+
+Pruning triples the target median and triples the DECOY median with it.
+Discrimination does not move, because the pruning criterion IS the scored
+statistic: a decoy's best-correlating subset flatters the decoy exactly as
+much. Selection on the response.
+
+**2. Library-competitor counting** -- flag a fragment contested when another
+library precursor in the same isolation window has a fragment within tolerance
+whose predicted RT and 1/K0 could co-elute, then score the uncontested subset.
+Measured, sweeping the co-elution tolerance (codex was right that the pass-2
+extraction window is a resource bound, not a co-elution test):
+
+    RT tol   contested t/d   uncontested/total   corr ALL   corr UNCONTESTED     n
+      60 s   1.000 / 1.000          1.9 / 11.7     0.8574             0.8788   312
+      10 s   0.667 / 0.750          4.6 / 11.7     0.8496             0.8287   986
+       5 s   0.500 / 0.500          6.1 / 11.7     0.8402             0.8298 1,392
+
+At a CORRECT tolerance and a representative sample, dropping contested
+fragments makes discrimination WORSE. The apparent +0.021 at 60 s existed only
+on the 312-precursor minority that survived a wrong filter. Note also that
+decoys are MORE contested than targets at 10 s (0.750 against 0.667), so the
+feature partly encodes decoy construction: `mutate` maps all 20 residues onto
+`LLLVVLLLLTSSSSLLNDQE` (LibraryGenerator.cpp:37-38), eight residue masses, no
+aromatics, no sulfur, no G/A/P, so decoy fragments sit on a different
+mass-defect manifold from natural ones.
+
+**3. Mass-tightening survival** -- DIA-NN computes its co-elution sum at base,
+0.45x and 0.2x tolerance ("a real peak survives tightening; an interferent
+often does not"). All arms centred identically on -9.6479 ppm:
+
+    tolerance                AUC     median target   median decoy
+    3.6 ppm               0.7537             0.058          0.010
+    12 ppm                0.7658             0.093          0.022
+    10 ppm + IM 0.050     0.8103             0.121          0.021
+
+    intensity survival ratio I(3.6)/I(12): AUC 0.5720, against 0.6084 for the
+    wide intensity alone and 0.6138 for the tight.
+
+Tightening HURTS. The reason is the useful part: the fragment mass calibration
+reports total per-hit scatter of 4.04 ppm, so +/-3.6 ppm is NARROWER THAN ONE
+SIGMA of single-hit noise and starves real peaks faster than interference --
+zero fraction 19.7% at 12 ppm against 45.3% at 3.6 ppm. The PRINCIPLE is not
+refuted, the WIDTH is. **Untested and cheap: tighten to ~6 ppm (above the 4.04
+ppm scatter) and keep it ALONGSIDE the 10-12 ppm sum rather than instead of
+it.** One extraction on the existing 1,000-precursor subset, minutes.
+
+### What survives: evidence-weighted, cross-precursor, from a previous pass
+
+The two failures share one cause: **library structure says what COULD be
+contested, not what WAS contaminated**, and per-precursor statistics cannot
+tell the difference because a decoy's own fragments flatter it identically.
+Only run evidence separates them, and the only non-circular source of run
+evidence is a PREVIOUS PASS.
+
+Sketch: weight each fragment's contamination by the competitors that were
+actually IDENTIFIED near that RT and mobility in pass 1, then recompute the
+co-elution features in pass 2 on the down-weighted set. It evades both failure
+modes -- the weight comes from OTHER precursors' evidence rather than this
+one's own correlations, and it counts identified competitors rather than merely
+permitted ones. A decoy cannot fake having been identified.
+
+This also reframes the iteration item elsewhere in this file: DIA-NN's ~12
+passes are not valuable as iteration per se; interference correction is the
+REASON to iterate. Prerequisite, scoped in the plan file and never built:
+retain peak groups between passes (~120 B each against tens of kB per trace) so
+pass 2 can rescore without re-extracting.
+
+### Constraints any design must satisfy (all learned the hard way)
+
+  * **Never select on the scored statistic.** Failure 1.
+  * **Never use a candidate-derived property to define the selection** --
+    observed fragment coverage, winning peak width, retained candidate count --
+    without a separate selective-inference argument (codex, review 46). Charge,
+    library fragment count and precursor m/z are precursor-fixed and safe.
+  * **`corr_sum` is a SUM, not a mean.** Removing fragments changes its scale
+    and its null; a clean score over 3 fragments is not comparable with one over
+    10. Carry the clean-fragment count, the pair count, mean-per-pair and a
+    shrinkage term, and an explicit missing value below minimum support --
+    never a placeholder dressed as a measurement.
+  * **Guard degenerate statistics.** `pearson` over n points is +-1 at n = 2;
+    `libraryCorrelation` now reports 0 below four INFORMATIVE (non-zero) points.
+    The same trap will exist in any new per-fragment statistic.
+  * **Audit target/decoy exchangeability BEFORE looking at identification
+    gains** (codex). If the classes differ on the new feature before run
+    evidence is consulted, it is unsafe for target-decoy FDR whatever it adds.
+  * **AUC is the wrong acceptance metric.** The pruning experiment moved medians
+    3x while AUC did not move; the MS1 result moved within-target separation
+    +0.837 while AUC moved +0.005. Acceptance is entrapment FDP at MATCHED
+    threshold and IDs at DIA-NN's operating point.
+  * **Never compare arms at nominal 1%.** Different arms sit at different
+    empirical FDPs -- 5.08% against 5.72% for two gates -- so nominal comparison
+    compares two different thresholds. This reversed the Gate C verdict once.
+  * **Pass-1 counts do not predict final results.** Three instances: the
+    mobility seed +43% -> +2%, the gate retest misread as a loss when it is a
+    +11.7% win, MS1 calibration +2.4% -> -1.4%.
+
+### Measurements to run first, cheapest first
+
+  1. The ~6 ppm mild-tightening arm above. Minutes, existing subset.
+  2. Per-fragment diagnostics on the 10,092 against accepted, matched on
+     charge/m/z/RT/intensity: effective fragment count, top-1/2 area share,
+     apex-RT MAD (vault: *Testing for interference cheaply*). Distinguishes
+     "uniformly weak" from "one or two hijacked fragments with clean siblings".
+     kimi calls this the table that decides more than any argument.
+  3. Contest-flag precision/recall against ACTUAL decorrelation on true
+     precursors -- the load-bearing number the competitor design never had.
+  4. Target/decoy competitor-count distributions from the library alone, no run,
+     stratified by fragment m/z, iRT and charge, to settle the mutate-alphabet
+     hazard. If they differ, prefer composition-preserving decoys
+     (pseudo-reverse/shuffle keep the residue multiset) over normalising the
+     feature per class.
+
+### Where the code is
+
+  * `src/score/PeakGroupScorer.cpp` -- `coelutionEvidence` (the gate statistic,
+    shared by both gate modes), `libraryCorrelation`, the CORR_SUM block
+    (~:553-565), the sub-score assignment block (~:1147-1230).
+  * `src/extract/ChromatogramExtractor.cpp:1150-1190` -- the match loop and
+    aggregation; `LiveSlot` already carries per-cell `ppm_num`/`ppm_den` planes,
+    which is what a tightened-tolerance feature would read.
+  * `src/extract/Ms1Traces.cpp` -- now takes `ppm_offset` and reports the
+    residual.
+  * `include/odia/scoring/lda.h:200-280` -- q-values; `:1035-1082` -- the
+    per-precursor argmax that a new feature would perturb (winner's curse).
+
+### Related open items
+
+Group-wise FDR was designed and KILLED in review 47 -- both reviewers
+independently: it fixes the ALLOCATION of a miscalibrated error rate and cannot
+fix its LEVEL, and no stratum is well enough calibrated to rescue (the dominant
+12-fragment population sits at 4.88% against a claimed 1%). kimi's framing is
+the one to keep: **decoy construction / null-shrinking is the LEVEL lever,
+stratification is the ALLOCATION lever, and only the first can ever deliver a
+true 1%.** The entrapment homology confound that would have voided the
+motivating gradient was audited and is clean -- 0 of 733,780 entrapment
+precursors share a stripped sequence with any of 1,325,594 human sequences, in
+every stratum.
+
+---
+
 ## The 1/K0 anchors are in; what is still open on that axis (2026-08-06)
 
 The 1/K0 calibration now measures at anchors instead of guessing at them, and
