@@ -60,6 +60,37 @@ needs one terminal reason per precursor key.
 That instrument now exists (`-out_terminal_reasons`, `d7349ed`) and the
 attribution stays open until it has run.
 
+## MEASURED: Gate C owns 98.2% of the candidate loss
+
+`-out_terminal_reasons` on the s08_6x60 fixture, full library, against DIA-NN's
+own run on the same fixture (4,948 confident precursors). Every library
+precursor carries exactly one reason, so this is a count, not an argument.
+
+    terminal reason   DIA-NN confident   share    whole library   share
+             scored              3,859   78.0%          180,227    3.9%
+             gate_c              1,069   21.6%        3,578,052   77.3%
+         few_points                 14    0.3%          865,215   18.7%
+       no_candidate                  6    0.1%            2,260    0.0%
+
+Of the 1,089 that never reach candidate formation, **gate_c accounts for 1,069
+-- 98.2%**. The picker itself fails 6 times.
+
+The alternative both reviewers raised is REFUTED by the same table.
+`not_reached` is ~13 across a 9.25M-precursor library and zero among DIA-NN's
+confident set: no confident precursor is lost to missing isolation-window
+coverage. `few_points` is large in the library (18.7%) and negligible in the
+confident set (0.3%) -- that is the fixture's retention-time gaps catching
+precursors that do not elute in the slices, which is what it should do.
+
+So the attribution withdrawn above is restored, on evidence this time. Note the
+fixture is EASIER than the full run at this stage -- 78.0% reach candidate
+formation here against 58.9% on the full run -- so the share is a fixture
+number and the full-run confirmation is still owed.
+
+The whole-library column is the other half of the story: Gate C rejects **77.3%
+of the library** and 3.9% of it is scored. That is what the gate is for; the
+question has only ever been what it costs.
+
 ## A second correction: "ranking is not the problem" was too broad
 
 Stage D measures within-precursor argmax. Stage E is a GLOBAL question --
