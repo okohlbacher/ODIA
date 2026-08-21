@@ -156,6 +156,48 @@ features the classifier does not have, and doc/45 measured that classifier
 within +1.8% of its ceiling on the present feature set. Priority stays with
 A->B -- now for a measured reason rather than because it is biggest.
 
+## The admission ceiling, MEASURED: +6.6% on the fixture
+
+`-oracle_rt` (660abdd) bypasses admission for a named set and synthesises a
+candidate at a given retention time if the picker found none there. Given
+DIA-NN's 4,948 confident precursors on the fixture, it matched 4,948 of 4,948
+and took them from 78.0% reaching candidate formation to **99.8%** -- `gate_c`
+disappears from that population entirely, so the bypass is complete.
+
+The matched-binary baseline reproduces the stored one exactly (3,282 IDs, 42
+entrapment, 7.49% FDP), so the instrumentation is inert and the delta is real.
+
+    newly admitted (1,063 of them from gate_c)        1,079
+    of those, identified at q <= 0.01                   203   18.8%
+    previously identified, no longer identified         119
+    net among DIA-NN confident        2,883 -> 3,073   +190   +6.6%
+
+**Admitting a precursor Gate C rejected identifies it 18.8% of the time.** The
+other 81% get a candidate and then fail scoring or the threshold.
+
+The 119 losses are why `d8_reason_diff.py` exists: admitting more candidates
+changes the competition, and a net gain hides a swap. Totals cannot see it.
+
+Extrapolated to the full run -- where 41% is lost to admission against 22% here
+-- 16,091 x 18.8% minus a proportional swap loss is **about +20%**, against
+`d5_yield.py`'s +40.9% upper bound. The bound holds and was loose, as it said
+it was.
+
+## So the gap is not in any of the four buckets
+
+    extraction     matched to DIA-NN            doc/44
+    admission      ceiling +20%, ORACLE-measured
+    ranking        95.6%, ~4% left
+    FDR threshold  51.3% FDP to recover         d6
+
+Perfect admission takes 31.4% of DIA-NN to ~37.8%. Nothing in the funnel
+contains a 3x. What the funnel says instead, in three places at once, is that
+ODIA needs more signal than DIA-NN does to call the same peptide: acceptance
+runs 7.0% -> 81.1% with abundance among precursors we already find, the ones
+the gate drops are 2.7x fainter, and 81% of oracle-admitted precursors still
+fail. That is one deficit -- DISCRIMINATION at low abundance -- and it is not
+addressable at any single stage of the funnel.
+
 ## A measurement bug this turned up
 
 DIA-NN writes `C(UniMod:4)`; our library writes `C(Carbamidomethyl)`. It is the
