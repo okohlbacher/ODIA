@@ -9,6 +9,10 @@
 #   scripts/bench.sh no-floor -min_library_fragments 0
 #   scripts/bench.sh wide-im  -precursor_im_window 0.05
 #
+# BENCH_FIXTURES picks the instrument: s08 (default), astral, or both. Both
+# search the same 4,986,616-precursor library -- see the note below the option,
+# because the Astral arm did not always.
+#
 # Results append to shared/libv2/bench_results.tsv and are printed against the
 # stored reference arms. doc/47 has the construction and the evidence.
 #
@@ -30,9 +34,22 @@ arm=$1; shift
 R=/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer
 S=/scratch/kohlbach/odia2x2
 L=$R/shared/libv2
-FX=/scratch/kohlbach/fixtures/s08_6x60/s08_6x60.mzpeak
-[[ -f "$FX" ]] || { echo "fixture missing: $FX (rebuild: shared/libv2/build_fixture.sh)" >&2; exit 1; }
 source $R/ODIA/scripts/env.sh
+
+# BENCH_FIXTURES=s08 (default, ~25 min) | astral | both.
+#
+# Both instruments now search the SAME 4,986,616-precursor library. The Astral
+# arm used to search shared/lib/astral_lib_own.tsv -- 10,891 precursors,
+# pre-selected -- so it was never on the same footing as S08, and removing the
+# FDR problem flattered both tools. DIA-NN on the full library actually finds
+# MORE (1,533 against 1,066): the small library was missing real peptides.
+#
+# Each fixture supplies its own retention-time map because neither can fit one
+# (doc/47). The Astral map comes from shared/libv2/astral_map.py, fitted on
+# DIA-NN's full-library run; its p95 residual is 134.5 s against S08's 37.7 s,
+# so the wider Astral window is measured, not careless.
+fixtures=${BENCH_FIXTURES:-s08}
+[[ $fixtures == both ]] && fixtures="s08 astral"
 
 # Which binary, and which source. An arm that silently ran a stale build is not
 # a comparison: 'gateq' reproduced the stored baseline exactly while emitting a
@@ -41,30 +58,44 @@ source $R/ODIA/scripts/env.sh
 bin_sha=$(git -C $R/ODIA rev-parse --short HEAD 2>/dev/null || echo unknown)
 bin_age=$(date -r $R/build-gpu/OpenDIAlyzer '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)
 dirty=$(git -C $R/ODIA status --porcelain 2>/dev/null | wc -l)
-echo "== bench arm '$arm' on s08_6x60 (6 x 60 s, 19.0% of spectra), extra args: $*"
 echo "   binary built $bin_age   repo $bin_sha${dirty:+ (+$dirty uncommitted)}"
 if [[ -n "$(find $R/ODIA/src $R/ODIA/include -newer $R/build-gpu/OpenDIAlyzer -name '*.cpp' -o -newer $R/build-gpu/OpenDIAlyzer -name '*.h' 2>/dev/null | head -1)" ]]; then
   echo "   WARNING: sources are NEWER than the binary -- this arm is measuring a stale build" >&2
 fi
-/usr/bin/time -v $R/build-gpu/OpenDIAlyzer \
-  -in "$FX" -tr $S/human_v2.parquet \
-  -irt_slope 1086.50 -irt_intercept 473.77 -rt_window_pass1 75.4069 \
-  -threads 96 -live_memory_gb 400 "$@" \
-  -out $S/bench_${arm}.tsv > $L/bench_${arm}.log 2>&1
-rc=$?
 
-wall=$(grep -oE "took [0-9:]+ [mh]" $L/bench_${arm}.log | head -1 | awk '{print $2}')
-mem=$(grep -oE "Peak Memory Usage: [0-9]+ MB" $L/bench_${arm}.log | grep -oE "[0-9]+")
-ids=$(grep -oE "identified [0-9]+ precursors at q <= 0.01" $L/bench_${arm}.log | tail -1 | grep -oE "[0-9]+" | head -1)
-echo "   exit $rc  wall $wall  peak ${mem}MB  ids ${ids:-0}"
+for fx in $fixtures; do
+  case $fx in
+    s08)    FX=/scratch/kohlbach/fixtures/s08_6x60/s08_6x60.mzpeak
+            MAP="-irt_slope 1086.50 -irt_intercept 473.77 -rt_window_pass1 75.4069"
+            desc="s08_6x60 (6 x 60 s, 19.0% of spectra)" ;;
+    astral) FX=/scratch/kohlbach/fixtures/astral_7x60/astral_7x60.mzpeak
+            MAP="-irt_slope 1706.1148 -irt_intercept 472.3459 -rt_window_pass1 269.0154"
+            desc="astral_7x60 (7 x 60 s)" ;;
+    *) echo "unknown fixture: $fx" >&2; exit 2 ;;
+  esac
+  [[ -f "$FX" ]] || { echo "fixture missing: $FX (rebuild: shared/libv2/build_fixture.sh)" >&2; exit 1; }
+  tag=${arm}_${fx}
+  echo "== bench arm '$arm' on $desc, extra args: $*"
 
-awk -F'\t' 'FNR==1{for(i=1;i<=NF;i++)h[$i]=i;next}
- ($h["Decoy"]==0||$h["Decoy"]=="false"){k=$h["Precursor.Id"]; s=$h["DScore"]+0;
-  if(!(k in b)||s>b[k]){b[k]=s; q[k]=$h["QValue"]}}
- END{for(k in b) print k"\t"b[k]"\t"q[k]}' $S/bench_${arm}.tsv > $L/rank_bench_${arm}.tsv
+  /usr/bin/time -v $R/build-gpu/OpenDIAlyzer \
+    -in "$FX" -tr $S/human_v2.parquet $MAP \
+    -threads 96 -live_memory_gb 400 "$@" \
+    -out $S/bench_${tag}.tsv > $L/bench_${tag}.log 2>&1
+  rc=$?
 
-/ceph/ibmi/abi/oliver/envs/pyprophet/bin/python3 $R/ODIA/scripts/bench_report.py \
-  "$arm" "$L/rank_bench_${arm}.tsv" "${wall:-?}" "${mem:-0}"
+  wall=$(grep -oE "took [0-9:]+ [mh]" $L/bench_${tag}.log | head -1 | awk '{print $2}')
+  mem=$(grep -oE "Peak Memory Usage: [0-9]+ MB" $L/bench_${tag}.log | grep -oE "[0-9]+")
+  ids=$(grep -oE "identified [0-9]+ precursors" $L/bench_${tag}.log | tail -1 | grep -oE "[0-9]+" | head -1)
+  echo "   exit $rc  wall $wall  peak ${mem}MB  ids ${ids:-?}"
+
+  awk -F'\t' 'FNR==1{for(i=1;i<=NF;i++)h[$i]=i;next}
+   ($h["Decoy"]==0||$h["Decoy"]=="false"){k=$h["Precursor.Id"]; s=$h["DScore"]+0;
+    if(!(k in b)||s>b[k]){b[k]=s; q[k]=$h["QValue"]}}
+   END{for(k in b) print k"\t"b[k]"\t"q[k]}' $S/bench_${tag}.tsv > $L/rank_bench_${tag}.tsv
+
+  /ceph/ibmi/abi/oliver/envs/pyprophet/bin/python3 $R/ODIA/scripts/bench_report.py \
+    "$tag" "$L/rank_bench_${tag}.tsv" "${wall:-?}" "${mem:-0}"
+done
 
 cat <<'GUARD'
 
