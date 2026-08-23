@@ -763,7 +763,8 @@ namespace
       "var_fragment_coverage",
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
       "var_im_delta", "var_ms1_coelution",
-      "var_mass_accuracy", "var_mass_spread", "var_im_spread"};
+      "var_mass_accuracy", "var_mass_spread", "var_im_spread",
+      "var_rt_spread"};
     return names;
   }
 
@@ -1178,6 +1179,11 @@ namespace
       staged_anchors.clear();
       const std::size_t lo = cand.left, hi = cand.right;
       const std::size_t width = hi - lo + 1;
+      // retentionTime() indexes cycles; candidate bounds are already clamped to
+      // them, but the clamp is kept explicit so a future boundary rule cannot
+      // walk off the axis silently.
+      const std::size_t n_cycles_minus1 =
+        chromatogram.cycles ? chromatogram.cycles - 1 : 0;
 
       // Per-transition traces over the candidate's own boundaries, and the
       // observed intensity of each transition as its area there.
@@ -1205,6 +1211,11 @@ namespace
       // rather than allowed negative: a weak real fragment sitting below its
       // own local median is absent evidence, not negative evidence.
       std::vector<double> corrected(tc, 0.0);
+      // Retained per fragment: RT_SPREAD needs each fragment's own baseline to
+      // place its centroid, and recomputing localBackground for that would be
+      // the same scan twice. Named for the fragment axis -- a plain
+      // `background` collides with the scalar one the sub-scores below use.
+      std::vector<double> frag_background(tc, 0.0);
       std::size_t at_apex = 0;
       for (std::uint32_t k = 0; k < tc; ++k)
       {
@@ -1213,8 +1224,60 @@ namespace
         std::vector<double> whole(n, 0.0);
         for (std::uint32_t j = 0; j < n; ++j) { whole[j] = points_k[j]; }
         const double bg = localBackground(whole, lo, hi);
+        frag_background[k] = bg;
         corrected[k] = std::max(0.0, observed[k] - bg * static_cast<double>(width));
         if (cand.apex < n && points_k[cand.apex] > bg) { ++at_apex; }
+      }
+
+      // RT_SPREAD: do this group's fragments agree about WHEN they elute?
+      //
+      // Each informative fragment gets a background-subtracted, intensity-
+      // weighted retention-time centroid over the candidate's own boundaries;
+      // the feature is the weighted scatter of those centroids about the
+      // group's apex time. A peptide's fragments come from one ion packet and
+      // agree; an interferent belongs to a different species and does not.
+      double rt_spread = std::numeric_limits<double>::quiet_NaN();
+      {
+        const double apex_rt =
+          static_cast<double>(chromatogram.retentionTime(
+            static_cast<std::uint32_t>(std::min<std::size_t>(cand.apex, n_cycles_minus1))));
+        std::vector<double> offset, weight;
+        offset.reserve(tc); weight.reserve(tc);
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          if (!(corrected[k] > 0.0)) { continue; }
+          double num = 0.0, den = 0.0;
+          for (std::size_t j = 0; j < width; ++j)
+          {
+            const double v = traces[k][j] - frag_background[k];
+            if (!(v > 0.0)) { continue; }
+            const double rt = static_cast<double>(chromatogram.retentionTime(
+              static_cast<std::uint32_t>(std::min<std::size_t>(lo + j, n_cycles_minus1))));
+            num += rt * v; den += v;
+          }
+          // A fragment that is entirely at or below its own baseline across the
+          // peak has no opinion about when it eluted. Excluded rather than
+          // given the apex by default, which would fake agreement.
+          if (!(den > 0.0)) { continue; }
+          offset.push_back(num / den - apex_rt);
+          weight.push_back(corrected[k]);
+        }
+        if (offset.size() >= options.min_rt_spread_fragments)
+        {
+          double w = 0.0, m = 0.0;
+          for (std::size_t k = 0; k < offset.size(); ++k)
+          { w += weight[k]; m += weight[k] * offset[k]; }
+          if (w > 0.0)
+          {
+            m /= w;
+            double var = 0.0;
+            for (std::size_t k = 0; k < offset.size(); ++k)
+            { const double d = offset[k] - m; var += weight[k] * d * d; }
+            // Negated: lower scatter is better, and every other sub-score is
+            // higher-is-better. Same convention as MASS_SPREAD and IM_SPREAD.
+            rt_spread = -std::sqrt(var / w);
+          }
+        }
       }
 
       // D6/D8 gate: a peak group is a co-elution. One transition above its
@@ -1550,6 +1613,9 @@ namespace
       g.sub_scores[MASS_ACCURACY] = std::isfinite(g.mass_ppm)
         ? static_cast<double>(g.mass_ppm)
         : std::numeric_limits<double>::quiet_NaN();
+      // Already negated where it was computed; NaN passes through so the
+      // constant-column guard can drop it on a run where it never fires.
+      g.sub_scores[RT_SPREAD] = rt_spread;
 
       // MS1_COELUTION: does the PRECURSOR rise and fall with its fragments?
       //

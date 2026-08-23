@@ -892,6 +892,10 @@ protected:
                           "S08's peaks are ~20-30 s.", false, true);
     registerFlag_("openswath_gauss",
                   "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
+    registerIntOption_("min_rt_spread_fragments", "<n>", 3,
+                       "Informative fragments required before var_rt_spread is computed. "
+                       "Below 3 a weighted scatter is a rescaled |difference| and any two "
+                       "agreeing fragments score perfectly.", false, true);
     registerStringOption_("oracle_rt", "<file>", "",
                           "DIAGNOSTIC ORACLE, never a production setting. A TSV of "
                           "Precursor.Id and retention time in run seconds. For each listed "
@@ -3723,6 +3727,8 @@ protected:
                                                         : terminal_reasons_.data();
     options.oracle_rt = oracle_rt_.empty() ? nullptr : oracle_rt_.data();
     options.oracle_rt_tol = getDoubleOption_("oracle_rt_tol");
+    options.min_rt_spread_fragments = static_cast<std::size_t>(
+      std::max(2, getIntOption_("min_rt_spread_fragments")));
     return options;
   }
 

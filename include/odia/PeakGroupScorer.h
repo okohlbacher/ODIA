@@ -207,6 +207,46 @@ namespace ODIA
       /// because zero scatter is what a perfect group looks like.
       IM_SPREAD,
 
+      // --- added 2026-08-23. The RETENTION-TIME analogue of MASS_SPREAD and
+      // IM_SPREAD, and the only form in which retention time can discriminate
+      // at all.
+      //
+      // RT_DELTA asked whether the GROUP sits where the library predicted, and
+      // was removed: a group has one retention time and its traces co-elute by
+      // construction, so both a real group and an interference group sit
+      // wherever the signal they were built from sits. There is nothing there
+      // to separate.
+      //
+      // BETWEEN fragments there is. A peptide's fragments are produced from one
+      // ion packet and share one elution profile, so their individual apices
+      // agree. An interfering fragment belongs to a different species and peaks
+      // somewhere else. That is a property of the group's internal consistency
+      // and needs no prediction, which is what makes it immune to the library
+      // being wrong -- the same argument that makes IM_SPREAD work.
+
+      /// Intensity-weighted scatter of each fragment's own retention-time
+      /// centroid about the group's apex, in seconds, NEGATED so that higher is
+      /// better like every other sub-score.
+      ///
+      /// The centroid rather than the argmax: on a faint fragment the argmax
+      /// jumps between adjacent cycles on noise, and the whole point of the
+      /// feature is to work where the shape features stop working (measured:
+      /// at the faintest abundance quintile var_library_corr is 0.532 and
+      /// var_xcorr_shape 0.598, against 0.913 and 0.962 at the brightest).
+      ///
+      /// Weighted by each fragment's background-corrected area, so a fragment
+      /// that is mostly noise does not get an equal vote on where the peak is.
+      ///
+      /// NaN with fewer than `min_rt_spread_fragments` informative fragments --
+      /// NaN rather than zero, because zero scatter is what a perfect group
+      /// looks like and a group with one fragment would score perfectly.
+      ///
+      /// Related to XCORR_COELUTION but not the same statistic: that is a
+      /// cross-correlation LAG between fragment PAIRS, this is each fragment's
+      /// offset from the group apex. Whether it is redundant with it is a
+      /// question for measurement, not for this comment.
+      RT_SPREAD,
+
       N_SUB_SCORES
     };
 
@@ -467,6 +507,14 @@ namespace ODIA
       /// never connected. When this is null MS1_COELUTION is NaN for every row
       /// and the constant-column guard drops it, which is the honest behaviour.
       const Ms1Traces* ms1 = nullptr;
+
+      /// Informative fragments required before RT_SPREAD is computed at all.
+      ///
+      /// Three is the smallest number for which a scatter means anything: with
+      /// two, the weighted sigma is a rescaled |difference| and every group with
+      /// two agreeing fragments looks perfect. The same reasoning that put a
+      /// four-point floor under the library correlation.
+      std::size_t min_rt_spread_fragments = 3;
 
       /// Where to record each precursor's `TerminalReason`, indexed by library
       /// precursor index. Null disables the accounting entirely.
