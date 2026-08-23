@@ -224,9 +224,17 @@ namespace ODIA
       // and needs no prediction, which is what makes it immune to the library
       // being wrong -- the same argument that makes IM_SPREAD work.
 
-      /// Intensity-weighted scatter of each fragment's own retention-time
-      /// centroid about the group's apex, in seconds, NEGATED so that higher is
-      /// better like every other sub-score.
+      /// Weighted scatter of the fragments' own retention-time centroids about
+      /// THEIR OWN WEIGHTED MEAN, in seconds, NEGATED so that higher is better
+      /// like every other sub-score.
+      ///
+      /// Dispersion BETWEEN fragments, not displacement from the group apex:
+      /// that apex comes from the summed trace, so one loud interferent would
+      /// drag the reference and the measurement together.
+      ///
+      /// NaN for candidates narrower than 3 cycles -- with one or two, every
+      /// centroid is forced to the same value and the scatter is 0, the BEST
+      /// possible score, so a three-fragment noise spike would look perfect.
       ///
       /// The centroid rather than the argmax: on a faint fragment the argmax
       /// jumps between adjacent cycles on noise, and the whole point of the
@@ -285,6 +293,9 @@ namespace ODIA
       NoWindowCoverage = 9,
       PrefilterExcluded = 10,
     };
+
+    /// Weighting for RT_SPREAD's per-fragment centroids. See the option.
+    enum class RtSpreadWeight { Area, Sqrt, None };
 
     struct Options
     {
@@ -507,6 +518,15 @@ namespace ODIA
       /// never connected. When this is null MS1_COELUTION is NaN for every row
       /// and the constant-column guard drops it, which is the honest behaviour.
       const Ms1Traces* ms1 = nullptr;
+
+      /// How much say each fragment gets in RT_SPREAD's centroid scatter.
+      ///
+      /// Area weighting estimates the dominant ion packet but suppresses the
+      /// signal this feature exists to find: for two clusters the weighted
+      /// variance scales as W1*W2/(W1+W2)^2, so one weak interfering fragment
+      /// contributes almost nothing. None gives every informative fragment an
+      /// equal vote, including barely-detected noisy ones. Sqrt is between.
+      RtSpreadWeight rt_spread_weight = RtSpreadWeight::Area;
 
       /// Informative fragments required before RT_SPREAD is computed at all.
       ///

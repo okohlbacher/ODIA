@@ -892,6 +892,17 @@ protected:
                           "S08's peaks are ~20-30 s.", false, true);
     registerFlag_("openswath_gauss",
                   "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
+    registerStringOption_("rt_spread_weight", "<how>", "area",
+                          "How much say each fragment gets in var_rt_spread. 'area' weights by "
+                          "background-corrected area -- a good estimator of the dominant ion "
+                          "packet and a poor detector of ONE weak interfering fragment, since "
+                          "for two clusters the weighted variance scales as W1*W2/(W1+W2)^2 and "
+                          "a small interferer's contribution vanishes with its area. 'none' "
+                          "gives every informative fragment an equal vote, including "
+                          "barely-detected noisy ones. 'sqrt' is between. The default is the "
+                          "one the feature was first measured with, not a validated choice.",
+                          false, true);
+    setValidStrings_("rt_spread_weight", {"area", "sqrt", "none"});
     registerIntOption_("min_rt_spread_fragments", "<n>", 3,
                        "Informative fragments required before var_rt_spread is computed. "
                        "Below 3 a weighted scatter is a rescaled |difference| and any two "
@@ -3729,6 +3740,13 @@ protected:
     options.oracle_rt_tol = getDoubleOption_("oracle_rt_tol");
     options.min_rt_spread_fragments = static_cast<std::size_t>(
       std::max(2, getIntOption_("min_rt_spread_fragments")));
+    {
+      const std::string w = getStringOption_("rt_spread_weight");
+      options.rt_spread_weight =
+        w == "none" ? ODIA::PeakGroupScorer::RtSpreadWeight::None
+      : w == "sqrt" ? ODIA::PeakGroupScorer::RtSpreadWeight::Sqrt
+                    : ODIA::PeakGroupScorer::RtSpreadWeight::Area;
+    }
     return options;
   }
 

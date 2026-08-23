@@ -1236,11 +1236,22 @@ namespace
       // the feature is the weighted scatter of those centroids about the
       // group's apex time. A peptide's fragments come from one ion packet and
       // agree; an interferent belongs to a different species and does not.
+      //
+      // The scatter is about the fragments' OWN weighted mean -- inter-fragment
+      // dispersion, not displacement from `cand.apex`, which cancels out of the
+      // arithmetic. Deliberate: the apex comes from the SUMMED trace, so one
+      // loud interferent would move the reference and the measurement together,
+      // and a feature about internal consistency must not be anchored to
+      // something the interference can drag. "Fragments disagree with the
+      // picked apex" is a different statistic and needs its own slot.
+      //
+      // Width floor: with one or two cycles every centroid is forced to the
+      // same value and the scatter is 0 -- the BEST possible score -- so a
+      // three-fragment noise spike clearing min_fragments_at_apex would look
+      // like perfect co-elution.
       double rt_spread = std::numeric_limits<double>::quiet_NaN();
+      if (width >= 3)
       {
-        const double apex_rt =
-          static_cast<double>(chromatogram.retentionTime(
-            static_cast<std::uint32_t>(std::min<std::size_t>(cand.apex, n_cycles_minus1))));
         std::vector<double> offset, weight;
         offset.reserve(tc); weight.reserve(tc);
         for (std::uint32_t k = 0; k < tc; ++k)
@@ -1255,12 +1266,25 @@ namespace
               static_cast<std::uint32_t>(std::min<std::size_t>(lo + j, n_cycles_minus1))));
             num += rt * v; den += v;
           }
-          // A fragment that is entirely at or below its own baseline across the
-          // peak has no opinion about when it eluted. Excluded rather than
-          // given the apex by default, which would fake agreement.
+          // A fragment entirely at or below its own baseline across the peak
+          // has no opinion about when it eluted. Excluded rather than given the
+          // apex by default, which would fake agreement. (Unreachable while the
+          // corrected[k] > 0 gate holds -- that implies sum(tr) > bg*width and
+          // hence one positive v -- but kept so this loop is correct on its own
+          // terms rather than on a gate twenty lines away.)
           if (!(den > 0.0)) { continue; }
-          offset.push_back(num / den - apex_rt);
-          weight.push_back(corrected[k]);
+          offset.push_back(num / den);
+          // Area weighting estimates the dominant ion packet well and is poorly
+          // matched to noticing ONE weak interfering fragment: for two clusters
+          // the weighted variance scales as W1*W2/(W1+W2)^2, so a small
+          // interferer's contribution vanishes with its area -- precisely the
+          // case this feature exists to catch. Unweighted has the opposite
+          // failure, giving a barely-detected noisy fragment an equal vote.
+          // Sqrt is between. Swept, not assumed.
+          const double a = corrected[k];
+          weight.push_back(options.rt_spread_weight == RtSpreadWeight::None ? 1.0
+                         : options.rt_spread_weight == RtSpreadWeight::Sqrt ? std::sqrt(a)
+                         : a);
         }
         if (offset.size() >= options.min_rt_spread_fragments)
         {
