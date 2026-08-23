@@ -913,9 +913,24 @@ namespace
     const std::uint32_t tc = chromatogram.transition_count;
     // Every return below records why. `mark` is a no-op unless
     // -out_terminal_reasons asked for the table.
+    // The EXTRACTOR's reasons win. It knows things this function cannot -- that
+    // no isolation window covers the precursor, or that the prefilter dropped
+    // it -- and if the scorer overwrites them the specific reason is replaced
+    // by a vaguer one that is also true.
+    //
+    // That is not hypothetical. On full_v9, `few_points` came out at 1,119,490
+    // and `no_window_coverage` at ZERO, and 100.0% of the `few_points` targets
+    // turned out to lie outside every window's m/z range (median m/z 1468.3
+    // against 525.8 for scored precursors; the windows stop at 1400.62 Th).
+    // The whole bucket was the uncovered population wearing the wrong label,
+    // which is exactly the kind of misattribution this table exists to prevent.
     const auto mark = [&](TerminalReason r) {
-      if (options.terminal_reason)
-      { options.terminal_reason[i] = static_cast<std::uint8_t>(r); }
+      if (!options.terminal_reason) { return; }
+      const std::uint8_t prior = options.terminal_reason[i];
+      if (prior == static_cast<std::uint8_t>(TerminalReason::NoWindowCoverage) ||
+          prior == static_cast<std::uint8_t>(TerminalReason::PrefilterExcluded))
+      { return; }
+      options.terminal_reason[i] = static_cast<std::uint8_t>(r);
     };
     if (tc == 0) { mark(TerminalReason::NoTransitions); return; }
 

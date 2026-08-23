@@ -37,7 +37,7 @@ int main(int argc, char** argv)
     std::size_t shown = 0;
     for (const auto& w : run->windows())
     {
-      if (shown++ >= 5) { break; }
+      if (shown++ >= 64) { break; }
       std::printf("  %.3f .. %.3f  (width %.3f)", w.mz_low, w.mz_high, w.width());
       if (w.im_low > -1e30) { std::printf("  1/K0 %.3f .. %.3f", w.im_low, w.im_high); }
       std::printf("\n");
