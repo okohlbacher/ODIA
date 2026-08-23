@@ -817,6 +817,11 @@ namespace ODIA
     /// reports that, and the refinement loop consults it rather than spending
     /// rounds to discover it. The map still centres pass 2's extraction window,
     /// which is upstream of anything here.
+    ///
+    /// Note this retired nothing that was running: `-refine_rounds` defaults to
+    /// 0, so the loop's `max_rounds == 0` early return fires first and the
+    /// guard never executes in a default run. It is there for the day someone
+    /// turns the loop on.
     static void refit(const Library& library, Result& result, const Options& options);
 
     /// Whether a new retention-time map can change any score through `refit`.
