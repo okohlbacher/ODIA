@@ -97,9 +97,34 @@ So `few_points` was the uncovered population wearing the wrong label, and
 `no_window_coverage` -- the label that exists for exactly this -- never fired.
 The scorer's `mark()` was overwriting the extractor's more specific reason with
 its own vaguer one, which is also true and much less useful. The extractor's
-reasons now take precedence, and the fixture arm testing that is running; if
-`few_points` does not move, the precedence fix was the wrong diagnosis and the
-extractor is not marking at all.
+reasons now take precedence. CONFIRMED by an arm set up so that a null result
+would have refuted the diagnosis:
+
+    fixture arm            few_points   no_window_coverage
+    before precedence       1,631,468             absent
+    after precedence          507,464          1,119,490
+
+`no_window_coverage` picks up exactly the count that was mislabelled, and the
+residual 507,464 is the genuine "reached the scorer with fewer than 3 points"
+population -- on a 6 x 60 s fixture, precursors whose retention-time window
+falls in a slice gap. Identifications are 3,302, identical to the arm before
+the change, so the fix is diagnostic-only as intended.
+
+### The full-run table, corrected without a re-run
+
+100.0% of full_v9's `few_points` TARGETS were measured to lie outside the
+acquired m/z range, so the whole bucket moves and the reassignment is exact
+rather than estimated:
+
+    no_window_coverage      1,119,490    12.1%
+    gate_c                  6,574,288    71.1%
+    scored                  1,556,317    16.8%
+    no_candidate                1,129     0.0%
+    all_candidates_dropped        397     0.0%
+    few_points                      0
+
+Nothing about the funnel's conclusions moves. Gate C still owns the admission
+loss; the relabelled bucket is precursors the instrument never fragmented.
 
 ### 12.8% of the target library cannot be searched on this file
 
