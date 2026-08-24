@@ -64,6 +64,15 @@ A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
 
 NDESC = {'anon': 1, 'lib': 2, 'full': 6, 'all': 6,
          'allside': 6, 'allint': 6}[FEAT]
+# Precursor charge, precursor m/z and peptide length were missing entirely.
+# Broadcast to every fragment token rather than appended after pooling, so
+# attention can combine 'this precursor is 3+' with 'this fragment is y7 2+'.
+# Arm-invariant on the shifted contrast, so they cannot leak -- they can only
+# act through interaction with the traces.
+USE_PREC = FEAT in ('full', 'all', 'allside', 'allint')
+if USE_PREC:
+    PD = np.load(f'{D}/desc_precursor.npy')
+    NDESC += PD.shape[1]
 # Which scalars the combined model may see. The combined run gained +0.0160 over
 # traces+descriptors, and there are two candidate explanations that these two
 # modes separate:
@@ -151,6 +160,9 @@ def batch(idx, arm, jitter):
     if FEAT in ('full', 'all', 'allside', 'allint'):
         d += [torch.from_numpy(PM[idx]), torch.from_numpy(FC[idx]),
               torch.from_numpy(OR[idx]), torch.from_numpy(SE[idx])]
+    if USE_PREC:
+        pd_ = torch.from_numpy(PD[idx])
+        d += [pd_[:, k:k + 1].expand(-1, ch.shape[1]) for k in range(pd_.shape[1])]
     sc = None
     if USE_SCAL:
         raw = (SC0 if arm == 0 else SC1)[idx]
