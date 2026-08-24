@@ -62,6 +62,20 @@ OR = np.load(f'{D}/desc_ordinal.npy') / 20.0
 SE = np.load(f'{D}/desc_series.npy')
 A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
 
+NDESC = {'anon': 1, 'lib': 2, 'full': 6, 'all': 6}[FEAT]
+# 'all' = full per-fragment descriptors PLUS the 19 shipped sub-scores, which
+# enter at the PRECURSOR level (they are one vector per candidate, not per
+# fragment) and are therefore concatenated after pooling rather than tokenised.
+USE_SCAL = FEAT == 'all'
+if USE_SCAL:
+    SC0 = np.load(f'{D}/scal_s08.npy'); SC1 = np.load(f'{D}/scal_s08shift.npy')
+    OK0 = np.load(f'{D}/scal_s08_ok.npy'); OK1 = np.load(f'{D}/scal_s08shift_ok.npy')
+    # Standardised on TRAIN rows only -- fitting the scaler on everything would
+    # leak test distribution into the model's input normalisation.
+    NSCAL = SC0.shape[1] + 1
+else:
+    NSCAL = 0
+
 lib = pq.read_table(f'{D}/corpus_lib.parquet', columns=['Precursor.Id','Decoy','Protein.Group'])
 pgm = {(p, int(d)): str(g) for p, d, g in zip(lib.column('Precursor.Id').to_pylist(),
                                               lib.column('Decoy').to_numpy(),
@@ -85,11 +99,15 @@ tr_i = np.flatnonzero(sel & (fold >= 5))
 va_i = np.flatnonzero(sel & (fold >= 3) & (fold < 5))
 te_i = np.flatnonzero(sel & (fold < 3))
 ispos = pos.astype(np.float32)
+if USE_SCAL:
+    _tr = np.flatnonzero(sel & (fold >= 5))
+    _st = np.concatenate([SC0[_tr], SC1[_tr]])
+    SC_MU = _st.mean(0).astype(np.float32)
+    SC_SD = np.maximum(_st.std(0), 1e-6).astype(np.float32)
+    print(f'scalars standardised on {len(_tr):,} TRAIN rows only')
 print(f'train {len(tr_i):,}  val {len(va_i):,}  test {len(te_i):,}')
 
 C, W = 128, 96
-NDESC = {'anon': 1, 'lib': 2, 'full': 6}[FEAT]
-
 def batch(idx, arm, jitter):
     t = torch.from_numpy(np.asarray((X0 if arm == 0 else X1)[idx], dtype=np.float32))
     if CENTRE == 'apex':
@@ -106,10 +124,16 @@ def batch(idx, arm, jitter):
     d = [torch.log1p(t.sum(2))]                               # observed scale
     if FEAT in ('lib', 'full'):
         d.append(torch.from_numpy(RI[idx]))                   # the EXPECTED pattern
-    if FEAT == 'full':
+    if FEAT in ('full', 'all'):
         d += [torch.from_numpy(PM[idx]), torch.from_numpy(FC[idx]),
               torch.from_numpy(OR[idx]), torch.from_numpy(SE[idx])]
-    return ch, m, torch.stack(d, -1)
+    sc = None
+    if USE_SCAL:
+        raw = (SC0 if arm == 0 else SC1)[idx]
+        ok = (OK0 if arm == 0 else OK1)[idx].astype(np.float32)
+        sc = torch.from_numpy(np.concatenate(
+            [(raw - SC_MU) / SC_SD, ok[:, None]], axis=1).astype(np.float32))
+    return ch, m, torch.stack(d, -1), sc
 
 class FragEnc(nn.Module):
     """Conv front end then a bidirectional GRU over time -- the time axis is
@@ -129,19 +153,22 @@ class FragEnc(nn.Module):
         return torch.cat([z, desc], -1)
 
 class SetTransformer(nn.Module):
-    def __init__(s, d=64, heads=4, blocks=2, ndesc=1):
+    def __init__(s, d=64, heads=4, blocks=2, ndesc=1, nscal=0):
         super().__init__()
         s.enc = FragEnc(d); s.proj = nn.Linear(d + ndesc, d)
         s.blocks = nn.ModuleList([nn.TransformerEncoderLayer(d, heads, 4 * d, 0.1,
                                   batch_first=True, norm_first=True) for _ in range(blocks)])
         s.q = nn.Parameter(torch.randn(1, 1, d))
         s.att = nn.MultiheadAttention(d, heads, batch_first=True)
-        s.head = nn.Sequential(nn.Linear(d + 1, 128), nn.GELU(), nn.Linear(128, 1))
-    def forward(s, ch, m, desc):
+        s.head = nn.Sequential(nn.Linear(d + 1 + nscal, 128), nn.GELU(),
+                               nn.Dropout(0.1), nn.Linear(128, 1))
+    def forward(s, ch, m, desc, scal=None):
         z = s.proj(s.enc(ch, desc)); pad = m == 0
         for b in s.blocks: z = b(z, src_key_padding_mask=pad)
         p, _ = s.att(s.q.expand(z.size(0), -1, -1), z, z, key_padding_mask=pad)
-        return s.head(torch.cat([p.squeeze(1), m.sum(1, keepdim=True)], -1)).squeeze(-1)
+        h = [p.squeeze(1), m.sum(1, keepdim=True)]
+        if scal is not None: h.append(scal)
+        return s.head(torch.cat(h, -1)).squeeze(-1)
 
 def evaluate(model, idx):
     model.eval(); sc, ys = [], []
@@ -149,20 +176,22 @@ def evaluate(model, idx):
         for a in range(0, len(idx), 512):
             s_ = idx[a:a + 512]
             if CONTRAST == 'ent':
-                ch, m, d = batch(s_, 0, False)
-                o = model(ch.to(dev), m.to(dev), d.to(dev))
+                ch, m, d, sv = batch(s_, 0, False)
+                o = model(ch.to(dev), m.to(dev), d.to(dev),
+                          None if sv is None else sv.to(dev))
                 sc.append(o.float().cpu().numpy()); ys.append(ispos[s_])
             else:
                 for arm in (0, 1):
-                    ch, m, d = batch(s_, arm, False)
-                    o = model(ch.to(dev), m.to(dev), d.to(dev))
+                    ch, m, d, sv = batch(s_, arm, False)
+                    o = model(ch.to(dev), m.to(dev), d.to(dev),
+                              None if sv is None else sv.to(dev))
                     sc.append(o.float().cpu().numpy()); ys.append(np.full(len(s_), 1.0 - arm))
     return roc_auc_score(np.concatenate(ys), np.concatenate(sc))
 
 results = []
 for seed in SEEDS:
     torch.manual_seed(seed); np.random.seed(seed)
-    model = SetTransformer(ndesc=NDESC).to(dev)
+    model = SetTransformer(ndesc=NDESC, nscal=NSCAL).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, EPOCHS)
     lossf = nn.BCEWithLogitsLoss()
@@ -174,13 +203,15 @@ for seed in SEEDS:
             s_ = np.sort(tr_i[order[a:a + 256]])
             outs, tgt = [], []
             if CONTRAST == 'ent':
-                ch, m, d = batch(s_, 0, True)
-                outs.append(model(ch.to(dev), m.to(dev), d.to(dev)))
+                ch, m, d, sv = batch(s_, 0, True)
+                outs.append(model(ch.to(dev), m.to(dev), d.to(dev),
+                                  None if sv is None else sv.to(dev)))
                 tgt.append(torch.from_numpy(ispos[s_]).to(dev))
             else:
                 for arm in (0, 1):
-                    ch, m, d = batch(s_, arm, True)
-                    o = model(ch.to(dev), m.to(dev), d.to(dev))
+                    ch, m, d, sv = batch(s_, arm, True)
+                    o = model(ch.to(dev), m.to(dev), d.to(dev),
+                              None if sv is None else sv.to(dev))
                     outs.append(o); tgt.append(torch.full_like(o, 1.0 - arm))
             opt.zero_grad(); lossf(torch.cat(outs), torch.cat(tgt)).backward(); opt.step()
         sched.step()
