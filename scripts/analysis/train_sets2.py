@@ -289,6 +289,15 @@ for seed in SEEDS:
         if va > best_va:
             best_va, best_ep = va, e + 1
             best_te = evaluate(model, te_i)
+            # Checkpoint at the VALIDATION-selected epoch, so the saved model is
+            # the one the reported number describes. Needed to transfer the
+            # model to anything outside this script -- without it the result is
+            # a number with no artefact behind it.
+            torch.save({'state': model.state_dict(), 'feat': FEAT,
+                        'centre': CENTRE, 'contrast': CONTRAST, 'seed': seed,
+                        'ndesc': NDESC, 'nscal': NSCAL, 'val': best_va,
+                        'epoch': best_ep},
+                       f'{D}/model_{FEAT}_{CONTRAST}_seed{seed}.pt')
     print(f'  seed {seed}: val {best_va:.4f} at epoch {best_ep}  ->  TEST {best_te:.4f}')
     results.append(best_te)
 
