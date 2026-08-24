@@ -122,7 +122,7 @@ def batch(idx, arm, jitter):
     bg = t.median(dim=2, keepdim=True).values
     ch = torch.stack([torch.log1p(t), torch.clamp(t - bg, min=0).log1p(), (t > 0).float()], 2)
     d = [torch.log1p(t.sum(2))]                               # observed scale
-    if FEAT in ('lib', 'full'):
+    if FEAT in ('lib', 'full', 'all'):
         d.append(torch.from_numpy(RI[idx]))                   # the EXPECTED pattern
     if FEAT in ('full', 'all'):
         d += [torch.from_numpy(PM[idx]), torch.from_numpy(FC[idx]),
