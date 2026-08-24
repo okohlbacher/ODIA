@@ -62,6 +62,7 @@ OR = np.load(f'{D}/desc_ordinal.npy') / 20.0
 SE = np.load(f'{D}/desc_series.npy')
 A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
 
+C, W = 128, 96
 NDESC = {'anon': 2, 'lib': 3, 'full': 7, 'all': 7,
          'allside': 7, 'allint': 7}[FEAT]
 # Precursor charge, precursor m/z and peptide length were missing entirely.
@@ -156,7 +157,6 @@ if USE_SCAL:
     print(f'scalars standardised on {len(_tr):,} TRAIN rows only')
 print(f'train {len(tr_i):,}  val {len(va_i):,}  test {len(te_i):,}')
 
-C, W = 128, 96
 def batch(idx, arm, jitter):
     t = torch.from_numpy(np.asarray((X0 if arm == 0 else X1)[idx], dtype=np.float32))
     if CENTRE == 'apex':
