@@ -62,13 +62,29 @@ OR = np.load(f'{D}/desc_ordinal.npy') / 20.0
 SE = np.load(f'{D}/desc_series.npy')
 A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
 
-NDESC = {'anon': 1, 'lib': 2, 'full': 6, 'all': 6,
-         'allside': 6, 'allint': 6}[FEAT]
+NDESC = {'anon': 2, 'lib': 3, 'full': 7, 'all': 7,
+         'allside': 7, 'allint': 7}[FEAT]
 # Precursor charge, precursor m/z and peptide length were missing entirely.
 # Broadcast to every fragment token rather than appended after pooling, so
 # attention can combine 'this precursor is 3+' with 'this fragment is y7 2+'.
 # Arm-invariant on the shifted contrast, so they cannot leak -- they can only
 # act through interaction with the traces.
+# A Gaussian shape prior. The model had predicted per-fragment INTENSITIES and
+# no predicted SHAPE at all -- nothing told it what a peak looks like in time.
+#
+# The width is MEASURED, not assumed. Aligning 10,943 confident positives on
+# DIA-NN's own apex and fitting a Gaussian to the mean profile gives sigma =
+# 1.48 s = 1.07 cycles, FWHM 3.5 s, R^2 = 0.9265 -- so the Gaussian assumption
+# holds well once the alignment is right. (Aligned on ODIA's PICKED apex instead
+# the fit collapses to R^2 0.43, because many picked apices are noise spikes;
+# and clipping the baseline at zero rectifies noise into a fake pedestal. Both
+# of those produced badly wrong widths before the measurement was done properly.)
+#
+# The template is centred on the crop centre, identically in both arms, so it
+# carries no arm-specific information and cannot leak.
+GAUSS_SIGMA_CYCLES = 1.07
+_gx = np.arange(W) - (W - 1) / 2.0
+GAUSS = np.exp(-0.5 * (_gx / GAUSS_SIGMA_CYCLES) ** 2).astype(np.float32)
 USE_PREC = FEAT in ('full', 'all', 'allside', 'allint')
 if USE_PREC:
     PD = np.load(f'{D}/desc_precursor.npy')
@@ -153,8 +169,18 @@ def batch(idx, arm, jitter):
         t = t[:, :, o:o + W]
     m = torch.from_numpy(M[idx].astype(np.float32))
     bg = t.median(dim=2, keepdim=True).values
-    ch = torch.stack([torch.log1p(t), torch.clamp(t - bg, min=0).log1p(), (t > 0).float()], 2)
+    gt = torch.from_numpy(GAUSS).view(1, 1, -1).expand(t.shape[0], t.shape[1], -1)
+    ch = torch.stack([torch.log1p(t), torch.clamp(t - bg, min=0).log1p(),
+                      (t > 0).float(), gt], 2)
     d = [torch.log1p(t.sum(2))]                               # observed scale
+    # Direct shape agreement per fragment: correlation of the background-
+    # subtracted trace against the expected Gaussian. The channel above lets the
+    # encoder learn its own comparison; this hands it the obvious one outright.
+    tb = torch.clamp(t - bg, min=0)
+    tc_ = tb - tb.mean(2, keepdim=True)
+    gc_ = gt - gt.mean(2, keepdim=True)
+    den = torch.sqrt((tc_ ** 2).sum(2) * (gc_ ** 2).sum(2)).clamp(min=1e-9)
+    d.append((tc_ * gc_).sum(2) / den)
     if FEAT in ('lib', 'full', 'all', 'allside', 'allint'):
         d.append(torch.from_numpy(RI[idx]))                   # the EXPECTED pattern
     if FEAT in ('full', 'all', 'allside', 'allint'):
@@ -177,7 +203,7 @@ class FragEnc(nn.Module):
     AdaptiveAvgPool1d bottleneck."""
     def __init__(s, d=64):
         super().__init__()
-        s.conv = nn.Sequential(nn.Conv1d(3, 32, 7, padding=3), nn.GELU(), nn.MaxPool1d(2),
+        s.conv = nn.Sequential(nn.Conv1d(4, 32, 7, padding=3), nn.GELU(), nn.MaxPool1d(2),
                                nn.Conv1d(32, 48, 5, padding=2), nn.GELU(), nn.MaxPool1d(2))
         s.gru = nn.GRU(48, d // 2, num_layers=1, batch_first=True, bidirectional=True)
         s.d = d
