@@ -61,11 +61,30 @@ X = np.array(X, dtype=np.float32); y = np.array(y); te = np.array(te)
 print(f'positives usable {kept:,}  (dropped {miss:,} lacking a candidate in one arm)')
 print(f'train {(~te).sum():,}  test {te.sum():,}')
 
-clf = xgb.XGBClassifier(n_estimators=400, max_depth=6, learning_rate=0.05,
-                        subsample=0.8, colsample_bytree=0.8, n_jobs=32,
-                        eval_metric='logloss', tree_method='hist')
-clf.fit(X[~te], y[~te])
-pr = clf.predict_proba(X[te])[:, 1]
-print(f'\nRUNG 1  shipped 19 sub-scores + GBT   AUC {roc_auc_score(y[te], pr):.4f}')
+def fit(cols_sel, name):
+    j = [cols.index(c) for c in cols_sel]
+    c = xgb.XGBClassifier(n_estimators=400, max_depth=6, learning_rate=0.05,
+                          subsample=0.8, colsample_bytree=0.8, n_jobs=32,
+                          eval_metric='logloss', tree_method='hist')
+    c.fit(X[~te][:, j], y[~te])
+    a = roc_auc_score(y[te], c.predict_proba(X[te][:, j])[:, 1])
+    print(f'  {name:<46} AUC {a:.4f}   ({len(j)} features)')
+    return c, a
+
+print()
+clf, _ = fit(cols, 'RUNG 1  all shipped sub-scores')
 imp = sorted(zip(cols, clf.feature_importances_), key=lambda t: -t[1])[:6]
-print('  top features: ' + ', '.join(f'{n}={v:.3f}' for n, v in imp))
+print('    top: ' + ', '.join(f'{n}={v:.3f}' for n, v in imp))
+
+# The trace tensor holds INTENSITY and nothing else. These five scalars are
+# computed from data that is not in it at all -- per-fragment mass deviations,
+# ion mobility, and the MS1 survey trace -- so if they carry weight then the
+# ladder was never comparing scalars against traces, it was comparing five
+# evidence families against one.
+SIDE = ['var_mass_accuracy', 'var_mass_spread', 'var_im_delta', 'var_im_spread',
+        'var_ms1_coelution']
+side = [c for c in cols if c in SIDE]
+intensity_only = [c for c in cols if c not in SIDE]
+fit(intensity_only, 'intensity-derived scalars only (tensor-comparable)')
+if side:
+    fit(side, 'the side-channel scalars ALONE (mass, mobility, MS1)')

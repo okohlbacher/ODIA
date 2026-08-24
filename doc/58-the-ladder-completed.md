@@ -46,6 +46,35 @@ The transformer was also overfitting by the end (train 0.8847 against test
 0.8645), where at 20 epochs it was underfitting (0.8546 / 0.8552). Its ceiling on
 this corpus is near 0.865, not somewhere above it.
 
+## My own strongest objection, run, and it failed
+
+The tensor holds INTENSITY and nothing else. Five of the nineteen scalars are
+computed from data that is not in it at all -- per-fragment mass deviations
+(`var_mass_accuracy`, `var_mass_spread`), ion mobility (`var_im_delta`,
+`var_im_spread`) and the MS1 survey trace (`var_ms1_coelution`). If those carry
+weight then the ladder was never scalars against traces; it was five evidence
+families against one, and the trace models were losing a rigged comparison.
+
+Measured by ablation on the same split:
+
+    all 19 shipped scalars                        0.8649
+    intensity-derived 14 only (tensor-comparable) 0.8621
+    the side-channel 5 ALONE                      0.6810
+
+The side channels reach 0.681 by themselves, so they are far from noise -- but
+they add only **+0.003** on top of the intensity features, being largely
+redundant with them on this contrast.
+
+So the objection fails, and the like-for-like comparison moves slightly the
+OTHER way:
+
+    trace transformer, apex-centred, final epoch   0.8645
+    intensity-only scalars                         0.8621
+
+**+0.0024 to the trace model**, on strictly comparable information. Still a dead
+heat; no longer a deficit. The honest statement is that on the same evidence
+neither representation beats the other.
+
 ## What this says about doc/55's premise
 
 doc/55's central hypothesis was that **collapsing twelve fragments into nineteen
@@ -55,8 +84,9 @@ keeps scalars.
 
 **On this contrast, that is not supported.** A permutation-equivariant model
 consuming the raw per-fragment traces, with attention across fragments, extracts
-no more label-predictive information than the nineteen scalars already do. The
-scalars are not leaving much on the table.
++0.0024 over the scalars computed from the same evidence. The scalars are not
+leaving recoverable structure on the table -- and neither is the neural model
+finding any that they miss.
 
 That is a negative result about the REPRESENTATION, and it is worth more than a
 marginal win would have been: it removes an entire direction. If the traces
