@@ -174,3 +174,34 @@ has the floor that is 0.5 by construction. The entrapment contrast gives the
 question we want answered and a floor that has to be subtracted by argument
 rather than by design. Neither alone is sufficient, which is why doc/56 kept
 both.
+
+## Combined beats either alone
+
+    model                                          test AUC   vs scalars
+    scalars alone: 19 shipped sub-scores + GBT       0.8629           --
+    traces alone, ANONYMOUS                  0.8752 +- 0.0007     +0.0123
+    traces + library prior                   0.8956 +- 0.0003     +0.0327
+    traces + full descriptors                0.9059 +- 0.0003     +0.0430
+    traces + descriptors + THE 19 SCALARS    0.9219 +- 0.0005     +0.0590
+
+**They are complementary, not redundant.** The combined model beats traces alone
+by +0.047 and scalars alone by +0.059, against a seed spread of 0.0005.
+
+**+0.0160 over the trace model is larger than predicted, and the prediction is
+now under test.** Two explanations, and they have different consequences:
+
+* **Orthogonal evidence.** Five scalars are computed from data the tensor does
+  not contain at all -- `var_ms1_coelution` (4th by SHAP attribution),
+  `var_mass_accuracy`, `var_mass_spread`, `var_im_delta`, `var_im_spread`. Those
+  five reach 0.681 alone. A gain from here is real new information and the right
+  answer is to put MS1, mass and mobility INTO the tensor.
+* **Candidate selection.** The scalars are computed on the picker's CHOSEN
+  candidate, so they encode a localisation decision the trace model has to make
+  for itself. A gain from here is not new evidence; it is the picker's answer
+  arriving by a side door, and it would inflate any comparison that credits it
+  to the scalars.
+
+`allside` (traces + only the five) and `allint` (traces + only the other
+fourteen) separate them. If the gain is in `allside`, extend the tensor. If it
+is in `allint`, the combined number is partly an artefact of how rung 1's inputs
+are produced and should be discounted accordingly.

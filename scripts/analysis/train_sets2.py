@@ -62,14 +62,38 @@ OR = np.load(f'{D}/desc_ordinal.npy') / 20.0
 SE = np.load(f'{D}/desc_series.npy')
 A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
 
-NDESC = {'anon': 1, 'lib': 2, 'full': 6, 'all': 6}[FEAT]
+NDESC = {'anon': 1, 'lib': 2, 'full': 6, 'all': 6,
+         'allside': 6, 'allint': 6}[FEAT]
+# Which scalars the combined model may see. The combined run gained +0.0160 over
+# traces+descriptors, and there are two candidate explanations that these two
+# modes separate:
+#   allside  ONLY the five scalars computed from data the tensor does not
+#            contain -- MS1 co-elution, per-fragment mass deviation, ion
+#            mobility. If the gain lives here it is genuinely orthogonal
+#            evidence.
+#   allint   ONLY the fourteen computed from the same intensity matrix the
+#            traces already carry. If the gain lives HERE it is not new
+#            evidence: it is the picker's candidate-selection leaking in
+#            through statistics computed on the candidate it chose.
+SIDE_NAMES = ['var_ms1_coelution', 'var_mass_accuracy', 'var_mass_spread',
+              'var_im_delta', 'var_im_spread']
 # 'all' = full per-fragment descriptors PLUS the 19 shipped sub-scores, which
 # enter at the PRECURSOR level (they are one vector per candidate, not per
 # fragment) and are therefore concatenated after pooling rather than tokenised.
-USE_SCAL = FEAT == 'all'
+USE_SCAL = FEAT in ('all', 'allside', 'allint')
 if USE_SCAL:
     SC0 = np.load(f'{D}/scal_s08.npy'); SC1 = np.load(f'{D}/scal_s08shift.npy')
     OK0 = np.load(f'{D}/scal_s08_ok.npy'); OK1 = np.load(f'{D}/scal_s08shift_ok.npy')
+    _cols = [str(c) for c in np.load(f'{D}/scal_cols.npy')]
+    if FEAT == 'allside':
+        keep = [i for i, c in enumerate(_cols) if c in SIDE_NAMES]
+    elif FEAT == 'allint':
+        keep = [i for i, c in enumerate(_cols) if c not in SIDE_NAMES]
+    else:
+        keep = list(range(len(_cols)))
+    SC0 = SC0[:, keep]; SC1 = SC1[:, keep]
+    print(f'scalar subset [{FEAT}]: {len(keep)} of {len(_cols)} '
+          f'-> {[_cols[i] for i in keep][:6]}{"..." if len(keep) > 6 else ""}')
     # Standardised on TRAIN rows only -- fitting the scaler on everything would
     # leak test distribution into the model's input normalisation.
     NSCAL = SC0.shape[1] + 1
@@ -122,9 +146,9 @@ def batch(idx, arm, jitter):
     bg = t.median(dim=2, keepdim=True).values
     ch = torch.stack([torch.log1p(t), torch.clamp(t - bg, min=0).log1p(), (t > 0).float()], 2)
     d = [torch.log1p(t.sum(2))]                               # observed scale
-    if FEAT in ('lib', 'full', 'all'):
+    if FEAT in ('lib', 'full', 'all', 'allside', 'allint'):
         d.append(torch.from_numpy(RI[idx]))                   # the EXPECTED pattern
-    if FEAT in ('full', 'all'):
+    if FEAT in ('full', 'all', 'allside', 'allint'):
         d += [torch.from_numpy(PM[idx]), torch.from_numpy(FC[idx]),
               torch.from_numpy(OR[idx]), torch.from_numpy(SE[idx])]
     sc = None
