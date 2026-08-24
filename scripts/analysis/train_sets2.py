@@ -41,6 +41,12 @@ SEEDS  = [int(x) for x in (sys.argv[5].split(',') if len(sys.argv) > 5 else ['0'
 #          precursors of different organisms, so metadata CAN separate them and
 #          the leakage floor has to be measured rather than assumed.
 CONTRAST = sys.argv[6] if len(sys.argv) > 6 else 'shift'
+# The batch preparation is CPU-heavy and torch grabs a thread per core by
+# default; two concurrent runs took 100 cores between them and drove the node to
+# load 258 on 224. Honour an explicit cap when one is set.
+import os as _os
+if _os.environ.get('TORCH_NUM_THREADS'):
+    torch.set_num_threads(int(_os.environ['TORCH_NUM_THREADS']))
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f'device {dev}  feat {FEAT}  centre {CENTRE}  epochs {EPOCHS}  seeds {SEEDS}')
 
