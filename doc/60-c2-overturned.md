@@ -8,13 +8,26 @@ doc/59 withdrew that on review. This is the corrected measurement.
 All on the SAME three-way protein split (folds 0-2 test, 3-4 validation, 5-9
 train), the same apex-centred contrast, the same 10,688 test precursors.
 
-    model                                          test AUC
-    rung 1: 19 shipped sub-scores + GBT              0.8629
-    trace transformer, ANONYMOUS traces      0.8662 +- 0.0004
-    trace transformer, + LIBRARY PRIOR       0.8818 +- 0.0013
+    model                                          test AUC    vs scalars
+    rung 1: 19 shipped sub-scores + GBT              0.8629            --
+    trace transformer, ANONYMOUS traces      0.8662 +- 0.0004      +0.0033
+    trace transformer, + LIBRARY INTENSITY   0.8818 +- 0.0013      +0.0189
+    trace transformer, + FULL DESCRIPTORS    0.8855 +- 0.0014      +0.0226
 
-**+0.0189 over the shipped scalars**, about 8x the seed spread and 8x the
-sampling standard error (~0.0023 on 21,376 test pairs).
+**+0.0226 over the shipped scalars**, about 16x the seed spread and 10x the
+sampling standard error (~0.0023 on 21,376 test pairs). The ladder is monotone
+and every step is outside the spread.
+
+**The descriptors cannot be leaking.** Library intensity, product m/z, ion
+series, ordinal and fragment charge are IDENTICAL between a positive and its own
+shifted negative -- same precursor, only the window moves -- so a model given
+them alone scores exactly 0.5. All of their +0.019 therefore comes from
+INTERACTION with the traces. That is the cleanest available demonstration that
+the gain is structure rather than metadata, and it is a property of the paired
+design rather than of an argument.
+
+**These are undertrained.** Five of six runs picked the LAST epoch on
+validation, so the schedule was too short and the numbers are a floor.
 
 ## What changed, and in what proportion
 
@@ -27,7 +40,7 @@ bidirectional GRU takes anonymous traces from 0.8645 to 0.8662. Small, and it
 was enough on its own to put the trace model nominally ahead of rung 1 while
 training on 27% LESS data (a fold now goes to validation).
 
-**The library prior, worth +0.0156.** This is the one all three reviewers found
+**The library prior, worth +0.0156, and the remaining descriptors +0.0037.** This is the one all three reviewers found
 independently, and it is an order of magnitude larger than the encoder fix. The
 models could not see which fragments SHOULD be strong, while rung 1's
 `var_library_corr`, `var_library_dotprod` and `var_library_rmsd` all compare
