@@ -166,3 +166,59 @@ already easy enough for DIA-NN, while the hard real Q1 peptides are unlabelled
 or mislabelled. Treat non-calls as UNLABELLED rather than negative
 (positive-unlabelled learning), keep DIA-NN calls as one benchmark label, and
 say "benchmark label" wherever "ground truth" is tempting.
+
+## A11. Asymmetric label noise in the positives (vibe, MEASURED and large)
+
+Both earlier reviewers missed this. A DIA-NN-confident positive is labelled from
+DIA-NN's apex, but the window is centred on the LIBRARY-PREDICTED retention
+time. When the prediction is off by more than the half-width, the window holds
+only noise and still carries a POSITIVE label.
+
+It is asymmetric by construction: RT-shifted negatives have their peak 300 s
+away and entrapment negatives have none, so both are correctly "no peak here".
+Only the positive class is diluted.
+
+Measured on the corpus, |RT_DIA-NN - (1086.50 x libRT + 473.77)| over 38,983
+positives:
+
+    <=  30 s   54.8%
+    <=  45 s   70.9%
+    <=  60 s   79.3%
+    <=  90 s   86.0%   <- the dump half-width
+    <= 120 s   89.2%
+    median 26.7 s   p90 128.0 s   p99 290.7 s
+
+**14.0% -- 5,473 positives -- have no peak in their own window.** Training on
+them teaches "no peak implies present", the exact inverse of the target concept,
+in the class that has no other source of noise.
+
+A second thing falls out that is bigger than the corpus. The 37.7 s p95 this
+project quotes for the S08 map is a FIXTURE number; on the full library the same
+constants give **p90 128 s and p99 291 s**. The map is far worse than the figure
+in circulation, and doc/54 has just shown on Astral that window width costs more
+than it buys. That deserves its own experiment independent of any classifier.
+
+**Fix:** the 5,473 move OUT of the positive class and become UNLABELLED -- the
+positive-unlabelled framing codex asked for in A10, not a new mechanism. They
+are true positives our window does not contain, so they are uninformative for a
+trace model rather than negative.
+
+**The bias this induces, stated rather than hidden:** the surviving positives
+are those whose iRT prediction is good, which correlates with sequence
+properties. It is measurable -- composition and abundance before against after
+the exclusion -- and that comparison is now part of corpus construction.
+
+## A12. Training and evaluation would be centred differently (vibe)
+
+A1 mandates evaluating on ODIA's own candidates at their own picked apex, to
+catch a residual centring artefact. But training windows are centred on the
+PREDICTED retention time. A peak at offset +X in training appears at offset 0 in
+evaluation, so A1 removes a between-class leak and introduces a
+train/evaluation distribution shift in its place.
+
+**Fix: random jitter augmentation.** Shift the window centre by a random offset
+each epoch, making the model invariant to where in the window the peak sits.
+That simultaneously removes any residual ability to use centring as a class cue
+and aligns training with an apex-centred evaluation -- cheaper and more robust
+than matching the two centrings exactly, and it attacks A1's leak from the other
+side: a model that cannot use position cannot be fooled by it.
