@@ -34,10 +34,24 @@ genuinely converges:
     rung 1: 19 shipped sub-scores + GBT              0.8629
 
 **+0.0430 over the shipped scalars**, with a seed spread of 0.0003 -- a margin
-about 19x the sampling standard error and 140x the spread. The 25-epoch numbers
-in the table above understate every trace rung, so the ablation proportions
-measured from them are provisional until the other two rungs are re-run at 70
-epochs, which is running.
+about 19x the sampling standard error.
+
+The converged ablation, and it does NOT preserve the 25-epoch proportions:
+
+    rung (70 epochs)                    test AUC        vs scalars   at 25 ep
+    rung 1: 19 shipped scalars            0.8629                --         --
+    trace, ANONYMOUS              0.8752 +- 0.0007       +0.0123    +0.0033
+    trace, FULL DESCRIPTORS       0.9059 +- 0.0003       +0.0430    +0.0226
+
+Both effects roughly TRIPLED with training. Anonymous traces alone now beat the
+scalars by +0.0123 where undertrained they managed +0.0033, and the descriptors
+add +0.0307 on top of that where undertrained they added +0.0193.
+
+**This is the same failure mode as the earlier best-epoch problem, wearing a
+different hat.** Three seeds agreeing to +-0.0014 looked like a stable
+measurement; all three had simply been stopped at the same wrong place. Seed
+agreement measures optimisation variance, not whether optimisation finished, and
+nothing in a tight spread tells you which of the two you are looking at.
 
 ## What changed, and in what proportion
 
