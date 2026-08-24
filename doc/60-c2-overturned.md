@@ -122,3 +122,31 @@ the honest quantity is its increment over that floor rather than its raw AUC.
 This retrospectively vindicates the RT-shifted design as the PRIMARY contrast.
 Its floor is 0.5 by construction and measured at 0.5000, so the +0.0226 in the
 table above is not competing with any taxonomy signal at all.
+
+## The presence question, answered against its floor
+
+The entrapment contrast asks what the project actually cares about -- present
+against absent, not here against there.
+
+    contrast   floor (descriptors, no traces)   trace model (full)
+    shifted                    0.5000            0.8855 +- 0.0014
+    entrapment                 0.7060            0.8712 +- 0.0022
+
+The trace model is far above the taxonomy floor on the presence question, so the
+traces carry real presence information and not merely organism. But **0.8712
+against a 0.7060 floor is not "+0.165"** -- AUC does not decompose that way, and
+quoting a difference of two AUCs as an increment would be exactly the kind of
+arithmetic this project has had to retract before.
+
+The clean isolation is a trace model with NO descriptors on the entrapment
+contrast: whatever it scores is presence information that cannot have come from
+the library pattern. That run is queued. Note it is not perfectly clean either
+-- Arabidopsis precursors sit in different m/z windows and therefore different
+interference environments, so a trace-only model retains an indirect route to
+taxonomy -- but it is much tighter than the descriptor-bearing model.
+
+Worth stating plainly: the shifted contrast gives the larger number (0.8855) AND
+has the floor that is 0.5 by construction. The entrapment contrast gives the
+question we want answered and a floor that has to be subtracted by argument
+rather than by design. Neither alone is sufficient, which is why doc/56 kept
+both.
