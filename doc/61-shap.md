@@ -104,3 +104,35 @@ The trainer does not save per-example scores yet, so that needs a small change.
 it could fail, and it failed cleanly. The value is that "MS1, mass and mobility
 are worth adding to the tensor" is now measured FALSE on this contrast -- which
 removes an expensive corpus rebuild that doc/56 A5 had listed as owed work.
+
+## The precursor descriptors were simply missing, and they are worth +0.0073
+
+The model carried per-FRAGMENT library intensity, fragment charge, product m/z,
+ion series and ordinal -- and nothing whatsoever about the precursor. No charge,
+no precursor m/z, no peptide length. That was an oversight, not a decision, and
+it was caught by a question rather than by any of the three reviews.
+
+    traces + fragment descriptors                    0.9059 +- 0.0003
+    traces + fragment descriptors + PRECURSOR        0.9132 +- 0.0010
+      (charge, precursor m/z, stripped length)
+
+**+0.0073 from three numbers per precursor.** For scale that is more than ten
+times the entire side-channel scalar family (MS1 + mass accuracy + mass spread +
+im delta + im spread, worth +0.0006) and roughly half of everything the nineteen
+shipped scalars add on top of the trace model.
+
+Mechanistically it is unsurprising in hindsight: charge determines which
+fragment series are populated and how crowded the isolation window is, so it
+should modulate how EVERY per-fragment descriptor is read. Broadcasting it to
+each fragment token rather than appending it after pooling is what lets
+attention use it that way.
+
+It is also leak-proof by the same argument as the fragment descriptors: charge,
+m/z and length are identical between a precursor's own window and its shifted
+one, so a model given them alone scores exactly 0.5, and all of the +0.0073 is
+interaction with the traces.
+
+**Worth noting how it was found.** Three adversarial reviews, all of which
+examined the input specification closely, did not catch it. They found the
+missing LIBRARY prior -- the input the hypothesis was about -- and stopped
+there. A plain question about what the model actually receives found the rest.
