@@ -26,8 +26,18 @@ INTERACTION with the traces. That is the cleanest available demonstration that
 the gain is structure rather than metadata, and it is a property of the paired
 design rather than of an argument.
 
-**These are undertrained.** Five of six runs picked the LAST epoch on
-validation, so the schedule was too short and the numbers are a floor.
+**Those were undertrained, badly.** Five of six runs picked the LAST epoch on
+validation. Re-run at 70 epochs, where validation selects epoch 54 and the model
+genuinely converges:
+
+    trace transformer, FULL DESCRIPTORS, 70 epochs   0.9059 +- 0.0003
+    rung 1: 19 shipped sub-scores + GBT              0.8629
+
+**+0.0430 over the shipped scalars**, with a seed spread of 0.0003 -- a margin
+about 19x the sampling standard error and 140x the spread. The 25-epoch numbers
+in the table above understate every trace rung, so the ablation proportions
+measured from them are provisional until the other two rungs are re-run at 70
+epochs, which is running.
 
 ## What changed, and in what proportion
 
