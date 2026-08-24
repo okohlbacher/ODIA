@@ -96,3 +96,29 @@ DISTRIBUTED across fragments rather than concentrated.
    localisation contrast has not been shown to add identifications at matched
    FDP, and doc/56 A4 warns the entrapment instrument breaks if this model is
    integrated naively.
+
+## The entrapment contrast has a leakage floor of 0.7060, measured
+
+doc/56 A2 said the entrapment negatives' organism confound could not be argued
+away and the floor had to be measured. It is now measured:
+`scripts/analysis/ent_floor.py`, descriptors ONLY -- library relative intensity,
+product m/z, ion series, ordinal, fragment charge, fragment mask -- and **no
+trace information whatsoever**:
+
+    LEAKAGE FLOOR on the entrapment contrast   AUC 0.7060
+    the same floor on the shifted contrast     AUC 0.5000
+
+**Composition matching did not remove the taxonomy signal.** Matching on charge,
+precursor m/z, peptide length and fragment count left the joint structure --
+which product masses, in which series, at which ordinals, with which expected
+intensities -- fully able to separate human from Arabidopsis. That is exactly
+codex's point in doc/56 A2: product m/z plus series plus ordinal is a partial
+representation of the peptide sequence, and matching four marginal distributions
+does not match it.
+
+So any trace model on the entrapment contrast must beat **0.706**, not 0.5, and
+the honest quantity is its increment over that floor rather than its raw AUC.
+
+This retrospectively vindicates the RT-shifted design as the PRIMARY contrast.
+Its floor is 0.5 by construction and measured at 0.5000, so the +0.0226 in the
+table above is not competing with any taxonomy signal at all.

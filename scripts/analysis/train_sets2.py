@@ -32,6 +32,15 @@ FEAT   = sys.argv[2] if len(sys.argv) > 2 else 'lib'
 EPOCHS = int(sys.argv[3]) if len(sys.argv) > 3 else 30
 CENTRE = sys.argv[4] if len(sys.argv) > 4 else 'apex'
 SEEDS  = [int(x) for x in (sys.argv[5].split(',') if len(sys.argv) > 5 else ['0', '1', '2'])]
+# 'shift'  positive = own window, negative = THE SAME precursor +300 s.
+#          Metadata is arm-invariant, so leakage is impossible by construction.
+#          Asks: is the peptide HERE rather than there. Localisation-flavoured.
+# 'ent'    positive = DIA-NN-confident target, negative = ENTRAPMENT target,
+#          both in their own window. Asks the PRESENCE question the project
+#          actually cares about -- at the cost that the two are different
+#          precursors of different organisms, so metadata CAN separate them and
+#          the leakage floor has to be measured rather than assumed.
+CONTRAST = sys.argv[6] if len(sys.argv) > 6 else 'shift'
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f'device {dev}  feat {FEAT}  centre {CENTRE}  epochs {EPOCHS}  seeds {SEEDS}')
 
@@ -60,12 +69,23 @@ pgm = {(p, int(d)): str(g) for p, d, g in zip(lib.column('Precursor.Id').to_pyli
 fold = np.array([int(hashlib.md5(pgm.get((p, int(d)), p).encode()).hexdigest(), 16) % 10
                  for p, d in zip(ids, dec)])
 pos = label == 'pos'
+neg = label == 'ent'
 if CENTRE == 'apex':
-    pos = pos & (A0 >= 0) & (A1 >= 0)
-tr_i = np.flatnonzero(pos & (fold >= 5))
-va_i = np.flatnonzero(pos & (fold >= 3) & (fold < 5))
-te_i = np.flatnonzero(pos & (fold < 3))
-print(f'positives {pos.sum():,}   train {len(tr_i):,}  val {len(va_i):,}  test {len(te_i):,}')
+    ok = (A0 >= 0) if CONTRAST == 'ent' else ((A0 >= 0) & (A1 >= 0))
+    pos = pos & ok
+    neg = neg & ok
+if CONTRAST == 'shift':
+    sel = pos
+    print(f'contrast SHIFT: {pos.sum():,} precursors, each its own positive and negative')
+else:
+    sel = pos | neg
+    print(f'contrast ENT: {pos.sum():,} positives against {neg.sum():,} entrapment '
+          f'negatives -- DIFFERENT precursors, so the metadata floor must be measured')
+tr_i = np.flatnonzero(sel & (fold >= 5))
+va_i = np.flatnonzero(sel & (fold >= 3) & (fold < 5))
+te_i = np.flatnonzero(sel & (fold < 3))
+ispos = pos.astype(np.float32)
+print(f'train {len(tr_i):,}  val {len(va_i):,}  test {len(te_i):,}')
 
 C, W = 128, 96
 NDESC = {'anon': 1, 'lib': 2, 'full': 6}[FEAT]
@@ -127,11 +147,16 @@ def evaluate(model, idx):
     model.eval(); sc, ys = [], []
     with torch.no_grad():
         for a in range(0, len(idx), 512):
-            sel = idx[a:a + 512]
-            for arm in (0, 1):
-                ch, m, d = batch(sel, arm, False)
+            s_ = idx[a:a + 512]
+            if CONTRAST == 'ent':
+                ch, m, d = batch(s_, 0, False)
                 o = model(ch.to(dev), m.to(dev), d.to(dev))
-                sc.append(o.float().cpu().numpy()); ys.append(np.full(len(sel), 1.0 - arm))
+                sc.append(o.float().cpu().numpy()); ys.append(ispos[s_])
+            else:
+                for arm in (0, 1):
+                    ch, m, d = batch(s_, arm, False)
+                    o = model(ch.to(dev), m.to(dev), d.to(dev))
+                    sc.append(o.float().cpu().numpy()); ys.append(np.full(len(s_), 1.0 - arm))
     return roc_auc_score(np.concatenate(ys), np.concatenate(sc))
 
 results = []
@@ -146,12 +171,17 @@ for seed in SEEDS:
         model.train()
         order = np.random.permutation(len(tr_i))
         for a in range(0, len(order), 256):
-            sel = np.sort(tr_i[order[a:a + 256]])
+            s_ = np.sort(tr_i[order[a:a + 256]])
             outs, tgt = [], []
-            for arm in (0, 1):
-                ch, m, d = batch(sel, arm, True)
-                o = model(ch.to(dev), m.to(dev), d.to(dev))
-                outs.append(o); tgt.append(torch.full_like(o, 1.0 - arm))
+            if CONTRAST == 'ent':
+                ch, m, d = batch(s_, 0, True)
+                outs.append(model(ch.to(dev), m.to(dev), d.to(dev)))
+                tgt.append(torch.from_numpy(ispos[s_]).to(dev))
+            else:
+                for arm in (0, 1):
+                    ch, m, d = batch(s_, arm, True)
+                    o = model(ch.to(dev), m.to(dev), d.to(dev))
+                    outs.append(o); tgt.append(torch.full_like(o, 1.0 - arm))
             opt.zero_grad(); lossf(torch.cat(outs), torch.cat(tgt)).backward(); opt.step()
         sched.step()
         va = evaluate(model, va_i)
@@ -164,5 +194,5 @@ for seed in SEEDS:
     results.append(best_te)
 
 r = np.array(results)
-print(f'\n{FEAT.upper():>5} [{CENTRE}]  test AUC {r.mean():.4f} +- {r.std():.4f} '
+print(f'\n{FEAT.upper():>5} [{CENTRE}/{CONTRAST}]  test AUC {r.mean():.4f} +- {r.std():.4f} '
       f'over {len(r)} seeds   (rung 1 = 0.8649)')
