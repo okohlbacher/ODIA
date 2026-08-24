@@ -136,3 +136,38 @@ interaction with the traces.
 examined the input specification closely, did not catch it. They found the
 missing LIBRARY prior -- the input the hypothesis was about -- and stopped
 there. A plain question about what the model actually receives found the rest.
+
+## The ladder as it now stands
+
+All apex-centred, shifted contrast, three-way protein split, 70 epochs, 3 seeds.
+
+    model                                              test AUC   vs shipped
+    shipped 19 sub-scores + GBT                          0.8629           --
+    traces, anonymous                            0.8752 +- 0.0007   +0.0123
+    traces + library prior                       0.8956 +- 0.0003   +0.0327
+    traces + fragment descriptors                0.9059 +- 0.0003   +0.0430
+    traces + fragment + PRECURSOR descriptors    0.9132 +- 0.0010   +0.0503
+    traces + descriptors + 19 scalars            0.9219 +- 0.0005   +0.0590
+    + precursor descriptors + GAUSSIAN prior     0.9302 +- 0.0003   +0.0673
+
+**+0.0673 over the shipped scorer**, seed spread 0.0003.
+
+Two of those steps came from a question about what the model actually receives,
+not from any of the three adversarial reviews: precursor charge/m/z/length
+(+0.0073 measured alone) and a Gaussian shape prior at a width measured from
+10,943 confident positives (sigma 1.07 cycles, R^2 0.93). Together they are
+worth +0.0083 on top of the previous best combined model.
+
+The reviews found the input the HYPOTHESIS was about -- the library prior, the
+single largest step at +0.0204 -- and stopped at the edge of the specification.
+Asking "what is actually in the tensor" found the rest. Both kinds of check were
+necessary and neither substitutes for the other.
+
+### Operational note, because it cost four hours
+
+Two trainers run concurrently took 58 and 44 cores each for CPU-side batch
+preparation and drove spock to load 258 on 224 cores, against a ~35 minute
+baseline: the `all` run took 4 hours. They were never GPU-starved -- GPU 1 sat
+at 78-89% -- and diagnosing it as GPU contention was wrong. torch takes a thread
+per core by default and the cap was missing. `OMP_NUM_THREADS`/
+`torch.set_num_threads` are now set in both the runner and the trainer.
