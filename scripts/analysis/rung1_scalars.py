@@ -54,7 +54,14 @@ for p, d, l in zip(ids, dec, label):
     k = (p, str(int(d)))
     if k not in own or k not in shift: miss += 1; continue
     kept += 1
-    t = fold(p, d) < 3
+    f = fold(p, d)
+    # Three-way split, matching train_sets2.py exactly: folds 0-2 test, 3-4
+    # validation, 5-9 train. The neural arm gives up a fold to validation, so
+    # letting the GBT train on 3-9 would hand it 27% more data and the
+    # comparison would not be about representation any more.
+    if f in (3, 4):
+        continue
+    t = f < 3
     X.append(own[k][1]);   y.append(1); te.append(t)
     X.append(shift[k][1]); y.append(0); te.append(t)
 X = np.array(X, dtype=np.float32); y = np.array(y); te = np.array(te)
