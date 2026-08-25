@@ -72,3 +72,37 @@ Fixed by `-stop_after library -out_lib` plus suffix stripping
 corrected `Fragment.Type`, which had been read as the enum's numeric value
 rather than y/b. The entrapment floor moved 0.7060 -> 0.7284 on the corrected
 descriptors.
+
+## Training on the right task: 3,377 -> 9,454, and why it cannot be believed
+
+The transfer test, rerun with a model trained on the ENTRAPMENT (presence)
+contrast instead of the shifted (localisation) one, GRU fixed:
+
+    ranking                        1% FDP    2%       5%       10%
+    ODIA shipped DScore            13,646   14,697   16,287   17,829
+    shifted-trained (doc/62)        3,377    3,770    4,593    5,826
+    entrapment-trained              9,454   11,209   13,912   16,505
+
+**2.8x better at 1% FDP than the shifted model**, closing to 93% of the shipped
+scorer by 10% FDP. doc/62's diagnosis was right: the task was the problem, not
+the representation.
+
+**And the number is inflated by construction.** doc/56 A4 wrote this down before
+any of it was built: a model trained AGAINST entrapment suppresses entrapment in
+whatever it ranks, so entrapment FDP -- which is (e/r)/t over ordinary targets --
+reads optimistic. The model has learned the CONSTRUCT the ruler is made of. A
+protein-disjoint split does not help, because the split separates individuals
+and the leak is at the level of the construct.
+
+So 9,454 is an upper bound of unknown tightness, and the honest comparison is
+still missing.
+
+**The decoy contrast is the one that can be measured on this ruler.** Decoys
+appear in neither the numerator nor the denominator of entrapment FDP, so a
+decoy-trained model has not seen the ruler at all. Its floor is 0.7086 rather
+than 0.5, which affects how its AUC may be read, but not the validity of its
+identification count. That run is what decides whether any of this transfers.
+
+Note also what the GRU fix was worth on this contrast: 0.8712 -> 0.8827
+(+0.0115), on a corpus where half the encoder had been contributing a state that
+had seen one time point.
