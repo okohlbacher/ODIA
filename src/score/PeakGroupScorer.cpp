@@ -303,6 +303,51 @@ namespace
       return near[near.size() / 2];
     }
 
+    /// Defined below with the other correlation helpers; declared here because
+    /// the selection-time library check belongs beside the boundary code it is
+    /// used from, not 300 lines away next to its arithmetic.
+    double pearson(const std::vector<double>& a, const std::vector<double>& b);
+
+    /// Do the fragments at `k` have the RELATIVE INTENSITIES the library
+    /// predicts? Pearson of background-subtracted per-fragment area against
+    /// library intensity, over the same window the sub-scores use.
+    ///
+    /// Separate from the sub-score of the same name because it is computed at
+    /// candidate-SELECTION time, before boundaries exist, for a position that
+    /// may never become a candidate. -1 when it cannot be formed.
+    double libraryCorrelationAt(const std::vector<std::vector<double>>& tr,
+                                const float* lib_intensity, std::size_t k,
+                                std::size_t half, std::size_t n)
+    {
+      if (!lib_intensity || tr.empty() || n == 0) { return -1.0; }
+      const std::size_t lo = k > half ? k - half : 0;
+      const std::size_t hi = std::min(k + half, n - 1);
+      std::vector<double> area, lib;
+      area.reserve(tr.size()); lib.reserve(tr.size());
+      for (std::size_t f = 0; f < tr.size(); ++f)
+      {
+        const double w = lib_intensity[f];
+        if (!(w > 0.0)) { continue; }
+        std::vector<double> flank;
+        const std::size_t fl = 20;
+        const std::size_t l0 = lo > fl ? lo - fl : 0;
+        for (std::size_t j = l0; j < lo; ++j) { flank.push_back(tr[f][j]); }
+        for (std::size_t j = hi + 1; j < n && j <= hi + fl; ++j) { flank.push_back(tr[f][j]); }
+        double base = 0.0;
+        if (!flank.empty())
+        {
+          std::sort(flank.begin(), flank.end());
+          base = flank[flank.size() / 2];
+        }
+        double a = 0.0;
+        for (std::size_t j = lo; j <= hi; ++j) { a += std::max(0.0, tr[f][j] - base); }
+        area.push_back(a); lib.push_back(w);
+      }
+      if (area.size() < 3) { return -1.0; }
+      const double r = pearson(area, lib);
+      return std::isfinite(r) ? r : -1.0;
+    }
+
     /// Walk out from an apex to a peak's boundaries on a SMOOTHED trace.
     ///
     /// Three guards, and the co-elution picker had none of them. A bare
@@ -703,7 +748,9 @@ namespace
       double min_corr_score, double max_corr_diff, double apex_evidence,
       std::size_t smooth_half_width, double boundary_fraction,
       std::size_t max_candidates, std::size_t min_cycles, std::size_t max_half,
-      std::size_t boundary_smooth_half, double boundary_sigmas)
+      std::size_t boundary_smooth_half, double boundary_sigmas,
+      const float* lib_intensity, std::size_t score_half,
+      std::size_t min_separation, double lib_weight)
     {
       std::vector<Candidate> found;
       const std::uint32_t tc = c.transition_count;
@@ -728,7 +775,19 @@ namespace
       struct Hit { std::size_t apex; double corr_sum; };
       std::vector<Hit> hits;
       std::vector<double> a, b;
-      for (std::size_t k = S + 1; k + S + 2 < n; ++k)
+      // The bound is what the WINDOW requires, stated directly. It used to be
+      // `k = S + 1; k + S + 2 < n`, which is one position tighter at the start
+      // and two at the end than the correlation window actually needs: the
+      // window is [k-S, k+S+1) so it fits for every k from S to n-S-1. Three
+      // scan positions per precursor were therefore never examined, and they
+      // did not land in any reject counter either -- they were not rejected,
+      // they were never considered, which is the kind of loss no amount of
+      // staring at the rejection table would have found.
+      //
+      // Small but not nothing: 198 of 33,337 confident positives, 0.59%, have
+      // their true apex on exactly those three cycles. Worth stating in a
+      // project whose emission gap is the thing being chased.
+      for (std::size_t k = S; k + S + 1 <= n; ++k)
       {
         // Cheap rejects first: something must be here, and it must persist
         // across neighbouring cycles rather than being a single spike.
@@ -796,6 +855,94 @@ namespace
       std::stable_sort(hits.begin(), hits.end(),
                        [](const Hit& x, const Hit& y) { return x.corr_sum > y.corr_sum; });
 
+      // ORDER the survivors by library agreement as well as by co-elution.
+      //
+      // corr_sum is a statement about SHAPE: do these fragments rise and fall
+      // together. It is the same kind of evidence at every position, and it is
+      // the only kind this detector has ever had -- which is why every attempt
+      // to fix candidate emission by moving its thresholds failed. Measured:
+      // raising the cap 3 -> 20 buys 15.9 points of recall and loses 3.4 of
+      // selection accuracy; relaxing apex_evidence loses on both axes; ranking
+      // by the co-elution sub-score instead of corr_sum is worse than corr_sum.
+      // Shape had been exhausted.
+      //
+      // The library says something corr_sum cannot: which fragments should be
+      // BRIGHT. Two co-eluting species have equally good shape and different
+      // relative intensities, so this separates exactly the case shape cannot.
+      // Measured over 11,731 confident positives, ranking the margin survivors
+      // by normalised corr_sum + library correlation rather than corr_sum:
+      //
+      //     statistic            recall@3   selection accuracy
+      //     corr_sum               69.5%          59.9%
+      //     library correlation    71.3%          63.6%
+      //     both                   72.7%          63.3%
+      //
+      // The first change to this detector that improves BOTH -- on that ruler.
+      //
+      // OFF BY DEFAULT, because that ruler is agreement with DIA-NN, and a
+      // reference-free measurement does not confirm it. Target fraction among
+      // the top-N with decoys as the control, no external tool involved:
+      //
+      //     discriminant     corr_sum   corr+lib      (top-500)
+      //     lib                 96.8%      91.0%
+      //     coelution           93.8%      94.8%
+      //
+      // The pattern is the winner's curse, not a defect in the ordering: an arm
+      // that selects the position maximising library correlation, and is then
+      // ranked by something containing library correlation, lets DECOYS shop
+      // for their best value too. The more the discriminant overlaps the
+      // selection statistic the worse it looks; on a discriminant it does not
+      // touch, it is mildly ahead.
+      //
+      // That matters here specifically because LIBRARY_CORR is one of the
+      // nineteen features the classifier sees, so the shipped pipeline is the
+      // coupled case rather than the independent one -- diluted one-in-nineteen,
+      // but in the direction the table warns about. Recall rising on a
+      // DIA-NN-agreement metric is, by this project's own rule, never
+      // sufficient evidence: it has already risen 85.1% to 93.8% once while
+      // identifications fell by 319.
+      //
+      // So this ships as a knob at 0. The measurement that can settle it is a
+      // full run gated on entrapment FDP, and this exists so that run is a flag
+      // rather than a patch.
+      //
+      // Applied AFTER the margin filter and BEFORE the cap, which is where it
+      // was measured. The gates and the margin still run on corr_sum alone, so
+      // nothing new is admitted -- only the order in which the cap keeps what
+      // corr_sum already accepted.
+      if (lib_weight > 0.0 && lib_intensity && hits.size() > 1)
+      {
+        std::vector<Hit> kept;
+        kept.reserve(hits.size());
+        for (const auto& h : hits)
+        {
+          if (h.corr_sum >= best - max_corr_diff) { kept.push_back(h); }
+        }
+        if (kept.size() > 1)
+        {
+          double lo_c = kept.front().corr_sum, hi_c = kept.front().corr_sum;
+          for (const auto& h : kept)
+          { lo_c = std::min(lo_c, h.corr_sum); hi_c = std::max(hi_c, h.corr_sum); }
+          const double span = hi_c - lo_c;
+          std::vector<std::pair<double, Hit>> keyed;
+          keyed.reserve(kept.size());
+          for (const auto& h : kept)
+          {
+            // -1 when the correlation cannot be formed, which is the worst a
+            // correlation can be: a position that cannot be checked against the
+            // library must not outrank one that was checked and agreed.
+            const double lc = libraryCorrelationAt(tr, lib_intensity, h.apex,
+                                                   score_half, n);
+            const double norm = span > 0.0 ? (h.corr_sum - lo_c) / span : 0.0;
+            keyed.emplace_back(norm + lib_weight * lc, h);
+          }
+          std::stable_sort(keyed.begin(), keyed.end(),
+                           [](const auto& x, const auto& y) { return x.first > y.first; });
+          hits.clear();
+          for (auto& k : keyed) { hits.push_back(k.second); }
+        }
+      }
+
       // Boundaries from the summed trace, as before: the extent of a peak is
       // not what changed here, only which positions are peaks.
       std::vector<double> total(n, 0.0);
@@ -830,10 +977,37 @@ namespace
         cd.left = b.first; cd.right = b.second;
         cd.apex = snapped;
         cd.apex_value = total[snapped];
-        // One candidate per apex; DIA-NN accepts at most one per scan position
-        // and we must not emit two peaks that share one.
+        // One candidate per BASIN, not per scan position.
+        //
+        // At a separation of 1 this is the old rule -- one candidate per apex,
+        // as DIA-NN does -- and that is the default, because widening it is
+        // measured to trade one thing for another rather than to be free.
+        //
+        // What widening buys: a cap of three slots currently means three
+        // positions, which can be three samples of ONE broad basin, so the true
+        // peak is evicted by near-duplicates of a wrong one. That eviction is
+        // not hypothetical: relaxing `apex_evidence` makes recall FALL, and
+        // relaxing an admission gate cannot shrink a pre-cap superset, so the
+        // extra positions must be consuming slots. Suppressing within a basin
+        // raises recall@3 from 72.7% to 75.5%.
+        //
+        // What it costs: the freed slots go to genuinely DIFFERENT peaks, which
+        // are genuinely able to outscore the true one. Selection accuracy, on a
+        // single sub-score as selector, falls 63.3% to 57.7%.
+        //
+        // Off by default for that reason. The measurement that could justify it
+        // needs the full nineteen-feature model and target-decoy competition,
+        // not one feature -- the model would have to be 7.4 points better
+        // conditionally than the proxy selector, which is a real question and
+        // not one a proxy can answer. The option exists so that experiment can
+        // be run without a code change.
         bool dup = false;
-        for (const auto& g : found) { if (g.apex == cd.apex) { dup = true; break; } }
+        const std::size_t sep = std::max<std::size_t>(1, min_separation);
+        for (const auto& g : found)
+        {
+          const std::size_t d = g.apex > cd.apex ? g.apex - cd.apex : cd.apex - g.apex;
+          if (d < sep) { dup = true; break; }
+        }
         if (!dup) { found.push_back(cd); }
       }
       return found;
@@ -1304,7 +1478,17 @@ namespace
                                          options.peak_min_cycles,
                                          options.peak_max_half_cycles,
                                          options.boundary_smooth_half,
-                                         options.boundary_sigmas);
+                                         options.boundary_sigmas,
+                                         // null disables the library ordering, which is what
+                                         // a library with no intensities should get: an
+                                         // all-equal vector correlates with nothing and would
+                                         // hand every position the same -1.
+                                         t.library_intensity.empty()
+                                           ? nullptr
+                                           : t.library_intensity.data() + chromatogram.transition_begin,
+                                         options.score_half_cycles,
+                                         options.candidate_min_separation,
+                                         options.select_library_weight);
     };
     const auto candidates = options.union_picking
       ? unionCandidates(chromatogram, coelution_candidates(),
@@ -1392,7 +1576,42 @@ namespace
       // actually flagged target, and the mismatched pairs put 876 control
       // residuals into a set that contained none, which made the fit refuse.
       staged_anchors.clear();
-      const std::size_t lo = cand.left, hi = cand.right;
+      // TWO intervals, because one interval was being asked to do two jobs that
+      // want opposite things.
+      //
+      // The walked boundaries answer "how far does this peak extend", which is
+      // the right question for QUANTIFICATION and for the retention-time range
+      // the group reports. The sub-scores are asking something else: "does the
+      // evidence at THIS position look like this peptide". For that, extent is
+      // a liability -- every cycle the interval gains past the peak is a cycle
+      // of neighbouring signal diluting the correlation, and the wider the
+      // interval the less the score depends on where the candidate actually is.
+      //
+      // Measured on 11,728 paired candidates: separating a correct candidate
+      // from a wrong one, a fixed apex-centred window beats the walked bounds
+      // by 0.0136 of AUC, 95% CI [0.0103, 0.0169] bootstrapped over precursors,
+      // P(fixed better) = 100%. The sign reverses only where the walk found a
+      // genuinely broad peak (walked width >= 9: 0.841 walked against 0.832
+      // fixed), which is the minority and is exactly the population whose area
+      // the walked bounds are still used for.
+      //
+      // This is also what DIA-NN does, arrived at independently: its
+      // discriminating correlations are computed over a fixed W = 2S+1 window
+      // and its descent-derived borders are reported as RT_start/RT_stop for
+      // quantification, not fed to the scores.
+      const std::size_t quant_lo = cand.left, quant_hi = cand.right;
+      const std::size_t lo = options.score_half_cycles
+        ? (cand.apex > options.score_half_cycles ? cand.apex - options.score_half_cycles : 0)
+        : cand.left;
+      std::size_t hi = options.score_half_cycles
+        ? std::min(cand.apex + options.score_half_cycles,
+                   chromatogram.cycles ? std::size_t(chromatogram.cycles) - 1 : cand.right)
+        : cand.right;
+      // `width` is unsigned, so an inverted pair does not produce a small
+      // window, it produces a 2^64 one. Reachable only if the apex is past the
+      // last cycle, which nothing should produce -- and which is the reason to
+      // spend a line on it rather than reason about whether anything does.
+      if (hi < lo) { hi = lo; }
       const std::size_t width = hi - lo + 1;
       // retentionTime() indexes cycles; candidate bounds are already clamped to
       // them, but the clamp is kept explicit so a future boundary rule cannot
@@ -1557,8 +1776,12 @@ namespace
       g.precursor = static_cast<std::uint32_t>(i);
       g.decoy = p.decoy[i] != 0;
       g.apex_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(cand.apex));
-      g.left_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(lo));
-      g.right_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(hi));
+      // The WALKED bounds, not the scoring window: this pair is the group's
+      // reported retention-time range, which downstream quantification
+      // integrates over. Narrowing it to the scoring window would truncate the
+      // area of every peak broader than 2*score_half_cycles+1 cycles.
+      g.left_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(quant_lo));
+      g.right_rt = chromatogram.retentionTime(static_cast<std::uint32_t>(quant_hi));
       g.apex_intensity = static_cast<float>(cand.apex_value);
 
       g.sub_scores.assign(N_SUB_SCORES, 0.0);

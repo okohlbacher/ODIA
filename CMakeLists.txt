@@ -159,6 +159,7 @@ foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_predict_ms2 odia_predict_ccs odia_oswpq_dump odia_run_info odia_extract odia_irt_calibration
                odia_chunked_column_test odia_ms2_sessions odia_scoring_smoke odia_picker_cases
                odia_peak_bounds
+               odia_interval_split
                odia_entrapment
                odia_rt_calibration odia_mass_calibration odia_mobility_calibration
                odia_extract_axis

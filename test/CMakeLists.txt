@@ -529,6 +529,7 @@ add_test(NAME picker_prefers_coelution_over_amplitude COMMAND odia_picker_cases)
 # Nothing in this suite asserted candidate GEOMETRY, only that the plumbing
 # around a candidate held, so the defect was invisible for as long as it existed.
 add_test(NAME peak_bounds_cover_the_peak_not_the_window COMMAND odia_peak_bounds)
+add_test(NAME scoring_and_quantification_intervals_are_independent COMMAND odia_interval_split)
 
 # Does a reported 1% FDR mean 1% of the identifications are wrong?
 #

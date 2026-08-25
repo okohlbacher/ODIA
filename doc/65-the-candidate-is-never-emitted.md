@@ -144,6 +144,29 @@ still costs.
 This is the "verify the negative is real" pattern for the third time in this
 project: a committed negative that was measuring a defect elsewhere.
 
+## The flow table, because the percentages have three denominators
+
+A reviewer pointed out that 58.3%, 49.0% and 69.5% cannot be read together, and
+that 38,483 sits oddly beside the 33,330 headline. They are different objects:
+
+    stage                                        n      % ruler   % prev
+    DIA-NN confident, q <= 0.01 -- THE RULER   39,149    100.0%       --
+    ...that ODIA also searched and scored      38,483     98.3%    98.3%
+    ...with any candidate within +-3 cycles    22,427     57.3%    58.3%
+    ...and that candidate ranked first         19,936     50.9%    88.9%
+
+  * **39,149** is the ruler for everything in this document. Worth noting:
+    `dn_xic.parquet` contains only q <= 0.01 rows, so "all rows" and "confident"
+    are the same set -- the filter I was applying was never removing anything.
+  * **33,330** is DIA-NN on the .d file with the PRODUCTION library, from
+    doc/reference numbers. Different run, different library. No percentage here
+    should be compared against it.
+  * **58.3%** is 22,427 / 38,483 -- of what ODIA scored. **57.3%** is the same
+    count over the full ruler. The gap is the 1.7% ODIA never searched.
+  * **49.0% / 69.5%** are neither: they come from the Python gate replay over an
+    11,731-precursor corpus subset, with a reimplementation of the detector
+    rather than the shipped C++. They locate a mechanism; they do not size it.
+
 ## What this does NOT say
 
 - 49.0% here against 58.3% in production is a difference between a Python

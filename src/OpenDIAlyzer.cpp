@@ -911,15 +911,53 @@ protected:
                           "it for 87.6% of them, so the fractional floor was unreachable for "
                           "most real peptides -- which is why the median peak group covered "
                           "129 of 130 cycles of its extraction window.", false, true);
-    registerIntOption_("peak_min_cycles", "<n>", 5,
+    registerIntOption_("peak_min_cycles", "<n>", 7,
                        "Smallest candidate width in cycles; boundaries are widened "
                        "symmetrically to reach it. Below a width several sub-scores stop "
                        "existing: MS1_COELUTION needs 5 cycles and the mass and mobility "
                        "blocks need more than one, so a 1-3 cycle candidate returns NaN for "
                        "five features at once, and var_rt_spread is worse than absent -- over "
                        "three points the fragment centroids cannot disagree, so it reports "
-                       "an agreement it never measured. 7 cycles is 9.7 s on S08, about 2.8x "
-                       "the measured 3.5 s FWHM.", false, true);
+                       "an agreement it never measured -- all of which applies when "
+                       "-score_half_cycles is 0. Otherwise the sub-scores no longer read this "
+                       "interval at all: it governs quantification and the reported RT range, "
+                       "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
+                       "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerDoubleOption_("select_library_weight", "<w>", 0.0,
+                          "Weight of library-intensity agreement when the candidate cap "
+                          "chooses among margin survivors. 0 is pure corr_sum. Non-zero is "
+                          "better on agreement with DIA-NN (recall within a cap of 3 rises "
+                          "69.5% to 72.7%) and not better reference-free: target fraction "
+                          "among the top-N with decoys as control is 91.0% against 96.8% "
+                          "when the discriminant is library correlation, 94.8% against 93.8% "
+                          "when it is co-elution. That split is the winner's curse, and the "
+                          "classifier does see LIBRARY_CORR, so the pipeline is on the "
+                          "unfavourable side. Off until a full run gated on entrapment FDP "
+                          "says otherwise.", false, true);
+    registerIntOption_("candidate_min_separation", "<n>", 1,
+                       "Smallest gap in cycles between two emitted candidates. 1 is one per "
+                       "scan position, as DIA-NN does; above 1 it is non-maximum suppression, "
+                       "so -max_candidates counts distinct PEAKS rather than samples of "
+                       "possibly one basin. Measured at separation 5: recall of the correct "
+                       "position within the cap rises 72.7% to 75.5%, and selection accuracy "
+                       "on a single sub-score falls 63.3% to 57.7%, because the freed slots go "
+                       "to genuinely different peaks. Off by default: the trade may reverse "
+                       "under the full classifier, but only by 7.4 points of conditional "
+                       "accuracy, which a one-feature proxy cannot establish.", false, true);
+    registerIntOption_("score_half_cycles", "<n>", 2,
+                       "Half-width in cycles of the window the SUB-SCORES are computed over, "
+                       "separately from the walked boundaries, which stay with quantification "
+                       "and the reported RT range. 0 restores the previous behaviour of "
+                       "scoring over the walked bounds. The two intervals want opposite "
+                       "things: extent is what quantification needs and what a sub-score is "
+                       "harmed by, since every cycle past the peak dilutes the correlation "
+                       "with neighbouring signal. On a window-wide interval a correct "
+                       "candidate and a wrong one 20 cycles away received the SAME "
+                       "sub-scores, median paired difference exactly 0. Measured over 11,728 "
+                       "paired candidates, a fixed window beats the walked bounds by 0.0136 "
+                       "AUC, 95% CI [0.0103, 0.0169] bootstrapped over precursors. This is "
+                       "also DIA-NN's arrangement: fixed window for the discriminating "
+                       "correlations, descent borders for RT_start/RT_stop.", false, true);
     registerIntOption_("peak_max_half_cycles", "<n>", 20,
                        "Largest half-span a boundary walk may take. Replaces a bound of "
                        "n/4, which made the widest admissible peak depend on the EXTRACTION "
@@ -3770,6 +3808,12 @@ protected:
       std::max(2, getIntOption_("min_rt_spread_fragments")));
     options.peak_min_cycles = static_cast<std::size_t>(
       std::max(1, getIntOption_("peak_min_cycles")));
+    options.score_half_cycles = static_cast<std::size_t>(
+      std::max(0, getIntOption_("score_half_cycles")));
+    options.candidate_min_separation = static_cast<std::size_t>(
+      std::max(1, getIntOption_("candidate_min_separation")));
+    options.select_library_weight =
+      std::max(0.0, getDoubleOption_("select_library_weight"));
     options.peak_max_half_cycles = static_cast<std::size_t>(
       std::max(2, getIntOption_("peak_max_half_cycles")));
     options.boundary_smooth_half = static_cast<std::size_t>(

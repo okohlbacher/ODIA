@@ -335,30 +335,22 @@ namespace ODIA
       /// centroids have almost no freedom, so the scatter is mechanically small
       /// and the feature reports agreement it has not measured.
       ///
-      /// 5 rather than 7, and the difference was measured rather than argued.
-      /// A reviewer's objection was that 7 is too NARROW -- DIA-NN computes its
-      /// discriminating correlations over a fixed W = 2S+1 with S = 2.2 *
-      /// PeakWidth, about 12 cycles at our FWHM. Swept against what the
-      /// boundary is FOR, which is separating a correct candidate from a wrong
-      /// one, the separation AUC falls monotonically as the minimum widens, in
-      /// every band of wrong-apex distance:
+      /// This was briefly 5, on a sweep that measured the minimum width while it
+      /// still governed SCORING. `score_half_cycles` took that job, and the two
+      /// jobs want opposite widths, so the sweep's answer moved with the job:
+      /// its optimum -- a 5-cycle window -- is now `score_half_cycles = 2`.
+      /// What remains here is quantification and the reported RT range, where
+      /// the argument runs the other way, because a minimum that truncates a
+      /// peak loses area that a narrower scoring window is free to ignore. Back
+      /// to 7 accordingly: 9.7 s at S08's 1.385 s cycle, about 2.8x the
+      /// measured 3.5 s FWHM, so roughly +-2 sigma either side of the apex.
       ///
-      ///     min    |dapex| 3-6    7-19    >=20
-      ///       5          0.587   0.752   0.778
-      ///       7          0.566   0.737   0.769
-      ///       9          0.545   0.714   0.758
-      ///      12          0.525   0.679   0.741
-      ///
-      /// So the wider window buys correlation stability at a price in exactly
-      /// the discrimination this project is short of. 5 is where that stops:
-      /// it is the measured optimum AND the smallest width at which every
-      /// sub-score above is still computable, MS1_COELUTION's 5 cycles being
-      /// the binding one. Going below it would trade a real feature for a
-      /// marginal AUC gain.
-      ///
-      /// 5 cycles is 6.9 s at S08's 1.385 s cycle, about 2x the measured 3.5 s
-      /// FWHM, so it still spans the peak rather than truncating it.
-      std::size_t peak_min_cycles = 5;
+      /// The sub-score list above is therefore no longer the reason for this
+      /// number -- none of those features read this interval any more. It is
+      /// kept because it still describes what a too-narrow group costs, and
+      /// because `score_half_cycles = 0` restores the old behaviour and with it
+      /// the old constraint.
+      std::size_t peak_min_cycles = 7;
 
       /// Largest half-span a boundary walk may take, in cycles.
       ///
@@ -385,6 +377,72 @@ namespace ODIA
       /// of the apex and exceeds a tenth of it for 87.6% of them, so the
       /// fractional floor was unreachable for most real peptides.
       double boundary_sigmas = 1.0;
+
+      /// Half-width, in cycles, of the window the SUB-SCORES are computed over.
+      /// 0 restores the previous behaviour, where the sub-scores used the
+      /// walked boundaries.
+      ///
+      /// Separate from the walked boundaries because the two intervals answer
+      /// different questions. The walked pair measures how far the peak
+      /// extends, which is what quantification and the reported RT range need.
+      /// A sub-score is asking whether the evidence AT THIS POSITION fits the
+      /// peptide, and for that a wider interval is strictly worse: it dilutes
+      /// the correlation with neighbouring signal and makes the score depend
+      /// less on where the candidate is -- in the limit, on a window-wide
+      /// interval, a correct candidate and a wrong one 20 cycles away received
+      /// the SAME sub-scores, median paired difference exactly 0.
+      ///
+      /// 2, giving a 5-cycle window, from the same sweep that set
+      /// `peak_min_cycles`: separation AUC falls monotonically as the window
+      /// widens. A fixed window beats the walked bounds by 0.0136 AUC, 95% CI
+      /// [0.0103, 0.0169] over 2,000 precursor-level bootstrap resamples.
+      /// It loses only where the walk found a genuinely broad peak (walked
+      /// width >= 9, 21% of candidates: 0.841 walked against 0.832 fixed), and
+      /// those are precisely the peaks whose AREA still comes from the walk.
+      ///
+      /// Cycles, not seconds, like every other width here -- which makes it a
+      /// portability hazard across acquisitions with a different cycle time.
+      /// See the note on `peak_min_cycles`.
+      std::size_t score_half_cycles = 2;
+
+      /// Smallest gap, in cycles, between two emitted candidates. 1 is one
+      /// candidate per scan position, which is what DIA-NN does and what this
+      /// has always done; above 1 it becomes non-maximum suppression, so a cap
+      /// of `max_candidates` means that many distinct PEAKS rather than that
+      /// many samples of possibly one.
+      ///
+      /// 1 by default even though the wider setting is measured to raise recall,
+      /// because it is measured to cost something too. Suppressing within a
+      /// basin at a separation of 5 raises recall@3 from 72.7% to 75.5% and
+      /// drops selection accuracy from 63.3% to 57.7% -- the freed slots go to
+      /// genuinely different peaks, which can genuinely outscore the true one.
+      /// The selector in that measurement is ONE sub-score and the pipeline's is
+      /// nineteen, so the trade may well reverse; but it would have to reverse
+      /// by 7.4 points of conditional accuracy, and a one-feature proxy cannot
+      /// establish that. This exists so the experiment that can is a flag and
+      /// not a patch.
+      std::size_t candidate_min_separation = 1;
+
+      /// Weight of library-intensity agreement when the cap chooses which of
+      /// the margin survivors to keep. 0 is pure `corr_sum`, which is what this
+      /// detector has always used.
+      ///
+      /// Non-zero is measured BETTER on agreement with DIA-NN (recall of the
+      /// correct position within a cap of 3 rises 69.5% to 72.7%) and NOT
+      /// better reference-free, which is the ruler that governs: target
+      /// fraction among the top-N, decoys as the control, is 91.0% against
+      /// 96.8% when the discriminant is library correlation and 94.8% against
+      /// 93.8% when it is co-elution. The split between those two is the
+      /// winner's curse -- selecting on a statistic and then ranking by it lets
+      /// decoys shop for their best value as freely as targets -- and the
+      /// shipped classifier does see LIBRARY_CORR, so the pipeline sits on the
+      /// unfavourable side of it.
+      ///
+      /// 0 by default for that reason, not because the idea is wrong. The
+      /// evidence it adds is genuinely orthogonal to shape, which is what the
+      /// detector was short of; what is unproven is that adding it to the
+      /// SELECTION survives target-decoy competition.
+      double select_library_weight = 0.0;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate
