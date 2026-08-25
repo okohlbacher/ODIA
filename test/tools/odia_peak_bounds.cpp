@@ -38,15 +38,27 @@ namespace
     if (!ok) { ++failures; }
   }
 
-  /// A Gaussian of the measured width (sigma 1.07 cycles) on a flat baseline.
+  /// A Gaussian of the measured width (sigma 1.07 cycles) on a NOISY baseline.
+  ///
+  /// The noise is not decoration. A flat baseline has zero scatter, so a
+  /// noise-relative floor lands exactly on it and any off-by-one in the
+  /// comparison passes or fails by luck; real traces have scatter and the rule
+  /// has to work against that. Deterministic generator so the test is
+  /// reproducible.
   std::vector<double> gaussian(std::size_t n, double centre, double sigma,
-                               double height, double baseline)
+                               double height, double baseline, double noise = 0.0)
   {
     std::vector<double> v(n, baseline);
+    std::uint32_t seed = 12345u;
     for (std::size_t i = 0; i < n; ++i)
     {
       const double d = (double(i) - centre) / sigma;
       v[i] += height * std::exp(-0.5 * d * d);
+      if (noise > 0.0)
+      {
+        seed = seed * 1664525u + 1013904223u;
+        v[i] += noise * ((double(seed >> 8) / double(1u << 24)) - 0.5);
+      }
     }
     return v;
   }
@@ -63,17 +75,19 @@ int main()
   //    This is the production case: baseline 12% of apex, so the old rule's
   //    floor is never reached and it walks to both edges.
   {
-    auto t = gaussian(130, 65.0, 1.07, 100.0, 12.0);
+    auto t = gaussian(130, 65.0, 1.07, 100.0, 12.0, 3.0);
     const auto b = ODIA::PeakGroupScorer::peakBoundsForTest(
       t, 65, 65, d.boundary_fraction, d.peak_min_cycles, d.peak_max_half_cycles);
     const long w = long(b.second - b.first + 1);
-    check(w <= 41, "peak on a 12%-of-apex baseline: width", w, 1, 41);
+    // The old rule gave 130 here and the span bound alone gave 41. A floor at
+    // baseline + 1 sigma should stop within a few cycles of the peak.
+    check(w <= 15, "peak on a noisy 12%-of-apex baseline: width", w, 1, 15);
   }
 
   // 2. A weak peak with a stronger neighbour 12 cycles away. The boundary must
   //    not cross the valley; if it does, every sub-score integrates both.
   {
-    auto t = gaussian(130, 60.0, 1.07, 40.0, 2.0);
+    auto t = gaussian(130, 60.0, 1.07, 40.0, 2.0, 1.0);
     const auto big = gaussian(130, 72.0, 1.07, 200.0, 0.0);
     for (std::size_t i = 0; i < t.size(); ++i) { t[i] += big[i]; }
     const auto b = ODIA::PeakGroupScorer::peakBoundsForTest(

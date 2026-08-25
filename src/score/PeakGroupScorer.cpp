@@ -293,7 +293,8 @@ namespace
                                                    std::size_t right_from,
                                                    double boundary_fraction,
                                                    std::size_t min_cycles,
-                                                   std::size_t max_half)
+                                                   std::size_t max_half,
+                                                   double boundary_sigmas)
     {
       const std::size_t n = sm.size();
       if (n == 0) { return {left_from, right_from}; }
@@ -317,7 +318,49 @@ namespace
         if (best > right_from) { right_from = best; }
       }
       const double apex = std::max(sm[left_from], sm[right_from]);
-      const double floor_value = boundary_fraction * apex;
+
+      // The floor is NOISE-relative, not apex-relative.
+      //
+      // Measured on 3,427 confident positives: the local baseline is a median
+      // of 36% of the apex, and for 87.6% of them it EXCEEDS a tenth of the
+      // apex. An apex-relative 10% floor is therefore unreachable for most real
+      // peptides -- which is why the walk ran to the window edge and the median
+      // peak group covered 129 of 130 cycles. The fraction was never a
+      // threshold; it was a formality.
+      //
+      // baseline + k*sigma is where the peak has returned to noise, which is
+      // what a boundary is. Robust statistics from OUTSIDE a core region so the
+      // peak cannot raise its own floor, and never above the apex -- that would
+      // give a zero-width group for a real but shallow peak, and shallow is
+      // exactly the regime this project is short in.
+      double floor_value = boundary_fraction * apex;
+      {
+        const std::size_t core = 6;
+        std::vector<double> far;
+        far.reserve(n);
+        for (std::size_t k = 0; k < n; ++k)
+        {
+          const bool near = (k + core >= left_from) && (k <= right_from + core);
+          if (!near) { far.push_back(sm[k]); }
+        }
+        if (far.size() >= 8)
+        {
+          std::sort(far.begin(), far.end());
+          const double base = far[far.size() / 2];
+          std::vector<double> dev(far.size());
+          for (std::size_t k = 0; k < far.size(); ++k)
+          { dev[k] = std::fabs(far[k] - base); }
+          std::sort(dev.begin(), dev.end());
+          const double sigma = 1.4826 * dev[dev.size() / 2];
+          const double noise_floor = base + boundary_sigmas * sigma;
+          // No `sigma > 0` guard. A trace with zero scatter outside the peak
+          // has a floor of exactly its baseline, which is the correct place to
+          // stop -- and requiring positive scatter is how the first version of
+          // this silently did nothing on a clean trace.
+          if (noise_floor < apex)
+          { floor_value = std::max(floor_value, noise_floor); }
+        }
+      }
       const double rebound_limit = 0.25 * apex;
       const std::size_t max_span = std::max<std::size_t>(2, max_half);
 
@@ -442,7 +485,8 @@ namespace
                                           std::size_t max_candidates,
                                           double boundary_fraction,
                                           std::size_t min_cycles,
-                                          std::size_t max_half)
+                                          std::size_t max_half,
+                                          double boundary_sigmas)
     {
       std::vector<Candidate> found;
       const std::size_t n = smoothed.size();
@@ -469,7 +513,7 @@ namespace
         // here, inline, and only here -- which is how the DEFAULT picker came to
         // run without it.
         const auto b = peakBounds(smoothed, i, plateau_end, boundary_fraction,
-                                  min_cycles, max_half);
+                                  min_cycles, max_half, boundary_sigmas);
         i = plateau_end;
         c.left = b.first;
         c.right = b.second;
@@ -576,7 +620,7 @@ namespace
       double min_corr_score, double max_corr_diff, double apex_evidence,
       std::size_t smooth_half_width, double boundary_fraction,
       std::size_t max_candidates, std::size_t min_cycles, std::size_t max_half,
-      std::size_t boundary_smooth_half)
+      std::size_t boundary_smooth_half, double boundary_sigmas)
     {
       std::vector<Candidate> found;
       const std::uint32_t tc = c.transition_count;
@@ -693,7 +737,7 @@ namespace
         // with no rebound guard and no span bound -- gave a median candidate
         // width of 129 of 130 cycles on a peak whose FWHM is 2.5 cycles.
         const auto b = peakBounds(total_smoothed, h.apex, h.apex, boundary_fraction,
-                                  min_cycles, max_half);
+                                  min_cycles, max_half, boundary_sigmas);
         cd.left = b.first; cd.right = b.second;
         // One candidate per apex; DIA-NN accepts at most one per scan position
         // and we must not emit two peaks that share one.
@@ -825,8 +869,8 @@ namespace
 
   std::pair<std::size_t, std::size_t> PeakGroupScorer::peakBoundsForTest(
     const std::vector<double>& sm, std::size_t l, std::size_t r, double bf,
-    std::size_t min_cycles, std::size_t max_half)
-  { return peakBounds(sm, l, r, bf, min_cycles, max_half); }
+    std::size_t min_cycles, std::size_t max_half, double sigmas)
+  { return peakBounds(sm, l, r, bf, min_cycles, max_half, sigmas); }
 
   const std::vector<std::string>& PeakGroupScorer::subScoreNames()
   {
@@ -1150,7 +1194,8 @@ namespace
     const auto amplitude_candidates = [&] {
       return findCandidates(smooth(total, options.boundary_smooth_half),
                             options.max_candidates, options.boundary_fraction,
-                            options.peak_min_cycles, options.peak_max_half_cycles);
+                            options.peak_min_cycles, options.peak_max_half_cycles,
+                            options.boundary_sigmas);
     };
     const auto coelution_candidates = [&] {
       // The picker's rejection counters are split by class so the stage at
@@ -1167,7 +1212,8 @@ namespace
                                          options.boundary_fraction, options.max_candidates,
                                          options.peak_min_cycles,
                                          options.peak_max_half_cycles,
-                                         options.boundary_smooth_half);
+                                         options.boundary_smooth_half,
+                                         options.boundary_sigmas);
     };
     const auto candidates = options.union_picking
       ? unionCandidates(chromatogram, coelution_candidates(),

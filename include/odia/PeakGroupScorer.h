@@ -267,7 +267,7 @@ namespace ODIA
     static std::pair<std::size_t, std::size_t> peakBoundsForTest(
       const std::vector<double>& smoothed, std::size_t left_from,
       std::size_t right_from, double boundary_fraction,
-      std::size_t min_cycles, std::size_t max_half);
+      std::size_t min_cycles, std::size_t max_half, double sigmas = 1.0);
 
     /// Why a library precursor produced no scored candidate.
     ///
@@ -356,6 +356,14 @@ namespace ODIA
       /// which is precisely the failure a boundary rule must not have. 1 gives
       /// a 3-point window, the widest that does not exceed a 2.5-cycle peak.
       std::size_t boundary_smooth_half = 1;
+
+      /// Boundary floor in robust sigmas of local noise above the local
+      /// baseline; the larger of this and `boundary_fraction` is used.
+      ///
+      /// Measured on 3,427 confident positives: the baseline is a median of 36%
+      /// of the apex and exceeds a tenth of it for 87.6% of them, so the
+      /// fractional floor was unreachable for most real peptides.
+      double boundary_sigmas = 1.0;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate

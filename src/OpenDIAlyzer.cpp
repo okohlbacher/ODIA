@@ -903,6 +903,14 @@ protected:
                           "one the feature was first measured with, not a validated choice.",
                           false, true);
     setValidStrings_("rt_spread_weight", {"area", "sqrt", "none"});
+    registerDoubleOption_("boundary_sigmas", "<k>", 1.0,
+                          "Candidate boundaries stop at the local baseline plus this many "
+                          "robust sigmas of local noise; the larger of this and "
+                          "-boundary_fraction wins. MEASURED on 3,427 confident positives: "
+                          "the baseline is a median of 36% of the apex and exceeds a TENTH of "
+                          "it for 87.6% of them, so the fractional floor was unreachable for "
+                          "most real peptides -- which is why the median peak group covered "
+                          "129 of 130 cycles of its extraction window.", false, true);
     registerIntOption_("peak_min_cycles", "<n>", 7,
                        "Smallest candidate width in cycles; boundaries are widened "
                        "symmetrically to reach it. Below a width several sub-scores stop "
@@ -3766,6 +3774,7 @@ protected:
       std::max(2, getIntOption_("peak_max_half_cycles")));
     options.boundary_smooth_half = static_cast<std::size_t>(
       std::max(0, getIntOption_("boundary_smooth_half")));
+    options.boundary_sigmas = getDoubleOption_("boundary_sigmas");
     {
       const std::string w = getStringOption_("rt_spread_weight");
       options.rt_spread_weight =
