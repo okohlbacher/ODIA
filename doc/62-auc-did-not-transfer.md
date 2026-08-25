@@ -66,3 +66,46 @@ real precursors, and ranking real precursors is the job.
 
 The honest summary of the day: the representation work is sound and the task
 definition was wrong.
+
+## The attribution, finished on a common basis
+
+    full   (traces + all descriptors, no scalars)   0.9169 +- 0.0011
+    allside (+ the 5 MS1/mass/mobility scalars)     0.9196 +- 0.0003   +0.0027
+    allint  (+ the 14 intensity-derived scalars)    0.9292 +- 0.0012   +0.0123
+    all     (+ all 19)                              0.9302 +- 0.0003   +0.0133
+
+Settled: the combined model's gain is in the INTENSITY-derived scalars, not the
+side channels. My prediction was the opposite and is now refuted on a single
+basis rather than across two. The corollary stands: extending the tensor with
+MS1, mass deviations and mobility -- doc/56 A5's owed work -- is not worth it.
+
+## Review of the transfer, and one real bug
+
+**The bidirectional GRU discards most of the backward context** (codex).
+`o[:, -1, :]` takes the output at the LAST timestep: for the forward direction
+that summarises the whole sequence, but the backward direction's state there has
+seen only the final time point. It should be `h_n`, or forward[-1] concatenated
+with backward[0]. The 0.9302 stands as an empirical number; the explanation that
+the GRU preserves the time axis in both directions is false of this code, and
+the encoder has been running at roughly half its intended capacity.
+
+**Codex reached the transfer diagnosis independently and sharpened it.** The
+apex-centred paired task keeps only positives with a picked candidate in BOTH
+arms, then crops each around its own apex -- so the model learns "which of two
+ALREADY-PICKED candidates looks more peptide-like", among the subset where both
+exist. That is candidate re-ranking. It says nothing about the 35% with no
+candidate, and "presence discrimination" overstated it.
+
+**Two protocol claims that the code does not honour**, both mine:
+* "test is read once" -- test is evaluated at every validation improvement.
+  Not algorithmic leakage while nothing acts on the intermediate values, but the
+  comment asserts something the code does not do.
+* the protein split falls back from protein group to precursor ID silently when
+  a lookup misses; coverage was measured (71,021 misses, all regenerated decoys,
+  which never train) but the assertion was never made explicit.
+
+**And a warning for the integration that has not happened yet:** adding the
+model as a 20th GBT feature needs OUT-OF-FOLD predictions. A network score
+computed for rows whose proteins the network trained on makes the stacked
+classifier's FDR optimistic. Cross-fitting is required, or the integration must
+be a standalone re-ranker evaluated on untouched proteins.
