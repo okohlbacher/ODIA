@@ -106,3 +106,58 @@ identification count. That run is what decides whether any of this transfers.
 Note also what the GRU fix was worth on this contrast: 0.8712 -> 0.8827
 (+0.0115), on a corpus where half the encoder had been contributing a state that
 had seen one time point.
+
+## The honest measurement: ~22% of the shipped scorer
+
+The decoy-trained model, scored on entrapment FDP -- a ruler it has never seen,
+because decoys enter neither side of it:
+
+    model              trained against   1% FDP    2%       5%       10%
+    ODIA shipped       decoys, full run  13,646   14,697   16,287   17,829
+    entrapment-trained entrapment         9,454   11,209   13,912   16,505
+    shifted-trained    own +300s window   3,377    3,770    4,593    5,826
+    decoy-trained      decoys             2,989    3,802    5,257    7,121
+
+**Both models that never saw entrapment land at ~3,000.** The one that looked
+good was trained against the construct the ruler is made of.
+
+**That difference measures the circularity doc/56 A4 warned about: ~3x.** 9,454
+against 2,989 for models of the same architecture, same corpus, same acceptance
+test, differing only in whether training touched the entrapment construct.
+A4 predicted the direction before any of this was built; this is its size.
+
+### What this establishes, and what it does not
+
+Established: **the trace-model direction as constituted does not beat the
+shipped scorer.** Two honest measurements agree at ~22% of it at 1% FDP. AUC
+said 0.93 against 0.86 and was wrong about what mattered, three times now.
+
+NOT established -- the comparison is not like-for-like, and in the shipped
+scorer's favour:
+
+* **Training volume.** The shipped GBT is a semi-supervised discriminant fitted
+  on ~1.5M peak groups FROM THIS RUN. The trace model saw 16,568 precursors from
+  a protein-disjoint subset. Two orders of magnitude, on the run being scored.
+* **Population.** The trace model only ever sees apex-centred windows of
+  precursors that HAVE a picked candidate. It has no way to rank the 35% that
+  do not, and the shipped scorer implicitly does.
+* **Corpus.** 86,809 precursors here against millions in a real run; the
+  ranking problem is not the same shape.
+
+So the honest summary is: on equal footing at the tail the trace model is far
+behind, and the footing is not equal. Fixing the footing is a much larger piece
+of work than anything attempted so far -- it means training on a full run's peak
+groups, not on a curated 83k corpus.
+
+### Where that leaves the direction
+
+The plan put the neural work first and it has now failed its acceptance test
+twice, honestly. The representation work is sound and reusable -- library prior,
+precursor descriptors, Gaussian prior, the GRU fix, and a corpus with measured
+floors for three contrasts. The task and the training volume are the problems,
+and neither is cheap.
+
+**Recommendation: park it and take the plan's step 2 and 3.** The v3 regression
+is 1,302 identifications sitting in a flag that was flipped for an experiment
+and never flipped back, and the Astral window is +117%. Both are measured, both
+are cheap, and neither depends on any of this.
