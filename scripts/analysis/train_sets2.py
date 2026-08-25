@@ -216,8 +216,17 @@ class FragEnc(nn.Module):
     def forward(s, ch, desc):
         B, F, K, L = ch.shape
         z = s.conv(ch.reshape(B * F, K, L)).transpose(1, 2)
-        o, _ = s.gru(z)
-        z = o[:, -1, :].reshape(B, F, s.d)
+        _, h = s.gru(z)
+        # h is (num_directions, B*F, hidden): the FORWARD final state and the
+        # BACKWARD final state, each having seen the whole sequence.
+        #
+        # This previously took o[:, -1, :], the output at the last timestep. For
+        # the forward direction that summarises everything; for the BACKWARD
+        # direction the state at the last chronological position has seen only
+        # the final time point. Half the encoder contributed almost nothing, and
+        # every number measured before this fix came from an encoder running at
+        # roughly half its intended capacity.
+        z = torch.cat([h[0], h[1]], dim=-1).reshape(B, F, s.d)
         return torch.cat([z, desc], -1)
 
 class SetTransformer(nn.Module):
