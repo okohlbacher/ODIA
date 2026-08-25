@@ -268,6 +268,63 @@ namespace
       return outside[outside.size() / 2];
     }
 
+    /// Walk out from an apex to a peak's boundaries on a SMOOTHED trace.
+    ///
+    /// Three guards, and the co-elution picker had none of them. A bare
+    /// "descend while above a fraction of the apex" never terminates on a noisy
+    /// baseline: measured on the corpus, the median candidate spanned 129 of
+    /// 130 cycles and 77.4% covered more than 80% of the extraction window,
+    /// against a peak whose measured FWHM is 3.5 s -- about 2.5 cycles. The
+    /// "peak group" was the whole window for most precursors, so every
+    /// sub-score integrated over [left,right] was integrating the interference
+    /// as well as the peak, and `localBackground` -- which estimates from the
+    /// points OUTSIDE the group -- had almost nothing left to estimate from.
+    ///
+    ///  * floor: stop below `boundary_fraction` of the apex.
+    ///  * rebound: stop if the trace climbs more than a quarter of the apex
+    ///    back above its running minimum, which is a valley into a neighbour.
+    ///  * span: never walk further than a quarter of the trace either way.
+    ///
+    /// This is the amplitude picker's rule, which had it all along; the two now
+    /// share one implementation rather than one having a good rule and the
+    /// DEFAULT picker a naive one.
+    std::pair<std::size_t, std::size_t> peakBounds(const std::vector<double>& sm,
+                                                   std::size_t left_from,
+                                                   std::size_t right_from,
+                                                   double boundary_fraction)
+    {
+      const std::size_t n = sm.size();
+      if (n == 0) { return {left_from, right_from}; }
+      const double apex = std::max(sm[std::min(left_from, n - 1)],
+                                   sm[std::min(right_from, n - 1)]);
+      const double floor_value = boundary_fraction * apex;
+      const double rebound_limit = 0.25 * apex;
+      const std::size_t max_span = std::max<std::size_t>(4, n / 4);
+
+      std::size_t l = std::min(left_from, n - 1), guard = 0;
+      double run_min = sm[l];
+      while (l > 0 && guard++ < max_span)
+      {
+        const double v = sm[l - 1];
+        if (v <= floor_value) { break; }
+        if (v > run_min + rebound_limit) { break; }
+        run_min = std::min(run_min, v);
+        --l;
+      }
+      std::size_t r = std::min(right_from, n - 1);
+      guard = 0;
+      run_min = sm[r];
+      while (r + 1 < n && guard++ < max_span)
+      {
+        const double v = sm[r + 1];
+        if (v <= floor_value) { break; }
+        if (v > run_min + rebound_limit) { break; }
+        run_min = std::min(run_min, v);
+        ++r;
+      }
+      return {l, r};
+    }
+
     std::vector<double> smooth(const std::vector<double>& x, std::size_t half)
     {
       if (half == 0 || x.size() < 2 * half + 1) { return x; }
@@ -376,41 +433,13 @@ namespace
         Candidate c;
         c.apex = (i + plateau_end) / 2;
         c.apex_value = smoothed[i];
-        const double floor_value = boundary_fraction * smoothed[i];
-
-        // Scale-aware descent. A bare "stop on any uptick" ends the window on
-        // the first noise wobble; "tolerate upticks" without a scale walks
-        // across a valley into the neighbouring peak and integrates both. So:
-        // stop at the floor, stop if the trace rebounds more than a fraction
-        // of the apex above the running minimum, and never run further than a
-        // bounded number of points.
-        const double rebound_limit = 0.25 * smoothed[i];
-        const std::size_t max_span = std::max<std::size_t>(4, n / 4);
-
-        std::size_t l = i, guard = 0;
-        double run_min = smoothed[i];
-        while (l > 0 && guard++ < max_span)
-        {
-          const double v = smoothed[l - 1];
-          if (v <= floor_value) { break; }
-          if (v > run_min + rebound_limit) { break; }
-          run_min = std::min(run_min, v);
-          --l;
-        }
-        std::size_t r = plateau_end;
-        guard = 0;
-        run_min = smoothed[plateau_end];
-        while (r + 1 < n && guard++ < max_span)
-        {
-          const double v = smoothed[r + 1];
-          if (v <= floor_value) { break; }
-          if (v > run_min + rebound_limit) { break; }
-          run_min = std::min(run_min, v);
-          ++r;
-        }
+        // The same scale-aware descent the co-elution picker now uses. It lived
+        // here, inline, and only here -- which is how the DEFAULT picker came to
+        // run without it.
+        const auto b = peakBounds(smoothed, i, plateau_end, boundary_fraction);
         i = plateau_end;
-        c.left = l;
-        c.right = r;
+        c.left = b.first;
+        c.right = b.second;
         found.push_back(c);
       }
 
@@ -613,6 +642,10 @@ namespace
       {
         for (std::size_t j = 0; j < n; ++j) { total[j] += tr[f][j]; }
       }
+      // Boundaries are found on a smoothed copy, as the amplitude picker does:
+      // on the raw sum a single noise point terminates or extends the walk.
+      // apex_value and the traces themselves stay raw.
+      const std::vector<double> total_smoothed = smooth(total, smooth_half_width);
       for (const auto& h : hits)
       {
         if (h.corr_sum < best - max_corr_diff) { ++rej.outside_margin[is_decoy]; break; }
@@ -621,11 +654,12 @@ namespace
         cd.apex = h.apex;
         cd.apex_value = total[h.apex];
         cd.corr_sum = h.corr_sum;
-        const double floor_value = boundary_fraction * total[h.apex];
-        std::size_t l = h.apex, r = h.apex;
-        while (l > 0 && total[l - 1] > floor_value) { --l; }
-        while (r + 1 < n && total[r + 1] > floor_value) { ++r; }
-        cd.left = l; cd.right = r;
+        // Boundaries on the SMOOTHED sum and with the amplitude picker's
+        // guards. The previous rule -- descend while above 10% of the apex,
+        // with no rebound guard and no span bound -- gave a median candidate
+        // width of 129 of 130 cycles on a peak whose FWHM is 2.5 cycles.
+        const auto b = peakBounds(total_smoothed, h.apex, h.apex, boundary_fraction);
+        cd.left = b.first; cd.right = b.second;
         // One candidate per apex; DIA-NN accepts at most one per scan position
         // and we must not emit two peaks that share one.
         bool dup = false;
