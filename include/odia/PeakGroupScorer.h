@@ -392,13 +392,29 @@ namespace ODIA
       /// interval, a correct candidate and a wrong one 20 cycles away received
       /// the SAME sub-scores, median paired difference exactly 0.
       ///
-      /// 2, giving a 5-cycle window, from the same sweep that set
-      /// `peak_min_cycles`: separation AUC falls monotonically as the window
-      /// widens. A fixed window beats the walked bounds by 0.0136 AUC, 95% CI
-      /// [0.0103, 0.0169] over 2,000 precursor-level bootstrap resamples.
-      /// It loses only where the walk found a genuinely broad peak (walked
-      /// width >= 9, 21% of candidates: 0.841 walked against 0.832 fixed), and
-      /// those are precisely the peaks whose AREA still comes from the walk.
+      /// 2, giving a 5-cycle window. A fixed window beats the walked bounds by
+      /// **0.0047** AUC, 95% CI [0.0011, 0.0082] over 2,000 precursor-level
+      /// bootstrap resamples.
+      ///
+      /// That figure was first recorded as 0.0136 and is corrected here. The
+      /// larger number was measured while `peak_min_cycles` was briefly 5;
+      /// restoring it to 7 widens the walked bounds and moves the walked arm
+      /// from 0.751 to 0.760 against the fixed window's 0.764. Same data, same
+      /// code, different value of a parameter that was changed for unrelated
+      /// reasons two commits later -- which is the ordinary way a quoted number
+      /// goes stale.
+      ///
+      /// So the split is worth about a third of what was first claimed, and the
+      /// case for it rests more on the architecture than on the margin: it is
+      /// what DIA-NN does, it is what the invariance test can hold in place, and
+      /// it costs nothing. The effect also reverses where the walk found a
+      /// genuinely broad peak (walked width >= 9, 21% of candidates: 0.838
+      /// walked against 0.832 fixed) and in the far-only band, so it is a small
+      /// average gain over a mixed population, not a uniform one.
+      ///
+      /// For scale, the change this one sits on top of -- making the boundary
+      /// floor reachable at all -- is worth **+0.253**. That is the result; this
+      /// is a refinement of it.
       ///
       /// Cycles, not seconds, like every other width here -- which makes it a
       /// portability hazard across acquisitions with a different cycle time.

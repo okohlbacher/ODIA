@@ -1589,11 +1589,19 @@ namespace
       //
       // Measured on 11,728 paired candidates: separating a correct candidate
       // from a wrong one, a fixed apex-centred window beats the walked bounds
-      // by 0.0136 of AUC, 95% CI [0.0103, 0.0169] bootstrapped over precursors,
-      // P(fixed better) = 100%. The sign reverses only where the walk found a
-      // genuinely broad peak (walked width >= 9: 0.841 walked against 0.832
-      // fixed), which is the minority and is exactly the population whose area
-      // the walked bounds are still used for.
+      // by 0.0047 of AUC, 95% CI [0.0011, 0.0082] bootstrapped over precursors,
+      // 1,988 of 2,000 resamples favouring fixed. The sign reverses where the
+      // walk found a genuinely broad peak (walked width >= 9: 0.838 walked
+      // against 0.832 fixed), which is the population whose area the walked
+      // bounds are still used for.
+      //
+      // Corrected from 0.0136, which was measured while `peak_min_cycles` was
+      // briefly 5. It is a small effect, and the reason to keep the split is
+      // not its size: it is that the two intervals answer different questions,
+      // that DIA-NN separates them for the same reason, and that a regression
+      // test can hold them apart. The change this refines -- a boundary floor
+      // that was unreachable for 87.6% of real peptides -- is worth +0.253 on
+      // the same measurement, and that is where the result actually lives.
       //
       // This is also what DIA-NN does, arrived at independently: its
       // discriminating correlations are computed over a fixed W = 2S+1 window

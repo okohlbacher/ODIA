@@ -954,10 +954,14 @@ protected:
                        "with neighbouring signal. On a window-wide interval a correct "
                        "candidate and a wrong one 20 cycles away received the SAME "
                        "sub-scores, median paired difference exactly 0. Measured over 11,728 "
-                       "paired candidates, a fixed window beats the walked bounds by 0.0136 "
-                       "AUC, 95% CI [0.0103, 0.0169] bootstrapped over precursors. This is "
-                       "also DIA-NN's arrangement: fixed window for the discriminating "
-                       "correlations, descent borders for RT_start/RT_stop.", false, true);
+                       "paired candidates, a fixed window beats the walked bounds by 0.0047 "
+                       "AUC, 95% CI [0.0011, 0.0082] bootstrapped over precursors -- a small "
+                       "effect, corrected down from 0.0136 which was measured while "
+                       "-peak_min_cycles was briefly 5. The case rests on the architecture "
+                       "rather than the margin: it is also DIA-NN's arrangement, a fixed "
+                       "window for the discriminating correlations and descent borders for "
+                       "RT_start/RT_stop. Making the boundary floor reachable at all, which "
+                       "this refines, is worth +0.253 on the same measurement.", false, true);
     registerIntOption_("peak_max_half_cycles", "<n>", 20,
                        "Largest half-span a boundary walk may take. Replaces a bound of "
                        "n/4, which made the widest admissible peak depend on the EXTRACTION "

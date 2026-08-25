@@ -96,3 +96,42 @@ invariances: moving the quantification bounds leaves every sub-score
 bit-identical, and moving the scoring window leaves the reported retention-time
 range bit-identical. Each half fails for a different re-coupling, and each
 carries its own control so that neither passes vacuously.
+
+## And a number of my own that did not survive re-measurement
+
+The reviewer's other flag was that the scoring/quantification split's AUC gain
+might be the apex snap re-centring rather than the narrower width. Checked, and
+it is not: both arms of that bootstrap already snapped, so the comparison was
+controlled. Separating all three factors over the same paired candidates:
+
+    arm                       median width      AUC
+    old rule (no snap)                 128     0.528
+    old rule + snap                    128     0.530
+    walked bounds, no snap               7     0.784
+    walked bounds + snap                 7     0.782
+    fixed +-2, no snap                   5     0.790
+    fixed +-2 + snap                     5     0.779
+
+    snap alone, holding the old rule       +0.001
+    boundaries alone (old -> walked)       +0.253
+    width alone (walked -> fixed)          -0.003   (far band only)
+
+The snap is worth nothing. **The boundary fix is worth +0.253 and is the whole
+result.**
+
+But re-running the fixed-vs-walked bootstrap at the SHIPPED defaults rather than
+the ones in force when it was first run gives **+0.0047, CI [+0.0011, +0.0082]**,
+not the +0.0136 quoted in doc/64 and in three comments. The difference is
+`peak_min_cycles`: it was briefly 5 when the bootstrap first ran, and moving it
+back to 7 -- for reasons that had nothing to do with this measurement -- widens
+the walked bounds and lifts the walked arm from 0.751 to 0.760 against the fixed
+window's 0.764.
+
+Nobody did anything wrong; a parameter changed two commits after a number was
+measured and the number was not re-derived. Corrected in the header, the
+implementation comment and the CLI text, all of which quoted the stale figure.
+
+The split stays, but the honest case for it is architectural rather than
+numerical: the two intervals answer different questions, DIA-NN separates them
+for the same reason, an invariance test can hold them apart, and it costs
+nothing. A third of a point of AUC is not why.
