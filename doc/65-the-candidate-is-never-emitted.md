@@ -34,23 +34,35 @@ The detector's own reject counters cannot answer this -- they count over all
 the gates were replayed at the true position, and at every other position too,
 because the question is one of RANK and rank needs the competitors.
 
+**CORRECTED.** The first version of this table charged a gate whenever the
+EXACT DIA-NN apex failed it. That is the wrong question, and a reviewer caught
+it: if ODIA's smoothed reference fragment peaks one cycle from DIA-NN's, the
+exact position fails `apex_evidence` while a perfectly good candidate is emitted
+at k+1. A gate should be charged only when NO position in the +-3-cycle
+reference interval survives it. Re-attributed that way the picture changes
+substantially, and the wrong version is left here because the size of the error
+is the point:
+
     11,731 confident positives with the true apex inside the window
       positions that become hits: median 39 per precursor, p90 50
 
-      <2 fragments present                      0.1%
-      corr_sum below min_corr_score 0.5         1.7%
-      shape gates (local max, apex_evidence)   21.3%
-      outside max_corr_diff 2.0                11.1%
-      outside the top-3 cap                    15.6%
-      SURVIVES and is emitted                  49.0%
+                                          exact apex   interval
+      <2 fragments present                     0.1%       0.0%
+      corr_sum below min_corr_score 0.5        1.7%       0.1%
+      shape gates (local max, apex_evidence)  21.3%       2.1%
+      outside max_corr_diff 2.0               11.1%       9.3%
+      outside the top-3 cap                   15.6%      17.7%
+      SURVIVES and is emitted                 49.0%      69.5%
 
-      rank by corr_sum, cumulative over all positives:
-        <=1 19.8%   <=2 38.7%   <=3 49.0%   <=5 54.9%   <=10 59.6%
+      rank by corr_sum, interval attribution, cumulative:
+        <=1 61.0%   <=2 66.2%   <=3 69.5%   <=5 74.2%   <=10 80.4%
 
-Raising `max_candidates` from 3 to 10 would add **10.5 points** of recall on its
-own. The single largest loss is the shape pair: `apex_evidence = 0.99` requires
-the reference fragment's smoothed value at the position to be within 1% of its
-own maximum over +-3 cycles, on top of being the maximum over +-1.
+The shape gates are barely implicated at all -- 2.1%, not 21.3%. **27 points of
+the loss are CAPACITY**: the top-3 cap at 17.7% and the margin at 9.3%. That is
+a different diagnosis and it points somewhere different.
+
+Raising `max_candidates` from 3 to 10 would add **10.9 points** of recall on its
+own.
 
 ## AMENDED THE SAME DAY: the reopening below did not survive its first test
 
@@ -93,7 +105,21 @@ looks like -- it is doing real work selecting which positions compete.
 **The conclusion that survives is narrower and more useful than the one I
 reached first: the 41.7% is not recoverable by tuning this detector.** It needs
 evidence the detector does not currently have -- not a different threshold on
-the evidence it has. That is a different phase, and a bigger one.
+the evidence it has.
+
+Narrower still, after review. "The detector is at a local optimum" is more than
+the measurements support; what they support is that the CORRELATION-ONLY
+proposal policy is near a local Pareto optimum under its present gates AND a
+single-sub-score selector. The cap question specifically is NOT closed, because
+the selector in those tables is one feature and the pipeline's is nineteen. The
+arithmetic: to beat cap 3 in absolute terms the full model needs 80.7%
+conditional accuracy at K=5, against the co-elution selector's 79.2% -- 1.5
+points. At K=10 it needs 74.5% against 71.4%, 3.1 points. Both are entirely
+plausible for a trained model, so a one-feature proxy cannot settle it.
+
+What the corrected table adds: since the loss is capacity rather than gating,
+the first thing to do with a fixed capacity is SPEND IT BETTER, which needs no
+extra candidates and no FDP risk at all.
 
 Caveat on all three tables: the selector is one sub-score, not the trained
 19-feature classifier, which is stronger. These are lower bounds and mechanism
@@ -128,3 +154,60 @@ project: a committed negative that was measuring a defect elsewhere.
   measurement that settles it is `fdp_compare.py` at matched entrapment FDP.
   The claim was that the reason to believe it costs 20% is gone. Measured
   directly, the cost is still there, so that claim is withdrawn.
+
+
+## The evidence the detector did not have
+
+`corr_sum` is a statement about SHAPE -- do these fragments rise and fall
+together -- and it is the same kind of evidence at every position. That is why
+every threshold moved in either direction failed: shape was exhausted. Ranking
+by the co-elution sub-score instead of corr_sum was worse for the same reason,
+being more of the same.
+
+The library says something shape cannot: which fragments should be BRIGHT. Two
+co-eluting species have equally good shape and contradictory relative
+intensities, and Pearson over a window is invariant to scale, so corr_sum is
+blind to exactly that case. Ranking the margin survivors by normalised corr_sum
+plus library correlation, cap unchanged at 3:
+
+    statistic                 recall@3   selection accuracy
+    corr_sum                    69.5%          59.9%
+    library correlation         71.3%          63.6%
+    both                        72.7%          63.3%
+    library-weighted corr_sum   71.2%          62.9%
+
+The first change to this detector that improves BOTH, and it admits nothing new
+-- it only reorders what corr_sum already accepted, before the cap. Merged.
+
+Label symmetry checked before merging, because the statistic reads library
+intensities and a decoy without them would be reordered differently from a
+target, which would corrupt FDR silently. `LibraryGenerator.h:243`: a decoy
+copies its target's intensities. Symmetric.
+
+## The RT prior is not the next lever
+
+Both comparators use predicted RT at selection time, so it is the obvious next
+candidate. Measured, it is too diffuse to help: over 33,333 confident positives
+the true apex sits a median of -1.0 cycles from the window centre with a
+standard deviation of **23.6 cycles (32.7 s)**.
+
+    window     true apexes kept    positions removed
+    +-16            50.5%               74%
+    +-24            69.2%               62%
+    +-32            82.3%               49%
+    +-48            94.9%               24%
+
+Keeping 95% costs +-48 cycles, which removes only a quarter of the search space.
+The prior is real but weak, and the trade is poor while 41.7 points are already
+being lost. This is also the approved plan's `-rt_window_p95_factor` item: the
+measurement says it is worth little on S08.
+
+## Still open
+
+Codex's design point, which the corrected table supports and I have not built:
+`apex_evidence` is doing two jobs, centring and non-maximum suppression, and the
+non-monotone recall when it is relaxed proves eviction -- relaxing an admission
+gate cannot reduce a pre-cap superset, so the extra positions must be consuming
+cap slots and displacing the true one. The fix is to cluster proposals into
+chromatographic basins and cap GROUPS rather than scan positions. Then a cap of
+3 means three distinct peaks rather than three samples of possibly one.
