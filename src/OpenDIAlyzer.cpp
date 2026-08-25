@@ -903,6 +903,26 @@ protected:
                           "one the feature was first measured with, not a validated choice.",
                           false, true);
     setValidStrings_("rt_spread_weight", {"area", "sqrt", "none"});
+    registerIntOption_("peak_min_cycles", "<n>", 7,
+                       "Smallest candidate width in cycles; boundaries are widened "
+                       "symmetrically to reach it. Below a width several sub-scores stop "
+                       "existing: MS1_COELUTION needs 5 cycles and the mass and mobility "
+                       "blocks need more than one, so a 1-3 cycle candidate returns NaN for "
+                       "five features at once, and var_rt_spread is worse than absent -- over "
+                       "three points the fragment centroids cannot disagree, so it reports "
+                       "an agreement it never measured. 7 cycles is 9.7 s on S08, about 2.8x "
+                       "the measured 3.5 s FWHM.", false, true);
+    registerIntOption_("peak_max_half_cycles", "<n>", 20,
+                       "Largest half-span a boundary walk may take. Replaces a bound of "
+                       "n/4, which made the widest admissible peak depend on the EXTRACTION "
+                       "WINDOW rather than on chromatography, and still allowed ~90 s against "
+                       "a 3.5 s FWHM.", false, true);
+    registerIntOption_("boundary_smooth_half", "<n>", 1,
+                       "Half-width of the moving average used for BOUNDARY DETECTION only. "
+                       "Separate from -smooth_half_width (2, a 5-point window), which is "
+                       "twice the measured peak width: a moving average broader than the peak "
+                       "lowers its apex, broadens it and merges neighbours, which is exactly "
+                       "what a boundary rule must not do.", false, true);
     registerIntOption_("min_rt_spread_fragments", "<n>", 3,
                        "Informative fragments required before var_rt_spread is computed. "
                        "Below 3 a weighted scatter is a rescaled |difference| and any two "
@@ -3740,6 +3760,12 @@ protected:
     options.oracle_rt_tol = getDoubleOption_("oracle_rt_tol");
     options.min_rt_spread_fragments = static_cast<std::size_t>(
       std::max(2, getIntOption_("min_rt_spread_fragments")));
+    options.peak_min_cycles = static_cast<std::size_t>(
+      std::max(1, getIntOption_("peak_min_cycles")));
+    options.peak_max_half_cycles = static_cast<std::size_t>(
+      std::max(2, getIntOption_("peak_max_half_cycles")));
+    options.boundary_smooth_half = static_cast<std::size_t>(
+      std::max(0, getIntOption_("boundary_smooth_half")));
     {
       const std::string w = getStringOption_("rt_spread_weight");
       options.rt_spread_weight =

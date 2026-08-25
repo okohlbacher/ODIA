@@ -522,6 +522,14 @@ add_test(NAME scoring_stack_adopted COMMAND odia_scoring_smoke)
 # detector stops taking the spike or the new one stops rejecting it.
 add_test(NAME picker_prefers_coelution_over_amplitude COMMAND odia_picker_cases)
 
+# Does a peak group cover the peak, or the whole extraction window?
+#
+# It covered the window: 77.4% of 400k production peak groups spanned more than
+# 80% of the extraction window, against a fitted 3.5 s FWHM -- about 2.5 cycles.
+# Nothing in this suite asserted candidate GEOMETRY, only that the plumbing
+# around a candidate held, so the defect was invisible for as long as it existed.
+add_test(NAME peak_bounds_cover_the_peak_not_the_window COMMAND odia_peak_bounds)
+
 # Does a reported 1% FDR mean 1% of the identifications are wrong?
 #
 # doc/07 lists entrapment as ordering item 4 and it had never been run. The

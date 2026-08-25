@@ -260,6 +260,15 @@ namespace ODIA
 
     static const std::vector<std::string>& subScoreNames();
 
+    /// Test seam for the boundary rule. The rule lives in an anonymous
+    /// namespace in the .cpp, which is right for it and leaves no way to assert
+    /// candidate GEOMETRY -- and geometry was where the defect was: 77.4% of
+    /// production peak groups covered more than 80% of the extraction window.
+    static std::pair<std::size_t, std::size_t> peakBoundsForTest(
+      const std::vector<double>& smoothed, std::size_t left_from,
+      std::size_t right_from, double boundary_fraction,
+      std::size_t min_cycles, std::size_t max_half);
+
     /// Why a library precursor produced no scored candidate.
     ///
     /// Every precursor gets EXACTLY ONE of these, which is the whole point: the
@@ -314,6 +323,39 @@ namespace ODIA
       /// A candidate's boundaries extend until the summed trace falls below
       /// this fraction of its apex.
       double boundary_fraction = 0.10;
+
+      /// Smallest candidate width, in cycles. Boundaries are widened
+      /// symmetrically to reach it.
+      ///
+      /// NOT cosmetic: several sub-scores stop existing below a width.
+      /// MS1_COELUTION needs 5 cycles, and the mass and mobility blocks need
+      /// hi > lo, so a 1-3 cycle candidate returns NaN for MASS_ACCURACY,
+      /// MASS_SPREAD, IM_DELTA, IM_SPREAD and MS1_COELUTION at once. RT_SPREAD
+      /// is worse than absent there -- over three time points the fragment
+      /// centroids have almost no freedom, so the scatter is mechanically small
+      /// and the feature reports agreement it has not measured.
+      ///
+      /// 7 cycles is 9.7 s at S08's 1.385 s cycle, about 2.8x the measured
+      /// 3.5 s FWHM, so it spans the peak rather than truncating it.
+      std::size_t peak_min_cycles = 7;
+
+      /// Largest half-span a boundary walk may take, in cycles.
+      ///
+      /// Replaces a bound of n/4, which was a catastrophe guard rather than a
+      /// peak-width constraint: it made the widest admissible peak depend on
+      /// the EXTRACTION WINDOW, so identical chromatography admitted different
+      /// peaks at different window settings, and at 130 cycles it still allowed
+      /// ~90 s against a 3.5 s FWHM. 20 cycles is 27.7 s, about 8x the FWHM.
+      std::size_t peak_max_half_cycles = 20;
+
+      /// Half-width of the moving average used for BOUNDARY DETECTION only.
+      ///
+      /// Separate from `smooth_half_width` (2, a 5-point window) because that
+      /// is twice the measured peak width: a moving average broader than the
+      /// peak lowers its apex, broadens it, and merges it with its neighbours,
+      /// which is precisely the failure a boundary rule must not have. 1 gives
+      /// a 3-point window, the widest that does not exceed a 2.5-cycle peak.
+      std::size_t boundary_smooth_half = 1;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate

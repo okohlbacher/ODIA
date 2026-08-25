@@ -291,15 +291,35 @@ namespace
     std::pair<std::size_t, std::size_t> peakBounds(const std::vector<double>& sm,
                                                    std::size_t left_from,
                                                    std::size_t right_from,
-                                                   double boundary_fraction)
+                                                   double boundary_fraction,
+                                                   std::size_t min_cycles,
+                                                   std::size_t max_half)
     {
       const std::size_t n = sm.size();
       if (n == 0) { return {left_from, right_from}; }
-      const double apex = std::max(sm[std::min(left_from, n - 1)],
-                                   sm[std::min(right_from, n - 1)]);
+      left_from = std::min(left_from, n - 1);
+      right_from = std::min(right_from, n - 1);
+      // Snap to the local maximum of THIS trace near the seed.
+      //
+      // The co-elution picker chooses its apex from one reference fragment and
+      // then walks the SUMMED trace, on which that position need not be a
+      // maximum at all. Starting a descent part-way up a slope makes the whole
+      // rule meaningless -- the apex value that sets the floor and the rebound
+      // limit is not the peak's -- and it is how a weak correct peak acquires a
+      // boundary containing its stronger neighbour.
+      {
+        const std::size_t lo = left_from > 2 ? left_from - 2 : 0;
+        const std::size_t hi = std::min(right_from + 2, n - 1);
+        std::size_t best = left_from;
+        for (std::size_t k = lo; k <= hi; ++k)
+        { if (sm[k] > sm[best]) { best = k; } }
+        if (best < left_from) { left_from = best; }
+        if (best > right_from) { right_from = best; }
+      }
+      const double apex = std::max(sm[left_from], sm[right_from]);
       const double floor_value = boundary_fraction * apex;
       const double rebound_limit = 0.25 * apex;
-      const std::size_t max_span = std::max<std::size_t>(4, n / 4);
+      const std::size_t max_span = std::max<std::size_t>(2, max_half);
 
       std::size_t l = std::min(left_from, n - 1), guard = 0;
       double run_min = sm[l];
@@ -321,6 +341,16 @@ namespace
         if (v > run_min + rebound_limit) { break; }
         run_min = std::min(run_min, v);
         ++r;
+      }
+      // Widen symmetrically to the minimum width. Below it, MS1_COELUTION (5
+      // cycles), the mass and mobility blocks (hi > lo) and RT_SPREAD all
+      // either vanish or report agreement they did not measure.
+      while (r - l + 1 < min_cycles && (l > 0 || r + 1 < n))
+      {
+        const bool can_l = l > 0, can_r = r + 1 < n;
+        if (can_l && (!can_r || sm[l - 1] >= sm[r + 1])) { --l; }
+        else if (can_r) { ++r; }
+        else { break; }
       }
       return {l, r};
     }
@@ -410,7 +440,9 @@ namespace
     /// descending to a fraction of the apex.
     std::vector<Candidate> findCandidates(const std::vector<double>& smoothed,
                                           std::size_t max_candidates,
-                                          double boundary_fraction)
+                                          double boundary_fraction,
+                                          std::size_t min_cycles,
+                                          std::size_t max_half)
     {
       std::vector<Candidate> found;
       const std::size_t n = smoothed.size();
@@ -436,7 +468,8 @@ namespace
         // The same scale-aware descent the co-elution picker now uses. It lived
         // here, inline, and only here -- which is how the DEFAULT picker came to
         // run without it.
-        const auto b = peakBounds(smoothed, i, plateau_end, boundary_fraction);
+        const auto b = peakBounds(smoothed, i, plateau_end, boundary_fraction,
+                                  min_cycles, max_half);
         i = plateau_end;
         c.left = b.first;
         c.right = b.second;
@@ -542,7 +575,8 @@ namespace
       std::size_t half_window,
       double min_corr_score, double max_corr_diff, double apex_evidence,
       std::size_t smooth_half_width, double boundary_fraction,
-      std::size_t max_candidates)
+      std::size_t max_candidates, std::size_t min_cycles, std::size_t max_half,
+      std::size_t boundary_smooth_half)
     {
       std::vector<Candidate> found;
       const std::uint32_t tc = c.transition_count;
@@ -645,7 +679,7 @@ namespace
       // Boundaries are found on a smoothed copy, as the amplitude picker does:
       // on the raw sum a single noise point terminates or extends the walk.
       // apex_value and the traces themselves stay raw.
-      const std::vector<double> total_smoothed = smooth(total, smooth_half_width);
+      const std::vector<double> total_smoothed = smooth(total, boundary_smooth_half);
       for (const auto& h : hits)
       {
         if (h.corr_sum < best - max_corr_diff) { ++rej.outside_margin[is_decoy]; break; }
@@ -658,7 +692,8 @@ namespace
         // guards. The previous rule -- descend while above 10% of the apex,
         // with no rebound guard and no span bound -- gave a median candidate
         // width of 129 of 130 cycles on a peak whose FWHM is 2.5 cycles.
-        const auto b = peakBounds(total_smoothed, h.apex, h.apex, boundary_fraction);
+        const auto b = peakBounds(total_smoothed, h.apex, h.apex, boundary_fraction,
+                                  min_cycles, max_half);
         cd.left = b.first; cd.right = b.second;
         // One candidate per apex; DIA-NN accepts at most one per scan position
         // and we must not emit two peaks that share one.
@@ -787,6 +822,11 @@ namespace
       return d > 0.0 ? dot / d : 0.0;
     }
   } // namespace
+
+  std::pair<std::size_t, std::size_t> PeakGroupScorer::peakBoundsForTest(
+    const std::vector<double>& sm, std::size_t l, std::size_t r, double bf,
+    std::size_t min_cycles, std::size_t max_half)
+  { return peakBounds(sm, l, r, bf, min_cycles, max_half); }
 
   const std::vector<std::string>& PeakGroupScorer::subScoreNames()
   {
@@ -1108,8 +1148,9 @@ namespace
       }
     }
     const auto amplitude_candidates = [&] {
-      return findCandidates(smooth(total, options.smooth_half_width),
-                            options.max_candidates, options.boundary_fraction);
+      return findCandidates(smooth(total, options.boundary_smooth_half),
+                            options.max_candidates, options.boundary_fraction,
+                            options.peak_min_cycles, options.peak_max_half_cycles);
     };
     const auto coelution_candidates = [&] {
       // The picker's rejection counters are split by class so the stage at
@@ -1123,7 +1164,10 @@ namespace
                                          options.corr_half_window,
                                          options.min_corr_score, options.max_corr_diff,
                                          options.apex_evidence, options.smooth_half_width,
-                                         options.boundary_fraction, options.max_candidates);
+                                         options.boundary_fraction, options.max_candidates,
+                                         options.peak_min_cycles,
+                                         options.peak_max_half_cycles,
+                                         options.boundary_smooth_half);
     };
     const auto candidates = options.union_picking
       ? unionCandidates(chromatogram, coelution_candidates(),
