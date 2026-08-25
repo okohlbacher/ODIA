@@ -40,7 +40,16 @@ SEEDS  = [int(x) for x in (sys.argv[5].split(',') if len(sys.argv) > 5 else ['0'
 #          actually cares about -- at the cost that the two are different
 #          precursors of different organisms, so metadata CAN separate them and
 #          the leakage floor has to be measured rather than assumed.
+# 'decoy'  positive = DIA-NN-confident target, negative = DECOY, both in their
+#          own window. This is what the shipped discriminant actually learns
+#          against, so it is the like-for-like task -- and unlike entrapment
+#          there is no organism confound, because a decoy is the same peptide's
+#          own permuted sequence.
+#          REQUIRES descriptors built by build_descriptors_v2.py: the first
+#          builder gave decoys all-zero library intensities, which would have
+#          made this contrast trivially separable on 'descriptors present'.
 CONTRAST = sys.argv[6] if len(sys.argv) > 6 else 'shift'
+NEG_LABEL = {'ent': 'ent', 'decoy': 'decoy'}.get(CONTRAST, 'ent')
 # The batch preparation is CPU-heavy and torch grabs a thread per core by
 # default; two concurrent runs took 100 cores between them and drove the node to
 # load 258 on 224. Honour an explicit cap when one is set.
@@ -139,9 +148,9 @@ pgm = {(p, int(d)): str(g) for p, d, g in zip(lib.column('Precursor.Id').to_pyli
 fold = np.array([int(hashlib.md5(pgm.get((p, int(d)), p).encode()).hexdigest(), 16) % 10
                  for p, d in zip(ids, dec)])
 pos = label == 'pos'
-neg = label == 'ent'
+neg = label == NEG_LABEL
 if CENTRE == 'apex':
-    ok = (A0 >= 0) if CONTRAST == 'ent' else ((A0 >= 0) & (A1 >= 0))
+    ok = (A0 >= 0) if CONTRAST in ('ent', 'decoy') else ((A0 >= 0) & (A1 >= 0))
     pos = pos & ok
     neg = neg & ok
 if CONTRAST == 'shift':
@@ -149,8 +158,9 @@ if CONTRAST == 'shift':
     print(f'contrast SHIFT: {pos.sum():,} precursors, each its own positive and negative')
 else:
     sel = pos | neg
-    print(f'contrast ENT: {pos.sum():,} positives against {neg.sum():,} entrapment '
-          f'negatives -- DIFFERENT precursors, so the metadata floor must be measured')
+    print(f'contrast {CONTRAST.upper()}: {pos.sum():,} positives against {neg.sum():,} '
+          f'{NEG_LABEL} negatives -- DIFFERENT precursors, so the metadata floor '
+          f'must be MEASURED, not assumed as it can be for the paired shift contrast')
 tr_i = np.flatnonzero(sel & (fold >= 5))
 va_i = np.flatnonzero(sel & (fold >= 3) & (fold < 5))
 te_i = np.flatnonzero(sel & (fold < 3))
@@ -252,7 +262,7 @@ def evaluate(model, idx):
     with torch.no_grad():
         for a in range(0, len(idx), 512):
             s_ = idx[a:a + 512]
-            if CONTRAST == 'ent':
+            if CONTRAST in ('ent', 'decoy'):
                 ch, m, d, sv = batch(s_, 0, False)
                 o = model(ch.to(dev), m.to(dev), d.to(dev),
                           None if sv is None else sv.to(dev))
@@ -279,7 +289,7 @@ for seed in SEEDS:
         for a in range(0, len(order), 256):
             s_ = np.sort(tr_i[order[a:a + 256]])
             outs, tgt = [], []
-            if CONTRAST == 'ent':
+            if CONTRAST in ('ent', 'decoy'):
                 ch, m, d, sv = batch(s_, 0, True)
                 outs.append(model(ch.to(dev), m.to(dev), d.to(dev),
                                   None if sv is None else sv.to(dev)))
