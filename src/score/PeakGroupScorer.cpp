@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <numeric>
 #include <sstream>
 
@@ -272,6 +273,11 @@ namespace
     {
       const std::size_t n = trace.size();
       if (n == 0) { return 0.0; }
+      // `span *= 2` never terminates from 0, and `hi` past the end silently
+      // yields an empty right flank. Neither is reachable from today's callers;
+      // both are one line to make unreachable from any caller.
+      if (flank == 0) { flank = 1; }
+      if (lo > hi || hi >= n) { hi = n - 1; lo = std::min(lo, hi); }
       std::vector<double> near;
       near.reserve(2 * flank + 8);
       for (std::size_t span = flank; span <= n; span *= 2)
@@ -285,6 +291,10 @@ namespace
       }
       if (near.size() < 3)
       {
+        // CLEAR first. Without this the surviving flank points are counted
+        // twice, so the fallback was neither the flank estimate nor the
+        // whole-trace one it claimed to degrade to.
+        near.clear();
         for (std::size_t i = 0; i < n; ++i)
         { if (i < lo || i > hi) { near.push_back(trace[i]); } }
       }
@@ -308,20 +318,35 @@ namespace
     ///  * floor: stop below `boundary_fraction` of the apex.
     ///  * rebound: stop if the trace climbs more than a quarter of the apex
     ///    back above its running minimum, which is a valley into a neighbour.
-    ///  * span: never walk further than a quarter of the trace either way.
+    ///  * span: never walk further than `max_half` cycles either way -- 20 by
+    ///    default, so about 15% of a 130-cycle window per side, not the
+    ///    "quarter of the trace" an earlier version of this comment claimed.
+    ///    It is a fuse, not a peak-width constraint: it fires on 0.2% of
+    ///    confident positives, so it is not what makes the rule work.
     ///
     /// This is the amplitude picker's rule, which had it all along; the two now
     /// share one implementation rather than one having a good rule and the
     /// DEFAULT picker a naive one.
+    ///
+    /// `apex_out`, when given, receives the SNAPPED apex. It is not optional
+    /// bookkeeping: the snap moved the position the floor and the rebound limit
+    /// are computed from, and a caller that keeps its original seed ends up
+    /// with boundaries derived from one position and an apex reported at
+    /// another. Downstream that desynchronises the at-apex fragment count, the
+    /// retention time the feature reports, and the one-candidate-per-apex
+    /// deduplication -- two seeds two cycles apart snap to the same maximum and
+    /// both survive as separate candidates.
     std::pair<std::size_t, std::size_t> peakBounds(const std::vector<double>& sm,
                                                    std::size_t left_from,
                                                    std::size_t right_from,
                                                    double boundary_fraction,
                                                    std::size_t min_cycles,
                                                    std::size_t max_half,
-                                                   double boundary_sigmas)
+                                                   double boundary_sigmas,
+                                                   std::size_t* apex_out = nullptr)
     {
       const std::size_t n = sm.size();
+      if (apex_out) { *apex_out = left_from; }
       if (n == 0) { return {left_from, right_from}; }
       left_from = std::min(left_from, n - 1);
       right_from = std::min(right_from, n - 1);
@@ -341,6 +366,7 @@ namespace
         { if (sm[k] > sm[best]) { best = k; } }
         if (best < left_from) { left_from = best; }
         if (best > right_from) { right_from = best; }
+        if (apex_out) { *apex_out = best; }
       }
       const double apex = std::max(sm[left_from], sm[right_from]);
 
@@ -358,6 +384,14 @@ namespace
       // peak cannot raise its own floor, and never above the apex -- that would
       // give a zero-width group for a real but shallow peak, and shallow is
       // exactly the regime this project is short in.
+      // The FALLBACK floor. The normal path is noise-relative and replaces this
+      // via the max() below; this term survives for the case that defeats the
+      // robust statistics -- a zero-inflated trace where more than half the far
+      // points are exactly 0, giving base = 0 and sigma = 0, so `base + k*sigma`
+      // is 0 and no k can rescue it. Intensities are non-negative, so a floor of
+      // 0 is never crossed and the walk would run to the span bound: the
+      // original whole-window failure, returning for precisely the faintest
+      // precursors. A reachable fraction of the apex is the right degradation.
       double floor_value = boundary_fraction * apex;
       {
         const std::size_t core = 6;
@@ -377,15 +411,39 @@ namespace
           { dev[k] = std::fabs(far[k] - base); }
           std::sort(dev.begin(), dev.end());
           const double sigma = 1.4826 * dev[dev.size() / 2];
-          const double noise_floor = base + boundary_sigmas * sigma;
-          // No `sigma > 0` guard. A trace with zero scatter outside the peak
-          // has a floor of exactly its baseline, which is the correct place to
-          // stop -- and requiring positive scatter is how the first version of
-          // this silently did nothing on a clean trace.
-          if (noise_floor < apex)
-          { floor_value = std::max(floor_value, noise_floor); }
+          // CAPPED, not discarded. Letting the noise floor through only when it
+          // sits below the apex made the rule discontinuous exactly where it
+          // matters: a candidate whose apex is at or below baseline+k*sigma
+          // reverted to the fractional floor, which is the floor measured to be
+          // unreachable for 87.6% of real peptides. The weakest peaks -- p10 of
+          // apex height is 0.9 sigma -- got the original failure mode back, and
+          // two near-identical low-S/N peaks could receive radically different
+          // boundaries depending on which side of the apex the floor fell.
+          //
+          // Capping just below the apex is continuous in the signal-to-noise
+          // ratio: a sub-sigma candidate gets the narrowest boundary the rule
+          // can express, then `min_cycles` widens it to a scoreable width.
+          // Whether such a candidate should exist at all is a question for the
+          // admission gate, not for a boundary rule.
+          // nextafter, not a 1e-9 absolute-scale epsilon: intensities here span
+          // several orders of magnitude, and `1e-9 * max(1, |apex|)` is either
+          // far larger than one representable step for a bright peak or, for a
+          // normalised trace, large enough to matter on its own.
+          const double noise_floor =
+            std::min(base + boundary_sigmas * sigma,
+                     std::nextafter(apex, -std::numeric_limits<double>::infinity()));
+          floor_value = std::max(floor_value, noise_floor);
         }
       }
+      // The rebound limit is apex-absolute, and DIA-NN's is not: it breaks at a
+      // valley only when the valley is DEEP (below apex/3) and the signal has
+      // since doubled off it, which is valley-relative and therefore fires on
+      // the shallow saddle between co-eluting isomers that an absolute
+      // threshold walks straight through. That argument is sound and the rule
+      // still lost: swept over four minimum widths and three bands of
+      // wrong-apex distance, the valley-relative guard scored lower on
+      // separation in all 24 cells (far band, min 5: 0.769 against 0.778;
+      // close band: 0.569 against 0.587). Kept as measured, not as preferred.
       const double rebound_limit = 0.25 * apex;
       const std::size_t max_span = std::max<std::size_t>(2, max_half);
 
@@ -761,9 +819,17 @@ namespace
         // guards. The previous rule -- descend while above 10% of the apex,
         // with no rebound guard and no span bound -- gave a median candidate
         // width of 129 of 130 cycles on a peak whose FWHM is 2.5 cycles.
+        // The snapped apex, not the seed. This picker chooses its apex from ONE
+        // reference fragment, and on the summed trace that position need not be
+        // a maximum -- which is exactly the case the snap exists for, and the
+        // reason the desynchronisation matters here and not in the amplitude
+        // picker, whose seed is a local maximum by construction.
+        std::size_t snapped = h.apex;
         const auto b = peakBounds(total_smoothed, h.apex, h.apex, boundary_fraction,
-                                  min_cycles, max_half, boundary_sigmas);
+                                  min_cycles, max_half, boundary_sigmas, &snapped);
         cd.left = b.first; cd.right = b.second;
+        cd.apex = snapped;
+        cd.apex_value = total[snapped];
         // One candidate per apex; DIA-NN accepts at most one per scan position
         // and we must not emit two peaks that share one.
         bool dup = false;

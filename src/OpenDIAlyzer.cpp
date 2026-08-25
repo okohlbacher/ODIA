@@ -911,7 +911,7 @@ protected:
                           "it for 87.6% of them, so the fractional floor was unreachable for "
                           "most real peptides -- which is why the median peak group covered "
                           "129 of 130 cycles of its extraction window.", false, true);
-    registerIntOption_("peak_min_cycles", "<n>", 7,
+    registerIntOption_("peak_min_cycles", "<n>", 5,
                        "Smallest candidate width in cycles; boundaries are widened "
                        "symmetrically to reach it. Below a width several sub-scores stop "
                        "existing: MS1_COELUTION needs 5 cycles and the mass and mobility "

@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <cstdlib>
 
 namespace
 {
@@ -106,6 +107,54 @@ int main()
     const long w = long(b.second - b.first + 1);
     check(w >= long(d.peak_min_cycles), "sharp peak widened to the minimum", w,
           long(d.peak_min_cycles), 130);
+  }
+
+  // 4. THE DISCONTINUITY. A candidate whose apex barely clears the noise must
+  //    not fall off a cliff into the fractional floor -- that floor is measured
+  //    unreachable for 87.6% of real peptides, so reverting to it restores the
+  //    original defect for precisely the weakest population. Two peaks either
+  //    side of the threshold must get comparable widths.
+  {
+    long w[2];
+    const double heights[2] = {3.2, 2.6};   // ~1.1 and ~0.9 sigma over noise 3
+    for (int k = 0; k < 2; ++k)
+    {
+      auto t = gaussian(130, 65.0, 1.07, heights[k], 12.0, 3.0);
+      const auto b = ODIA::PeakGroupScorer::peakBoundsForTest(
+        t, 65, 65, d.boundary_fraction, d.peak_min_cycles, d.peak_max_half_cycles);
+      w[k] = long(b.second - b.first + 1);
+    }
+    const long gap = std::labs(w[0] - w[1]);
+    check(gap <= 6, "sub-sigma peak: width is continuous across the floor", gap, 0, 6);
+  }
+
+  // 5. A TAILING peak. Real chromatography is asymmetric; the rule must follow
+  //    the tail rather than stopping at the symmetric point or running away
+  //    down it.
+  {
+    std::vector<double> t(130, 10.0);
+    for (std::size_t i = 0; i < t.size(); ++i)
+    {
+      const double d0 = double(i) - 60.0;
+      t[i] += d0 < 0 ? 100.0 * std::exp(-0.5 * (d0 / 1.07) * (d0 / 1.07))
+                     : 100.0 * std::exp(-d0 / 6.0);
+    }
+    const auto b = ODIA::PeakGroupScorer::peakBoundsForTest(
+      t, 60, 60, d.boundary_fraction, d.peak_min_cycles, d.peak_max_half_cycles);
+    check(long(b.second) >= 66 && long(b.second) <= 95,
+          "tailing peak: right edge follows the tail", long(b.second), 66, 95);
+  }
+
+  // 6. A peak at the TRACE EDGE, where the flanks are one-sided and the noise
+  //    region is truncated. It must still terminate and still reach the
+  //    minimum width rather than running to the boundary of the array.
+  {
+    auto t = gaussian(130, 3.0, 1.07, 100.0, 12.0, 3.0);
+    const auto b = ODIA::PeakGroupScorer::peakBoundsForTest(
+      t, 3, 3, d.boundary_fraction, d.peak_min_cycles, d.peak_max_half_cycles);
+    const long w = long(b.second - b.first + 1);
+    check(w >= long(d.peak_min_cycles) && w <= 41, "peak at the trace edge: width",
+          w, long(d.peak_min_cycles), 41);
   }
 
   std::printf("\n%s\n", failures ? "FAILURES" : "all peak-boundary cases pass");

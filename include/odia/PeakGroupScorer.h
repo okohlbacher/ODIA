@@ -335,9 +335,30 @@ namespace ODIA
       /// centroids have almost no freedom, so the scatter is mechanically small
       /// and the feature reports agreement it has not measured.
       ///
-      /// 7 cycles is 9.7 s at S08's 1.385 s cycle, about 2.8x the measured
-      /// 3.5 s FWHM, so it spans the peak rather than truncating it.
-      std::size_t peak_min_cycles = 7;
+      /// 5 rather than 7, and the difference was measured rather than argued.
+      /// A reviewer's objection was that 7 is too NARROW -- DIA-NN computes its
+      /// discriminating correlations over a fixed W = 2S+1 with S = 2.2 *
+      /// PeakWidth, about 12 cycles at our FWHM. Swept against what the
+      /// boundary is FOR, which is separating a correct candidate from a wrong
+      /// one, the separation AUC falls monotonically as the minimum widens, in
+      /// every band of wrong-apex distance:
+      ///
+      ///     min    |dapex| 3-6    7-19    >=20
+      ///       5          0.587   0.752   0.778
+      ///       7          0.566   0.737   0.769
+      ///       9          0.545   0.714   0.758
+      ///      12          0.525   0.679   0.741
+      ///
+      /// So the wider window buys correlation stability at a price in exactly
+      /// the discrimination this project is short of. 5 is where that stops:
+      /// it is the measured optimum AND the smallest width at which every
+      /// sub-score above is still computable, MS1_COELUTION's 5 cycles being
+      /// the binding one. Going below it would trade a real feature for a
+      /// marginal AUC gain.
+      ///
+      /// 5 cycles is 6.9 s at S08's 1.385 s cycle, about 2x the measured 3.5 s
+      /// FWHM, so it still spans the peak rather than truncating it.
+      std::size_t peak_min_cycles = 5;
 
       /// Largest half-span a boundary walk may take, in cycles.
       ///
