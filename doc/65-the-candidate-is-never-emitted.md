@@ -52,7 +52,55 @@ own. The single largest loss is the shape pair: `apex_evidence = 0.99` requires
 the reference fragment's smoothed value at the position to be within 1% of its
 own maximum over +-3 cycles, on top of being the maximum over +-1.
 
-## Why this reopens a closed question
+## AMENDED THE SAME DAY: the reopening below did not survive its first test
+
+The section that follows argued that "relaxing admission costs 20.4% at matched
+FDP" should be reopened, because it was measured when the sub-scores could not
+distinguish candidates at all. The argument is still correct about the premise.
+It is wrong about the conclusion, and three probes say so.
+
+Selection accuracy -- how often a real sub-score picks the true position out of
+the top K -- contains both halves of the trade, the recall a wider gate buys and
+the precision it costs:
+
+    cap K      recall    selection accuracy
+      3         69.5%           59.9%
+      5         74.2%           58.8%
+     10         80.4%           57.4%
+     20         85.4%           56.5%
+     none       87.2%           56.6%
+
+Recall rises 17.7 points and selection accuracy falls monotonically. Relaxing
+`apex_evidence` is worse still -- it loses on BOTH axes, because the extra
+positions it admits displace the true one from the top three:
+
+    apex_evidence   recall    selection accuracy
+        0.99        69.5%          59.9%
+        0.95        69.2%          59.9%
+        0.90        69.0%          59.8%
+        0.80        68.3%          59.2%
+        0.00        66.4%          56.9%
+
+And replacing the selection statistic does not help either: ranking the same hit
+positions by the co-elution sub-score over the new scoring window gives recall@3
+66.2% and accuracy 56.6%, an equal-weight blend 69.0%/59.3%, against corr_sum's
+69.5%/59.9%.
+
+So the detector sits at a local optimum. Every threshold moved in either
+direction makes it worse, and `apex_evidence = 0.99` is not the crude filter it
+looks like -- it is doing real work selecting which positions compete.
+
+**The conclusion that survives is narrower and more useful than the one I
+reached first: the 41.7% is not recoverable by tuning this detector.** It needs
+evidence the detector does not currently have -- not a different threshold on
+the evidence it has. That is a different phase, and a bigger one.
+
+Caveat on all three tables: the selector is one sub-score, not the trained
+19-feature classifier, which is stronger. These are lower bounds and mechanism
+probes. They are consistent enough, and monotone enough, that I would want a
+positive reason to expect the classifier to reverse all three.
+
+## Why this reopens a closed question (SUPERSEDED -- see the amendment above)
 
 The plan lists "relaxing admission at all" as closed by measurement: -20.4% at
 matched entrapment FDP. That measurement is not wrong, but it was made under a
@@ -63,9 +111,9 @@ candidates into a classifier that cannot distinguish them can only add noise,
 so -20.4% is what that experiment had to produce.
 
 The premise has changed: separation is now 0.769/0.782, and 0.78 with the
-scoring window split out. Whether relaxed admission still costs is once again an
-open question, and it is the one worth asking, because it is where 41.7 points
-of recall are.
+scoring window split out. Whether relaxed admission still costs was therefore
+once again an open question -- and the amendment above answers it: yes, it
+still costs.
 
 This is the "verify the negative is real" pattern for the third time in this
 project: a committed negative that was measuring a defect elsewhere.
@@ -78,4 +126,5 @@ project: a committed negative that was measuring a defect elsewhere.
 - Recall against DIA-NN is agreement with a comparator, not truth.
 - No claim is made that raising the cap is free. It costs FDP, and the only
   measurement that settles it is `fdp_compare.py` at matched entrapment FDP.
-  The claim is narrower: the reason to believe it costs 20% is gone.
+  The claim was that the reason to believe it costs 20% is gone. Measured
+  directly, the cost is still there, so that claim is withdrawn.

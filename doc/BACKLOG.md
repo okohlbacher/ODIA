@@ -3624,3 +3624,20 @@ centres pass 2's extraction window, which is upstream of scoring.
 
 Still owed: a benchmark arm measuring what the removal is worth, against the
 15:44 baseline that reproduces the stored one exactly.
+
+## Two build trees, and bench.sh runs the one build_odia.sh does not
+
+`scripts/build_odia.sh` builds into `$ODIA_SCRATCH/build/odia`
+(/scratch/kohlbach/odia/build/odia). `scripts/bench.sh` line 85 EXECUTES
+`$R/build-gpu/OpenDIAlyzer`, a separate CMake tree with its own CMakeCache.
+Building with build_odia.sh therefore does not update the binary any benchmark
+will run.
+
+Not silently broken: bench.sh's staleness check compares source mtimes against
+build-gpu's binary, so it warns. But the warning is the only thing standing
+between a clean build and a benchmark of week-old code, and "I just built it"
+is exactly the state in which people ignore warnings.
+
+Either point both at one tree, or make bench.sh take the binary path from the
+same variable build_odia.sh writes to. Until then: rebuild build-gpu explicitly
+before any bench.sh arm.
