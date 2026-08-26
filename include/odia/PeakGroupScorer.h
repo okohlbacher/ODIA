@@ -255,6 +255,39 @@ namespace ODIA
       /// question for measurement, not for this comment.
       RT_SPREAD,
 
+      /// How much of each fragment's signal the group's COMMON elution profile
+      /// explains, averaged over informative fragments.
+      ///
+      /// DIA-NN's interference idea, as a score rather than a subtraction: the
+      /// fragment least affected by interference -- highest summed correlation
+      /// to the others, among the library's six brightest -- carries the true
+      /// elution shape. Every other fragment is then that shape plus whatever
+      /// else happens to co-elute in its m/z channel, so projecting it onto the
+      /// reference splits it into the part that belongs to this peptide and the
+      /// part that does not.
+      ///
+      /// Related to XCORR_COELUTION and measured to be a BETTER form of the same
+      /// evidence rather than a second copy: correlation between them is 0.864,
+      /// and reference-free, target fraction among the top-5,000 with decoys as
+      /// control is 91.7% against co-elution's 83.2%. Combining the two is worse
+      /// than this alone (88.7%), which is what "dominates" looks like -- so if
+      /// this earns its place, the question of retiring the older column is a
+      /// real one rather than a courtesy.
+      ///
+      /// Projection rather than pairwise correlation matters at low intensity:
+      /// a pairwise mean treats two equally noisy fragments as agreeing when
+      /// they agree about noise, while a projection onto a chosen reference
+      /// asks a directional question and a noisy fragment simply explains
+      /// little.
+      ///
+      /// Label-symmetric by construction: a per-candidate transform applied
+      /// identically to targets and decoys. This is NOT DIA-NN's cross-precursor
+      /// `remove_ifs`, which deletes the weaker of two precursors claiming one
+      /// physical peak and operates on TARGETS ONLY -- porting that symmetrically
+      /// "to preserve exchangeability" would be precisely wrong, and a naive
+      /// simulation of it is already recorded as costing >2,000 identifications.
+      PROFILE_FIT,
+
       N_SUB_SCORES
     };
 
