@@ -460,6 +460,27 @@ namespace ODIA
       /// SELECTION survives target-decoy competition.
       double select_library_weight = 0.0;
 
+      /// Exponent on library intensity when Gate C weights each transition's
+      /// vote. 0 is one vote per transition, which is what has always shipped.
+      ///
+      /// This is the admission gate, and it is where the losses are: of the
+      /// DIA-NN-confident precursors ODIA fails to score, gate_c accounts for
+      /// 98.2% and the picker returning nothing for 0.6%. Relaxing the
+      /// threshold has already been measured end-to-end at -20.4% at matched
+      /// entrapment FDP, so the threshold is not the lever -- the statistic is.
+      ///
+      /// The weights are renormalised to keep sum(w^2) equal to the transition
+      /// count, so the null width and therefore the gate's stringency are
+      /// unchanged and the same VOLUME is admitted. Measured that way, at the
+      /// production-like operating point: DIA-NN-confident recall 79.9% ->
+      /// 81.5%, and target/decoy ratio among the admitted 1.33 -> 1.39. Both
+      /// rulers move together, which no other change this week managed.
+      ///
+      /// 1.0 is linear weighting. 0.5 (sqrt) measured very slightly better at
+      /// the tightest operating points and slightly worse in the middle; the
+      /// middle is where production sits.
+      double gate_library_weight = 0.0;
+
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate
       /// never reports a lag resting on one point of overlap.

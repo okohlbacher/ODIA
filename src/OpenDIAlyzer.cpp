@@ -923,6 +923,17 @@ protected:
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
                        "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerDoubleOption_("gate_library_weight", "<exp>", 0.0,
+                          "Exponent on library intensity when Gate C weights each "
+                          "transition's vote; 0 is one vote per transition, as shipped. "
+                          "Gate C is where the losses are: of the DIA-NN-confident "
+                          "precursors ODIA fails to score, it accounts for 98.2% against the "
+                          "picker's 0.6%. Weights are renormalised so sum(w^2) matches the "
+                          "transition count, leaving the null width and therefore the "
+                          "admitted VOLUME unchanged -- a gain can only come from admitting a "
+                          "better-chosen set. Measured at the production operating point: "
+                          "DIA-NN-confident recall 79.9% -> 81.5%, target/decoy ratio among "
+                          "the admitted 1.33 -> 1.39.", false, true);
     registerDoubleOption_("select_library_weight", "<w>", 0.0,
                           "Weight of library-intensity agreement when the candidate cap "
                           "chooses among margin survivors. 0 is pure corr_sum. Non-zero is "
@@ -3826,6 +3837,8 @@ protected:
       std::max(1, getIntOption_("candidate_min_separation")));
     options.select_library_weight =
       std::max(0.0, getDoubleOption_("select_library_weight"));
+    options.gate_library_weight =
+      std::max(0.0, getDoubleOption_("gate_library_weight"));
     options.peak_max_half_cycles = static_cast<std::size_t>(
       std::max(2, getIntOption_("peak_max_half_cycles")));
     options.boundary_smooth_half = static_cast<std::size_t>(
