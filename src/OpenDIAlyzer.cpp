@@ -923,6 +923,10 @@ protected:
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
                        "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerIntOption_("null_feature_seed", "<n>", 0,
+                       "Seed for -null_feature. Different seeds give different arbitrary "
+                       "classifier trajectories, which is how the width of the noise band is "
+                       "measured rather than guessed from one sample.", false, true);
     registerFlag_("null_feature",
                   "DIAGNOSTIC, never a setting. Emit var_null_control, a deterministic hash "
                   "of the precursor and apex that varies per candidate and carries no "
@@ -3867,6 +3871,8 @@ protected:
     options.mass_survival_ppm = std::max(0.0, getDoubleOption_("mass_survival_ppm"));
     options.mass_survival_centre = getDoubleOption_("mass_survival_centre");
     options.null_feature = getFlag_("null_feature");
+    options.null_feature_seed =
+      static_cast<std::uint64_t>(std::max(0, getIntOption_("null_feature_seed")));
     options.peak_max_half_cycles = static_cast<std::size_t>(
       std::max(2, getIntOption_("peak_max_half_cycles")));
     options.boundary_smooth_half = static_cast<std::size_t>(

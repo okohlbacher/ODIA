@@ -2051,7 +2051,8 @@ namespace
       // to whether this candidate is a target or a decoy.
       if (options.null_feature)
       {
-        std::uint64_t z = (std::uint64_t(i) << 20) ^ std::uint64_t(cand.apex);
+        std::uint64_t z = (std::uint64_t(i) << 20) ^ std::uint64_t(cand.apex)
+                        ^ (options.null_feature_seed * 0xD1B54A32D192ED03ULL);
         z += 0x9E3779B97F4A7C15ULL;
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;

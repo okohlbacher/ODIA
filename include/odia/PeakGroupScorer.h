@@ -330,6 +330,12 @@ namespace ODIA
       /// slots.
       ///
       /// Off unless `-null_feature` is given. It must never be on in a real run.
+      ///
+      /// IT REPRODUCED THE PROFILE. Pure noise gives -1.5% at 7.42%, -3.9% at
+      /// 10% and +5.7% at 15%, inside the range the four real changes gave
+      /// (-0.9 to -3.1%, +6.6 to +8.6%). So the fixture cannot resolve a
+      /// feature-sized change: adding any column moves the classifier's
+      /// trajectory further than a feature's information content does.
       NULL_CONTROL,
 
       N_SUB_SCORES
@@ -563,6 +569,11 @@ namespace ODIA
       /// Emit the NULL_CONTROL column. A diagnostic, never a setting: see the
       /// enum. Off leaves it NaN, which the constant-column guard drops.
       bool null_feature = false;
+
+      /// Seed for NULL_CONTROL. Different seeds give different arbitrary
+      /// trajectories, which is how the width of the band is measured rather
+      /// than inferred from one sample.
+      std::uint64_t null_feature_seed = 0;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate
