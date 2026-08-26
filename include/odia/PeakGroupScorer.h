@@ -255,6 +255,83 @@ namespace ODIA
       /// question for measurement, not for this comment.
       RT_SPREAD,
 
+      /// What FRACTION of a fragment's matched intensity survives tightening
+      /// the mass tolerance, averaged over fragments.
+      ///
+      /// The idea is DIA-NN's -- a real peak sits on its calibrated m/z and
+      /// survives tightening, while an interferent that merely fell inside the
+      /// window often does not -- but the provenance claimed here first was
+      /// wrong and is corrected. DIA-NN's 1x / 0.45x / 0.20x tolerances are its
+      /// NINE MS1 channels, feeding tight-tolerance CORRELATIONS
+      /// (pMs1TightOne/Two); its per-fragment mass feature is pAcc[6], a
+      /// deviation rather than a surviving-intensity fraction. So 4.5 and 2.0
+      /// ppm are an MS1 constant imported into MS2, and they are not what
+      /// DIA-NN does with fragments.
+      ///
+      /// Measured on real S08 frames rather than assumed: a cell is a MIXTURE,
+      /// and 95.1% of bright real-peak cells contain more than one peak. The
+      /// weighted mean therefore pulls crowded cells toward the window centre,
+      /// which cuts targets from a nominal 1.0 to 0.925 at 4.5 ppm AND lifts
+      /// decoy-like cells from 0.45 to 0.564 -- a nominal gap of 0.55 measured
+      /// at 0.36. At 2.0 ppm, 43% of perfectly on-mass bright cells fail purely
+      /// from co-window neighbours, so that setting measures local crowding
+      /// rather than mass correctness. **4.5 is the value to test; 2.0 is not.**
+      ///
+      /// No re-extraction was needed. The extractor already stores
+      /// sum(intensity * ppm) and sum(intensity) per cell, so the tightened
+      /// query is a filter over cells that are already in memory rather than a
+      /// second pass over the raw data.
+      ///
+      /// LABEL-SYMMETRIC in the way the two changes reverted before it were
+      /// not. It consults no library intensity, which is what broke those: a
+      /// decoy copies its target's per-fragment intensities verbatim while its
+      /// fragment m/z ARE recomputed, so any intensity-weighted statistic
+      /// silently asks a different question of each class. This asks both the
+      /// same question -- how far is the matched signal from the m/z THIS
+      /// precursor's fragment should have -- and a decoy's recomputed m/z makes
+      /// that a genuine test rather than a scrambled one.
+      ///
+      /// Orthogonal by construction to everything already here, which the
+      /// project's own rule says is the lever rather than count: the existing
+      /// mass features are a deviation and a scatter, both summaries of WHERE
+      /// the matched peaks sit. This is how much intensity is still there when
+      /// the window closes, which a median deviation cannot express -- one
+      /// fragment can have a perfect median and lose most of its area.
+      ///
+      /// NaN when the ppm planes are absent (`-collect_mass_residuals` off) or
+      /// no fragment matched a peak. Note the imputation hazard that bit an
+      /// earlier feature: PercolatorEngine fills NaN with the column median, so
+      /// a candidate that could not be measured is scored as an average one.
+      /// Here the NaN case is a whole-run structural absence rather than a
+      /// per-candidate weakness, which is the case that imputation was designed
+      /// for.
+      MASS_SURVIVAL,
+
+      /// A DELIBERATELY UNINFORMATIVE COLUMN. Not a feature -- a control.
+      ///
+      /// Six unrelated changes have now been measured on the fixture at matched
+      /// entrapment FDP, and every one produced the same profile: slightly
+      /// negative at 5.72-10% and +6 to +8% at 15%. Six coincidences is not a
+      /// hypothesis. The alternative is that ADDING A COLUMN AT ALL perturbs the
+      /// semi-supervised classifier's trajectory, and that at the operating
+      /// point the perturbation is larger than anything a single feature's
+      /// information content contributes.
+      ///
+      /// This column decides between those. It is a deterministic hash of the
+      /// precursor index and apex cycle, scaled to [0,1): it varies per
+      /// candidate, so it is not constant and survives the constant-column
+      /// guard, and it is uniform with respect to label, so it carries no
+      /// information a classifier could legitimately use.
+      ///
+      /// If an arm carrying it reproduces that profile, then the fixture cannot
+      /// resolve feature-level changes at this effect size and six "failures to
+      /// convert" collapse into one measurement artefact. If it comes back flat,
+      /// the six results stand and the features really were not worth their
+      /// slots.
+      ///
+      /// Off unless `-null_feature` is given. It must never be on in a real run.
+      NULL_CONTROL,
+
       N_SUB_SCORES
     };
 
@@ -459,6 +536,33 @@ namespace ODIA
       /// detector was short of; what is unproven is that adding it to the
       /// SELECTION survives target-decoy competition.
       double select_library_weight = 0.0;
+
+      /// Tightened mass tolerance, in ppm, for MASS_SURVIVAL. 0 leaves the
+      /// sub-score NaN for every candidate, which the constant-column guard
+      /// then drops -- so 0 is genuinely off rather than a column of zeros.
+      ///
+      /// DIA-NN tightens to 0.45x and 0.20x of the extraction window. On S08
+      /// the window is 10 ppm, so 4.5 and 2.0 are the corresponding values.
+      /// Expressed in absolute ppm rather than as a fraction because the
+      /// scorer does not know the extraction window, and a fraction of an
+      /// unknown is worse than a number someone had to choose.
+      double mass_survival_ppm = 0.0;
+
+      /// Where the run's fragment deviations actually sit, in ppm. MASS_SURVIVAL
+      /// measures its window about this rather than about zero.
+      ///
+      /// 0 is correct whenever the mass calibration succeeded, because the
+      /// offset is folded into the query m/z and the residual is centred by
+      /// construction. It is NOT correct when the calibration gate fails: that
+      /// path sets the offset to 0 with a 50 ppm window and leaves the
+      /// distribution where the instrument put it -- about -9 ppm on S08 --
+      /// where a window about zero scores real fragments near 0 and uniform
+      /// noise higher, inverting the feature.
+      double mass_survival_centre = 0.0;
+
+      /// Emit the NULL_CONTROL column. A diagnostic, never a setting: see the
+      /// enum. Off leaves it NaN, which the constant-column guard drops.
+      bool null_feature = false;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate

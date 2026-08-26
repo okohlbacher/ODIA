@@ -923,6 +923,36 @@ protected:
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
                        "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerFlag_("null_feature",
+                  "DIAGNOSTIC, never a setting. Emit var_null_control, a deterministic hash "
+                  "of the precursor and apex that varies per candidate and carries no "
+                  "information about label. Six unrelated changes have each measured "
+                  "slightly negative at the operating point and +6 to +8% at 15% FDP; this "
+                  "column tests whether that profile is caused by adding a column at all "
+                  "rather than by any of them. If an arm carrying it reproduces the profile, "
+                  "the fixture cannot resolve feature-level changes at this effect size.",
+                  true);
+    registerDoubleOption_("mass_survival_centre", "<ppm>", 0.0,
+                          "Where this run's fragment deviations sit, for -mass_survival_ppm "
+                          "to measure its window about. 0 is right when the mass calibration "
+                          "succeeded, since the offset is folded into the query m/z and the "
+                          "residual is centred. It is WRONG when the calibration gate fails: "
+                          "that path uses a 50 ppm window with no offset, and a window about "
+                          "zero then scores real fragments near 0 while uniform noise scores "
+                          "higher -- the feature inverts.", false, true);
+    registerDoubleOption_("mass_survival_ppm", "<ppm>", 0.0,
+                          "Tightened mass tolerance for var_mass_survival, the fraction of "
+                          "each fragment's matched intensity that survives closing the mass "
+                          "window. DIA-NN's cheapest interference test: a real peak sits on "
+                          "its theoretical m/z and survives tightening, an interferent that "
+                          "merely fell inside the window often does not. Needs no "
+                          "re-extraction -- the per-cell sum(intensity*ppm) and "
+                          "sum(intensity) are already in memory. Consults NO library "
+                          "intensity, so it asks targets and decoys the same question, unlike "
+                          "the two intensity-weighted changes reverted before it. 0 leaves "
+                          "the column NaN and the constant-column guard drops it. DIA-NN "
+                          "tightens to 0.45x and 0.20x of the window; on S08's 10 ppm that is "
+                          "4.5 and 2.0.", false, true);
     registerDoubleOption_("select_library_weight", "<w>", 0.0,
                           "Weight of library-intensity agreement when the candidate cap "
                           "chooses among margin survivors. 0 is pure corr_sum. Non-zero is "
@@ -3424,7 +3454,15 @@ protected:
     }
     if (!mass_on)
     {
-      for (const char* n : {"var_mass_accuracy", "var_mass_spread"})
+      // var_mass_survival belongs on this list, not beside it. It is a THIRD
+      // draw on the same per-cell deviation planes, so `-mass_features off`
+      // must withhold it too -- otherwise the switch that exists because the
+      // mass channel COSTS 174 identifications on S08 is bypassed by a column
+      // added later, and an arm that looks like "does survival help" is really
+      // "does re-admitting the mass channel help on the file where it hurts".
+      // The first two arms were run before this line existed and measured
+      // exactly that confound.
+      for (const char* n : {"var_mass_accuracy", "var_mass_spread", "var_mass_survival"})
       {
         const int i = index_of(n);
         if (i >= 0) { out.push_back(i); }
@@ -3826,6 +3864,9 @@ protected:
       std::max(1, getIntOption_("candidate_min_separation")));
     options.select_library_weight =
       std::max(0.0, getDoubleOption_("select_library_weight"));
+    options.mass_survival_ppm = std::max(0.0, getDoubleOption_("mass_survival_ppm"));
+    options.mass_survival_centre = getDoubleOption_("mass_survival_centre");
+    options.null_feature = getFlag_("null_feature");
     options.peak_max_half_cycles = static_cast<std::size_t>(
       std::max(2, getIntOption_("peak_max_half_cycles")));
     options.boundary_smooth_half = static_cast<std::size_t>(

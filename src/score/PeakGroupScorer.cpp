@@ -1165,7 +1165,7 @@ namespace
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
       "var_im_delta", "var_ms1_coelution",
       "var_mass_accuracy", "var_mass_spread", "var_im_spread",
-      "var_rt_spread"};
+      "var_rt_spread", "var_mass_survival", "var_null_control"};
     return names;
   }
 
@@ -1988,6 +1988,82 @@ namespace
       // at -3 ppm" and reject correct identifications for being well
       // calibrated. It exists to fit a recalibration, and is read only for
       // groups the FDR has already accepted.
+      // MASS_SURVIVAL: how much of each fragment's MATCHED intensity is still
+      // there when the mass window is tightened.
+      //
+      // `ppm_den` is sum(intensity) over the peaks that matched this cell, so
+      // it is the matched intensity itself and needs no separate weight. A cell
+      // whose intensity-weighted mean deviation falls outside the tightened
+      // window is treated as lost. That is an approximation -- a cell holding
+      // both an on-mass and an off-mass peak has a mean that hides the split --
+      // and it is the same approximation the two-plane representation already
+      // forces on MASS_ACCURACY, so it introduces no new inaccuracy here.
+      // `hi > lo` for the same reason the block below it requires it: at a
+      // single cycle the per-fragment ratio degenerates to 0 or 1 and enters
+      // the classifier alongside fractions taken over five. The feature
+      // reverted yesterday lacked exactly this guard.
+      if (options.mass_survival_ppm > 0.0 && hi > lo &&
+          chromatogram.ppm_num != nullptr && chromatogram.ppm_den != nullptr)
+      {
+        double acc = 0.0;
+        std::size_t n_frag = 0;
+        for (std::uint32_t k = 0; k < tc; ++k)
+        {
+          const std::uint32_t n = chromatogram.pointCount(k);
+          const std::ptrdiff_t off = chromatogram.trace(k) - chromatogram.points;
+          const float* num = chromatogram.ppm_num + off;
+          const float* den = chromatogram.ppm_den + off;
+          double full = 0.0, tight = 0.0;
+          for (std::size_t j = lo; j <= hi && j < n; ++j)
+          {
+            if (!(den[j] > 0.0f)) { continue; }
+            const double d = double(den[j]);
+            full += d;
+            // Centred on the run's fragment deviation, not on zero. The
+            // calibration offset is normally folded into the query m/z, which
+            // centres the residual -- but when the mass-calibration gate FAILS
+            // the offset is set to 0 with a 50 ppm window and the distribution
+            // is left where the instrument put it. On S08 that is about -9 ppm,
+            // and an absolute window about zero would then score a perfectly
+            // real fragment near 0 while a decoy matching noise uniformly
+            // across the window scores higher: the column INVERTS. MASS_ACCURACY
+            // re-centres for precisely this reason.
+            const double dev = double(num[j]) / d - options.mass_survival_centre;
+            if (std::fabs(dev) <= options.mass_survival_ppm)
+            { tight += d; }
+          }
+          // A fragment that matched nothing abstains rather than scoring 0:
+          // "no peak to lose" is not "the peak did not survive".
+          if (full > 0.0) { acc += tight / full; ++n_frag; }
+        }
+        if (n_frag > 0)
+        { g.sub_scores[MASS_SURVIVAL] = acc / static_cast<double>(n_frag); }
+        else
+        { g.sub_scores[MASS_SURVIVAL] = std::numeric_limits<double>::quiet_NaN(); }
+      }
+      else
+      {
+        g.sub_scores[MASS_SURVIVAL] = std::numeric_limits<double>::quiet_NaN();
+      }
+
+      // The control. splitmix64 on (precursor, apex): deterministic, so a
+      // repeat run reproduces it exactly, and uniform in [0,1) with no relation
+      // to whether this candidate is a target or a decoy.
+      if (options.null_feature)
+      {
+        std::uint64_t z = (std::uint64_t(i) << 20) ^ std::uint64_t(cand.apex);
+        z += 0x9E3779B97F4A7C15ULL;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        z ^= z >> 31;
+        g.sub_scores[NULL_CONTROL] =
+          static_cast<double>(z >> 11) / static_cast<double>(1ULL << 53);
+      }
+      else
+      {
+        g.sub_scores[NULL_CONTROL] = std::numeric_limits<double>::quiet_NaN();
+      }
+
       if (chromatogram.ppm_num != nullptr && chromatogram.ppm_den != nullptr && hi > lo)
       {
         std::vector<double> dev, per_fragment, cell;
