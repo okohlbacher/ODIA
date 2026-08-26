@@ -568,6 +568,20 @@ namespace ODIA
 
       /// Emit the NULL_CONTROL column. A diagnostic, never a setting: see the
       /// enum. Off leaves it NaN, which the constant-column guard drops.
+      /// GBT stability knobs. 0 keeps the model's own default (120 trees,
+      /// depth 4, lambda 1.0, min_child_rows 20).
+      ///
+      /// Exposed because the discriminant is measurably unstable to an
+      /// uninformative column -- Spearman rho 0.79-0.82 and top-500 agreement
+      /// 0.38-0.42 between a run and the same run plus a noise feature. A
+      /// shallower or more strongly regularised model has less freedom to pick
+      /// a different equally-good solution when the feature set moves, and
+      /// whether that buys stability is now a measurement rather than an
+      /// argument.
+      int gbt_max_depth = 0;
+      int gbt_min_child_rows = 0;
+      double gbt_lambda = 0.0;
+
       bool null_feature = false;
 
       /// Seed for NULL_CONTROL. Different seeds give different arbitrary

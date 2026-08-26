@@ -2444,6 +2444,19 @@ namespace
     }
 
     Scoring::LDAParams params;
+    // The classifier's stability knobs, exposed because it turned out to need
+    // them. Adding a column of PURE NOISE moves identifications by up to 11.9%
+    // at the operating point, and the churn is in the DISCRIMINANT rather than
+    // the threshold: Spearman rho between a run and the same run with a noise
+    // column is 0.79-0.82, and agreement in the top 500 is 0.38-0.42. A model
+    // with 120 trees of depth 4 over ~3,400 positives has enough freedom to
+    // find a different-but-equally-good solution whenever the feature set
+    // changes, which makes every feature-level measurement on this pipeline
+    // unreadable. These let that be tested rather than argued about.
+    if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
+    if (options.gbt_min_child_rows > 0)
+    { params.gbt.min_child_rows = options.gbt_min_child_rows; }
+    if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
     // Two of the sub-scores are lower-is-better by construction, so their
     // weights may never come out positive. XCORR_COELUTION is the mean |lag|
     // between fragment maxima -- a peak group IS a co-elution, so more lag is

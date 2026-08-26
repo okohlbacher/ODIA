@@ -923,6 +923,20 @@ protected:
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
                        "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerIntOption_("gbt_max_depth", "<n>", 0,
+                       "Tree depth for -classifier gbt; 0 keeps the model default of 4. A "
+                       "shallower model has less freedom to find a different equally-good "
+                       "solution when the feature set changes. Exposed because adding a "
+                       "column of pure noise moves identifications by up to 11.9% at the "
+                       "operating point, with Spearman rho 0.79-0.82 against the same run "
+                       "without it.", false, true);
+    registerIntOption_("gbt_min_child_rows", "<n>", 0,
+                       "Minimum rows per leaf for -classifier gbt; 0 keeps the model default "
+                       "of 20. Raising it is the blunt way to stop the model resolving "
+                       "structure that only exists in one solution path.", false, true);
+    registerDoubleOption_("gbt_lambda", "<v>", 0.0,
+                          "L2 on leaf values for -classifier gbt; 0 keeps the model default "
+                          "of 1.0.", false, true);
     registerIntOption_("null_feature_seed", "<n>", 0,
                        "Seed for -null_feature. Different seeds give different arbitrary "
                        "classifier trajectories, which is how the width of the noise band is "
@@ -3871,6 +3885,9 @@ protected:
     options.mass_survival_ppm = std::max(0.0, getDoubleOption_("mass_survival_ppm"));
     options.mass_survival_centre = getDoubleOption_("mass_survival_centre");
     options.null_feature = getFlag_("null_feature");
+    options.gbt_max_depth = getIntOption_("gbt_max_depth");
+    options.gbt_min_child_rows = getIntOption_("gbt_min_child_rows");
+    options.gbt_lambda = getDoubleOption_("gbt_lambda");
     options.null_feature_seed =
       static_cast<std::uint64_t>(std::max(0, getIntOption_("null_feature_seed")));
     options.peak_max_half_cycles = static_cast<std::size_t>(
