@@ -103,15 +103,40 @@ weakest candidates and is median-imputed at 0.4821, the **69.9th percentile of
 the scoreable decoys** -- a candidate that could not be scored outranks 70% of
 decoys that could.
 
-## The measurement problem underneath all of it
+## The measurement question, settled: ODIA is deterministic
 
-Every arm today compared a change against a baseline on the fixture. The same
-default configuration drifted **+117 IDs and +0.23 pp FDP between 2026-08-23 and
-2026-08-26** -- larger than the +99 effect under test. Run-to-run variance has
-never been established in this project, and until it is, no fixture arm at this
-effect size is attributable to its change.
+A reviewer observed that the same default configuration drifted **+117 IDs and
++0.23 pp FDP between 2026-08-23 and 2026-08-26**, larger than the +99 effect
+under test, and concluded the arms were not attributable. That was the right
+thing to worry about and the wrong conclusion, and the repeat run settles it:
 
-That is the first thing to fix, and it costs one repeat run.
+    arm                IDs   entrap    FDP   sigma   DIA-NN    wall    peak
+    profilefit_s08   3,540       58   9.62    1.26    3,147   22:41   40419
+    replicate_s08    3,540       58   9.62    1.26    3,147   22:47   40385
+
+Identical configuration, identical binary, **identical on every result column**.
+Only wall time and peak RSS move, which are scheduling and allocator noise
+rather than output. **Run-to-run variance is zero: the classifier's folds, the
+extraction and the FDR are all deterministic.**
+
+Two consequences, and they point opposite ways.
+
+**Single runs are exact comparisons.** Two arms differing only in the change
+under test differ by exactly that change. So the matched-FDP results above --
+Gate C weighting -2.0%, PROFILE_FIT -2.8% at the operating point -- ARE
+attributable, and the removals stand on them. There is no noise floor to hide
+behind, in either direction.
+
+**The three-day baseline drift was therefore real.** It was not variance; it was
+the ~45 commits of boundary work between the two dates changing the output by
++117 IDs and +0.23 pp of FDP. At matched FDP that came to +1.2% at the operating
+point, entrapment 40/40 -- small, but a real effect rather than a measurement
+artefact.
+
+What the reviewer's caution correctly identifies is a narrower hazard: an arm is
+only clean if the binaries differ *by the change alone*. That held for both arms
+here. It would not hold for an arm compared against a baseline from a different
+build, which is exactly what the `build-gpu` trap made easy before it was fixed.
 
 ## What survives
 
