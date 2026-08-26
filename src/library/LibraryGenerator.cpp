@@ -1034,8 +1034,23 @@ namespace ODIA
       // its target and therefore has zero discriminative power, and the decoy is
       // extracted from the isolation window where its target's real signal lives,
       // so it acquires genuine chromatographic evidence it has no right to.
-      // ODIA is alone among the four engines in this -- DIA-NN, OpenSWATH and
-      // ODIA V1 all recompute.
+      // NOT an ODIA peculiarity, and an earlier version of this comment claimed
+      // the opposite. Inheriting the precursor m/z is the FIELD CONVENTION:
+      // DIA-NN moves fragment m/z only, and OpenSWATH's MRMDecoy ships
+      // product_mz_shift = +20 Th with precursor_mz_shift = 0. Both keep the
+      // target's precursor m/z deliberately.
+      //
+      // So the consequence -- MS1-envelope-only quantities carrying no
+      // discriminative power -- is shared by every library-based DIA engine, and
+      // is presumably why DIA-NN's MS1 evidence is nine CORRELATION channels
+      // rather than an envelope match. That is an argument for making ODIA's MS1
+      // evidence co-elution-based, not obviously an argument for recomputing.
+      //
+      // Recomputing also cuts the other way on the null: a decoy extracted where
+      // its target's real signal lives is a decoy that must beat real
+      // interference, while one relocated to an arbitrary window may face less.
+      // Whether that is conservative or anti-conservative is an entrapment
+      // question that nothing here measures.
       //
       // The 1/K0 has to move WITH it. On diaPASEF the extraction window is
       // two-dimensional, so a decoy whose m/z changes while its mobility does

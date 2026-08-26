@@ -108,70 +108,12 @@ namespace
     ///        z-scores over those transitions, so its null scale is
     ///        sqrt(contributing / w) -- which is what lets a threshold be set
     ///        from a noise model instead of from a run-wide decoy quantile.
-    /// Gate C's admission statistic.
-    ///
-    /// `lib_intensity`, when given with a non-zero `weight_exp`, gives each
-    /// transition a vote proportional to pow(library intensity, weight_exp)
-    /// instead of an equal one. A fragment the library says should be the
-    /// brightest in the spectrum otherwise counts exactly as much as one it
-    /// says is barely there, and this gate is where 98.2% of the loss against
-    /// DIA-NN's confident set happens -- 21.6% of them are rejected here,
-    /// against 0.6% lost to the picker returning nothing.
-    ///
-    /// The weights are RENORMALISED so that sum(w^2) equals the number of
-    /// contributing transitions, which is what sum(1^2) would have been. That
-    /// is not cosmetic: under white noise each transition's z-score has unit
-    /// variance, so the summed statistic has variance sum(w^2), and the
-    /// prominence threshold below is k * sqrt(contributing / w). Weighting
-    /// without renormalising would move the statistic's null width and quietly
-    /// change the gate's stringency, which would make any comparison a
-    /// comparison of thresholds rather than of statistics. Renormalised, the
-    /// null is unchanged by construction and the gate admits the same VOLUME --
-    /// so a gain can only come from admitting a better-chosen set.
-    ///
-    /// Measured by replay at matched admitted volume, targets against decoys:
-    /// at the production-like operating point, DIA-NN-confident recall rises
-    /// 79.9% -> 81.5% and the target/decoy ratio among the admitted rises
-    /// 1.33 -> 1.39. Both rulers, same direction, no extra candidates.
     double coelutionEvidence(const PrecursorChromatogram& c, std::size_t points,
-                             std::size_t half, std::size_t* contributing = nullptr,
-                             const float* lib_intensity = nullptr,
-                             double weight_exp = 0.0)
+                             std::size_t half, std::size_t* contributing = nullptr)
     {
       if (points == 0) { return 0.0; }
-      const bool weighted = lib_intensity != nullptr && weight_exp > 0.0;
       std::vector<double> s(points, 0.0);
       std::vector<double> y, scratch;
-      // First pass over the weights, so they can be renormalised before any of
-      // them is applied. A transition that contributes nothing (no spread) must
-      // not contribute a weight either, or the normalisation is computed over a
-      // different set than the sum it scales.
-      std::vector<double> w_of(c.transition_count, 1.0);
-      if (weighted)
-      {
-        double ss = 0.0;
-        std::size_t n_used = 0;
-        for (std::uint32_t t = 0; t < c.transition_count; ++t)
-        {
-          const std::uint32_t n = c.pointCount(t);
-          if (n == 0) { w_of[t] = 0.0; continue; }
-          const double raw = static_cast<double>(lib_intensity[t]);
-          const double wt = raw > 0.0 ? std::pow(raw, weight_exp) : 0.0;
-          w_of[t] = wt;
-          if (wt > 0.0) { ss += wt * wt; ++n_used; }
-        }
-        // All-zero or single-fragment libraries fall back to equal votes rather
-        // than to a division by zero.
-        if (ss > 0.0 && n_used > 0)
-        {
-          const double k = std::sqrt(static_cast<double>(n_used) / ss);
-          for (auto& wt : w_of) { wt *= k; }
-        }
-        else
-        {
-          std::fill(w_of.begin(), w_of.end(), 1.0);
-        }
-      }
       for (std::uint32_t t = 0; t < c.transition_count; ++t)
       {
         const std::uint32_t n = c.pointCount(t);
@@ -190,9 +132,8 @@ namespace
         // A transition with no spread contributes NOTHING rather than being
         // given an invented scale. It cannot vote for or against co-elution.
         if (!(mad > 0.0)) { continue; }
-        if (weighted && !(w_of[t] > 0.0)) { continue; }
         if (contributing != nullptr) { ++*contributing; }
-        const double scale = w_of[t] / (1.4826 * mad);
+        const double scale = 1.0 / (1.4826 * mad);
         for (std::uint32_t i = 0; i < n && i < points; ++i)
         { s[i] += (y[i] - median) * scale; }
       }
@@ -405,87 +346,6 @@ namespace
       if (area.size() < 3) { return -1.0; }
       const double r = pearson(area, lib);
       return std::isfinite(r) ? r : -1.0;
-    }
-
-    /// PROFILE_FIT: the fraction of each fragment's signal that the group's
-    /// common elution profile explains.
-    ///
-    /// Deliberately a COSINE on baseline-subtracted traces, not a Pearson
-    /// correlation on centred ones, and the difference is the whole point. Once
-    /// a local background is removed, a fragment's mean IS signal -- it is the
-    /// peak. Centring subtracts it again and asks only whether two shapes wiggle
-    /// together, which two equally noisy fragments can satisfy by agreeing about
-    /// noise. A cosine against a chosen reference asks a directional question, so
-    /// a fragment that is mostly noise simply explains little of it.
-    ///
-    /// Reference-free, that difference is worth 91.7% against 83.2% target
-    /// fraction among the top-5,000 with decoys as the control.
-    double profileFit(const std::vector<std::vector<double>>& traces,
-                      const std::vector<double>& background,
-                      const std::vector<double>& library_intensity)
-    {
-      const std::size_t tc = traces.size();
-      const double nan = std::numeric_limits<double>::quiet_NaN();
-      if (tc < 3 || background.size() < tc || library_intensity.size() < tc)
-      { return nan; }
-
-      std::vector<std::vector<double>> y(tc);
-      std::vector<double> norm2(tc, 0.0);
-      std::vector<std::size_t> use;
-      for (std::size_t k = 0; k < tc; ++k)
-      {
-        if (!(library_intensity[k] > 0.0)) { continue; }
-        y[k].assign(traces[k].size(), 0.0);
-        double nn = 0.0;
-        for (std::size_t j = 0; j < traces[k].size(); ++j)
-        {
-          const double v = std::max(0.0, traces[k][j] - background[k]);
-          y[k][j] = v; nn += v * v;
-        }
-        norm2[k] = nn;
-        if (nn > 0.0) { use.push_back(k); }
-      }
-      if (use.size() < 3) { return nan; }
-
-      // The reference is chosen among the library's SIX BRIGHTEST rather than
-      // over everything, which is DIA-NN's TopF. A faint fragment can correlate
-      // beautifully with another faint one and carry the whole group off to an
-      // interference; restricting the choice to fragments the library says
-      // should be there makes the reference hard to hijack.
-      std::vector<std::size_t> bright = use;
-      std::stable_sort(bright.begin(), bright.end(),
-                       [&](std::size_t a, std::size_t b)
-                       { return library_intensity[a] > library_intensity[b]; });
-      if (bright.size() > 6) { bright.resize(6); }
-
-      const auto cos2 = [&](std::size_t a, std::size_t b) {
-        const std::size_t n = std::min(y[a].size(), y[b].size());
-        double d = 0.0;
-        for (std::size_t j = 0; j < n; ++j) { d += y[a][j] * y[b][j]; }
-        const double den = norm2[a] * norm2[b];
-        return den > 0.0 ? (d * d) / den : 0.0;
-      };
-
-      std::size_t ref = bright.front();
-      double best = -1.0;
-      for (const std::size_t a : bright)
-      {
-        double acc = 0.0;
-        for (const std::size_t b : bright) { if (a != b) { acc += cos2(a, b); } }
-        if (acc > best) { best = acc; ref = a; }
-      }
-
-      double acc = 0.0;
-      std::size_t n_used = 0;
-      for (const std::size_t k : use)
-      {
-        if (k == ref) { continue; }
-        acc += cos2(k, ref); ++n_used;
-      }
-      // The reference is excluded from its own average: it explains itself
-      // perfectly by construction, so including it would add a constant 1 and
-      // make a two-fragment group look better than it is.
-      return n_used ? acc / static_cast<double>(n_used) : nan;
     }
 
     /// Walk out from an apex to a peak's boundaries on a SMOOTHED trace.
@@ -1305,7 +1165,7 @@ namespace
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
       "var_im_delta", "var_ms1_coelution",
       "var_mass_accuracy", "var_mass_spread", "var_im_spread",
-      "var_rt_spread", "var_profile_fit"};
+      "var_rt_spread"};
     return names;
   }
 
@@ -1526,12 +1386,7 @@ namespace
       //     C co-elution     4.8%       100.0%
       std::size_t contributing = 0;
       const double m = coelutionEvidence(chromatogram, points,
-                                         options.gate_smooth_half, &contributing,
-                                         t.library_intensity.empty()
-                                           ? nullptr
-                                           : t.library_intensity.data()
-                                               + chromatogram.transition_begin,
-                                         options.gate_library_weight);
+                                         options.gate_smooth_half, &contributing);
       bool was_ready = true;
       bool admitted = true;
       if (options.gate_mode == "prominence")
@@ -1962,7 +1817,6 @@ namespace
       // weight vector should not have to remember which column is inverted.
       g.sub_scores[XCORR_COELUTION] = -coelution;
       g.sub_scores[LIBRARY_CORR] = libraryCorrelation(corrected, library_intensity);
-      g.sub_scores[PROFILE_FIT] = profileFit(traces, frag_background, library_intensity);
       g.sub_scores[LIBRARY_DOTPROD] = dotProduct(corrected, library_intensity);
 
       // D6: the old group/window area ratio carried no library or

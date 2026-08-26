@@ -101,11 +101,25 @@ are the two OpenDIAlyzer attempts and are private.
 | interference handling | explicit removal phase | none explicit | none | none |
 | FDR engine | in-process | PyProphet | in-process | in-process |
 | tolerance adaptation | iterative, per-run | one correction | narrow-only | narrow-only |
-| decoy m/z | recomputed | recomputed | recomputed | **inherits target's** |
+| decoy PRECURSOR m/z | **inherits target's** | **inherits target's** | inherits target's | **inherits target's** |
+| decoy FRAGMENT m/z | recomputed | +20 Th shift | recomputed | recomputed |
 
-That last row is load-bearing and is V2's alone: because decoys carry the target's
-precursor m/z, **any MS1-envelope-only feature is numerically identical for a
-decoy and its target** and has zero discriminative power in production.
+**CORRECTED 2026-08-26.** The original row read "decoy m/z: recomputed |
+recomputed | recomputed | inherits target's" and called the inheritance V2's
+alone. That is wrong, and it propagated into a standing report before it was
+caught. The vault, source-derived, records DIA-NN as moving **fragment m/z
+only** and OpenSWATH's `MRMDecoy` as shipping `product_mz_shift = +20 Th` with
+`precursor_mz_shift = 0` (`15-Method/DIA pipeline phases compared.md:27`,
+`Interference lights up decoys.md:7-10`).
+
+So inheriting the decoy precursor m/z is the FIELD CONVENTION and V2 is in the
+majority, not alone. The consequence is still real and still worth stating --
+because decoys carry the target's precursor m/z, **any MS1-envelope-only feature
+is numerically identical for a decoy and its target** and has zero
+discriminative power -- but it is a property of library-based DIA generally, not
+a defect peculiar to this engine. It is presumably why DIA-NN's MS1 evidence is
+nine CORRELATION channels rather than an envelope match, which makes it an
+argument for co-elution-based MS1 evidence rather than for recomputing the mass.
 
 ## 5. Measured standing (Astral, same file)
 

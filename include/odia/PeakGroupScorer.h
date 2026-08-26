@@ -255,39 +255,6 @@ namespace ODIA
       /// question for measurement, not for this comment.
       RT_SPREAD,
 
-      /// How much of each fragment's signal the group's COMMON elution profile
-      /// explains, averaged over informative fragments.
-      ///
-      /// DIA-NN's interference idea, as a score rather than a subtraction: the
-      /// fragment least affected by interference -- highest summed correlation
-      /// to the others, among the library's six brightest -- carries the true
-      /// elution shape. Every other fragment is then that shape plus whatever
-      /// else happens to co-elute in its m/z channel, so projecting it onto the
-      /// reference splits it into the part that belongs to this peptide and the
-      /// part that does not.
-      ///
-      /// Related to XCORR_COELUTION and measured to be a BETTER form of the same
-      /// evidence rather than a second copy: correlation between them is 0.864,
-      /// and reference-free, target fraction among the top-5,000 with decoys as
-      /// control is 91.7% against co-elution's 83.2%. Combining the two is worse
-      /// than this alone (88.7%), which is what "dominates" looks like -- so if
-      /// this earns its place, the question of retiring the older column is a
-      /// real one rather than a courtesy.
-      ///
-      /// Projection rather than pairwise correlation matters at low intensity:
-      /// a pairwise mean treats two equally noisy fragments as agreeing when
-      /// they agree about noise, while a projection onto a chosen reference
-      /// asks a directional question and a noisy fragment simply explains
-      /// little.
-      ///
-      /// Label-symmetric by construction: a per-candidate transform applied
-      /// identically to targets and decoys. This is NOT DIA-NN's cross-precursor
-      /// `remove_ifs`, which deletes the weaker of two precursors claiming one
-      /// physical peak and operates on TARGETS ONLY -- porting that symmetrically
-      /// "to preserve exchangeability" would be precisely wrong, and a naive
-      /// simulation of it is already recorded as costing >2,000 identifications.
-      PROFILE_FIT,
-
       N_SUB_SCORES
     };
 
@@ -492,27 +459,6 @@ namespace ODIA
       /// detector was short of; what is unproven is that adding it to the
       /// SELECTION survives target-decoy competition.
       double select_library_weight = 0.0;
-
-      /// Exponent on library intensity when Gate C weights each transition's
-      /// vote. 0 is one vote per transition, which is what has always shipped.
-      ///
-      /// This is the admission gate, and it is where the losses are: of the
-      /// DIA-NN-confident precursors ODIA fails to score, gate_c accounts for
-      /// 98.2% and the picker returning nothing for 0.6%. Relaxing the
-      /// threshold has already been measured end-to-end at -20.4% at matched
-      /// entrapment FDP, so the threshold is not the lever -- the statistic is.
-      ///
-      /// The weights are renormalised to keep sum(w^2) equal to the transition
-      /// count, so the null width and therefore the gate's stringency are
-      /// unchanged and the same VOLUME is admitted. Measured that way, at the
-      /// production-like operating point: DIA-NN-confident recall 79.9% ->
-      /// 81.5%, and target/decoy ratio among the admitted 1.33 -> 1.39. Both
-      /// rulers move together, which no other change this week managed.
-      ///
-      /// 1.0 is linear weighting. 0.5 (sqrt) measured very slightly better at
-      /// the tightest operating points and slightly worse in the middle; the
-      /// middle is where production sits.
-      double gate_library_weight = 0.0;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate

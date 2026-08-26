@@ -57,10 +57,14 @@ namespace
       {"rt_model", rt_model}, {"ms2_model", ms2_model}, {"ccs_model", ccs_model},
       {"instrument", instrument}, {"nce", nce},
       {"irt_rescale", irt_rescale},
-      // In the embedded recipe deliberately: a library whose decoys carry their
-      // OWN precursor m/z is a different searchable object from one whose
-      // decoys carry their target's, and the fingerprint derived from this
-      // config is what decides whether a cached library may be reused.
+      // Recorded in the embedded recipe so a library states how its decoys were
+      // built. NOTE, because an earlier comment here claimed more than this: it
+      // does NOT protect cache reuse. The reuse decision is made by
+      // fingerprintParams in LibraryGenerator.cpp, which does not include this
+      // flag, and the embedded config is never read back to decide reuse. Two
+      // OpenDIAlyzer paths also call appendDecoys without it. Until those are
+      // closed, a cached library built with this ON can be silently rebuilt with
+      // inherited-m/z decoys.
       {"recompute_decoy_mz", recompute_decoy_mz}};
   }
 }
