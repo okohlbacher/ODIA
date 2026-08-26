@@ -2049,6 +2049,21 @@ namespace
       // The control. splitmix64 on (precursor, apex): deterministic, so a
       // repeat run reproduces it exactly, and uniform in [0,1) with no relation
       // to whether this candidate is a target or a decoy.
+      // Two kinds of null, and the second is the one that tests anything.
+      //
+      // `hash` is a column uniform in label. It is index 20 of 21, and split
+      // ties break toward the LOWEST feature index (gbt.h), so it is maximally
+      // disadvantaged for winning a tie -- and at depth 2 it won zero splits in
+      // any fold. Bit-identical output then proves only that a column which is
+      // never selected changes nothing, which is a fixed point rather than
+      // stability.
+      //
+      // `dup` is the test that matters: an epsilon-jittered copy of CORR_SUM,
+      // the highest-attribution feature in the model. It carries NO information
+      // the model does not already have, and it WILL win splits, because it is
+      // very nearly as good as the column it copies. If output moves under it,
+      // then "insensitive to an added column" was never true -- it was
+      // "insensitive to a column that loses every gain comparison".
       if (options.null_feature)
       {
         std::uint64_t z = (std::uint64_t(i) << 20) ^ std::uint64_t(cand.apex)
@@ -2057,8 +2072,19 @@ namespace
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
         z ^= z >> 31;
-        g.sub_scores[NULL_CONTROL] =
+        const double u =
           static_cast<double>(z >> 11) / static_cast<double>(1ULL << 53);
+        if (options.null_feature_dup)
+        {
+          // Relative jitter, so the copy tracks CORR_SUM across its whole range
+          // rather than being swamped by an absolute epsilon at large values.
+          const double base = g.sub_scores[CORR_SUM];
+          g.sub_scores[NULL_CONTROL] = base * (1.0 + 1e-6 * (u - 0.5));
+        }
+        else
+        {
+          g.sub_scores[NULL_CONTROL] = u;
+        }
       }
       else
       {
@@ -2457,6 +2483,7 @@ namespace
     if (options.gbt_min_child_rows > 0)
     { params.gbt.min_child_rows = options.gbt_min_child_rows; }
     if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
+    params.gbt.fixed_bins = options.gbt_fixed_bins;
     // Two of the sub-scores are lower-is-better by construction, so their
     // weights may never come out positive. XCORR_COELUTION is the mean |lag|
     // between fragment maxima -- a peak group IS a co-elution, so more lag is

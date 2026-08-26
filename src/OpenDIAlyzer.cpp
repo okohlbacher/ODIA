@@ -923,6 +923,14 @@ protected:
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
                        "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerFlag_("gbt_fixed_bins",
+                  "Compute the GBT's histogram bin edges from ALL rows instead of the current "
+                  "semi-supervised training set. The default recomputes them from pos+neg, "
+                  "which changes every iteration -- so adding one column changes the model, "
+                  "which changes the selected positives, which re-discretises every OTHER "
+                  "column. That is why a column of pure noise moves identifications by up to "
+                  "11.9% here. Edges over all rows are label-independent and identical across "
+                  "iterations and feature sets.", true);
     registerIntOption_("gbt_max_depth", "<n>", 0,
                        "Tree depth for -classifier gbt; 0 keeps the model default of 4. A "
                        "shallower model has less freedom to find a different equally-good "
@@ -937,6 +945,13 @@ protected:
     registerDoubleOption_("gbt_lambda", "<v>", 0.0,
                           "L2 on leaf values for -classifier gbt; 0 keeps the model default "
                           "of 1.0.", false, true);
+    registerFlag_("null_feature_dup",
+                  "Make -null_feature an epsilon-jittered copy of var_corr_sum rather than a "
+                  "uniform hash. The hash sits at the last column index and split ties break "
+                  "to the lowest index, so it loses every tie and can win no splits -- making "
+                  "bit-identical output a fixed point rather than evidence of stability. A "
+                  "near-duplicate of the strongest feature carries no new information but "
+                  "does win splits, which is the test that distinguishes the two.", true);
     registerIntOption_("null_feature_seed", "<n>", 0,
                        "Seed for -null_feature. Different seeds give different arbitrary "
                        "classifier trajectories, which is how the width of the noise band is "
@@ -3886,8 +3901,10 @@ protected:
     options.mass_survival_centre = getDoubleOption_("mass_survival_centre");
     options.null_feature = getFlag_("null_feature");
     options.gbt_max_depth = getIntOption_("gbt_max_depth");
+    options.gbt_fixed_bins = getFlag_("gbt_fixed_bins");
     options.gbt_min_child_rows = getIntOption_("gbt_min_child_rows");
     options.gbt_lambda = getDoubleOption_("gbt_lambda");
+    options.null_feature_dup = getFlag_("null_feature_dup");
     options.null_feature_seed =
       static_cast<std::uint64_t>(std::max(0, getIntOption_("null_feature_seed")));
     options.peak_max_half_cycles = static_cast<std::size_t>(

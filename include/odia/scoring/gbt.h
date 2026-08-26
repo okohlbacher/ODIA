@@ -57,6 +57,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 namespace ODIA::Scoring
@@ -73,6 +74,20 @@ struct GBTParams
   double gamma = 0.0;             ///< minimum gain to split
   double min_child_weight = 1.0;  ///< minimum summed hessian in a child
   int min_child_rows = 20;        ///< minimum rows in a child; guards tiny leaves on small folds
+  /// Bin edges from ALL rows rather than from the current training set.
+  ///
+  /// The default recomputes quantile edges from `pos + neg`, which in a
+  /// semi-supervised loop CHANGES every iteration. That is an amplification
+  /// path: adding one column changes the model, which changes the selected
+  /// positives, which re-discretises EVERY OTHER column -- so a perturbation
+  /// that should be local becomes global. Measured consequence: a column of
+  /// pure noise moves identifications by up to 11.9%, with Spearman rho 0.79
+  /// between a run and the same run plus that column.
+  ///
+  /// Edges over all rows are label-independent and therefore identical across
+  /// iterations and across feature sets, which closes the loop. Costs one extra
+  /// pass over the unlabelled rows per fit.
+  bool fixed_bins = false;
   /// Threads for the histogram pass (0 = whatever OpenMP gives). fit() is normally called from
   /// inside the fold loop's parallel region, where a nested team defaults to ONE thread -- so the
   /// caller must both set this and enable a second active level, or the parallelism does nothing.
@@ -230,7 +245,16 @@ public:
     std::vector<double> y(rows.size(), 0.0);
     for (std::size_t i = 0; i < pos.size(); ++i) { y[i] = 1.0; }
 
-    edges_ = gbt_detail::computeBinEdges(X, rows, p.n_bins);
+    if (p.fixed_bins)
+    {
+      std::vector<std::size_t> all_rows(X.size());
+      std::iota(all_rows.begin(), all_rows.end(), std::size_t{0});
+      edges_ = gbt_detail::computeBinEdges(X, all_rows, p.n_bins);
+    }
+    else
+    {
+      edges_ = gbt_detail::computeBinEdges(X, rows, p.n_bins);
+    }
     // A feature with no edges cannot split; that is fine, it just never wins a gain comparison.
     //
     // FLAT, not vector<vector>: the histogram pass below is 93% of a fit and reads every feature of

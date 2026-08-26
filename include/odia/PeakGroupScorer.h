@@ -582,12 +582,25 @@ namespace ODIA
       int gbt_min_child_rows = 0;
       double gbt_lambda = 0.0;
 
+      /// Compute the GBT's histogram bin edges from ALL rows rather than from
+      /// the evolving semi-supervised training set. See GBTParams::fixed_bins:
+      /// the default re-discretises every feature whenever the positive set
+      /// moves, which turns a one-column perturbation into a global one.
+      bool gbt_fixed_bins = false;
+
       bool null_feature = false;
 
       /// Seed for NULL_CONTROL. Different seeds give different arbitrary
       /// trajectories, which is how the width of the band is measured rather
       /// than inferred from one sample.
       std::uint64_t null_feature_seed = 0;
+
+      /// Make NULL_CONTROL an epsilon-jittered copy of CORR_SUM instead of a
+      /// uniform hash. The hash loses every split tie by position and so proves
+      /// only a fixed point; a near-duplicate of the strongest feature WILL win
+      /// splits while carrying nothing new, which is the actual test of whether
+      /// a configuration attributes an added column correctly.
+      bool null_feature_dup = false;
 
       /// Maximum lag, in cycles, considered by the cross-correlations. Capped
       /// internally at (n-1)/2 of the shortest trace, so a 5-point candidate
