@@ -129,3 +129,38 @@ This control cost one 23-minute arm. It should have been run before the second
 feature-level arm of the day, not after the sixth. Every feature-level verdict
 issued today was read off an instrument that had never been checked against a
 known-null input.
+
+
+## The cause is model capacity, and there is a dial
+
+The churn is in the DISCRIMINANT, not the threshold. Measured from four arms'
+rank files with no new run: Spearman rho between a run and the same run plus a
+noise column is 0.79-0.82, mean rank displacement 12-14%, and agreement in the
+top 500 is 0.38-0.42 -- worst exactly where it should be best -- recovering to
+0.94 only by top-3000.
+
+Two ways of constraining the model, each with a paired null arm at seed 99:
+
+    setting                  rho(base, +noise)   identical
+    depth 4 (default)              0.791            no
+    min_child_rows 200             0.663            no
+    depth 2                        1.000000         YES
+
+**At depth 2 the output is bit-identical with and without the noise column.**
+The instability is capacity: 120 trees of depth 4 over ~3,400 positives can find
+a different-but-equally-good solution whenever the feature set moves.
+Regularising the LEAVES made it worse, which rules out "too little
+regularisation" -- min_child_rows 200 coarsens the fit without removing the
+freedom to choose among equivalent split sets.
+
+The cost is real. Depth 2 gives 3,385 IDs at 10.07% FDP, and at matched FDP it
+is -14.0% at the operating point against one draw of depth 4. Depth 4's own
+range across four draws there is 2,778 to 3,152; depth 2's 2,711 sits below all
+of them.
+
+So the trade is exactness against depth: **depth 4 cannot be measured, depth 2
+can be measured but costs identifications.** Depth 3 is running.
+
+This reframes the whole day. Every feature-level arm was run on a model whose
+solution path moves further than the feature does. The right order was always:
+fix the instrument, then measure the features.
