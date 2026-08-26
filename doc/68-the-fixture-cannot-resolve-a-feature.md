@@ -158,8 +158,36 @@ is -14.0% at the operating point against one draw of depth 4. Depth 4's own
 range across four draws there is 2,778 to 3,152; depth 2's 2,711 sits below all
 of them.
 
-So the trade is exactness against depth: **depth 4 cannot be measured, depth 2
-can be measured but costs identifications.** Depth 3 is running.
+Depth 3 does not split the difference. It improves rho to 0.893 but leaves the
+HEAD of the list exactly as unstable -- top-500 agreement 0.410, against depth
+4's 0.418 and depth 2's 1.000. There is no middle: rho rises smoothly while the
+quantity that matters does not move at all until depth 2.
+
+    depth   rho        top-500   identical
+      4     0.790859   0.418     no
+      3     0.892746   0.410     no
+      2     1.000000   1.000     YES
+
+So the trade is exactness against depth, with a threshold rather than a slope:
+**depth 4 cannot be measured, depth 2 can be measured exactly.**
+
+## The methodology that follows
+
+Depth 4's headline number is one draw from a band. Estimating its central value
+from the four draws available at the operating point -- 3,152 / 3,105 / 3,127 /
+2,778 -- gives about 3,041, against depth 2's 2,711 and depth 3's 3,074. So
+depth 2 costs roughly 11% against depth 4's centre, not the 14% a single draw
+suggested.
+
+That is a price worth paying for an instrument, not for production:
+
+* **Screen features at depth 2.** The output is bit-identical to a noise
+  perturbation, so a difference of any size is real. This is the first
+  configuration in this project where a sub-score can be judged at all.
+* **Ship at depth 4**, and confirm a screened winner there with a PAIRED NULL
+  arm rather than against the baseline.
+* A feature that helps at depth 2 and not at depth 4 is not thereby refuted --
+  but it is a different claim, and it needs the paired-null comparison to make.
 
 This reframes the whole day. Every feature-level arm was run on a model whose
 solution path moves further than the feature does. The right order was always:
