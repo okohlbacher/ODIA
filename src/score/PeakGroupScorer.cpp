@@ -2484,6 +2484,18 @@ namespace
     { params.gbt.min_child_rows = options.gbt_min_child_rows; }
     if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
     params.gbt.fixed_bins = options.gbt_fixed_bins;
+    // `-classifier_iterations` was a DEAD OPTION: registered, parsed, stored on
+    // Options, and never read here, so the loop always ran LDAParams' own
+    // n_iter = 3 whatever the flag said. Found because a frozen-trajectory arm
+    // at `-classifier_iterations 1` came back BYTE-IDENTICAL to the default --
+    // which is the only reason a dead knob ever gets noticed.
+    //
+    // It matters beyond tidiness. Re-selecting the positive set each iteration
+    // is the path by which an added column changes the labels and therefore
+    // everything downstream; n_iter = 1 is the cheapest way to cut it, and
+    // until now that experiment could not be run at all.
+    if (options.classifier_iterations > 0)
+    { params.n_iter = options.classifier_iterations; }
     // Two of the sub-scores are lower-is-better by construction, so their
     // weights may never come out positive. XCORR_COELUTION is the mean |lag|
     // between fragment maxima -- a peak group IS a co-elution, so more lag is
