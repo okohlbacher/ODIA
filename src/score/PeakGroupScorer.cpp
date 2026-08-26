@@ -2422,7 +2422,21 @@ namespace
     // Only when the picker actually computed it. The amplitude detector leaves
     // CORR_SUM at 0, and seeding on a constant would guarantee the failure this
     // is meant to prevent.
-    if (options.coelution_picking)
+    //
+    // The OpenSWATH picker leaves it at 0 too, and the guard did not say so --
+    // `coelution_picking` stays true under `-picker openswath` because it is
+    // driven by a different flag, so the pure-OpenSWATH arm seeded its
+    // semi-supervised loop on an identically-zero column. That is not a
+    // hypothetical: every recorded number for that arm was produced this way,
+    // which means the measured verdict on OpenSWATH-style picking (+4.7% on
+    // S08, -38.8% on Astral) is confounded with this defect and cannot be read
+    // as a property of the picker until it is re-measured.
+    //
+    // `union_openswath` is deliberately NOT excluded: it mixes co-elution
+    // candidates that carry a real corr_sum with OpenSWATH ones that carry
+    // zero, so the column is informative rather than constant.
+    const bool pure_openswath = options.openswath_picking && !options.union_picking;
+    if (options.coelution_picking && !pure_openswath)
     {
       params.seed_mask.assign(N_SUB_SCORES, 0);
       params.seed_mask[CORR_SUM] = 1;

@@ -3766,10 +3766,18 @@ protected:
     options.max_mass_anchors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_mass_anchors")));
     options.min_library_corr = getDoubleOption_("min_library_corr");
-    options.coelution_picking = !getFlag_("amplitude_picking");
     const std::string picker = getStringOption_("picker");
     options.union_picking = picker == "union" || picker == "union_openswath";
     options.openswath_picking = picker == "openswath" || picker == "union_openswath";
+    // `-picker amplitude` used to be a NO-OP. It is in the valid-strings list,
+    // so it validates and prints in the help, but the amplitude detector is
+    // selected by the older `-amplitude_picking` flag and nothing here read
+    // `picker == "amplitude"` -- so anyone choosing it from the documented
+    // options silently got the co-elution picker instead, and any arm labelled
+    // "amplitude" that was driven this way measured co-elution under a wrong
+    // name. Both spellings now select it.
+    options.coelution_picking =
+      !getFlag_("amplitude_picking") && picker != "amplitude";
     options.openswath_sn = getDoubleOption_("openswath_sn");
     options.openswath_gauss = getFlag_("openswath_gauss");
     options.openswath_peak_width = getDoubleOption_("openswath_peak_width");
