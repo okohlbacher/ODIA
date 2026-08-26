@@ -45,6 +45,45 @@ It is deterministic and arbitrary: a different feature set gives a different
 solution path, and on a fixture holding 19% of the retention time and ~40
 entrapment hits at the operating point, that path difference dominates.
 
+## The band, measured with three seeds rather than inferred from one
+
+One null arm shows the band exists. Its WIDTH needs more than one sample, and
+different seeds give different arbitrary trajectories, so:
+
+    arm                  IDs   entrap    FDP    DIA-NN
+    inertcol (base)    3,419       51   8.75     3,073
+    null seed 0        3,370       49   8.52     3,038
+    null seed 7        3,458       54   9.17     3,092
+    null seed 99       3,326       57  10.07     2,940
+
+Pure noise spans **132 identifications (3.9%)** and **1.55 pp of FDP** before any
+matched-FDP comparison is made. At matched FDP against the same baseline:
+
+    null seed    5.72%    7.42%     10%     15%
+       0        -13.7%    -1.5%   -3.9%   +5.7%
+       7        -14.4%    -0.8%   -2.3%   +7.9%
+      99        -39.6%   -11.9%   -9.9%   +3.1%
+
+**The band at the operating point is -0.8% to -11.9%.** Every change measured
+today sits inside it:
+
+    change                  7.42%
+    mass survival 4.5 ppm   -0.9%
+    Gate C weighting        -2.0%
+    PROFILE_FIT             -2.8%
+    mass survival 2.0 ppm   -3.1%
+    ---- noise band ----    -0.8% to -11.9%
+
+They are not merely indistinguishable from noise; they are at the BETTER end of
+it. A verdict of "does not convert" was never available from this instrument.
+
+One more thing the three seeds show, which a single arm could not: all three are
+NEGATIVE at the operating point. A column carrying no information is not free --
+it is an overfitting surface for a semi-supervised loop with ~40 entrapment hits
+to calibrate against. That is consistent with this project's recorded finding
+that feature COUNT buys nothing, and sharpens it: count is not neutral, it is
+mildly harmful.
+
 ## What this invalidates, and what it does not
 
 **Invalidated as evidence about the features:** all six "does not convert"
@@ -68,8 +107,10 @@ are all an order of magnitude clear of it.
 
 ## What to do instead
 
-* **Never judge a feature-sized change on one fixture arm again.** The band is
-  at least +-3% at the operating point and wider at 15%.
+* **Never judge a feature-sized change on one fixture arm again.** The measured
+  band at the operating point is -0.8% to -11.9% over three seeds, so the
+  fixture's feature-level resolution is worse than 10%. Nothing in the range any
+  single sub-score plausibly delivers is measurable there.
 * **Run a null arm alongside any arm whose expected effect is under ~5%**, and
   report the difference against the null rather than against the baseline.
   `-null_feature` with `-null_feature_seed` exists for this; different seeds give
