@@ -56,15 +56,38 @@ source $R/ODIA/scripts/env.sh
 fixtures=${BENCH_FIXTURES:-s08}
 [[ $fixtures == both ]] && fixtures="s08 astral"
 
-# Which binary, and which source. An arm that silently ran a stale build is not
-# a comparison: 'gateq' reproduced the stored baseline exactly while emitting a
-# log line the current source no longer contains, and nothing in the output said
-# so. mtime rather than an embedded SHA because the binary carries none.
+# WHICH BINARY. This used to name $R/build-gpu/OpenDIAlyzer, a second CMake tree
+# that scripts/build_odia.sh does not write -- it builds into
+# ${ODIA_BUILD:-${ODIA_SCRATCH}/build/odia}. So "source, build, bench" ran the
+# binary the build had just NOT produced, and the staleness check below compared
+# against that same wrong file, which is the one guard that should have caught
+# it. Both now derive from the one expression build_odia.sh uses.
+#
+# Override with ODIA_BIN to bench a specific binary deliberately -- e.g. to
+# reproduce a stored arm against the tree it was measured on.
+BIN=${ODIA_BIN:-${ODIA_BUILD:-${ODIA_SCRATCH}/build/odia}/OpenDIAlyzer}
+[[ -x "$BIN" ]] || {
+  echo "no ODIA binary at $BIN" >&2
+  echo "  build it:  source scripts/env.sh && bash scripts/build_odia.sh" >&2
+  echo "  or point ODIA_BIN at one deliberately" >&2
+  exit 1
+}
+
+# An arm that silently ran a stale build is not a comparison: 'gateq' reproduced
+# the stored baseline exactly while emitting a log line the current source no
+# longer contains, and nothing in the output said so. mtime rather than an
+# embedded SHA because the binary carries none.
 bin_sha=$(git -C $R/ODIA rev-parse --short HEAD 2>/dev/null || echo unknown)
-bin_age=$(date -r $R/build-gpu/OpenDIAlyzer '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)
+bin_age=$(date -r "$BIN" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)
 dirty=$(git -C $R/ODIA status --porcelain 2>/dev/null | wc -l)
-echo "   binary built $bin_age   repo $bin_sha${dirty:+ (+$dirty uncommitted)}"
-if [[ -n "$(find $R/ODIA/src $R/ODIA/include -newer $R/build-gpu/OpenDIAlyzer -name '*.cpp' -o -newer $R/build-gpu/OpenDIAlyzer -name '*.h' 2>/dev/null | head -1)" ]]; then
+echo "   binary $BIN"
+echo "   built $bin_age   repo $bin_sha${dirty:+ (+$dirty uncommitted)}"
+# -newer applies only to the term it follows, so the original
+#   -newer BIN -name '*.cpp' -o -newer BIN -name '*.h'
+# was already correct in spirit but repeated the predicate; grouped here so a
+# future edit cannot drop one half and silently stop checking headers.
+if [[ -n "$(find $R/ODIA/src $R/ODIA/include \
+              \( -name '*.cpp' -o -name '*.h' \) -newer "$BIN" 2>/dev/null | head -1)" ]]; then
   echo "   WARNING: sources are NEWER than the binary -- this arm is measuring a stale build" >&2
 fi
 
@@ -82,7 +105,7 @@ for fx in $fixtures; do
   tag=${arm}_${fx}
   echo "== bench arm '$arm' on $desc, extra args: $*"
 
-  /usr/bin/time -v $R/build-gpu/OpenDIAlyzer \
+  /usr/bin/time -v "$BIN" \
     -in "$FX" -tr $S/human_v2.parquet $MAP \
     -threads 96 -live_memory_gb 400 "$@" \
     -out $S/bench_${tag}.tsv > $L/bench_${tag}.log 2>&1

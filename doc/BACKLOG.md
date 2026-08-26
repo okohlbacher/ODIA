@@ -3625,7 +3625,7 @@ centres pass 2's extraction window, which is upstream of scoring.
 Still owed: a benchmark arm measuring what the removal is worth, against the
 15:44 baseline that reproduces the stored one exactly.
 
-## Two build trees, and bench.sh runs the one build_odia.sh does not
+## ~~Two build trees, and bench.sh runs the one build_odia.sh does not~~ FIXED 2026-08-26
 
 `scripts/build_odia.sh` builds into `$ODIA_SCRATCH/build/odia`
 (/scratch/kohlbach/odia/build/odia). `scripts/bench.sh` line 85 EXECUTES
@@ -3641,3 +3641,14 @@ is exactly the state in which people ignore warnings.
 Either point both at one tree, or make bench.sh take the binary path from the
 same variable build_odia.sh writes to. Until then: rebuild build-gpu explicitly
 before any bench.sh arm.
+
+**Fixed.** bench.sh now derives `BIN` from the same
+`${ODIA_BUILD:-${ODIA_SCRATCH}/build/odia}` expression build_odia.sh writes to,
+hard-fails when no binary is there, prints the path it is about to run, and
+accepts `ODIA_BIN` to bench a specific binary deliberately. The staleness check
+now compares against that same file rather than against the tree nobody builds.
+
+One consequence to be aware of before comparing to STORED arms: those were run
+against `build-gpu`, so an arm reproduced now runs a different binary than the
+one that produced the stored number. Where an exact reproduction matters, set
+`ODIA_BIN=$R/build-gpu/OpenDIAlyzer` explicitly.
