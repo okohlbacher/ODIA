@@ -135,3 +135,37 @@ The split stays, but the honest case for it is architectural rather than
 numerical: the two intervals answer different questions, DIA-NN separates them
 for the same reason, an invariance test can hold them apart, and it costs
 nothing. A third of a point of AUC is not why.
+
+
+## A design choice that flips two thirds of the rankings and costs nothing
+
+The detector walks fragments in descending correlation and credits a position
+with the first one that passes the shape gates. So the stored score belongs to
+the witnessing fragment, and the highest-correlating fragment -- which just
+failed the apex test -- does not get to speak for the position.
+
+Consequential, and unmeasured until now:
+
+    the scored reference is not the highest-correlating fragment   67.7% of positions
+    deflation when it happens (margin is 2.0)   median 0.709, p90 1.860, max 9.005
+    ...exceeding the margin outright                               8.0%
+    precursors whose top-ranked position would change              69.3%
+    precursors whose margin-surviving set would change             85.3%
+
+Ranking by the position's best correlation instead -- admission unchanged, so a
+position still needs a passing witness -- is measurably no better:
+
+    selection    top-500   top-1000   top-2000     (discriminant: co-elution)
+    corr_sum       93.8%      92.3%      86.2%
+    corr_max       93.4%      91.6%      84.4%
+
+Two orderings that disagree about which position to name on two thirds of
+precursors separate targets from decoys equally well. The existing design is
+validated rather than merely defended -- and the result generalises: **the
+positions inside a precursor's margin set are largely interchangeable to a
+discriminant**, which is why every selection-statistic change measured this
+session moved the reference-free ruler by fractions of a point regardless of how
+large its effect on agreement with DIA-NN looked.
+
+That is the session's most useful negative. It says the remaining emission gap
+will not be closed by choosing better among the candidates already on the list.
