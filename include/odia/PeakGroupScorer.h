@@ -588,6 +588,16 @@ namespace ODIA
       /// moves, which turns a one-column perturbation into a global one.
       bool gbt_fixed_bins = false;
 
+      /// Boosting rounds and shrinkage. 0 keeps the model's own 120 and 0.1.
+      ///
+      /// The pairing that matters is depth 2 with MORE trees: shallow trees
+      /// added additively recover capacity without creating the small-leaf
+      /// overfitting surface that lets an uninformative column win splits at
+      /// depth 4. Halving the learning rate while doubling the rounds is the
+      /// usual way to buy accuracy at fixed variance.
+      int gbt_n_trees = 0;
+      double gbt_learning_rate = 0.0;
+
       bool null_feature = false;
 
       /// Seed for NULL_CONTROL. Different seeds give different arbitrary

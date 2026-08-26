@@ -923,6 +923,15 @@ protected:
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
                        "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+    registerIntOption_("gbt_n_trees", "<n>", 0,
+                       "Boosting rounds for -classifier gbt; 0 keeps the model default of "
+                       "120. Pairs with -gbt_max_depth 2: shallow trees added additively "
+                       "recover capacity without the small-leaf surface that lets an "
+                       "uninformative column win splits at depth 4.", false, true);
+    registerDoubleOption_("gbt_learning_rate", "<v>", 0.0,
+                          "Shrinkage for -classifier gbt; 0 keeps the model default of 0.1. "
+                          "Halve it while doubling -gbt_n_trees to buy accuracy at fixed "
+                          "variance.", false, true);
     registerFlag_("gbt_fixed_bins",
                   "Compute the GBT's histogram bin edges from ALL rows instead of the current "
                   "semi-supervised training set. The default recomputes them from pos+neg, "
@@ -3902,6 +3911,8 @@ protected:
     options.null_feature = getFlag_("null_feature");
     options.gbt_max_depth = getIntOption_("gbt_max_depth");
     options.gbt_fixed_bins = getFlag_("gbt_fixed_bins");
+    options.gbt_n_trees = getIntOption_("gbt_n_trees");
+    options.gbt_learning_rate = getDoubleOption_("gbt_learning_rate");
     options.gbt_min_child_rows = getIntOption_("gbt_min_child_rows");
     options.gbt_lambda = getDoubleOption_("gbt_lambda");
     options.null_feature_dup = getFlag_("null_feature_dup");

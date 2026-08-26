@@ -2484,6 +2484,16 @@ namespace
     { params.gbt.min_child_rows = options.gbt_min_child_rows; }
     if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
     params.gbt.fixed_bins = options.gbt_fixed_bins;
+    // More SHALLOW trees rather than fewer deep ones. Depth 2 is the only
+    // configuration measured to attribute an added column correctly, and it
+    // costs about 11% of identifications against depth 4's centre. Boosting
+    // recovers capacity additively -- many depth-2 trees approximate a richer
+    // function without ever fitting a leaf of a handful of rows, which is the
+    // surface gbt.h:441 names and the one that lets a noise column win a split
+    // at depth 4.
+    if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
+    if (options.gbt_learning_rate > 0.0)
+    { params.gbt.learning_rate = options.gbt_learning_rate; }
     // `-classifier_iterations` was a DEAD OPTION: registered, parsed, stored on
     // Options, and never read here, so the loop always ran LDAParams' own
     // n_iter = 3 whatever the flag said. Found because a frozen-trajectory arm
