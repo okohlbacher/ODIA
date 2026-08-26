@@ -795,7 +795,8 @@ namespace ODIA
 
   std::size_t LibraryGenerator::appendDecoys(Library& library, DecoyMethod method,
                                              std::size_t* skipped_out,
-                                             std::size_t min_fragments)
+                                             std::size_t min_fragments,
+                                             bool recompute_decoy_mz)
   {
     if (method == DecoyMethod::None) { return 0; }
 
@@ -1023,9 +1024,54 @@ namespace ODIA
         continue;
       }
 
-      p.mz.push_back(p.mz[i]);
+      // THE PRECURSOR m/z. Inherited from the target by default, and that is a
+      // real defect rather than an approximation like the ones below it.
+      //
+      // The fragment m/z above are recomputed from the decoy peptide; this one
+      // is copied. Under `mutate` the decoy's composition genuinely differs, so
+      // the stored value is the mass of a different molecule. Two consequences:
+      // any MS1-envelope-only quantity is numerically IDENTICAL for a decoy and
+      // its target and therefore has zero discriminative power, and the decoy is
+      // extracted from the isolation window where its target's real signal lives,
+      // so it acquires genuine chromatographic evidence it has no right to.
+      // ODIA is alone among the four engines in this -- DIA-NN, OpenSWATH and
+      // ODIA V1 all recompute.
+      //
+      // The 1/K0 has to move WITH it. On diaPASEF the extraction window is
+      // two-dimensional, so a decoy whose m/z changes while its mobility does
+      // not is a physically inconsistent ion that can fall outside the window
+      // and be DELETED rather than relocated -- and deleting decoys
+      // non-uniformly is an FDR change wearing a bug fix's clothes.
+      //
+      // `mobilityFromCCS` already exists for exactly this and is what fills the
+      // targets' own 1/K0 at prediction time; the collision cross-section is a
+      // property of the ion, so it is the quantity that legitimately carries
+      // over to a rearranged sequence, and 1/K0 is then re-derived from it at
+      // the new mass. A library that carries 1/K0 but no CCS is inverted first
+      // with `ccsFromMobility`, so both library provenances behave the same.
+      double new_mz = fromFixed(p.mz[i]);
+      if (recompute_decoy_mz)
+      {
+        const double dz = decoy.getMZ(static_cast<int>(p.charge[i]));
+        if (std::isfinite(dz) && dz > 0.0) { new_mz = dz; }
+      }
+      p.mz.push_back(toFixed(new_mz));
       p.irt.push_back(p.irt[i]);
-      p.im.push_back(p.im[i]);
+
+      float new_im = p.im[i];
+      if (recompute_decoy_mz && std::isfinite(p.im[i]))
+      {
+        const double ccs_i =
+          (i < p.ccs.size() && std::isfinite(p.ccs[i]))
+            ? static_cast<double>(p.ccs[i])
+            : ccsFromMobility(p.im[i], fromFixed(p.mz[i]), p.charge[i]);
+        const double k0 = mobilityFromCCS(ccs_i, new_mz, p.charge[i]);
+        // Only on a finite, positive result: a decoy silently losing its
+        // mobility would be distinguishable by a missing value, which is the
+        // same FDR leak the CCS copy below exists to avoid.
+        if (std::isfinite(k0) && k0 > 0.0) { new_im = static_cast<float>(k0); }
+      }
+      p.im.push_back(new_im);
       // A decoy has the target's composition rearranged, so its cross-section
       // is close to the target's but not identical. Copying is the same
       // approximation already made for iRT and the intensity pattern, and it

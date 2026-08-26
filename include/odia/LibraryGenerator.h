@@ -313,9 +313,15 @@ namespace ODIA
     /// @param min_fragments the same bar the targets had to clear. Applying it
     ///        to one class only is an anti-conservative FDR (D7 rule 2).
     /// Idempotent: targets that already have a decoy are skipped.
+    /// @param recompute_decoy_mz recompute the decoy's PRECURSOR m/z from its
+    ///        own sequence instead of inheriting the target's, and re-derive its
+    ///        1/K0 from its collision cross-section at that new mass so it stays
+    ///        a consistent ion in the two-dimensional diaPASEF window. Off by
+    ///        default pending its first measured arm.
     static std::size_t appendDecoys(Library& library, DecoyMethod method,
                                     std::size_t* skipped_out = nullptr,
-                                    std::size_t min_fragments = 0);
+                                    std::size_t min_fragments = 0,
+                                    bool recompute_decoy_mz = false);
   };
 
 } // namespace ODIA

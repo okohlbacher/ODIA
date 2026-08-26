@@ -32,7 +32,8 @@ namespace
   json effectiveConfig(const ODIA::DigestParams& p, const std::string& decoys,
                        const std::string& rt_model, const std::string& ms2_model,
                        const std::string& ccs_model, double nce,
-                       const std::string& instrument, bool irt_rescale)
+                       const std::string& instrument, bool irt_rescale,
+                       bool recompute_decoy_mz)
   {
     return json{
       {"schema_version", 1},
@@ -55,7 +56,12 @@ namespace
       {"decoys", decoys},
       {"rt_model", rt_model}, {"ms2_model", ms2_model}, {"ccs_model", ccs_model},
       {"instrument", instrument}, {"nce", nce},
-      {"irt_rescale", irt_rescale}};
+      {"irt_rescale", irt_rescale},
+      // In the embedded recipe deliberately: a library whose decoys carry their
+      // OWN precursor m/z is a different searchable object from one whose
+      // decoys carry their target's, and the fingerprint derived from this
+      // config is what decides whether a cached library may be reused.
+      {"recompute_decoy_mz", recompute_decoy_mz}};
   }
 }
 
@@ -101,10 +107,12 @@ protected:
   /// correctly.
   void apply_(const json& j, ODIA::DigestParams& p, std::string& decoys,
               std::string& rt_model, std::string& ms2_model, std::string& ccs_model,
-              double& nce, std::string& instrument, bool& irt_rescale)
+              double& nce, std::string& instrument, bool& irt_rescale,
+              bool& recompute_decoy_mz)
   {
     const json ref = effectiveConfig(p, decoys, rt_model, ms2_model, ccs_model,
-                                     nce, instrument, irt_rescale);
+                                     nce, instrument, irt_rescale,
+                                     recompute_decoy_mz);
     for (const auto& [k, v] : j.items())
     {
       if (!ref.contains(k)) { throw std::runtime_error("unknown config key: " + k); }
@@ -148,6 +156,8 @@ protected:
     if (j.contains("instrument")) { instrument = j["instrument"]; }
     if (j.contains("nce")) { nce = j["nce"]; }
     if (j.contains("irt_rescale")) { irt_rescale = j["irt_rescale"]; }
+    if (j.contains("recompute_decoy_mz"))
+    { recompute_decoy_mz = j["recompute_decoy_mz"]; }
     if (p.charges.empty()) { throw std::runtime_error("precursor_charges must not be empty"); }
   }
 
@@ -160,6 +170,10 @@ protected:
     // so shipping ours DOUBLED its decoy population and made its FDR far more
     // conservative. ODIA appends its own on load when a library has none.
     std::string decoys = "none", rt_model, ms2_model, ccs_model, instrument = "QE";
+    // Off pending its first measured arm, not because of a hazard: the decoy's
+    // 1/K0 is re-derived from its CCS at the new mass, so it stays a physically
+    // consistent ion inside the two-dimensional diaPASEF window.
+    bool recompute_decoy_mz = false;
     double nce = 30.0;
     // RAW MODEL UNITS are the pipeline domain (doc/28): the library carries the
     // RT model's own 0..1 output and the per-run map takes it to seconds. The
@@ -174,7 +188,8 @@ protected:
       std::ifstream in(cfg);
       if (!in) { writeLogError_("cannot read config: " + cfg); return INPUT_FILE_NOT_FOUND; }
       try { apply_(json::parse(in, nullptr, true, true), p, decoys, rt_model,
-                   ms2_model, ccs_model, nce, instrument, irt_rescale); }
+                   ms2_model, ccs_model, nce, instrument, irt_rescale,
+                   recompute_decoy_mz); }
       catch (const std::exception& e)
       { writeLogError_(std::string("config: ") + e.what()); return ILLEGAL_PARAMETERS; }
     }
@@ -190,7 +205,8 @@ protected:
       }
     }
     const json eff = effectiveConfig(p, decoys, rt_model, ms2_model, ccs_model,
-                                     nce, instrument, irt_rescale);
+                                     nce, instrument, irt_rescale,
+                                     recompute_decoy_mz);
 
     if (const std::string wc = getStringOption_("write_config"); !wc.empty())
     {
@@ -264,7 +280,8 @@ protected:
       // Same fragment bar as the targets: applying it to one class only is an
       // anti-conservative FDR.
       const auto made = ODIA::LibraryGenerator::appendDecoys(library, method, &skipped,
-                                                             p.min_fragments);
+                                                             p.min_fragments,
+                                                             recompute_decoy_mz);
       writeLogInfo_("decoys: " + std::to_string(made) + " (" + decoys + "), " +
                     std::to_string(skipped) + " skipped");
     }
