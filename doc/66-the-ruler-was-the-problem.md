@@ -169,3 +169,35 @@ large its effect on agreement with DIA-NN looked.
 
 That is the session's most useful negative. It says the remaining emission gap
 will not be closed by choosing better among the candidates already on the list.
+
+
+## The cap, settled on the right ruler
+
+Codex held that the cap question was open, and it was right that my answer used
+the disowned ruler. The interchangeability finding above suggested the answer
+might reverse: if the positions in a margin set are interchangeable, admitting
+more of them should be roughly neutral rather than harmful.
+
+It does not reverse. Target fraction among the top-N, decoys as the control,
+selection by `corr_sum`, cap varied:
+
+    cap    top-500   top-1000   top-2000     (discriminant: co-elution)
+      1      94.4%      93.4%      84.3%
+      3      93.8%      92.3%      86.2%
+      5      92.2%      91.3%      84.5%
+     10      90.2%      89.3%      82.3%
+   none      89.0%      86.7%      81.1%
+
+Monotone and substantial, and the library discriminant agrees (96.8% -> 89.8%
+-> 86.1% at top-1000). Both rulers now say the same thing, which is the outcome
+worth having: the earlier conclusion was reached on evidence that could not
+support it, and it happens to have been correct.
+
+Why interchangeability does not extend this far: it was measured among the top
+THREE margin survivors, which are near-ties. Raising the cap admits positions
+further down that are genuinely weaker, and a maximum taken over more candidates
+inflates decoys as readily as targets.
+
+Cap 1 is better than cap 3 at the tightest operating points and worse at looser
+ones -- less winner's curse, less recall -- so 3 sits sensibly between them.
+`max_candidates = 3` is now a measured default rather than an inherited one.
