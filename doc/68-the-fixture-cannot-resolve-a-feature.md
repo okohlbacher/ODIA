@@ -192,3 +192,47 @@ That is a price worth paying for an instrument, not for production:
 This reframes the whole day. Every feature-level arm was run on a model whose
 solution path moves further than the feature does. The right order was always:
 fix the instrument, then measure the features.
+
+
+## The instrument works, and the first thing it measured said no
+
+`var_mass_survival` at 4.5 ppm, screened at depth 2 against a control differing
+only by that column:
+
+    matched FDP    delta
+       5.72%       -8.7%
+       7.42%       -6.6%   <- operating point
+      10.00%       +5.6%
+      15.00%       +2.5%
+
+**-6.6% at the operating point, and this one is attributable.** There is no band
+to hide in: at depth 2 the output is bit-identical under a noise perturbation,
+so the difference is the feature.
+
+The same run validates the instrument, which matters more than the verdict. A
+reviewer's objection to screening at depth 2 was that stability might be a
+tautology -- a depth-2 model might simply never split on a twentieth column, in
+which case "insensitive to noise" would mean "deaf to everything". It does not:
+
+    depth 2 + pure noise        3,385 IDs   IDENTICAL to control
+    depth 2 + mass survival     3,295 IDs   -90
+
+It ignored the uninformative column and responded to the informative one. That
+is the behaviour an instrument is supposed to have, and it was not designed in
+-- it was tested for and could have failed.
+
+One assumption corrected on the way: `-mass_features on` turned out to be a
+no-op on this fixture (d2mf is identical to d2base), so `auto` already resolves
+to ON here -- presumably the calibration gate fails on a 19% slice, where it
+passes on the full file. The reasoning that put `var_mass_survival` on the
+`!mass_on` withhold list still holds for the full run; it simply had no effect
+on the arms.
+
+## Where that leaves the day
+
+Nothing built today earned its place. Gate C weighting was label-asymmetric,
+PROFILE_FIT's mechanism was absent, and mass survival costs 6.6% measured
+exactly. Four features, four rejections.
+
+What was built instead is the ability to tell -- and the record of six earlier
+verdicts that were never available. That is the more useful half.
