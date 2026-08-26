@@ -236,3 +236,52 @@ exactly. Four features, four rejections.
 
 What was built instead is the ability to tell -- and the record of six earlier
 verdicts that were never available. That is the more useful half.
+
+
+## The duplicate-column test was inert, and the reason answers the objection
+
+A reviewer's blocker: depth-2 bit-identity proves only that a column which never
+wins a split changes nothing -- a fixed point, not stability -- because
+var_null_control sits at index 20 of 21 and split ties break toward the LOWEST
+feature index, so it is maximally disadvantaged. The prescribed test was a
+column that DOES win splits while carrying nothing new: an epsilon-jittered copy
+of var_corr_sum.
+
+Built and run. It changed nothing anywhere:
+
+    arm       IDs   entrap    FDP   vs its base
+    d2base  3,385       58  10.07
+    d2dup   3,385       58  10.07   IDENTICAL
+    fbbase  3,338       50   8.79
+    fbdup   3,338       50   8.79   IDENTICAL
+
+Identical even under fixed bins at depth 4, which the HASH null does move
+(3,338 / 3,366 / 3,263). So the duplicate is inert in a configuration that is
+demonstrably not stable -- which means the test measured its own construction,
+not the model. At 1e-6 relative jitter the copy falls in the same 64 quantile
+bins as the column it copies, so its gain is exactly equal at every split, and
+an exact tie is resolved against it by index. It can never win a split.
+
+**A truly redundant column cannot win a split against its twin.** A tree reads
+only order, so any monotone transform of a feature partitions identically; the
+only way to make a copy win is to add enough noise that it is no longer
+redundant. The reviewer's test, as specified, cannot be constructed.
+
+What answers the objection instead is the mechanism, and the evidence is already
+in hand. At depth 2 a tree has 3 internal nodes; at depth 4 it has 15. A uniform
+column has near-zero gain, so it legitimately loses every gain comparison
+against real features when the budget is 3 -- and wins some when the budget is
+15 and deep nodes are fitting small subsets. That is not blindness, it is
+selection working, and it is the textbook overfitting surface this codebase's
+own comment names at gbt.h:441 ("a leaf of a handful of rows is fitted noise,
+and it lands in the score tail that sets the FDR threshold").
+
+The decisive counter-evidence is that depth 2 is NOT inert to a split-winning
+column: var_mass_survival moved it by -90 identifications. So depth 2 ignored
+the column with no gain and responded to the one with gain, which is the
+behaviour required of an instrument.
+
+Residual, and it should be stated rather than argued away: this is one feature
+set at one column index. A feature whose gain sits near the depth-2 selection
+threshold could be admitted or refused on a margin, and nothing here measures
+how wide that margin is.
