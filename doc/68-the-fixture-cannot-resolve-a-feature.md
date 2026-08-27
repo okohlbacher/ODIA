@@ -319,3 +319,62 @@ cost -- it was two bad defaults.
 Running: the stacked arm with its null, plus the same trees-and-iterations
 change at depth 4 to separate "shallow is good" from "these two defaults were
 bad at any depth".
+
+
+## The stacked arm: the prediction was wrong, and the reason is worth keeping
+
+Predicted above: depth 2 with both changes "would land near 3,240, against depth
+4's 3,152". Measured, at the DIA-NN operating point of 7.42% entrapment FDP:
+
+    arm      configuration                                        IDs @ 7.42%
+    d2base   depth 2, defaults                                          2,711
+    d2it1    depth 2, n_iter 1                                          3,014
+    combo    depth 2, n_iter 1, 480 trees, lr 0.025                     2,964
+    d4it1    depth 4, n_iter 1, 480 trees, lr 0.025                     2,741
+    fbbase   depth 4, fixed bins, defaults                              3,153
+
+**The two effects do not compose.** `n_iter = 1` alone is +11.2% over d2base, as
+recorded. Adding 480 trees at lr 0.025 on top of it does not add +7.1%; it
+*costs* 1.7% (3,014 -> 2,964). The +7.1% measured for 480 trees was measured
+against a three-iteration baseline, and once the loop is cut to a single fit
+the extra capacity has nothing left to recover. Two changes that each help
+against the default are not additive when they repair the same defect.
+
+The prediction of 3,240 was not off by noise. At depth 2 these numbers are
+exact, so 2,964 against a predicted 3,240 is a straightforward falsification of
+the compositional assumption behind it.
+
+**What did survive: depth 2 beats depth 4 on its own terms.** `combo` and
+`d4it1` differ in nothing but depth, and read 2,964 against 2,741 -- **+8.1% for
+the shallower model**. So shallow trees are not merely the configuration that
+can be measured; at matched trees, shrinkage and iterations they are also the
+better one.
+
+## Exactness holds at the stacked configuration, under the worst seed
+
+`combon` is `combo` plus `-null_feature -null_feature_seed 99`, and the log
+confirms the column was live: it drops **four** uninformative sub-scores where
+`combo` drops five, retaining `var_null_control`. The two arms are identical at
+every FDP target measured:
+
+    FDP target    2.00%   5.00%   5.72%   7.42%    10%     15%
+    combo            41   2,250   2,557   2,964  3,500   4,030
+    combon           41   2,250   2,557   2,964  3,500   4,030
+
+Seed 99 is the harshest of the three in the table at the top of this document
+(-39.6% at 5.72%, -11.9% at the operating point when it was run at depth 4), so
+this is the stress case rather than a favourable one. Seeds 0 and 7 are running
+to complete the sweep; the claim "the fixture's feature-level resolution is
+restored at this configuration" is not established until they land.
+
+## The comparison this table cannot make
+
+`fbbase` reads 3,153 -- higher than every depth-2 arm. It is depth 4, so it sits
+on the instrument this document exists to discredit, and 3,153 against d2it1's
+3,014 is a 4.6% gap lying **inside** the -0.8% to -11.9% null band. The two are
+therefore not distinguishable, and no ranking between them should be asserted in
+either direction.
+
+That is the honest position: **d2it1 is the best configuration that can be
+measured, and it is not measurably worse than the depth-4 default.** The win
+being claimed here is exactness, not identifications.
