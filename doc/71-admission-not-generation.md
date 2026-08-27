@@ -57,3 +57,51 @@ decoy null, and the threshold applied to it.
 
 That is the same place the project's earlier accounting landed independently:
 Gate C carrying ~98.8% of the emission loss. Two different routes, one target.
+
+---
+
+# RETRACTED: the baseline was not a control
+
+Adversarial review, 2026-08-28, confirmed at source. Everything above that
+compares an arm to "baseline" is a TWO-factor comparison reported as one.
+
+`shared/libv2/run_random_extract.sh` passes `-out_chrom`; `run_admit.sh` does
+not. `src/OpenDIAlyzer.cpp:1864` forks on `if (out_chrom.empty())` into a
+different scoring path, and the two paths do not score the same feature set:
+
+    baseline (acq_i025, -out_chrom)      dropping 7 sub-score(s)
+                                         Mass.Ppm NaN on 19,999 / 19,999 rows
+    cap10 / sep5 / both (no -out_chrom)  dropping 4 sub-score(s)
+                                         Mass.Ppm NaN on 0 / 19,999 rows
+
+**The baseline ran a classifier with three fewer live features than every arm it
+was compared against** (`var_im_delta`, `var_mass_accuracy`, `var_mass_spread`).
+So the generation response (39.3% -> 58.7%), the threshold clearance column, and
+the +126 accepted are all confounded with a feature-set change.
+
+Three further corrections from the same review, independent of the fork:
+
+* **The 82% refusal rate is conditioned on the outcome it indicts.** "Declined"
+  is DEFINED as q > 0.01, so measuring refusal within that set is circular. Over
+  all 4,731 DIA-NN-confident precursors, ODIA admits **76.2%** of its correct
+  top-ranked candidates at q <= 0.01, in every arm (75.7-77.5%). The 15-18%
+  figure is a flip rate between two deterministic arms and is withdrawn.
+
+* **+/-10 s is not a correct-peak criterion.** It is 5.6x DIA-NN's median FWHM
+  (3.57 s) and 2.4x ODIA's own median peak-group width (8.31 s). Against a
+  decoy-candidate null the "has a correct candidate" rate falls from 39.3% to
+  32.4% (baseline) and 60.4% to 43.5% (both), so the generation response is
+  +11.1 real points rather than +19.4.
+
+* **Generation loses more than admission, not less.** In absolute counts over
+  the 2,353 declined, with the decoy null applied: generation 1,590 (67.6%),
+  ranking 121 (5.1%), admission 642 (27.3%). A1 is refuted by its own numbers
+  once they are expressed as losses rather than rates.
+
+What survives: **ranking is not the constraint.** Winner-level accuracy is
+30.0% (baseline) to 36.5% (both) against a decoy-winner null of 3.5-3.7% --
+8-18x enrichment -- and it RISES with more candidates, so the 76.2% -> 62.9%
+"ranking degradation" cited above is denominator inflation, not degradation.
+
+`adm_scores_base.tsv` re-runs the baseline configuration without `-out_chrom`
+so the comparison can be redone on one factor.
