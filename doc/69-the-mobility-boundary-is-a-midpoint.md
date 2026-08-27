@@ -141,3 +141,46 @@ What remains true is narrower: after ODIA's own correction the residual is p95
 **0.0362**, still beyond the +/-0.025 half-window, so the aperture is tight
 against what the calibration can deliver. That is a sizing question, not the
 funnel.
+
+## What the fix changed, measured on the library rather than end to end
+
+The strategy this sits under judges a phase on its own job, so the question is
+not "how many identifications" but **how many precursors change what the
+instrument is asked for**. Over the 4,991,901 target precursors, comparing the
+window set that admits each one under the derived bands against the stated ones:
+
+    same window count                    4,659,405   93.34%
+    admitted by MORE windows now            74,745    1.50%
+    admitted by FEWER windows now          257,751    5.16%
+    covered by NO window -- derived         768,923   15.40%
+    covered by NO window -- stated          953,234   19.10%
+
+The stated bands are **stricter**, and that is the correction, not a loss. Of
+the 257,282 targets newly excluded:
+
+    outside the acquisition range [0.6, 1.4]   241,636   93.92%
+    inside it, outside their window's box       15,646    6.08%
+
+The instrument acquired 1/K0 in [0.600, 1.400] (`GlobalMetadata`
+`OneOverK0AcqRangeLower/Upper`). **13.45% of the library -- 671,394 targets,
+666,908 of them above the ceiling -- predicts a mobility the instrument never
+sampled.** The derived bands were one-sided, so every one of those was admitted,
+placed, extracted, and given a full-length trace that could not contain its
+signal. The stated bands reject them.
+
+The remaining 15,646 are the real diaPASEF geometry rather than an edge case: a
+window is a BOX, so m/z 400 at 1/K0 1.0 was never acquired even though both
+coordinates are individually in range -- the scheme samples a diagonal, not a
+rectangle. Splitting those by whether the mobility calibration recovers them:
+
+    covered again once the IM calibration is applied   7,882
+    genuinely outside the scheme's coverage            7,764
+
+So the tight bands cost at most **7,764 targets (0.16%)** that the scheme does
+not sample, plus 7,882 that only the *uncalibrated* library axis pushed out --
+and pass 2 extracts on the calibrated axis, where they return. Against that,
+~250,000 precursors stop being extracted from windows that never contained them.
+
+**The library, not the extractor, is where the 13.45% belongs.** A CCS model
+predicting 1/K0 up to 2.2962 for an instrument that stops at 1.400 is a
+library-construction problem, and it is now visible because the geometry is.
