@@ -77,18 +77,67 @@ Add it to the list of things the fixture cannot answer, beside FDR, standing
 against DIA-NN, and retention-time calibration: **it cannot answer anything
 about the acquisition geometry, because it does not preserve it.**
 
-## The fix, not yet made
+## The fix: the true bands are already inside the .mzpeak
 
-The midpoint is the best available guess from what the mzpeak carries. Three
-ways out, in increasing order of correctness:
+The claim above -- that the midpoint is "the best available guess from what the
+mzpeak carries" -- is **wrong, and was corrected the same day**. The conversion
+does not lose the bands. It keeps them, in the embedded vendor method:
 
-1. Derive the boundary from the observed mobility distribution of the merged
-   peak list -- the two windows' ion populations are separated by a real gap,
-   and the gap's location does not assume symmetry.
-2. Have the converter preserve `ion_mobility_lower_limit` / `_upper_limit`.
-   They exist in the vendor table; nothing but the conversion loses them.
-3. Read `DiaFrameMsMsWindows` directly when the run is a .d.
+    vendor/1305.m/diaSettings.diasqlite  ->  DiaWindowsSpecification
+    (Id, Type, CycleId, OneOverK0Start, OneOverK0End, IsolationMz,
+     IsolationWidth, CollisionEnergy)          25 rows
 
-Until one of them lands, the derived band is systematically wrong wherever the
-co-packed windows are unequal, which on this instrument is ten groups out of
-twelve.
+    Id  Cycle  OneOverK0Start  OneOverK0End  IsolationMz  IsolationWidth
+     2      1            0.90          1.40      718.845           23.05
+     3      1            0.60          0.90      398.160          141.28
+     4      2            0.92          1.40      742.620           26.50
+
+Group 1's boundary is stated as **0.90 exactly**, against the 0.9498 ODIA
+derives -- the +0.0498 this document measured, now confirmed against the
+vendor's own number rather than against a fitted scan axis.
+
+Two further things that table settles:
+
+* **The true bands are bounded on BOTH sides** -- 0.60-0.90 and 0.90-1.40.
+  ODIA's derived bands are one-sided, `(-inf, X]` and `[X, +inf)`. The outer
+  edges are real and are currently unbounded.
+* **No .d dependency.** The file is inside the .mzpeak, so reading it needs no
+  vendor SDK, no re-conversion, and no format change -- only that the reader
+  open one more entry of the archive it already has open.
+
+So the fix is to read `OneOverK0Start`/`OneOverK0End` verbatim and stop
+deriving anything. `deriveMobilityBands` stays as the fallback for files that
+carry no vendor method.
+
+Until that lands, the derived band is systematically wrong wherever the
+co-packed windows are unequal, which on this instrument is ten groups of twelve.
+
+## What this is NOT
+
+An adversarial review claimed from these numbers that "ODIA's mobility aperture
+excludes half the reference population before any scoring". Checked against the
+run log, that is wrong, and the correction matters more than the claim:
+
+    full_prom10.log:41   ion-mobility calibration: DEFERRED -- this pass
+                         extracts on the library's 1/K0; the next one is where
+                         the correction lands
+    full_prom10.log:110  GATE PASSED -- 2 of 3 charges corrected, 70% of the
+                         mean squared 1/K0 error removed OUT OF FOLD
+
+Pass 1 does extract on the raw library axis, and that axis is genuinely bad:
+`observed - library iIM` over DIA-NN's 39,115 confident precursors has a median
+of **+0.0232**, from a scale error of **-4.66%** (`obs = 0.9534*lib + 0.0693`),
+so a +/-0.025 window centred on the library value admits only **54.09%** of
+them. ODIA measures the same defect itself and calls it "-3.7% error in the
+CCS->1/K0 coefficient" for charge 2.
+
+But pass 1 exists only to collect anchors, and it collected 5,622 at q <= 0.01.
+**Pass 2 re-extracts everything on the calibrated axis** -- both passes walk all
+32,210 spectra, both report the same 1,119,490 precursors covered by no
+isolation window, and pass 2 ends with MORE candidates than pass 1 (15,333,736
+against 13,338,052). The pass-1 mobility loss does not propagate to scoring.
+
+What remains true is narrower: after ODIA's own correction the residual is p95
+**0.0362**, still beyond the +/-0.025 half-window, so the aperture is tight
+against what the calibration can deliver. That is a sizing question, not the
+funnel.
