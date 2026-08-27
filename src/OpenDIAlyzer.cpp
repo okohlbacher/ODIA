@@ -348,6 +348,21 @@ protected:
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
                        "in consecutive cycles to count.", false, true);
+    registerDoubleOption_("im_window_pass1_scale", "<x>", 1.0,
+                          "Widen the mobility half-window by this factor for PASS 1 ONLY. "
+                          "Pass 1 extracts around the UNCALIBRATED library 1/K0 and then "
+                          "harvests the mobility anchors the calibration is fitted on -- so a "
+                          "precursor whose library value is off by more than the window cannot "
+                          "score, cannot become an anchor, and the correction is fitted only on "
+                          "the precursors that least needed it. Measured on S08 against DIA-NN's "
+                          "observed 1/K0: fitting on a +/-0.025-truncated sample recovers a "
+                          "-1.84% scale error where the untruncated fit gives -4.66%, i.e. under "
+                          "40% of it, and leaves a p95 residual of 0.0414 against 0.0362. "
+                          "Widening only pass 1 costs interference in a pass whose only product "
+                          "is anchors, and buys the calibration its own tail. 1.0 keeps the "
+                          "previous behaviour. Mirrors -rt_window_pass1, which already gives "
+                          "pass 1 its own retention-time window for the same reason.",
+                          false);
     registerDoubleOption_("precursor_im_window", "<1/K0>", 0.025,
                           "Half-width of the ion-mobility window around the PRECURSOR's own "
                           "library 1/K0. 0 disables it, leaving only the isolation window's "
@@ -1437,7 +1452,7 @@ protected:
     options.use_ion_mobility = !getFlag_("no_ion_mobility");
     options.precursor_im_window = seed_im_window_ > 0.0
                                     ? seed_im_window_
-                                    : getDoubleOption_("precursor_im_window");
+                                    : getDoubleOption_("precursor_im_window") * pass1_im_scale_;
     // The width measurement reads the ppm planes, so asking for it turns them
     // on. Making the user pass two flags that only work together is a way of
     // producing runs that silently measured nothing.
@@ -1927,9 +1942,25 @@ protected:
       // map that is 7.77 * (run seconds) + 733, i.e. ~24,000 s for a 5,400 s
       // gradient: pass 1 extracted from beyond the end of the run and every
       // anchor it could have found was unreachable.
+      // Pass 1's product is anchors, so its mobility window is sized for
+      // COVERAGE of the uncalibrated axis, not for purity. Restored immediately
+      // after, so pass 2 narrows again around the corrected centre.
+      pass1_im_scale_ = std::max(1.0, getDoubleOption_("im_window_pass1_scale"));
+      if (pass1_im_scale_ > 1.0)
+      {
+        std::ostringstream im;
+        im.setf(std::ios::fixed); im.precision(4);
+        im << "pass 1 mobility half-window "
+           << getDoubleOption_("precursor_im_window") * pass1_im_scale_
+           << " (" << pass1_im_scale_ << "x the "
+           << getDoubleOption_("precursor_im_window")
+           << " pass 2 uses), so the calibration can see the tail it corrects";
+        writeLogInfo_(im.str());
+      }
       const auto rc = extractAndScore_(library, run,
                                        pass1_window > 0.0 ? pass1_window : 1.0e9,
                                        external_irt_, pass1);
+      pass1_im_scale_ = 1.0;
       if (rc != EXECUTION_OK) { return rc; }
     }
 
@@ -3996,6 +4027,10 @@ protected:
   /// seed reported +0.0044 where the same run's full pass-2 calibration, fitted
   /// from thousands of anchors, found +0.0199.
   double seed_im_window_ = 0.0;
+  /// Multiplier on the mobility half-window, 1.0 except during pass 1. Set
+  /// around the pass-1 extraction only, so pass 2 narrows again around the
+  /// centre the calibration just corrected.
+  double pass1_im_scale_ = 1.0;
   std::size_t pass_offset_ = 0;
 
   /// Refit the retention-time map and the discriminant, alternately, until the
