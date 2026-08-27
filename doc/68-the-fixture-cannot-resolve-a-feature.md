@@ -285,3 +285,37 @@ Residual, and it should be stated rather than argued away: this is one feature
 set at one column index. A feature whose gain sits near the depth-2 selection
 threshold could be admitted or refused on a margin, and nothing here measures
 how wide that margin is.
+
+
+## What the working instrument found first: the semi-supervised loop is harmful
+
+Every comparison below is EXACT -- depth 2, where base and null arms are
+bit-identical -- so these are attributable in a way nothing measured on the
+default configuration has been.
+
+    vs d2base, at matched entrapment FDP     5.72%    7.42%     10%
+    240 trees, lr 0.05                      -27.1%    +5.2%   +3.6%
+    480 trees, lr 0.025                     -14.9%    +7.1%   +0.8%
+    n_iter = 1                               +4.0%   +11.2%   +5.1%
+
+**Three iterations of re-selecting the positive set cost 11.2% at the operating
+point against a single fit.** The loop is not paying for itself; it is losing
+identifications. That is a result the broken instrument could not have produced
+-- at depth 4 the same comparison reads -2.3%, comfortably inside the -0.8% to
+-11.9% band, i.e. indistinguishable from noise.
+
+More shallow trees also help, +7.1% at 480 rounds, and -- the part that matters
+structurally -- **they do not cost exactness**: d2t240 and d2t480 are both
+bit-identical to their null arms. Capacity added additively does not recreate
+the surface that lets a noise column win a split; capacity added by DEPTH does.
+That is the cleanest statement of the mechanism yet.
+
+Both effects point the same way at the operating point and should compose.
+Depth 2 sits near 2,711 IDs there; +11.2% and +7.1% together would land near
+3,240, against depth 4's 3,152. If that holds, the configuration that can be
+MEASURED is also the better one, and the 11% "cost of exactness" was never a
+cost -- it was two bad defaults.
+
+Running: the stacked arm with its null, plus the same trees-and-iterations
+change at depth 4 to separate "shallow is good" from "these two defaults were
+bad at any depth".
