@@ -48,6 +48,16 @@ namespace ODIA
       : filename_(filename), index_(MzPeak::open(filename.c_str())),
         spectra_(index_.spectra()), vendor_windows_(readVendorDiaWindows(filename))
     {
+      for (const auto& v : vendor_windows_)
+      {
+        if (vendor_im_high_ == 0.0 && vendor_im_low_ == 0.0)
+        {
+          vendor_im_low_ = v.one_over_k0_start;
+          vendor_im_high_ = v.one_over_k0_end;
+        }
+        vendor_im_low_ = std::min(vendor_im_low_, v.one_over_k0_start);
+        vendor_im_high_ = std::max(vendor_im_high_, v.one_over_k0_end);
+      }
       // Metadata only. mzPeak serves this faster than mzML and without
       // decoding a peak, which is what lets the whole extraction be planned
       // before anything expensive happens.
@@ -107,6 +117,9 @@ namespace ODIA
         }
 
         std::vector<SpectrumInfo> here;
+        // The window's own mobility POSITION, kept beside it so a stated band
+        // can be checked against the place the instrument actually put it.
+        std::vector<double> here_pos;
         for (const auto& prec : s.precursors())
         {
           const auto& w = prec.isolation_window;
@@ -120,6 +133,22 @@ namespace ODIA
             if (sel.ion_mobility_lower_limit) { one.window.im_low = *sel.ion_mobility_lower_limit; }
             if (sel.ion_mobility_upper_limit) { one.window.im_high = *sel.ion_mobility_upper_limit; }
           }
+          // The position is NOT taken from this precursor: the writer attaches
+          // every selected ion of the spectrum to precursor 0 (see the same
+          // quirk in MobilityBands.cpp), so reading per-precursor gives the
+          // first window the LAST window's position and the second none at all
+          // -- which reads as "half the windows are outside their band".
+          // Matched by m/z against the spectrum's whole position list instead.
+          double pos = std::numeric_limits<double>::quiet_NaN();
+          {
+            double bd = std::numeric_limits<double>::infinity();
+            for (const auto& ip : ions)
+            {
+              const double d = std::abs(ip.mz - *w.target_mz);
+              if (d < bd) { bd = d; pos = ip.im; }
+            }
+            if (!(bd <= 0.1)) { pos = std::numeric_limits<double>::quiet_NaN(); }
+          }
 
           // "lower" and "upper" are the writer's SCAN order, not an ordering of
           // 1/K0: on a timsTOF 1/K0 decreases with scan number, so the file's
@@ -131,6 +160,7 @@ namespace ODIA
             std::swap(one.window.im_low, one.window.im_high);
           }
           here.push_back(one);
+          here_pos.push_back(pos);
         }
 
         // The instrument STATED the bands, and the conversion kept them --
@@ -143,8 +173,20 @@ namespace ODIA
         std::size_t stated_here = 0;
         if (!vendor_windows_.empty())
         {
-          for (auto& one : here)
+          for (std::size_t hi_ = 0; hi_ < here.size(); ++hi_)
           {
+            auto& one = here[hi_];
+            // A band the FILE states for this spectrum outranks the method: it
+            // describes what was acquired, where the method describes what was
+            // asked for. Absent on this converter (the limit fields are not in
+            // the schema at all), so this is precedence for other writers, not
+            // dead code for its own sake.
+            if (std::isfinite(one.window.im_low) && std::isfinite(one.window.im_high) &&
+                one.window.im_low < one.window.im_high)
+            {
+              ++stated_here;
+              continue;
+            }
             const double centre = one.window.centre();
             const VendorDiaWindow* best = nullptr;
             double best_d = std::numeric_limits<double>::infinity();
@@ -158,8 +200,23 @@ namespace ODIA
             // cannot match the wrong window and cannot miss the right one.
             if (best && best_d <= 0.1)
             {
-              one.window.im_low = best->one_over_k0_start;
-              one.window.im_high = best->one_over_k0_end;
+              const double pos = here_pos[hi_];
+              if (!std::isnan(pos) &&
+                  (pos < best->one_over_k0_start || pos > best->one_over_k0_end))
+              {
+                ++vendor_position_outside_;
+              }
+              // The method's INTERNAL splits are the point of reading it. Its
+              // OUTER edges are not: the acquisition pads past them -- peaks run
+              // to 1.4007 against a stated 1.400 -- and the band test is
+              // half-open, so clipping there drops real acquired signal from
+              // every outermost window. Leave those ends open.
+              one.window.im_low = (best->one_over_k0_start <= vendor_im_low_ + 1e-9)
+                                    ? -std::numeric_limits<double>::infinity()
+                                    : best->one_over_k0_start;
+              one.window.im_high = (best->one_over_k0_end >= vendor_im_high_ - 1e-9)
+                                     ? std::numeric_limits<double>::infinity()
+                                     : best->one_over_k0_end;
               ++stated_here;
             }
           }
@@ -225,7 +282,25 @@ namespace ODIA
         std::cerr << "isolation windows: mobility bands STATED by the instrument method for "
                   << vendor_matched_ << " of " << (vendor_matched_ + vendor_unmatched_)
                   << " spectrum-windows (" << vendor_windows_.size()
-                  << " in the vendor table)\n";
+                  << " in the vendor table, outer edges left open)";
+        if (vendor_position_outside_)
+        {
+          // The centre match proves the m/z agrees with the acquisition. It says
+          // nothing about the 1/K0 columns, so a method edited after acquisition
+          // passes every check made so far and silently zeroes real fragments.
+          // The window's own mobility position must lie inside its stated band.
+          std::cerr << "; WARNING " << vendor_position_outside_
+                    << " windows carry a mobility position OUTSIDE their stated band"
+                       " -- the embedded method may not be the one acquired under";
+        }
+        std::cerr << '\n';
+      }
+      else if (!info_.empty() && vendor_unmatched_)
+      {
+        // Silence here is indistinguishable from "not a Bruker run". Say so.
+        std::cerr << "isolation windows: no instrument method usable in this file; "
+                  << vendor_unmatched_ << " spectrum-windows fall back to DERIVED "
+                     "mobility bands\n";
       }
 
       std::size_t refused = 0;
@@ -387,6 +462,11 @@ namespace ODIA
     std::vector<VendorDiaWindow> vendor_windows_;
     std::size_t vendor_matched_ = 0;
     std::size_t vendor_unmatched_ = 0;
+    /// The extreme edges of the stated scheme, so the outermost bands can be
+    /// left open rather than clipping the acquisition's own padding.
+    double vendor_im_low_ = 0.0;
+    double vendor_im_high_ = 0.0;
+    std::size_t vendor_position_outside_ = 0;
     /// One counter per MobilityBandResult, so a refusal is reported rather
     /// than inferred from chromatograms that came out worse.
     std::array<std::size_t, 5> derivation_{};

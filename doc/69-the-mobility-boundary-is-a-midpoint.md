@@ -184,3 +184,64 @@ and pass 2 extracts on the calibrated axis, where they return. Against that,
 **The library, not the extractor, is where the 13.45% belongs.** A CCS model
 predicting 1/K0 up to 2.2962 for an instrument that stops at 1.400 is a
 library-construction problem, and it is now visible because the geometry is.
+
+## Correction: "precursors excluded" is an offline proxy, not what the tool does
+
+The impact table above counts precursors whose (m/z, 1/K0) falls in no window.
+An adversarial review checked the extractor and the count does not describe
+pipeline behaviour:
+
+* **Precursor-to-window assignment is m/z only** --
+  `ChromatogramExtractor.cpp:492-501` tests `windows[w].contains(mz)`, and
+  `contains()` is `mz >= mz_low && mz <= mz_high`. Mobility is not consulted.
+* **The band filters PEAKS**, at `ChromatogramExtractor.cpp:1153`:
+  `if (use_band && (peak_im < im_low || peak_im >= im_high)) continue;`
+
+So no precursor is dropped by this change. Every one is still assigned and
+still extracted; what changes is which peaks are allowed to enter its trace.
+The right statement is that **the fix converts cross-talk into zeros**: under
+the derived boundary a precursor assigned to window A, whose true mobility slice
+was B's, integrated B's fragments and scored them as its own. Removing that is
+the point, and because cross-talk that scores well is also how a false anchor
+enters pass 1, anchor collection should improve rather than degrade.
+
+The same correction disposes of a worry raised against the change -- that tight
+bands in pass 1 would censor the precursors needed to fit the mobility
+calibration. **The band test never sees the library 1/K0.** It compares a RAW
+peak's mobility, in the instrument frame, against a band in the same frame. The
+-4.66% library scale error cannot push a peak across a boundary; it enters only
+the per-transition tolerance around `lib_im` (`:1164`), which this change does
+not touch. The "7,882 return once calibration is applied" figure is a property
+of the offline proxy, not of the extractor.
+
+What the review did find, and what has been fixed:
+
+* **The outer edges were a real regression.** Peaks run to 1.4007 (the TIMS scan
+  range pads past the stated ceiling; see `SpectrumSource.h:82`) while the
+  method states 1.400, and the band test is half-open -- so every peak in
+  [1.400, 1.4007] was dropped from every outermost window, where the derived
+  band had been unbounded. The internal splits are what the method is worth;
+  its outer edges are where hardware padding lives. Those ends are now left
+  open.
+* Entry selection tested a SUBSTRING, so `diaSettings.diasqlite-wal` would have
+  matched; and the backup rule was a substring on the whole path, so a live
+  method named `backup-final.m` would have been skipped in silence. Now a
+  suffix test and a path-component test.
+* Two live methods in one archive, or one isolation centre stated with two
+  different bands across cycles, now REFUSE and fall back to derivation with a
+  warning, rather than taking whichever row the archive listed first.
+* A band the file states per spectrum now outranks the method, rather than
+  being overwritten by it.
+* The empty path is no longer silent; a run with mobility that finds no usable
+  method says so.
+* `mkstemp` rather than a pid-derived name in a shared /tmp, and a size cap
+  before allocating.
+
+And one check that was worth running: each window's own mobility position must
+lie inside the band the method states for it. Written naively this fired on
+16,105 of 32,210 windows -- exactly half -- which is not a stale method but the
+writer attaching every selected ion of a frame to precursor 0, a quirk
+`MobilityBands.cpp` already documents. Matched by m/z instead, **all 32,210
+pass**. That is meaningful: the m/z centres agreeing only proves the method's
+m/z column is right, while the positions agreeing is evidence the 1/K0 columns
+belong to this acquisition too.
