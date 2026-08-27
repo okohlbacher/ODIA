@@ -318,6 +318,39 @@ namespace ODIA
     c_.intensity.assign(running, 0.0f);
   }
 
+  void ChromatogramCollector::repairPrecursorIndex()
+  {
+    // `precursor_transition_begin` is zero-initialised and written only by
+    // accept(), which returns early for a precursor that extracted nothing --
+    // no isolation window, no points, or all-zero. Those leave ZERO HOLES in an
+    // array that `precursorOf()` binary-searches with std::upper_bound, and
+    // upper_bound on a non-monotonic array returns an arbitrary index. The
+    // symptom is a precursor whose retention times are read from axis position
+    // 0, i.e. the start of the run: on one 10,000-precursor arm 35.16% of the
+    // written traces carried the run's first cycles as their RT column while
+    // their intensities were correct, because intensity goes through the
+    // separately-correct `begin[]` prefix sum and the scorer indexes
+    // `precursor_axis_begin` directly. A TSV bug, not a scoring bug -- but a
+    // silent one, and anything that reads the RT column (an apex-centred crop,
+    // an RT-window check, a cross-engine join on time) is wrong for those rows.
+    //
+    // Filled from the RIGHT, not the left. A hole must take the begin of the
+    // NEXT precursor so it occupies zero width; forward-filling it with the
+    // PREVIOUS value would widen the predecessor's span and hand that
+    // predecessor's own transitions to the empty precursor instead. A precursor
+    // that extracted nothing owns no transition with data, so a zero-width
+    // entry is exactly right for every transition that can be queried.
+    auto& b = c_.precursor_transition_begin;
+    if (b.empty()) { return; }
+    std::uint32_t next = static_cast<std::uint32_t>(c_.count.size());
+    for (std::size_t i = b.size(); i-- > 0;)
+    {
+      if (b[i] == 0 && i != 0) { b[i] = next; }
+      else { next = b[i]; }
+    }
+  }
+
+
   void ChromatogramCollector::accept(const PrecursorChromatogram& trace)
   {
     if (!trace.extracted()) { return; }
@@ -350,7 +383,7 @@ namespace ODIA
     Stats& st = stats == nullptr ? local : *stats;
     ChromatogramCollector collector;
     extract(library, source, options, collector, &st);
-    Chromatograms out = collector.take();
+    Chromatograms out = collector.take();   // take() repairs the precursor index
     // Counted by the extractor, reported on the object, because that is where
     // every caller has always read them.
     out.precursors_without_window = st.precursors_without_window;

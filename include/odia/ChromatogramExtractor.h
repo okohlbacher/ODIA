@@ -344,7 +344,16 @@ namespace ODIA
     bool needsLayoutCounts() const override { return true; }
 
     Chromatograms& chromatograms() { return c_; }
-    Chromatograms take() { return std::move(c_); }
+    /// Repairs the precursor index before handing the table over. Done HERE
+    /// rather than left to the caller because there are two extraction paths --
+    /// ChromatogramExtractor::extract() and OpenDIAlyzer's own -out_chrom path,
+    /// which builds a collector itself -- and only one of them was calling it.
+    /// A caller that forgets gets a silently wrong retention-time column.
+    Chromatograms take() { repairPrecursorIndex(); return std::move(c_); }
+
+    /// Make `precursor_transition_begin` monotonic before anyone binary-searches
+    /// it. Idempotent; take() calls it.
+    void repairPrecursorIndex();
 
   private:
     Chromatograms c_;
