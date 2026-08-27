@@ -3,6 +3,7 @@
 
 #include <odia/MobilityBands.h>
 #include <odia/SpectrumSource.h>
+#include <odia/VendorDiaWindows.h>
 
 #include <limits>
 #include <utility>
@@ -10,6 +11,7 @@
 #include <mzpeak.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <iostream>
 #include <map>
@@ -44,7 +46,7 @@ namespace ODIA
   public:
     explicit MzPeakSource(const std::string& filename)
       : filename_(filename), index_(MzPeak::open(filename.c_str())),
-        spectra_(index_.spectra())
+        spectra_(index_.spectra()), vendor_windows_(readVendorDiaWindows(filename))
     {
       // Metadata only. mzPeak serves this faster than mzML and without
       // decoding a peak, which is what lets the whole extraction be planned
@@ -131,12 +133,46 @@ namespace ODIA
           here.push_back(one);
         }
 
+        // The instrument STATED the bands, and the conversion kept them --
+        // in the embedded method, not in the spectra. Prefer them over any
+        // derivation: the midpoint rule below is exact only for equally wide
+        // co-packed windows, and on S08 ten groups of twelve are not, which
+        // puts the derived boundary as much as 0.0845 out in 1/K0 against a
+        // 0.059 mobility window (doc/69). Matching is by window centre, which
+        // is the same number in both places.
+        std::size_t stated_here = 0;
+        if (!vendor_windows_.empty())
+        {
+          for (auto& one : here)
+          {
+            const double centre = one.window.centre();
+            const VendorDiaWindow* best = nullptr;
+            double best_d = std::numeric_limits<double>::infinity();
+            for (const auto& v : vendor_windows_)
+            {
+              const double d = std::abs(v.isolation_mz - centre);
+              if (d < best_d) { best_d = d; best = &v; }
+            }
+            // A tenth of a Th is far tighter than the 19-267 Th window spacing
+            // and far looser than the float noise between the two files, so it
+            // cannot match the wrong window and cannot miss the right one.
+            if (best && best_d <= 0.1)
+            {
+              one.window.im_low = best->one_over_k0_start;
+              one.window.im_high = best->one_over_k0_end;
+              ++stated_here;
+            }
+          }
+          vendor_matched_ += stated_here;
+          if (stated_here < here.size()) { vendor_unmatched_ += here.size() - stated_here; }
+        }
+
         // No stated band: derive one from the mobility positions. The rule and
         // its refusals live in MobilityBands, where they can be tested without
         // a file; the outcome is COUNTED here, because a derivation that
         // quietly does not happen leaves two co-packed windows sharing one
         // merged peak list with nothing to separate them.
-        if (here.size() > 1)
+        if (stated_here < here.size() && here.size() > 1)
         {
           std::vector<IsolationWindow> band(here.size());
           for (std::size_t k = 0; k < here.size(); ++k) { band[k] = here[k].window; }
@@ -181,6 +217,17 @@ namespace ODIA
       // windows into one frame it means the co-packed windows are no longer
       // separated at all, and the only visible symptom would be interference
       // that looks like the instrument's.
+      // Say which source the bands came from. A run that silently derived them
+      // when the file stated them, or the reverse, is the difference between a
+      // boundary that is right and one that is up to 0.0845 out.
+      if (vendor_matched_)
+      {
+        std::cerr << "isolation windows: mobility bands STATED by the instrument method for "
+                  << vendor_matched_ << " of " << (vendor_matched_ + vendor_unmatched_)
+                  << " spectrum-windows (" << vendor_windows_.size()
+                  << " in the vendor table)\n";
+      }
+
       std::size_t refused = 0;
       for (std::size_t r = 0; r < derivation_.size(); ++r)
       {
@@ -333,6 +380,13 @@ namespace ODIA
     MzPeak::Spectra spectra_;
     std::vector<SpectrumInfo> info_;
     std::vector<IsolationWindow> windows_;
+
+    /// The instrument's own window table, read once from the embedded method.
+    /// Empty for a file that carries none, which is the normal case off this
+    /// instrument and is why every use is guarded rather than asserted.
+    std::vector<VendorDiaWindow> vendor_windows_;
+    std::size_t vendor_matched_ = 0;
+    std::size_t vendor_unmatched_ = 0;
     /// One counter per MobilityBandResult, so a refusal is reported rather
     /// than inferred from chromatograms that came out worse.
     std::array<std::size_t, 5> derivation_{};

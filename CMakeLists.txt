@@ -64,6 +64,17 @@ if(NOT libzip_FOUND)
     INTERFACE_INCLUDE_DIRECTORIES "${LIBZIP_INCLUDE_DIR}")
 endif()
 
+# SQLite reads the vendor instrument method embedded in an .mzpeak. The stated
+# diaPASEF mobility bands live there and nowhere else in the converted file --
+# see include/odia/VendorDiaWindows.h. Already in the environment; OpenMS uses
+# it for .osw/.pqp, ODIA links it directly rather than through a patched OpenMS.
+find_path(SQLite3_INCLUDE_DIR NAMES sqlite3.h)
+find_library(SQLite3_LIBRARY NAMES sqlite3)
+if(NOT SQLite3_INCLUDE_DIR OR NOT SQLite3_LIBRARY)
+  message(FATAL_ERROR "sqlite3 not found; scripts/bootstrap_env.sh provides it")
+endif()
+message(STATUS "SQLite3: ${SQLite3_LIBRARY}")
+
 find_package(Arrow CONFIG REQUIRED)
 find_package(Parquet CONFIG REQUIRED)
 if(Arrow_VERSION VERSION_LESS 23)
@@ -97,6 +108,7 @@ set(ODIA_LIB_SOURCES
   src/io/MiniJson.cpp
   src/io/MobilityBands.cpp
   src/io/MzPeakSource.cpp
+  src/io/VendorDiaWindows.cpp
   src/extract/ChromatogramExtractor.cpp
   src/extract/Ms1Traces.cpp
   src/extract/PrecursorPrefilter.cpp
@@ -119,11 +131,12 @@ if(ODIA_LIB_SOURCES)
   target_include_directories(odia_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak
                                          ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET}
-                                         ${ONNXRuntime_LIBRARY} libzip::zip)
+                                         ${ONNXRuntime_LIBRARY} libzip::zip
+                                         ${SQLite3_LIBRARY})
   if(OpenMP_CXX_FOUND)
     target_link_libraries(odia_core PUBLIC OpenMP::OpenMP_CXX)
   endif()
-  target_include_directories(odia_core PUBLIC ${ONNXRuntime_INCLUDE_DIR})
+  target_include_directories(odia_core PUBLIC ${ONNXRuntime_INCLUDE_DIR} ${SQLite3_INCLUDE_DIR})
   set_target_properties(odia_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
