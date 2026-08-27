@@ -1136,6 +1136,15 @@ protected:
                           "group, qvalue. Fitting a calibration is a modelling question and "
                           "re-running a 10-minute search to try another model is the wrong loop.",
                           false);
+    registerStringOption_("out_windows", "<file>", "",
+                          "Write the isolation windows this run DERIVED here as a TSV: index, "
+                          "mz_low, mz_high, mz_centre, mz_width, im_low, im_high. The scheme is "
+                          "read out of the spectra, not out of the stated method, and nothing "
+                          "wrote it before -- so a scheme misread, and on diaPASEF a collapsed "
+                          "m/z x 1/K0 geometry, was invisible in both directions. The vendor's "
+                          "own table is in the .d (DiaFrameMsMsWindows) and is the thing to "
+                          "check this against.",
+                          false);
     registerIntOption_("max_mass_anchors", "<n>", 8000000,
                        "Ceiling on harvested anchors, ~24 B each. Hitting it truncates the "
                        "sample in RUN ORDER, which is a retention-time bias, so the number "
@@ -1366,6 +1375,36 @@ protected:
     {
       writeLogError_(std::string("Cannot open run ") + run + ": " + e.what());
       return INPUT_FILE_NOT_FOUND;
+    }
+
+    // The derived isolation scheme, before anything consumes it. Written here
+    // rather than at the end because a run that dies later still answers "did
+    // we read the acquisition geometry correctly", which is upstream of every
+    // other question this tool can be wrong about.
+    {
+      const std::string wdump = getStringOption_("out_windows");
+      if (!wdump.empty())
+      {
+        std::ofstream out(wdump);
+        if (!out)
+        {
+          writeLogWarn_("cannot write -out_windows " + wdump);
+        }
+        else
+        {
+          out << "index\tmz_low\tmz_high\tmz_centre\tmz_width\tim_low\tim_high\n";
+          out.precision(10);
+          const auto& wins = source->windows();
+          for (std::size_t i = 0; i < wins.size(); ++i)
+          {
+            const auto& w = wins[i];
+            out << i << '\t' << w.mz_low << '\t' << w.mz_high << '\t'
+                << w.centre() << '\t' << w.width() << '\t'
+                << w.im_low << '\t' << w.im_high << '\n';
+          }
+          writeLogInfo_("wrote " + std::to_string(wins.size()) + " isolation windows to " + wdump);
+        }
+      }
     }
 
     ODIA::ChromatogramExtractor::Options options;
