@@ -146,3 +146,51 @@ null). It is which peak group ends up on top, on precursors where a correct one
 may or may not have been generated at all -- and separating those two requires a
 correctness criterion better than "RT within 10 s", which is 5.6x DIA-NN's
 median FWHM.
+
+---
+
+# Resolved with a peak-identity criterion: it IS generation
+
+The +/-10 s criterion used above is 5.6x DIA-NN's median FWHM and carries a
+decoy null of 10-30%, which is why every decomposition built on it moved when
+poked. Replacing it with **boundary IoU >= 0.5 against DIA-NN's own
+`RT.Start`/`RT.Stop`** (median peak width 9.70 s, p95 15.24 s) drops the decoy
+null to **3.4%** and the picture stops moving:
+
+    arm     top-cand correct   ANY cand correct   decoy null   admitted of top
+    base           52.5%             56.2%            3.4%          78.0%
+    cap10          54.8%             62.4%            9.2%          77.4%
+    sep5           52.2%             55.9%            3.4%          79.5%
+    both           54.4%             62.3%           10.2%          78.3%
+
+Over 4,731 DIA-NN-confident precursors:
+
+* **Generation loses 43.8%.** No ODIA candidate overlaps DIA-NN's peak at all.
+* **Ranking loses 3.7 points** (56.2% -> 52.5%), i.e. 6.6% of what is generated.
+* **Admission keeps 78.0%** of what reaches the top.
+
+So the ordering is generation >> admission > ranking, which is the review's
+position and the opposite of this document's original title. The title is wrong
+and is left standing only so the retraction is legible.
+
+**Raising the candidate cap does not fix it.** Null-corrected -- (obs - null) /
+(1 - null) -- `cap10` moves ANY-candidate 54.7% -> 58.6% but TOP-candidate
+50.8% -> **50.2%**. More candidates are generated, none of them win. That is
+exactly why the matched-decoy-budget gain was +12 to +26 rather than +126: the
+extra candidates are mostly coincidences, which the rising decoy null (3.4% ->
+9.2%) states directly.
+
+## What this means for where to work
+
+The 43.8% is not a threshold, not a ranking, and not a cap. For those
+precursors ODIA never proposes a peak group overlapping the one DIA-NN reports,
+inside a +/-300 s window that provably contains DIA-NN's answer for 99.8% of
+them. The candidates it does propose are elsewhere.
+
+That points at the peak DETECTOR -- what counts as a local maximum worth
+emitting -- rather than at how many are kept or how they are scored. The
+co-elution evidence used to seed candidates is the natural suspect, and it is
+testable without a new run: for a sample of the 43.8%, the traces are already on
+disk and DIA-NN's bounds are known, so the question "was there a detectable
+peak there at all, by any criterion" can be answered directly from the
+chromatograms.
