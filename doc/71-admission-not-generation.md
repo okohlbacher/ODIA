@@ -194,3 +194,38 @@ testable without a new run: for a sample of the 43.8%, the traces are already on
 disk and DIA-NN's bounds are known, so the question "was there a detectable
 peak there at all, by any criterion" can be answered directly from the
 chromatograms.
+
+## The 43.8% are faint, not overlooked
+
+Read directly from ODIA's own chromatograms (`acq_i025.tsv`) inside DIA-NN's
+stated `RT.Start`/`RT.Stop` for each precursor, 400 sampled from each group:
+
+    group                     mean intensity in DIA-NN's peak   in/out contrast   p25
+    ODIA FOUND the peak                     450.9                    2.13x        1.41
+    ODIA MISSED it (the 43.8%)              324.2                    1.24x        0.98
+
+Where ODIA proposes nothing there IS signal -- 28% weaker, not absent -- but the
+contrast against the rest of the search window is **1.24x against 2.13x**, and
+the bottom quartile sits at **0.98**: no enrichment whatsoever inside the region
+DIA-NN calls a peak.
+
+So the missed precursors are not obvious peaks that a detector overlooked. They
+are low-contrast regions, and for a quarter of them ODIA's trace is flat there.
+That makes the 43.8% a **sensitivity limit rather than a detector defect**, and
+it changes what would fix it: a more permissive local-maximum rule would emit
+mostly noise at this contrast, which is consistent with what `-max_candidates 10`
+actually did (more candidates, no more winners, decoy null 3.4% -> 9.2%).
+
+**What this measurement cannot decide**, and should not be quoted as deciding:
+whether DIA-NN is right about those precursors. Two readings survive it equally.
+DIA-NN may be using evidence ODIA does not -- MS1, isotope envelopes, more
+fragments per precursor -- in which case the gap is an evidence gap and belongs
+upstream in the library or the extraction plan. Or some of those q <= 0.01 calls
+are marginal: this is a 10,000-precursor library, where DIA-NN's own target-decoy
+statistics are thin, and its confident set is the label the whole comparison
+rests on.
+
+Separating those needs a reference that is not DIA-NN. OpenSWATH covers 53.9% of
+this stratum and is already on disk; if OSW also finds a peak where ODIA sees
+1.24x contrast, the evidence-gap reading is supported, and if it does not, the
+marginal-call reading is.
