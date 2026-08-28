@@ -105,3 +105,44 @@ What survives: **ranking is not the constraint.** Winner-level accuracy is
 
 `adm_scores_base.tsv` re-runs the baseline configuration without `-out_chrom`
 so the comparison can be redone on one factor.
+
+---
+
+# Redone on one factor: the title of this document is wrong
+
+The matched baseline (`adm_scores_base.tsv`, same configuration WITHOUT
+`-out_chrom`, so all four arms drop the same 4 sub-scores and carry `Mass.Ppm`
+populated) gives:
+
+    arm     cand/prec  accept q<=.01  matched decoy budget  top-cand RT-ok  admitted of those
+    base         2.22          2,405          2,391    (+0)          3,000             76.3%
+    cap10        5.32          2,489          2,405   (+14)          3,130             75.8%
+    sep5         2.19          2,441          2,417   (+26)          2,996             77.6%
+    both         5.18          2,502          2,403   (+12)          3,122             76.3%
+
+Matched decoy budget = the 26 decoy groups above the baseline's own acceptance
+cut (DScore 4.3234), so every arm is read at the same realised false-positive
+load rather than at its own q-value.
+
+**The generation gain is mostly bought.** +126 against the broken baseline
+becomes +97 against a matched one and **+12 to +26 at matched decoy budget**.
+`sep5` is the best of the three at +26 and proposes FEWER candidates than
+baseline (2.19 vs 2.22), which is the opposite of a generation effect.
+
+**Admission is not the defect.** ODIA admits **76.3%** of the precursors whose
+top candidate sits within 10 s of DIA-NN's reported RT, and that rate is flat at
+75.8-77.6% across all four arms. The 15-18% clearance in the retracted section
+was conditioned on the outcome it indicted.
+
+**The gap is that the top candidate is often not the right peak.** Of 4,731
+DIA-NN-confident precursors, ODIA's top-DScore candidate is RT-correct for
+**3,000 (63.4%)**. It then admits 76.3% of those and declines most of the rest,
+which is conservative and correct behaviour rather than a refusal of good
+evidence. The loss is the 36.6% where ODIA's best candidate is somewhere else.
+
+That is not admission, not the q-value cut, not candidate count, and not
+ranking-among-what-was-proposed (winner-level enrichment is 8-18x over a decoy
+null). It is which peak group ends up on top, on precursors where a correct one
+may or may not have been generated at all -- and separating those two requires a
+correctness criterion better than "RT within 10 s", which is 5.6x DIA-NN's
+median FWHM.
