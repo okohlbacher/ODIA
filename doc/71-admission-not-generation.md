@@ -229,3 +229,36 @@ Separating those needs a reference that is not DIA-NN. OpenSWATH covers 53.9% of
 this stratum and is already on disk; if OSW also finds a peak where ODIA sees
 1.24x contrast, the evidence-gap reading is supported, and if it does not, the
 marginal-call reading is.
+
+## OpenSWATH arbitrates: about half the misses are real
+
+The previous section left two readings open -- an evidence gap in ODIA, or
+marginal DIA-NN calls -- and said OpenSWATH separates them. It does.
+
+Asking whether OSW has a candidate whose `LEFT_WIDTH`/`RIGHT_WIDTH` overlaps
+DIA-NN's `RT.Start`/`RT.Stop` at IoU >= 0.5:
+
+    group                              n      OSW finds a peak there
+    ODIA FOUND it                  1,378              86.2%
+    ODIA MISSED it (the 43.8%)     1,175              56.6%
+    same, DIA-NN bounds +200 s       1,175               0.1%   <- null
+
+The 0.1% null says the criterion is sharp; nothing here is coincidence.
+
+**Both readings are right, in roughly equal measure.** For **56.6%** of what
+ODIA misses, OSW independently finds a peak exactly where DIA-NN reports one --
+two engines agreeing, sharing no code and no selection, without ODIA. The
+remaining 43.4% are DIA-NN-only and are consistent with marginal calls or with
+evidence only DIA-NN uses.
+
+**Sized:** 2,241 missed x 56.6% = **~1,268 precursors, 26.9% of the
+DIA-NN-confident set**, are peaks two independent engines detect and ODIA never
+proposes -- at a median in/out trace contrast of 1.24x.
+
+That is the target, and it is now specific: not "ODIA misses 44%", which mixed
+in DIA-NN's own marginal calls, but a corroborated 27% where OSW's detector
+fires at contrast levels ODIA's does not. OSW's peak picking is
+`PeakPickerChromatogram` / `PeakPickerMRM` (`vault/95-OpenMS-API/Files/`), a
+smoothed second-derivative picker with its own signal-to-noise estimator, which
+is a different family from ODIA's co-elution-seeded candidate generation and is
+the natural comparison for what to change.
