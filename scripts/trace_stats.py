@@ -34,6 +34,9 @@ not a property of the measurement.
 import argparse, sys, math, random
 
 SMOOTH = False
+CROP = 0.0
+CENTRES = None
+CUR_PID = None
 
 
 def diann_smooth(v):
@@ -59,6 +62,18 @@ def diann_smooth(v):
 
 
 def trace_metrics(rts, vals):
+    if CROP > 0 and vals:
+        if CENTRES is not None:
+            c = CENTRES.get(CUR_PID)
+            if c is None:
+                return None          # no common centre -> not comparable, drop it
+        else:
+            ai = max(range(len(vals)), key=lambda i: vals[i])
+            c = rts[ai]
+        keep = [i for i, t in enumerate(rts) if abs(t - c) <= CROP]
+        if len(keep) >= 3:
+            rts = [rts[i] for i in keep]
+            vals = [vals[i] for i in keep]
     if SMOOTH:
         vals = diann_smooth(vals)
     n = len(vals)
@@ -140,6 +155,7 @@ def run_diann(path, outp, sample, seed, explicit=None):
                 k = (pr, fe)
                 if k != cur:
                     if cur is not None:
+                        globals()['CUR_PID'] = _norm(cur[0])
                         m = trace_metrics(rts, vals)
                         if m:
                             emit(out, cur[0], cur[1], m); n += 1
@@ -147,6 +163,7 @@ def run_diann(path, outp, sample, seed, explicit=None):
                 rts.append(rt * 60.0)   # DIA-NN rt is MINUTES; everything here is seconds
                 vals.append(va)
         if cur is not None:
+            globals()['CUR_PID'] = _norm(cur[0])
             m = trace_metrics(rts, vals)
             if m:
                 emit(out, cur[0], cur[1], m); n += 1
@@ -198,6 +215,7 @@ def run_odia(path, outp, sample, seed, explicit=None):
             k = (pid, frag)
             if k != cur:
                 if cur is not None:
+                    globals()['CUR_PID'] = _norm(cur[0])
                     m = trace_metrics(rts, vals)
                     if m:
                         emit(out, cur[0], cur[1], m); n += 1
@@ -205,6 +223,7 @@ def run_odia(path, outp, sample, seed, explicit=None):
             rts.append(float(p[ix['RT']]))
             vals.append(float(p[ix['Intensity']]))
         if cur is not None:
+            globals()['CUR_PID'] = _norm(cur[0])
             m = trace_metrics(rts, vals)
             if m:
                 emit(out, cur[0], cur[1], m); n += 1
@@ -222,6 +241,21 @@ if __name__ == '__main__':
                                          'draws from each engine\'s own pool and so cannot '
                                          'produce a comparable pair.')
     ap.add_argument('--seed', type=int, default=20260827)
+    ap.add_argument('--centres',
+                    help='TSV of Precursor.Id<TAB>centre_seconds. With --crop, each trace is '
+                         'cropped around THIS centre instead of its own apex. Cropping on the '
+                         'own apex is not a neutral control: it preserves the maximum by '
+                         'construction (apex_val is unchanged for 99,458 of 99,459 traces) and '
+                         're-centres a wide window far more than a narrow one, so it flatters '
+                         'whichever engine searched wider. An engine-independent prior centre -- '
+                         'the RT map prediction -- is the honest common ground.')
+    ap.add_argument('--crop', type=float, default=0.0,
+                    help='crop each trace to +/-CROP seconds around ITS OWN apex before '
+                         'measuring. frac_in_fwhm divides by area over the whole window, so a '
+                         'fixed threshold is really a signal-to-background gate whose strictness '
+                         'depends on window length -- comparing a 300 s window against a 60 s one '
+                         'measures the windows, not the traces. Cropping on each engine\'s own '
+                         'apex keeps the comparison symmetric.')
     ap.add_argument('--smooth', action='store_true',
                     help="apply DIA-NN's [0.25,0.5,0.25] kernel before measuring")
     a = ap.parse_args()
@@ -232,4 +266,16 @@ if __name__ == '__main__':
         print(f'restricted to {len(explicit):,} listed precursors', file=sys.stderr)
     SMOOTH = a.smooth
     globals()['SMOOTH'] = SMOOTH
+    globals()['CROP'] = a.crop
+    if a.centres:
+        c = {}
+        for i, l in enumerate(open(a.centres)):
+            if i == 0 and not l[0].isalpha():
+                continue
+            parts = l.rstrip('\n').split('\t')
+            if len(parts) >= 2:
+                try: c[parts[0]] = float(parts[1])
+                except ValueError: pass
+        globals()['CENTRES'] = c
+        print(f'cropping around {len(c):,} supplied centres', file=sys.stderr)
     (run_diann if a.engine == 'diann' else run_odia)(a.path, a.out, a.sample, a.seed, explicit)
