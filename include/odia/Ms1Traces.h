@@ -82,10 +82,25 @@ namespace ODIA
     /// @param observed_ppm_median  optional out-param receiving the median
     ///        residual against the CALIBRATED target, so the applied offset can
     ///        be checked rather than assumed: a correct offset centres it on 0.
+    /// @param isotope_offset_da  isotope index times the neutron mass delta,
+    ///        divided by the precursor's own charge at build time: the target
+    ///        m/z becomes `mz + isotope_offset_da / charge`, BEFORE the ppm
+    ///        calibration scaling. 0 is the monoisotopic trace. Used by the
+    ///        -out_ms1_iso cohort export (M+1, M+2 evidence channels).
+    /// @param keep  optional per-precursor mask (size precursorCount). When
+    ///        given, only masked-in precursors get a dense row -- the matrix is
+    ///        `kept x bins` instead of `np x bins`, which is what makes a 3x
+    ///        isotope build affordable (the full-library dense matrix is 77.6
+    ///        GB at 4.99M precursors and is charged before extraction begins).
+    ///        With @p keep, `at()` takes ROW indices, not library indices;
+    ///        @p kept_indices receives the library index of each row.
     static Ms1Traces build(const Library& library, SpectrumSource& source,
                            double fragment_ppm, double im_window,
                            double ppm_offset = 0.0,
-                           double* observed_ppm_median = nullptr);
+                           double* observed_ppm_median = nullptr,
+                           double isotope_offset_da = 0.0,
+                           const std::vector<std::uint8_t>* keep = nullptr,
+                           std::vector<std::uint32_t>* kept_indices = nullptr);
 
   private:
     std::vector<float> times_;

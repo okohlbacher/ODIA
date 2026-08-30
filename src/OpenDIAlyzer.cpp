@@ -231,6 +231,26 @@ protected:
     registerOutputFile_("out_chrom", "<file>", "",
                         "Write extracted chromatograms here (TSV).", false);
     setValidFormats_("out_chrom", {"tsv"}, false);
+    registerInputFile_("out_chrom_ids", "<tsv>", "",
+                       "Restrict -out_chrom (and -out_ms1_iso) to precursors whose "
+                       "Precursor.Id appears in column 1 of this TSV. The id is DIA-NN's "
+                       "convention (modified sequence + charge), the same string -out_chrom "
+                       "writes. A listed id emits BOTH its target and its decoy block; the "
+                       "Decoy column separates them downstream. Extraction itself is "
+                       "untouched -- only the output shrinks, which is what makes a "
+                       "cohort dump of a multi-million-precursor library writable.",
+                       false, true);
+    setValidFormats_("out_chrom_ids", {"tsv"}, false);
+    registerOutputFile_("out_ms1_iso", "<file>", "",
+                        "Write MS1 M/M+1/M+2 traces for the -out_chrom_ids cohort here "
+                        "(TSV: Precursor.Id, Decoy, Isotope, Precursor.Mz, RT, Intensity; "
+                        "non-zero runs only, one flanking zero each side). REQUIRES "
+                        "-out_chrom_ids: the dense 3x trace matrix is only affordable "
+                        "cohort-restricted (the full-library mono matrix alone is 77.6 GB "
+                        "at 4.99M precursors). The isotope targets are mz + k*1.003355/z "
+                        "per precursor charge, extracted at the same calibrated MS1 centre "
+                        "and mobility gate as the mono trace.", false, true);
+    setValidFormats_("out_ms1_iso", {"tsv"}, false);
 
     // NO DEFAULT. -1 means "not given", and the run's own calibration then
     // supplies it. Naming a number up front is a guess about the instrument, and
@@ -1682,6 +1702,54 @@ protected:
     }
     sink.ms1Available(ms1_traces_.empty() ? nullptr : &ms1_traces_);
 
+    // -out_ms1_iso: the cohort M/M+1/M+2 export. Once per run (the MS1 grid and
+    // calibration are per-run, not per-pass), separate cohort-restricted builds
+    // so the scorer's full ms1_traces_ is never touched. The mask is by
+    // reconstructed Precursor.Id -- the writer's own join key -- so a listed id
+    // covers its target AND decoy rows, same contract as -out_chrom_ids.
+    if (!out_ms1_iso_.empty() && !ms1_iso_written_ && !out_chrom_keep_.empty() &&
+        !source->ms1Spectra().empty())
+    {
+      ms1_iso_written_ = true;
+      const auto t_iso = std::chrono::steady_clock::now();
+      const auto& lp = library.precursors();
+      std::vector<std::uint8_t> mask(library.precursorCount(), 0);
+      std::size_t kept_n = 0;
+      for (std::size_t i = 0; i < library.precursorCount(); ++i)
+      {
+        const auto seq = library.strings().get(lp.modified_sequence[i]);
+        const std::string id = std::string(seq) +
+                               std::to_string(static_cast<int>(lp.charge[i]));
+        if (out_chrom_keep_.count(id) != 0) { mask[i] = 1; ++kept_n; }
+      }
+      const double iso_im = options.precursor_im_window * getDoubleOption_("ms1_im_scale");
+      static constexpr double NEUTRON_DA = 1.003355;
+      std::vector<std::uint32_t> kept_rows;
+      ODIA::Ms1Traces iso[3];
+      for (int k = 0; k < 3; ++k)
+      {
+        std::vector<std::uint32_t>* rows_out = k == 0 ? &kept_rows : nullptr;
+        iso[k] = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
+                                        iso_im, ms1PpmCentre_(), nullptr,
+                                        k * NEUTRON_DA, &mask, rows_out);
+      }
+      try
+      {
+        ODIA::writeMs1TracesTsv(out_ms1_iso_, library, iso[0], iso[1], iso[2], kept_rows);
+        const double secs = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - t_iso).count();
+        writeLogInfo_("-out_ms1_iso: wrote M/M+1/M+2 traces for " +
+                      std::to_string(kept_n) + " cohort precursor rows (of " +
+                      std::to_string(out_chrom_keep_.size()) + " listed ids) to " +
+                      out_ms1_iso_ + " in " + std::to_string(secs) + " s");
+      }
+      catch (const std::exception& e)
+      {
+        writeLogError_(std::string("Failed to write -out_ms1_iso: ") + e.what());
+        return CANNOT_WRITE_OUTPUT_FILE;
+      }
+    }
+
     if (options.irt_slope == 0.0 && !library_rt_is_run_seconds)
     {
       writeLogWarn_("No iRT calibration given (-irt_slope/-irt_intercept). The "
@@ -1779,7 +1847,8 @@ protected:
       try
       {
         const auto t_write = std::chrono::steady_clock::now();
-        ODIA::writeChromatogramTsv(out_chrom, library, chromatograms);
+        ODIA::writeChromatogramTsv(out_chrom, library, chromatograms,
+                                   out_chrom_keep_.empty() ? nullptr : &out_chrom_keep_);
         chrom_write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - t_write).count();
       }
@@ -4556,6 +4625,22 @@ protected:
 
     const std::string in_run = getStringOption_("in");
     const std::string out_chrom = getStringOption_("out_chrom");
+    out_ms1_iso_ = getStringOption_("out_ms1_iso");
+    if (const std::string ids_path = getStringOption_("out_chrom_ids"); !ids_path.empty())
+    {
+      try { out_chrom_keep_ = ODIA::readPrecursorIdList(ids_path); }
+      catch (const std::exception& e)
+      { writeLogError_(e.what()); return ILLEGAL_PARAMETERS; }
+      writeLogInfo_("-out_chrom_ids: " + std::to_string(out_chrom_keep_.size()) +
+                    " precursor ids restrict the chromatogram/MS1 output");
+    }
+    if (!out_ms1_iso_.empty() && out_chrom_keep_.empty())
+    {
+      writeLogError_("-out_ms1_iso requires -out_chrom_ids: a full-library 3x MS1 "
+                     "trace matrix is not affordable (77.6 GB per isotope at 4.99M "
+                     "precursors). Give the cohort id list.");
+      return ILLEGAL_PARAMETERS;
+    }
 
     // Naming no stage means "run to the end", and which end that is depends on
     // whether there is a run to work on.
@@ -5267,6 +5352,14 @@ private:
   ODIA::MassCalibration::Model mass_model_;
   /// The run's MS1 precursor traces, built once before the first scoring pass.
   ODIA::Ms1Traces ms1_traces_;
+
+  /// -out_chrom_ids: reconstructed Precursor.Ids that restrict the chromatogram
+  /// and MS1-isotope output. Empty = no restriction.
+  std::unordered_set<std::string> out_chrom_keep_;
+  /// -out_ms1_iso path, and the once-per-run latch for its export (the MS1 grid
+  /// is per-run; a second pass must not re-extract and re-write it).
+  std::string out_ms1_iso_;
+  bool ms1_iso_written_ = false;
 
   /// One `PeakGroupScorer::TerminalReason` per library precursor, or empty when
   /// -out_terminal_reasons was not given. Cleared before the pass that gets

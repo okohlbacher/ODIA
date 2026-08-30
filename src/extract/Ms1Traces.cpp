@@ -40,7 +40,10 @@ namespace ODIA
 
   Ms1Traces Ms1Traces::build(const Library& library, SpectrumSource& source,
                              double fragment_ppm, double im_window,
-                             double ppm_offset, double* observed_ppm_median)
+                             double ppm_offset, double* observed_ppm_median,
+                             double isotope_offset_da,
+                             const std::vector<std::uint8_t>* keep,
+                             std::vector<std::uint32_t>* kept_indices)
   {
     Ms1Traces out;
     const auto& ms1 = source.ms1Spectra();
@@ -51,7 +54,32 @@ namespace ODIA
     out.bins_ = ms1.size();
     out.times_.reserve(ms1.size());
     for (const auto& s : ms1) { out.times_.push_back(static_cast<float>(s.retention_time)); }
-    out.values_.assign(np * out.bins_, 0.0f);
+
+    // Row assignment. Without a mask each library precursor owns row i (the
+    // scorer's contract). With a mask, rows are assigned in ascending library
+    // index over the kept precursors, and the caller gets that order back via
+    // kept_indices -- the writer reconstructs ids from it, so the mapping is
+    // never inferred twice.
+    std::vector<std::uint32_t> row;
+    std::size_t rows = np;
+    if (keep != nullptr)
+    {
+      row.assign(np, UINT32_MAX);
+      std::uint32_t r = 0;
+      for (std::size_t i = 0; i < np; ++i)
+      {
+        if (i < keep->size() && (*keep)[i]) { row[i] = r++; }
+      }
+      rows = r;
+      if (kept_indices != nullptr)
+      {
+        kept_indices->clear();
+        kept_indices->reserve(rows);
+        for (std::size_t i = 0; i < np; ++i)
+        { if (row[i] != UINT32_MAX) { kept_indices->push_back(static_cast<std::uint32_t>(i)); } }
+      }
+    }
+    out.values_.assign(rows * out.bins_, 0.0f);
 
     // Search the sorted LIBRARY side and iterate the peaks: SpectrumSource
     // documents that a peak array is not ascending in m/z (a mobility frame
@@ -63,6 +91,7 @@ namespace ODIA
     idx.reserve(np);
     for (std::size_t i = 0; i < np; ++i)
     {
+      if (keep != nullptr && row[i] == UINT32_MAX) { continue; }
       // CALIBRATED, like the fragment axis. This matched on the library's
       // THEORETICAL m/z with a symmetric window and no offset, while the
       // fragment extractor was centred on the fitted deviation -- on S08 that
@@ -73,8 +102,16 @@ namespace ODIA
       // DIA-NN precursors we reject, against -0.124 for the 801,458 bulk
       // non-identifications and 0.473 for accepted ones), and absence cannot be
       // concluded from an uncalibrated measurement.
-      const double mz = fromFixed(p.mz[i]) * (1.0 + ppm_offset * 1e-6);
-      if (mz > 0.0) { idx.push_back({mz, static_cast<std::uint32_t>(i), p.im[i]}); }
+      //
+      // The isotope offset is applied BEFORE the calibration scaling, and per
+      // this precursor's own charge: the M+k target is `mz + k*dm/z`, and the
+      // instrument's relative (ppm) error then applies to that target as it
+      // does to any mass.
+      const int z = p.charge[i] > 0 ? static_cast<int>(p.charge[i]) : 1;
+      const double mz = (fromFixed(p.mz[i]) + isotope_offset_da / z) *
+                        (1.0 + ppm_offset * 1e-6);
+      const std::uint32_t slot = keep != nullptr ? row[i] : static_cast<std::uint32_t>(i);
+      if (mz > 0.0) { idx.push_back({mz, slot, p.im[i]}); }
     }
     std::sort(idx.begin(), idx.end(),
               [](const Target& a, const Target& b) { return a.mz < b.mz; });
