@@ -100,8 +100,25 @@ BEFORE anything extracts on it:
   transfer learning stays deferred -- it risks baking one vendor's axis into a
   supposedly instrument-independent quantity.
 
-## Validation
+## Validation (v2 profile, binary 3b6c4374, pre-registered rules)
 
-(filled in from run_prior.sh arms: mechanism checks M1-M3, matched entrapment
-FDP at e>=10, Astral byte-identity -- see the pre-registered rules in the
-script header.)
+**S08 / mix10k (DIA-NN-confident-enriched, the design population): PASS on both
+clauses.** Mechanism: mass-probe centre 0.0000 (on) vs 0.0242 (off); runtime
+MSE-removed 2.3% vs 70.0%; z3 residual +0.0053 = the predicted run part.
+Counts at matched entrapment FDP, e>=10 cells: +180 / +212 / +193 at
+FDP<=5/7.5/10% against a 99-ID band.
+
+**S08 / 500k random (stress case): EQUAL within band.** +93 / +99 / -49 at the
+same cells; probe centre improves 0.0430 -> 0.0142 but misses the <=0.012 rule.
+Known weakness, recorded as open: this library is z4-heavy (213,864 rows under
+a constant fitted on 1,194 anchors of a different population) and 27.5% of its
+rows sit outside the profile's fitted [0.759,1.367], carrying the boundary
+correction. The prior arm's PASS 1 halves (964 -> 482) while pass 2 and FDP are
+neutral -- the runtime stage compensates. The profile's support does not cover
+libraries of this range; a range-extended refit (or per-run fallback fit) is
+the successor item.
+
+**Astral (no mobility axis): byte-identical** score tables with the prior on
+and off (cmp, an_IDENTICAL) -- the no-op proof, as required.
+
+76/76 ctest green. Shipped at a2a5506.
