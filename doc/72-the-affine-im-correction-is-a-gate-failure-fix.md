@@ -1,5 +1,66 @@
 # The affine 1/K0 correction is a fix for a gate failure, not for the library
 
+> **CORRECTION, 2026-08-28 — the stated mechanism is wrong; the number is a
+> different quantity than the document claims it is.** The document says "One
+> factor differs: the library's IM column." It does not. Re-reading the logs:
+>
+>     arm     fragment mass gate          extraction window          candidate groups
+>     base    PASSED (ratio 0.186)        +/-10 ppm centred -10.02        511,337
+>     imfix   FAILED (ratio 0.252)        +/-50 ppm centred   0.00      1,057,015
+>
+> The gate requires ratio <= 0.25; the corrected arm reached 0.252 and fell back
+> to `fragment_ppm_uncalibrated` = 50 ppm with no centring.
+>
+> **This is mediation, not confounding, and the distinction is not pedantic.**
+> The gate outcome is DOWNSTREAM of the treatment: the corrected library changes
+> which cells pass 1 probes, which changes the mass residuals, which changes the
+> gate's verdict. So `1,194 -> 780` remains a valid single-draw estimate of the
+> TOTAL effect of shipping the corrected library under the current binary — the
+> gate flip is part of what shipping it does. Calling the result "confounded"
+> would reframe a real, treatment-caused cost as a measurement artefact, which
+> happens to rehabilitate the earlier +32.3% claim. That is the direction this
+> project's errors have repeatedly leaned, and it is not licensed here.
+>
+> What IS wrong is the attribution. "-34.7% because the mobility gate fires" is
+> dead: the mobility gate was not the differing mechanism, the mass path was.
+> The honest form is: the correction's harm on this run operated THROUGH the mass
+> gate, and how much of it survives with the mass path held fixed is unmeasured.
+>
+> Nor does the near-miss license much. The treatment moved the ratio 0.186 ->
+> 0.252, an absolute change of 0.066 — the 0.002 distance to the threshold is the
+> small number, and quoting only it hides the larger movement. Without a measured
+> standard error on the ratio statistic, "0.252 is a knife-edge accident" is
+> assertion, not evidence. What the near-miss does license: this run's downstream
+> regime is threshold-sensitive, so the total effect is UNSTABLE, and both -34.7%
+> and the earlier +32.3% are single draws of a gate that can flip.
+>
+> What survives measurement: the loss is not decoy-counting arithmetic. Targets
+> and decoys expanded almost identically (2.065x and 2.070x), and at a matched
+> decoy budget the corrected arm still ranks far fewer targets:
+>
+>     decoy budget      base     imfix
+>               10     1,182       824
+>              100     1,592     1,176
+>            1,000     2,737     2,418
+>
+> Read that with care: the classifier is trained per run, so the two arms' scores
+> are not on a common scale. It is a statement about each arm's whole pipeline,
+> not about extraction alone.
+>
+> Running now to decompose it: `shared/libv2/run_immass2x2.sh` (library x pass-1
+> mobility scale, mass path pinned identically) and `shared/libv2/run_massregime.sh`
+> (2 libraries x 3 mass regimes — narrow-centred, wide-CENTRED, wide-uncentred —
+> which supplies the missing base-under-wide cell the decomposition needs, and
+> separates the fallback's two simultaneous changes, breadth and mis-centring).
+>
+> The comparability check that would have caught this is now mechanical:
+> `shared/libv2/arm_assert.py`, run before any identification count is read.
+>
+> Reviewed adversarially by codex 0.149.1 and kimi 0.38.0; both independently
+> rejected the word "confounded" and the 0.002 argument, and codex identified the
+> missing cell.
+
+
 An earlier measurement on a 10,000-precursor library found that pre-correcting
 the library's ion mobility with `IM' = 0.95323*IM + 0.06916` gained **+32.3%**
 identifications at the default aperture, and concluded the aperture sweep had
