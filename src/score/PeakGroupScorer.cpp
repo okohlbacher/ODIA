@@ -2470,6 +2470,21 @@ namespace
     }
 
     Scoring::LDAParams params;
+    // These three were registered, parsed, and stored in Options -- and never
+    // copied here, so `-use_pi0`, `-train_fdr` and `-train_fdr_initial` silently
+    // returned the defaults. `acd000f` added all four of this family and touched
+    // nothing in this file; only `-classifier_iterations` was later connected
+    // (`c4b1416`), and it was found because an arm came back byte-identical.
+    // The consequence is not merely a dead knob: triage arms on record claim to
+    // have tested `use_pi0` and a relaxed `train_fdr`, and did not.
+    //
+    // Wiring rather than deprecating, because the intent is unambiguous -- all
+    // three carry detailed help text describing behaviour they never had -- and
+    // because the defaults are unchanged, so only a caller who asks for
+    // something different sees any difference.
+    if (options.train_fdr_initial > 0.0) { params.train_fdr_initial = options.train_fdr_initial; }
+    if (options.train_fdr > 0.0) { params.train_fdr = options.train_fdr; }
+    params.use_pi0 = options.use_pi0;
     // The classifier's stability knobs, exposed because it turned out to need
     // them. Adding a column of PURE NOISE moves identifications by up to 11.9%
     // at the operating point, and the churn is in the DISCRIMINANT rather than
@@ -2590,7 +2605,18 @@ namespace
       // 3.0.15 configures XGBoost 3.2.0. Six of its nine parameters already
       // match; this changes max_depth 4 -> 6 and eta 0.1 -> 0.3.
       params.classifier = Scoring::LDAParams::Classifier::GBT;
+      // WHOLESALE replacement, so it must not silently discard the per-parameter
+      // overrides applied above -- `-classifier xgboost -gbt_max_depth 8` used to
+      // ignore the depth entirely. Take the preset first, then re-apply anything
+      // the caller set explicitly.
       params.gbt = Scoring::GBTParams::pyprophet();
+      if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
+      if (options.gbt_min_child_rows > 0) { params.gbt.min_child_rows = options.gbt_min_child_rows; }
+      if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
+      if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
+      if (options.gbt_learning_rate > 0.0) { params.gbt.learning_rate = options.gbt_learning_rate; }
+      params.gbt.fixed_bins = options.gbt_fixed_bins;
+      params.gbt.n_threads = static_cast<int>(options.threads);
     }
     else if (options.classifier == "gbt")
     {

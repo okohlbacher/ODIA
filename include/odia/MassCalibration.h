@@ -437,6 +437,35 @@ namespace ODIA
       /// taken against different denominators, and reconciling them by making
       /// them equal would be reconciling away the measurement.
       double im_window = 0.010;
+
+      /// Half-width searched to MEASURE the library's systematic 1/K0 error
+      /// before `im_window` is applied, so the probe's mobility gate is centred
+      /// on where the precursors actually are rather than on where the library
+      /// says they are. 0 restores the old behaviour: gate on the library value
+      /// directly.
+      ///
+      /// WHY. `im_window` is a tolerance on `|peak_im - LIBRARY_im|`, so a
+      /// library whose 1/K0 column is systematically off loses those precursors
+      /// from the FRAGMENT MASS sample entirely -- a mass question decided by a
+      /// mobility value. Measured on S08 2026-08-28: an affine edit displacing
+      /// 1/K0 by +0.0224 put 79.06% of 500,000 targets outside the window, moved
+      /// the mass gate statistic 0.186 -> 0.252 and failed it, dropping the run
+      /// to +/-50 ppm UNCENTRED. Reproduced synthetically in
+      /// test/tools/odia_mobility_calibration.cpp section 5b, where the same
+      /// shift takes the mass sample from 2,405 residuals to 95 and turns a
+      /// correctly recovered -9.95 ppm into no fit at all.
+      ///
+      /// The offset is a MODE over a wide window, not a mean: most library
+      /// targets are absent from any given cell, so a wide search returns
+      /// unrelated centroids that are ~uniform, and a mode is robust to that
+      /// where a mean is not. This is the same estimator, and the same
+      /// reasoning, that `peakednessRatio` and `refineLocation` already use on
+      /// the mass axis.
+      ///
+      /// Widening `im_window` is NOT the alternative: 0.025 made the gate FAIL
+      /// and 0.050 made the residuals flat. The tight window is doing real work
+      /// on a correct library; the defect is only that it is centred on zero.
+      double im_autocentre_window = 0.060;
       bool use_ion_mobility = true;
 
       /// m/z shifts, in Th, that build the null. Each shifts ALL of a
@@ -613,6 +642,18 @@ namespace ODIA
       std::size_t decoy_cells = 0;
       std::size_t spectra_decoded = 0;
       double collect_seconds = 0.0;
+
+      /// The systematic (peak 1/K0 - library 1/K0) the probe measured and
+      /// centred its mobility gate on, and how many deltas it was measured
+      /// from. Zero deltas means the measurement was not attempted or found too
+      /// few; the gate then sits on the library value, as it always did.
+      double im_probe_offset = 0.0;
+      std::size_t im_probe_deltas = 0;
+      /// Quartiles of the same delta sample. The mode is taken over ALL matched
+      /// peak-query pairs and most of those are interference, so the quartiles
+      /// are the check on whether the mode describes a real population or a
+      /// feature of the noise inside the collection window.
+      double im_probe_q1 = 0.0, im_probe_med = 0.0, im_probe_q3 = 0.0;
     };
 
     /// Probe the run and return the raw residuals, targets and controls.
@@ -688,7 +729,15 @@ namespace ODIA
 
     /// Density near zero against density at the edge of @p window. ~1 for a
     /// uniform sample, >> 1 for a genuine error distribution.
-    static double peakednessRatio(const std::vector<double>& absolute_deviation, double window);
+    /// Ratio of central-band to edge-band mass in `absolute_deviation`.
+    ///
+    /// `edge_count`, when non-null, receives the edge-band count -- the ratio's
+    /// DENOMINATOR. A zero denominator is not a large ratio, it is an absent
+    /// measurement, and the 1e9 returned for it is a sentinel rather than a
+    /// value. A caller that GATES on this ratio must check `edge_count` first;
+    /// a caller that only reports it need not.
+    static double peakednessRatio(const std::vector<double>& absolute_deviation, double window,
+                                  std::size_t* edge_count = nullptr);
 
     /// Robust scale of the SIGNAL alone, with the flat background subtracted.
     ///

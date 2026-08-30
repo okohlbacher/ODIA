@@ -90,8 +90,10 @@ namespace ODIA
     return sigma;
   }
 
-  double MassCalibration::peakednessRatio(const std::vector<double>& abs_err, double window)
+  double MassCalibration::peakednessRatio(const std::vector<double>& abs_err, double window,
+                                          std::size_t* edge_count)
   {
+    if (edge_count != nullptr) { *edge_count = 0; }
     // The guard that stops the estimator fitting noise. Most library targets are
     // absent from any given cell, so a wide search returns an unrelated centroid
     // and those errors are ~UNIFORM over the window. A uniform sample still has
@@ -105,6 +107,7 @@ namespace ODIA
       if (a <= 0.2 * window) { ++c; }
       else if (a >= 0.6 * window && a <= 0.8 * window) { ++e; }
     }
+    if (edge_count != nullptr) { *edge_count = e; }
     // Both bands are 0.2*window wide, so raw counts are already densities.
     if (e == 0) { return c > 0 ? 1e9 : 0.0; }          // no edge mass at all
     return static_cast<double>(c) / static_cast<double>(e);
@@ -949,6 +952,137 @@ namespace ODIA
       }
     }
 
+    // ---- measure the library's systematic 1/K0 error, before gating on it --
+    //
+    // `im_window` is a tolerance on |peak_im - LIBRARY_im|. Centred on zero it
+    // assumes the library's mobility column is right, and silently deletes the
+    // precursors for which it is not -- from the FRAGMENT MASS sample. See the
+    // header for the S08 measurement and the synthetic reproduction.
+    //
+    // A mode, not a mean: over a wide window most matches are unrelated
+    // centroids, ~uniform, and a mean tracks them while a mode does not.
+    double im_offset = 0.0;
+    std::size_t im_offset_n = 0;
+    if (opt.im_window > 0.0 && opt.im_autocentre_window > opt.im_window)
+    {
+      std::vector<double> deltas;
+      deltas.reserve(1u << 16);
+      std::vector<ODIA::SpectrumPeaks> pre;
+      for (std::size_t c = 0; c < chosen.size(); ++c)
+      {
+        const auto& cyc = cycles[chosen[c]];
+        source.peaks(cyc.first, cyc.second, pre);
+        for (std::size_t si = cyc.first; si < cyc.second; ++si)
+        {
+          const std::uint32_t w = window_of[si];
+          if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
+          auto& x = index[w];
+          if (x.query.empty()) { continue; }
+          const auto& peaks = pre[si - cyc.first];
+          if (peaks.empty() || !peaks.hasIonMobility()) { continue; }
+          const double ppm = opt.search_ppm * 1e-6;
+          const double front = x.query.front().mz, back = x.query.back().mz;
+          // FILTER EXACTLY AS THE GATE DOES. The first version of this loop
+          // applied neither the frame's mobility band nor the iRT restriction,
+          // while the gate whose window it centres applies both -- and the
+          // comment forty lines below says why that is wrong: "fitting it
+          // through a different filter than it is applied through is how a
+          // calibration ends up centred on the wrong population."
+          //
+          // Measured consequence on S08, probe mode against the run's own
+          // anchor-based centre: +0.0295 on the 500k raw library, +0.0162 on the
+          // affine one, +0.0045 on mix10k, +0.0021 on S30 -- the gap scaling
+          // with how much of the library is ABSENT from the run, which is what
+          // an unfiltered, interference-dominated sample predicts.
+          const bool use_band_ac = opt.use_ion_mobility;
+          const double im_lo_ac = info[si].window.im_low;
+          const double im_hi_ac = info[si].window.im_high;
+          for (std::size_t k = 0; k < peaks.size(); ++k)
+          {
+            const double m = peaks.mz[k];
+            const double slack = m * ppm * 1.01 + 1e-6;
+            if (m + slack < front || m - slack > back) { continue; }
+            const double peak_im = double(peaks.ion_mobility[k]);
+            if (std::isnan(peak_im)) { continue; }
+            if (use_band_ac && (peak_im < im_lo_ac || peak_im > im_hi_ac)) { continue; }
+            std::size_t i = x.bucket[x.bucketOf(std::max(m - slack, front))];
+            for (; i < x.query.size() && x.query[i].mz <= m + slack; ++i)
+            {
+              const double q = x.query[i].mz;
+              if (std::abs(m - q) > q * ppm) { continue; }
+              // The run's own iRT map, so the sample is drawn only where a
+              // precursor should elute -- the same restriction the gate loop
+              // applies, and computed above for it.
+              if (rt_restricted)
+              {
+                const double want_rt = predicted_rt[x.query[i].cell / variants];
+                if (std::isfinite(want_rt) &&
+                    std::abs(static_cast<double>(info[si].retention_time) - want_rt) >
+                      opt.rt_window_seconds)
+                {
+                  continue;
+                }
+              }
+              const float want = p.im[sampled[x.query[i].cell / variants]];
+              if (std::isnan(want)) { continue; }
+              const double d = peak_im - double(want);
+              if (std::abs(d) <= opt.im_autocentre_window) { deltas.push_back(d); }
+            }
+          }
+        }
+      }
+      im_offset_n = deltas.size();
+      if (deltas.size() >= 200)
+      {
+        std::sort(deltas.begin(), deltas.end());
+        // ITERATED, not a single mode. A half-sample mode over the whole +/-0.060
+        // collection window is taken on a distribution whose IQR is ~0.053 on
+        // real data -- ten times the fixture's -- because most matched
+        // peak-query pairs are interference, and on that shape it latches onto a
+        // shoulder rather than the signal peak.
+        //
+        // Measured on S08 after the collection loop was corrected to filter as
+        // the gate does: the single mode still read 0.0430 (b_base) and 0.0119
+        // (b_imfix) against the runs' own anchor-based centres of 0.0212 and
+        // 0.0011 -- gaps of +0.0218 and +0.0108, both failing the +/-0.005 rule
+        // registered for that fix. The MEDIANs, 0.0130 and 0.0047, were closer
+        // but not close: the estimator, not only its input, is biased.
+        //
+        // So re-centre: take the mode, restrict to a window one im_window wide
+        // around it, and re-estimate. Three passes. This is mean-shift on the
+        // half-sample mode, and it converges on the densest part of the SIGNAL
+        // rather than on the broad interference pedestal, because after the
+        // first restriction the pedestal is no longer in the sample.
+        double centre = halfSampleMode(deltas);
+        for (int pass = 0; pass < 3; ++pass)
+        {
+          std::vector<double> near;
+          near.reserve(deltas.size() / 4 + 16);
+          for (double d : deltas)
+          {
+            if (std::abs(d - centre) <= opt.im_window) { near.push_back(d); }
+          }
+          if (near.size() < 200) { break; }
+          const double next = refineLocation(near, halfSampleMode(near), opt.im_window);
+          if (!std::isfinite(next)) { break; }
+          if (std::abs(next - centre) < 1e-5) { centre = next; break; }
+          centre = next;
+        }
+        im_offset = std::isfinite(centre) ? centre : 0.0;
+      }
+      if (diag != nullptr)
+      {
+        diag->im_probe_offset = im_offset;
+        diag->im_probe_deltas = im_offset_n;
+        if (!deltas.empty())
+        {
+          diag->im_probe_q1 = deltas[deltas.size() / 4];
+          diag->im_probe_med = deltas[deltas.size() / 2];
+          diag->im_probe_q3 = deltas[(3 * deltas.size()) / 4];
+        }
+      }
+    }
+
     std::size_t decoded = 0, probed = 0;
     for (std::size_t c = 0; c < chosen.size(); ++c)
     {
@@ -998,7 +1132,9 @@ namespace ODIA
             if (opt.im_window > 0.0 && !std::isnan(peak_im))
             {
               const float want = p.im[sampled[x.query[i].cell / variants]];
-              if (!std::isnan(want) && std::abs(peak_im - want) > opt.im_window) { continue; }
+              // Centred on the measured library error, not on zero.
+              if (!std::isnan(want) &&
+                  std::abs(peak_im - double(want) - im_offset) > opt.im_window) { continue; }
             }
             // MOST INTENSE within the window, not nearest. On this instrument
             // class the interferents are numerous but individually weak, so
@@ -1131,6 +1267,19 @@ namespace ODIA
         << diag->collect_seconds << " s)";
     }
     o << "\n";
+    if (diag != nullptr && diag->im_probe_deltas > 0)
+    {
+      const auto prec = o.precision();
+      o.precision(4);
+      o << "  probe 1/K0:  gate centred on " << diag->im_probe_offset
+        << " (mode of " << diag->im_probe_deltas << " deltas, quartiles "
+        << diag->im_probe_q1 << " / " << diag->im_probe_med << " / " << diag->im_probe_q3
+        << ") -- the library's systematic 1/K0 error, so a library whose mobility column "
+           "is off does not lose its precursors from the MASS sample. The mode is taken "
+           "over ALL matched peak-query pairs, most of which are interference, so compare "
+           "it against the quartiles before trusting it\n";
+      o.precision(prec);
+    }
     o << "  peakedness:  " << m.peakedness << " (control " << m.decoy_peakedness
       << "), gate at " << m.gate_peakedness << " evaluated over +/-" << m.gate_ppm
       << " ppm of a +/-" << m.search_ppm << " ppm search\n";

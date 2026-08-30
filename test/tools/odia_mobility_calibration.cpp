@@ -39,6 +39,7 @@
 
 #include <odia/DIANNLibraryFile.h>
 #include <odia/LibraryGenerator.h>
+#include <odia/MassCalibration.h>
 #include <odia/MobilityCalibration.h>
 #include <odia/SpectrumSource.h>
 
@@ -146,6 +147,20 @@ namespace
       return p.mz.size() - 1;
     }
 
+    /// Move every precursor's LIBRARY 1/K0 by a constant, leaving the run
+    /// untouched. This is what an affine pre-correction of a library does to the
+    /// relationship between the library and the instrument, and it is the only
+    /// thing that varies between the two arms of the metamorphic mass-gate
+    /// check.
+    void shiftLibraryIm(double delta)
+    {
+      auto& im = lib_.precursors().im;
+      for (auto& v : im)
+      {
+        if (!std::isnan(v)) { v = static_cast<float>(v + delta); }
+      }
+    }
+
     void addTransition(double product_mz)
     {
       auto& t = lib_.transitions();
@@ -209,6 +224,20 @@ namespace
     /// probe was refused on S08: the cluster is there, it is reproducible, and
     /// it is not the precursor.
     double absent_interference = 0.0;
+    /// Per-peak Gaussian scatter about `mass_ppm`, in ppm. A perfectly constant
+    /// error has ZERO scale and the mass gate rejects it as "degenerate scale",
+    /// so a fixture that plants one cannot exercise the gate at all. S08's own
+    /// per-hit scatter is 5.46 ppm.
+    double mass_ppm_sigma = 0.0;
+
+    /// A systematic FRAGMENT MASS error, in ppm, applied to the RUN's peaks
+    /// relative to the library's transition m/z. Zero means the run's masses are
+    /// exactly the library's, which is the case for every mobility test here and
+    /// is also why the mass calibration finds nothing on this fixture: there is
+    /// nothing to find. Needed by the metamorphic mass-gate check, which has to
+    /// plant a real mass error before it can ask whether a MOBILITY shift
+    /// changes whether that error is recovered. S08's own value is about -10.
+    double mass_ppm = 0.0;
     std::size_t background = 2000;     ///< unrelated peaks per spectrum
     /// The truth: what to add to the library 1/K0 for this precursor.
     std::function<double(std::size_t /*index*/, std::uint8_t /*charge*/, double /*mz*/,
@@ -264,6 +293,8 @@ namespace
     }
 
     std::normal_distribution<double> jitter(0.0, 0.002);
+    std::normal_distribution<double> mass_jitter(0.0, plan.mass_ppm_sigma > 0.0
+                                                        ? plan.mass_ppm_sigma : 1.0);
     std::uniform_real_distribution<double> band(0.75, 1.25);
     // Drawn ONCE per precursor: a wrong 1/K0 that is nevertheless the same
     // every time the precursor is seen, which is the case the peakedness gate
@@ -311,7 +342,10 @@ namespace
             {
               const double m = truth + scan[s];
               if (m < 0.70 || m >= 1.30) { continue; }
-              w.run.addPeak(si, fmz, I * shape[s], plan.mobility ? float(m) : NA);
+              const double mass_err = plan.mass_ppm_sigma > 0.0
+                                        ? plan.mass_ppm + mass_jitter(rng) : plan.mass_ppm;
+              w.run.addPeak(si, fmz * (1.0 + mass_err * 1e-6), I * shape[s],
+                            plan.mobility ? float(m) : NA);
               if (plan.peaked_control)
               {
                 // The same coherence at the control's m/z, and TIGHTER, so the
@@ -547,6 +581,15 @@ namespace
       World w;
       auto opt = baseOptions();
       opt.folds = 2;
+      // This fixture plants OPPOSITE offsets in the two folds, which is the only
+      // way to distinguish "applied the other fold's model" from "applied its
+      // own" -- and it therefore builds a model that is genuinely harmful out of
+      // fold, by construction. The out-of-fold quality guard added 2026-08-28
+      // refuses exactly that, correctly, and would refuse this fixture before it
+      // could assert anything about fold mechanics. Disable the guard here: this
+      // test is about WHICH model reaches a precursor, not whether the model is
+      // any good.
+      opt.min_squared_error_removed = -1e9;
       const auto planted = [&](std::size_t i, std::uint8_t, double) {
         return ODIA::MobilityCalibration::foldIndex(static_cast<std::uint32_t>(i), 2) == 0
                  ? 0.005 : 0.025;
@@ -574,6 +617,71 @@ namespace
             "fold 0 is corrected by fold 1's number -- the fit that saw it did not");
       check(std::abs(e1 - 0.005) < 0.003,
             "fold 1 is corrected by fold 0's number");
+    }
+
+    // ---- 5b. METAMORPHIC: the FRAGMENT MASS gate must not depend on a -------
+    //          systematic shift in the library's 1/K0.
+    //
+    // MassCalibration's probe refuses a peak unless
+    // |peak_im - LIBRARY_im| <= Options::im_window (0.010 by default,
+    // MassCalibration.cpp ~998). So the MASS fit is sampled through a gate keyed
+    // on the library's MOBILITY, and a library whose 1/K0 column is
+    // systematically off loses those precursors from the mass sample entirely.
+    //
+    // Measured on S08 2026-08-28: an affine edit of the library's IM column,
+    // displacing 1/K0 by +0.0224 at 1/K0 1.0, put 79.06% of 500,000 targets
+    // outside this window. The fragment mass gate then moved from PASSED (ratio
+    // 0.186) to FAILED (0.252) and the run fell back to +/-50 ppm UNCENTRED --
+    // which cost it more identifications than anything else measured that week.
+    // Nothing in either class's documentation says the two stages are coupled,
+    // and the coupling was found only because a mobility experiment produced an
+    // inexplicable mass result.
+    //
+    // The property asserted here is metamorphic: the run is IDENTICAL in both
+    // arms -- same peaks, same m/z, same mass error -- and only the library's
+    // 1/K0 column moves. A fragment mass question must not be decided by it.
+    {
+      const double SHIFT = 0.0224;      // the S08 affine displacement at 1/K0 1.0
+      auto massArm = [&](double library_im_shift) {
+        Plan plan;
+        plan.present = 1.0;
+        plan.peaked_control = true;
+        // A real, recoverable fragment mass error, so the gate has something to
+        // pass ON. Without it both arms refuse for want of a signal and the
+        // metamorphic check passes vacuously -- which is what the control
+        // assertion below exists to catch, and did.
+        plan.mass_ppm = -10.0;
+        plan.mass_ppm_sigma = 4.0;   // a constant error has no scale and is rejected as degenerate
+        World w;
+        // The RUN is built with no mobility offset, so peaks sit exactly at the
+        // UNSHIFTED library 1/K0. Shifting the library afterwards therefore
+        // moves the library away from the truth, which is precisely what an
+        // affine pre-correction of a library does.
+        build(w, plan, [](std::size_t, std::uint8_t, double) { return 0.0; });
+        if (library_im_shift != 0.0) { w.lib.shiftLibraryIm(library_im_shift); }
+        ODIA::MassCalibration::Options mo;
+        mo.max_precursors = plan.precursors;
+        mo.cycles = plan.cycles;
+        ODIA::MassCalibration::Diagnostics md;
+        const auto m = ODIA::MassCalibration::calibrate(w.lib.library(), w.run, mo, &md);
+        std::printf("     [shift %+.4f] %s\n", library_im_shift,
+                    ODIA::MassCalibration::report(m, &md).c_str());
+        return m;
+      };
+      const auto unshifted = massArm(0.0);
+      const auto shifted = massArm(SHIFT);
+      std::printf("5b. the fragment MASS gate against a library 1/K0 shift of +%.4f\n"
+                  "     unshifted: fitted=%d  centred %.3f -> %.3f ppm\n"
+                  "     shifted:   fitted=%d  centred %.3f -> %.3f ppm\n",
+                  SHIFT, int(unshifted.fitted), unshifted.centred_before_ppm,
+                  unshifted.centred_after_ppm, int(shifted.fitted),
+                  shifted.centred_before_ppm, shifted.centred_after_ppm);
+      check(unshifted.fitted,
+            "the mass gate passes on a library whose 1/K0 is correct (the control -- if this "
+            "fails the fixture is wrong and the metamorphic check below means nothing)");
+      check(unshifted.fitted == shifted.fitted,
+            "METAMORPHIC: shifting the LIBRARY's 1/K0 does not change the FRAGMENT MASS gate's "
+            "verdict -- the run, its peaks and its mass error are identical in both arms");
     }
 
     // ---- 6. the ANCHORED probe --------------------------------------------

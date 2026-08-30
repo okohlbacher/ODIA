@@ -55,6 +55,30 @@ string(REPLACE "peptdeep_rt_dynamic.onnx" "peptdeep_ccs_dynamic.onnx"
 set(ODIA_FIXTURE_DIR "$ENV{ODIA_SCRATCH}/fixtures"
     CACHE PATH "Directory holding the assay-library fixtures")
 
+# Absent fixtures used to be SILENT. Every test below sits inside if(EXISTS ...),
+# ODIA_SCRATCH is node-local, and the source library they are derived from lived
+# on one node's /scratch -- so on the compute node where the work actually
+# happens, ctest reported "100% tests passed, 0 tests failed out of 52" while
+# TWENTY-FOUR tests were never configured, among them every library-reader,
+# decoy-method and adversarial-input case. With the fixtures present the same
+# tree reports 76, and all 76 pass: the code was fine, it simply was not checked.
+#
+# A skip that reports success is worse than a failure. Say so at configure time,
+# loudly, and name the fix. scripts/make_fixtures.sh now defaults to a copy on
+# shared storage so any node can derive them.
+if(NOT EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.parquet")
+  message(WARNING
+    "Assay-library fixtures are ABSENT from ${ODIA_FIXTURE_DIR}.\n"
+    "  ~24 tests -- every library-reader, decoy-method and adversarial-input "
+    "case -- will be SILENTLY SKIPPED, and ctest will still report success.\n"
+    "  Fix: bash scripts/make_fixtures.sh   (reads the shared source under "
+    "shared/ref/fixture_src/, falls back to node-local /scratch)\n"
+    "  Configure with -DODIA_REQUIRE_FIXTURES=ON to make this fatal instead.")
+  if(ODIA_REQUIRE_FIXTURES)
+    message(FATAL_ERROR "ODIA_REQUIRE_FIXTURES=ON and the fixtures are absent.")
+  endif()
+endif()
+
 if(EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.parquet")
   # -decoys none keeps this a READER test. Decoy completion has its own test.
   add_test(NAME library_parquet

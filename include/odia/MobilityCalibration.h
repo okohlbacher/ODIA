@@ -483,6 +483,38 @@ namespace ODIA
       /// axis's own passing case, which measures 4.34 against 2.98.
       double min_control_margin = 1.25;
 
+      /// Refuse the fitted correction when the fraction of mean squared 1/K0
+      /// error it removes OUT OF FOLD is at or below this.
+      ///
+      /// `squared_error_removed` was computed out of fold over `folds` and then
+      /// only PRINTED, several hundred lines after the gate had decided -- so
+      /// the engine measured the one quantity that answers "is this correction
+      /// worth applying" and did not consult it. Measured on S08, 500k
+      /// precursors, every one of these reporting GATE PASSED on the peakedness
+      /// heuristic alone:
+      ///
+      ///     arm          removed out of fold   robust scatter
+      ///     base x2              67.1%         0.0118 -> 0.0113
+      ///     base x1              56.5%         0.0085 -> 0.0090
+      ///     affine x1             4.7%         0.0117 -> 0.0118
+      ///     affine x2            -5.5%         0.0105 -> 0.0112
+      ///
+      /// 0.0 is a threshold and is named as one. It is defensible as a NULL --
+      /// it compares the correction against doing nothing -- but it treats a
+      /// point estimate of -0.1% and one of -50% identically, and both reviews
+      /// of this change said the principled version is a fold-level interval:
+      /// refuse when the upper bound is <= 0 if the policy is "apply only
+      /// demonstrated benefit", or when the lower bound is > 0 is violated if it
+      /// is "catch only demonstrated harm". That interval is computable from the
+      /// `folds` already fitted and is the right next step; this is the
+      /// provisional conservative version.
+      ///
+      /// Set very negative to disable -- which the fold-isolation test does,
+      /// because it plants DIFFERENT offsets per fold on purpose and so
+      /// constructs a model that is genuinely harmful out of fold. That test is
+      /// asserting fold mechanics, not calibration quality.
+      double min_squared_error_removed = 0.0;
+
       /// A charge gets its own curve only with at least this many anchors. Below
       /// it the charge is left UNCORRECTED -- not given the pooled offset, which
       /// would be another charge's answer applied to a population that has no
@@ -498,14 +530,22 @@ namespace ODIA
       /// against +0.0019 and -0.096 for charge 2). The charge that most needs
       /// the correction is the one that cannot reach the count for it.
       ///
-      /// Pooling the SLOPE is physically justified in a way pooling the offset
-      /// is not. The slope is a relative scale error in the CCS->1/K0
-      /// conversion coefficient, and that coefficient is a property of the
-      /// conversion, shared by every charge. A constant offset is not: it
-      /// absorbs charge-dependent instrument calibration, which is exactly the
-      /// thing "another charge's offset is not this charge's answer" refuses.
-      /// So this borrows only the shared quantity and still fits the
-      /// charge-specific one from the charge's own anchors.
+      /// STRUCK 2026-08-28 (doc/36 section 5b, ordered removed 2026-08-18 and
+      /// still live until today). The physical justification was FALSE:
+      ///
+      ///   ~~"Pooling the SLOPE is physically justified ... The slope is a
+      ///   relative scale error in the CCS->1/K0 conversion coefficient, and
+      ///   that coefficient is a property of the conversion, shared by every
+      ///   charge."~~
+      ///
+      /// The fitted slope is `c*lambda_z`, where lambda_z is the CHARGE'S OWN
+      /// reliability ratio. Measured, `a_q` spans -0.058 to -0.078, a 28%
+      /// spread across charge, so the pooled quantity is demonstrably not
+      /// shared. Pooling survives only as statistical regularisation of a small
+      /// sample -- which is a weaker claim and does not by itself justify
+      /// borrowing across charges. It also explains this tier's signature,
+      /// out-of-fold MSE improving while identifications fall: it applies one
+      /// charge's shrinkage fraction to another.
       ///
       /// The m/z shape is NOT borrowed either -- it needs bins, and a charge
       /// that cannot reach 120 anchors cannot fill 8 of them.
@@ -722,6 +762,15 @@ namespace ODIA
       /// Fraction of the mean squared delta the correction removes, measured on
       /// the anchors OUT OF FOLD. The prototype's headline number.
       double squared_error_removed = 0.0;
+
+      /// The same fraction computed within each fold. Its SPREAD is the only
+      /// uncertainty available for `squared_error_removed`, and it matters: a
+      /// ratio on a small denominator is unstable, and at a cell whose
+      /// correction is near zero the pooled figure moved 6.4 points between two
+      /// runs differing only by a 0.0004 ppm mass offset. A guard that reads the
+      /// pooled point estimate alone flips on noise precisely where its decision
+      /// is closest.
+      std::vector<double> fold_error_removed;
       /// Window half-width the corrected residual supports. REPORTED, NEVER
       /// APPLIED -- see the header.
       double window_im = -1.0;

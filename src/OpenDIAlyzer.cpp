@@ -282,11 +282,65 @@ protected:
                        "Acquisition cycles probed, spread over the gradient. This is what the "
                        "measurement costs: one cycle is one decoded spectrum per isolation "
                        "window.", false, true);
+    registerDoubleOption_("ms1_ppm_offset", "<ppm>", 1e9,
+                          "Centre the MS1 mass axis on this offset instead of BORROWING the "
+                          "fragment fit's. The borrow is a hypothesis -- the instrument need not "
+                          "err identically on MS1 and MS2 -- and the engine already measures "
+                          "whether it holds, then only reports it: where the fragment gate "
+                          "passes the MS1 residual is 0.030 ppm, and where it fails the same "
+                          "line reads 3.398 ppm and is logged FAR FROM ZERO, so "
+                          "var_ms1_coelution is being measured through a mis-centred window. "
+                          "DIA-NN calibrates MS1 separately and its applied corrections differ "
+                          "from its MS2 ones by 3.4 ppm on this file (+4.453 against +1.012 "
+                          "median). Exposed to make the borrow TESTABLE, not to replace it: a "
+                          "previous 'the run already measured it, so apply it' change was "
+                          "measured harmful on the second instrument. Default 1e9 = borrow.",
+                          false, true);
+    registerDoubleOption_("mz_calib_im_window", "<1/K0>", 0.010,
+                          "Half-window on the LIBRARY's 1/K0 within which the fragment-mass "
+                          "probe will accept a peak. This couples the two calibrations in a "
+                          "direction nothing documents: the MASS fit is sampled through a gate "
+                          "keyed on the library's MOBILITY, so a library whose 1/K0 column is "
+                          "systematically off loses those precursors from the mass sample "
+                          "entirely. Measured on S08: an affine edit displacing 1/K0 by +0.0224 "
+                          "-- 2.24x this window -- put 79.06%% of 500,000 targets outside the "
+                          "probe and flipped the mass gate from PASSED (ratio 0.186) to FAILED "
+                          "(0.252), which cost the run its calibrated window. 0 disables the "
+                          "gate. Diagnostic: exposed to make that coupling measurable, not "
+                          "because the default is in doubt.",
+                          false, true);
     registerDoubleOption_("mz_calib_search_ppm", "<ppm>", 50.0,
                           "Half-width searched while COLLECTING the residuals, before any window "
                           "is inferred. Deliberately far wider than anything extracted with: the "
                           "distribution's shoulders have to be visible. 0 disables inference.",
                           false, true);
+    registerStringOption_("im_prior", "<profile>", "timstof",
+                          "Per-charge affine prior applied to the LIBRARY's predicted 1/K0 "
+                          "before pass 1, im' = a_z*im + b_z. The peptdeep prediction sits "
+                          "systematically LOW on the vendor axis (S08 consensus, n=1614: "
+                          "median +0.021, i.e. +2.1%, sloping +3.1% at 1/K0 0.7 to +0.9% at "
+                          "1.4), and the runtime calibration cannot absorb that alone: pass 1 "
+                          "extracts and harvests its anchors AT the biased coordinates, and a "
+                          "harvest truncated by the bias it must fix recovers under 40% of a "
+                          "scale error. DIA-NN's raw predictor carries the same sign of error "
+                          "(+0.008) and resolves it the same way, by calibrating predictions "
+                          "per run.\n\n"
+                          "'timstof' (= timstof-s08-v1): z2 affine 0.94060,0.08319; z3 "
+                          "CONSTANT +0.02445; z4 CONSTANT +0.02868; z1 and z>=5 identity. "
+                          "Fitted on 39,115 q<=0.01 anchors (shared_rt_coords_s08), y = the "
+                          "vendor axis at the reported apex (library-invariant to 0.0009 "
+                          "median), NOT any Predicted.IM. z3/z4 ship constants because their "
+                          "slopes are not identifiable across anchor sets; z2's slope carries "
+                          "a ~0.011 set-to-set systematic, so treat the digits as "
+                          "reproducibility, not accuracy. One instrument; provisional until a "
+                          "second is measured. 'off' disables. Custom: 'z2:a,b;z3:a,b'.\n\n"
+                          "Applied to targets AND decoys identically -- correcting one class "
+                          "alone breaks target-decoy exchangeability and with it the FDR. "
+                          "Outside the fitted range [0.742,1.367] the BOUNDARY's correction is "
+                          "applied (constant extrapolation) and the count reported. On a run "
+                          "with no mobility axis every consumer of library 1/K0 is inert, so "
+                          "the prior is a no-op there by construction.",
+                          false);
     registerStringOption_("ion_mobility_calibration", "<mode>", "auto",
                           "How the run's own 1/K0 prediction error is measured before the "
                           "mobility window is recentred on it. anchors: from the peak groups "
@@ -344,11 +398,34 @@ protected:
                        "-- the pooled slope is dominated by charge 2's 378 anchors against charge "
                        "3's 93, so it undercorrects. Set 40 to enable.",
                        false, true);
+    registerDoubleOption_("im_min_mse_removed", "<fraction>", 0.0,
+                          "Refuse the fitted 1/K0 correction when the fraction of mean squared "
+                          "error it removes OUT OF FOLD is at or below this. The engine has "
+                          "always computed that number over 4 folds and only PRINTED it, after "
+                          "the gate had already decided on a peakedness heuristic -- which on "
+                          "S08 reported GATE PASSED for corrections removing 67.1%%, 4.7%% and "
+                          "-5.5%% alike. 0 refuses only corrections that make the axis WORSE on "
+                          "held-out residuals. It is a threshold and is named as one: it treats "
+                          "-0.1%% and -50%% identically, and the principled version is a "
+                          "fold-level interval, computable from the folds already fitted. "
+                          "Negative disables the check.",
+                          false, true);
+    registerIntOption_("im_min_anchors_per_charge", "<n>", 100,
+                       "A charge gets its own 1/K0 curve only with at least this many anchors; "
+                       "below it the charge is left UNCORRECTED. Exposed because the floor sits "
+                       "INSIDE comparisons that are read as single-factor: widening pass 1's "
+                       "mobility window on S08 took charge 3 from 106 anchors (NOT APPLIED) to "
+                       "157 (APPLIED), so the window change and a discrete gate flip moved "
+                       "together and the identification delta cannot be attributed to either. "
+                       "Set it below the narrower arm's count to hold the flip fixed and measure "
+                       "the window alone. Diagnostic; 120 is the production value and the "
+                       "measurement behind it is in MobilityCalibration.h.",
+                       false, true);
     registerIntOption_("im_calib_cycles", "<n>", 200,
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
                        "in consecutive cycles to count.", false, true);
-    registerDoubleOption_("im_window_pass1_scale", "<x>", 1.0,
+    registerDoubleOption_("im_window_pass1_scale", "<x>", 2.0,
                           "Widen the mobility half-window by this factor for PASS 1 ONLY. "
                           "Pass 1 extracts around the UNCALIBRATED library 1/K0 and then "
                           "harvests the mobility anchors the calibration is fitted on -- so a "
@@ -1570,7 +1647,7 @@ protected:
           ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                                options.precursor_im_window *
                                                  getDoubleOption_("ms1_im_scale"),
-                                               extracted_ppm_offset_, &ms1_resid);
+                                               ms1PpmCentre_(), &ms1_resid);
           {
             // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
             // which is a hypothesis: the instrument need not err identically on
@@ -1765,6 +1842,99 @@ protected:
                       " precursors: the library now carries RUN SECONDS, so "
                       "var_rt_delta is available. An external map is now worth "
                       "what a fitted one is.");
+      }
+    }
+
+    // The ion-mobility PRIOR, mirroring the iRT block above: a library-wide
+    // correction applied in place, once, before anything extracts on it.
+    // See -im_prior's help for the measurement and the fitting rules. Targets
+    // and decoys move together -- the loop runs over every row -- because
+    // correcting one class alone breaks target-decoy exchangeability.
+    {
+      const std::string spec = getStringOption_("im_prior");
+      std::map<int, std::pair<double, double>> prior;
+      if (spec == "timstof")
+      {
+        // timstof-s08-v1: fitted on shared_rt_coords_s08.parquet -- 39,115
+        // q<=0.01 precursors, 24x the consensus set the first draft used.
+        // y = DIA-NN's REPORTED apex IM (the vendor axis; verified
+        // library-invariant to median |delta| 0.0009 over 28,463 cross-search
+        // precursors) -- never Predicted.IM, which is post-calibration and was
+        // the circular target of the retracted affine patch. x verified equal
+        // to ODIA's own library IM to 0.000000 on all 39,115.
+        //
+        // z2 is the only charge with an identifiable SLOPE (paired-bootstrap
+        // out-of-fold gain -0.00205 [-0.00215,-0.00195]). z3's slope is NOT
+        // identifiable -- three anchor sets give three non-overlapping values
+        // (0.981 / 0.941 / 0.910) and the affine's OOF gain (-0.00008) fails a
+        // 0.0005 materiality floor -- so z3 ships a CONSTANT, as does z4
+        // (gain CI includes 0). z1 and z>=5 ship IDENTITY: n=40 and a
+        // predictor slope of 0.48 say the model is unreliable there and a
+        // correction fitted on nothing must not be applied to something.
+        //
+        // Honest precision: the z2 slope carries a ~0.011 set-to-set
+        // systematic (coords 0.9406 vs consensus 0.9518), i.e. ~+/-0.006 of
+        // applied shift at the range edges. The five decimals are
+        // reproducibility, not accuracy.
+        prior[2] = {0.94060, 0.08319};
+        prior[3] = {1.0, 0.02445};
+        prior[4] = {1.0, 0.02868};
+        // no pooled fallback: unknown charges pass through unchanged
+      }
+      else if (spec != "off" && !spec.empty())
+      {
+        std::stringstream parts(spec);
+        std::string part;
+        while (std::getline(parts, part, ';'))
+        {
+          if (part.empty()) { continue; }
+          const auto colon = part.find(':');
+          const auto comma = part.find(',', colon == std::string::npos ? 0 : colon);
+          if (colon == std::string::npos || comma == std::string::npos)
+          {
+            writeLogError_("-im_prior: cannot parse '" + part +
+                           "' (want z2:a,b;z3:a,b;*:a,b)");
+            return ILLEGAL_PARAMETERS;
+          }
+          const std::string zs = part.substr(0, colon);
+          const int zz = (zs == "*") ? 0 : std::stoi(zs);
+          prior[zz] = {std::stod(part.substr(colon + 1, comma - colon - 1)),
+                       std::stod(part.substr(comma + 1))};
+        }
+      }
+      if (!prior.empty())
+      {
+        // Outside the fitted range the boundary's CORRECTION is carried
+        // (constant extrapolation): the affine itself must not be trusted where
+        // it was never measured.
+        constexpr double LO = 0.759, HI = 1.367;   // the 39k fit's z2 support
+        auto& p = library.precursors();
+        std::size_t n = 0, clamped = 0;
+        std::map<int, std::size_t> per_z;
+        for (std::size_t i = 0; i < p.im.size(); ++i)
+        {
+          if (!std::isfinite(p.im[i])) { continue; }
+          const int zz = static_cast<int>(p.charge[i]);
+          const auto it = prior.count(zz) ? prior.find(zz) : prior.find(0);
+          if (it == prior.end()) { continue; }
+          const double a = it->second.first, b = it->second.second;
+          const double im = p.im[i];
+          const double at = std::clamp(im, LO, HI);
+          if (at != im) { ++clamped; }
+          p.im[i] = static_cast<float>(im + (a * at + b - at));
+          ++n; ++per_z[zz];
+        }
+        if (n > 0)
+        {
+          std::ostringstream os;
+          os << "applied the '" << spec << "' 1/K0 prior to " << n
+             << " precursors (targets and decoys alike";
+          for (const auto& [zz, cnt] : per_z) { os << ", z" << zz << " " << cnt; }
+          os << "); " << clamped << " outside the fitted [0.742,1.367] carried "
+             << "the boundary correction. The runtime calibration now fits the "
+             << "RUN residue (~0.006-0.008 expected) rather than the model bias.";
+          writeLogInfo_(os.str());
+        }
       }
     }
 
@@ -2707,7 +2877,7 @@ protected:
       ODIA::PrecursorPrefilter::Options po;
       po.top_n = static_cast<std::size_t>(std::max(1, getIntOption_("prefilter_top_n")));
       po.ppm = extracted_ppm_ > 0.0 ? extracted_ppm_ : 15.0;
-      po.ppm_centre = extracted_ppm_offset_;
+      po.ppm_centre = ms1PpmCentre_();
       po.im_window = getDoubleOption_("precursor_im_window");
       const double pw = getDoubleOption_("prefilter_rt_window");
       // `pass2_window` is ALREADY a half-width -- the extractor slices
@@ -5116,6 +5286,17 @@ private:
   double extracted_ppm_ = 0.0;
   double extracted_ppm_offset_ = 0.0;
 
+  /// The centre the MS1 axis is extracted on: the fragment fit's offset unless
+  /// -ms1_ppm_offset overrides it. Both MS1 sites go through here so they cannot
+  /// drift apart -- Ms1Traces::build and the precursor prefilter must search the
+  /// same axis or the prefilter admits on one centre and the trace scores on
+  /// another.
+  double ms1PpmCentre_() const
+  {
+    const double v = getDoubleOption_("ms1_ppm_offset");
+    return v < 1e8 ? v : extracted_ppm_offset_;
+  }
+
   /// p95 residual of an ACCEPTED retention-time seed, seconds; 0 when none was
   /// accepted. Sizes pass 1's window -- see runScoreWorkflow_.
   /// Median of a vector, by partial sort. Used by the RT-consistency anchor
@@ -5380,6 +5561,9 @@ private:
       imc.max_im_slope = std::max(0.0, getDoubleOption_("max_im_slope"));
       imc.min_anchors_pooled_slope = static_cast<std::size_t>(
         std::max(0, getIntOption_("im_calib_pooled_slope_min")));
+      imc.min_anchors_per_charge = static_cast<std::size_t>(
+        std::max(1, getIntOption_("im_min_anchors_per_charge")));
+      imc.min_squared_error_removed = getDoubleOption_("im_min_mse_removed");
       // Probe through the mass window that is about to be extracted with, so
       // the two calibrations cannot disagree about what a fragment match is.
       imc.fragment_ppm = options.fragment_ppm;
@@ -5522,6 +5706,7 @@ private:
         std::max(1, getIntOption_("mz_calib_precursors")));
       mzc.cycles = static_cast<std::size_t>(std::max(1, getIntOption_("mz_calib_cycles")));
       mzc.use_ion_mobility = !getFlag_("no_ion_mobility");
+      mzc.im_window = std::max(0.0, getDoubleOption_("mz_calib_im_window"));
       mzc.sigma_multiple = getDoubleOption_("mass_sigma_multiple");
       if (remeasure_with_map)
       {

@@ -450,6 +450,11 @@ namespace ODIA
     // correction is worth against the RAW residual is `squared_error_removed`.
     m.sigma_before = gate_sigma / MILLI;
 
+    // The ratio's DENOMINATOR. peakednessRatio returns 1e9 when it is zero --
+    // a sentinel for "no edge mass to divide by", not a measurement of a
+    // perfectly peaked control. Gating on that sentinel makes the gate
+    // unpassable no matter what the data look like, so it is checked below.
+    std::size_t control_edge = 0;
     if (!decoy_ptr.empty())
     {
       std::vector<double> ds;
@@ -457,7 +462,7 @@ namespace ODIA
       std::vector<double> dd;
       dd.reserve(ds.size());
       for (double x : ds) { dd.push_back(std::abs(x)); }
-      m.decoy_peakedness = MassCalibration::peakednessRatio(dd, gate_milli);
+      m.decoy_peakedness = MassCalibration::peakednessRatio(dd, gate_milli, &control_edge);
     }
 
     // ---- the gate ---------------------------------------------------------
@@ -477,7 +482,53 @@ namespace ODIA
       m.reason = "degenerate scale";
       return m;
     }
-    if (!decoy_milli.empty() && m.peakedness < opt.min_control_margin * m.decoy_peakedness)
+    // A control with no edge mass has no computable ratio, so it cannot
+    // overrule the target statistic.
+    //
+    // This is NOT the "a thin control has no opinion" argument, which the mass
+    // axis considered and REJECTED (`MassCalibration.h:340-346`: its sparsity is
+    // itself the signal, and `min_control_residuals` is deliberately 0). The
+    // distinction is that a thin control still yields a ratio; a control with
+    // e == 0 yields 1e9, which is a placeholder for an absent denominator. Any
+    // finite `min_control_margin` times 1e9 exceeds every attainable peakedness,
+    // so the branch below could only ever refuse.
+    //
+    // Measured on S08 2026-08-28: `w7_apply_imfix` extracted through a
+    // +/-8.86 ppm window, which left 15 control residuals against 367 target
+    // (against 40 and 152 in the two +/-50 and +/-10 ppm arms). Zero of the 15
+    // landed in the 0.6-0.8 edge band -- unremarkable at n=15 -- and the run
+    // reported "peakedness 16.67 against 1000000000.00, a margin of 0.00x" and
+    // discarded a 1/K0 correction it had no evidence against. That sentinel
+    // appears in exactly 1 of 183 run logs in shared/libv2, and only in the arm
+    // with the narrow window. Narrowing the fragment window starves this control.
+    if (!decoy_milli.empty() && control_edge == 0)
+    {
+      // REFUSE, and say why honestly. An earlier version of this branch skipped
+      // the control test and applied the fit on the absolute peakedness alone.
+      // That was fail-OPEN: it converted "the control carries no information"
+      // into "permission to correct", and it was written after observing the
+      // refusal in exactly one arm -- the arm I wanted to succeed. That is
+      // post-selection reasoning, and the evidence does not even support it:
+      // refusing gave 1,241 identifications against 1,210 for applying.
+      //
+      // The defect was never the DECISION, it was the REASON. The old message
+      // read "peakedness 16.67 against 1000000000.00, a margin of 0.00x",
+      // reporting a sentinel as though it were a measurement, which is
+      // undiagnosable. A control with no edge mass has no denominator and
+      // therefore no opinion -- and no opinion is not consent.
+      char buf[360];
+      std::snprintf(buf, sizeof buf,
+                    "the control could not be measured: %zu control residuals put no mass in "
+                    "the 0.6-0.8 edge band, so its peakedness has no denominator. The data's "
+                    "own peakedness is %.2f (floor %.2f), but with no control there is no test "
+                    "of whether that peak is specific to these precursors' fragments rather "
+                    "than to interference, so the correction is REFUSED. A thin control is a "
+                    "reason to distrust the fit, not a reason to skip the test",
+                    decoy_milli.size(), m.peakedness, opt.min_peakedness);
+      m.reason = buf;
+      return m;
+    }
+    else if (!decoy_milli.empty() && m.peakedness < opt.min_control_margin * m.decoy_peakedness)
     {
       char buf[360];
       std::snprintf(buf, sizeof buf,
@@ -722,10 +773,27 @@ namespace ODIA
       char slope_buf[128] = "";
       if (full.im_slope != 0.0)
       {
+        // The "i.e. a X% error in the CCS->1/K0 coefficient" gloss that used to
+        // close this line is STRUCK -- doc/36 section 5a, ordered removed
+        // 2026-08-18 and still live until today. It was not a measurement. If
+        // the slope were a pure multiplicative scale error, the correction at
+        // the pivot would have to be slope*pivot: -0.0245 at 0.991 gives -0.0243,
+        // where the same fit logged +0.017. Charge 3 was worse: a "+5.3% scale"
+        // implies +0.046 at 0.871 against a logged +0.010. The fitted slope is
+        // `c*lambda_z`, where lambda_z is the charge's own reliability ratio, so
+        // it is a shrunk quantity and not the coefficient error at all.
+        //
+        // This mattered beyond tidiness: the struck gloss was quoted as evidence
+        // as recently as doc/74 ("the measured CCS->1/K0 coefficient error moves
+        // -3.4% -> -5.1%"). A number the project had already retracted was
+        // being read off the log and used to support a new conclusion, because
+        // the log still printed it. Print the slope and the pivot, which are
+        // what was fitted, and let a reader who wants a coefficient error derive
+        // it with the shrinkage in hand.
         std::snprintf(slope_buf, sizeof slope_buf,
-                      "; 1/K0-linear %+.4f per 1/K0 about %.3f, i.e. a %.1f%% error in "
-                      "the CCS->1/K0 coefficient",
-                      full.im_slope, full.im_pivot, 100.0 * full.im_slope);
+                      "; 1/K0-linear %+.4f per 1/K0 about %.3f (a SHRUNK slope, c*lambda_z: "
+                      "not the CCS->1/K0 coefficient error, see doc/36 5a)",
+                      full.im_slope, full.im_pivot);
       }
       if (full.shaped)
       {
@@ -767,15 +835,41 @@ namespace ODIA
     double sum_before = 0.0, sum_after = 0.0;
     std::vector<double> corrected;
     corrected.reserve(kept.size());
+    // Per fold as well as pooled, so the pooled number can carry an uncertainty
+    // instead of being read as exact. Measured 2026-08-28 on S08: at a cell
+    // whose correction is genuinely near zero, the POOLED figure came out -5.5%
+    // and +0.9% on two runs differing only by a 0.0004 ppm mass offset -- a
+    // 6.4-point spread where cells with a real correction span 2.2. A ratio on a
+    // small denominator is unstable, so a guard reading the point estimate flips
+    // on noise at exactly the cells where the decision is closest.
+    std::vector<double> fold_before(m.folds, 0.0), fold_after(m.folds, 0.0);
     for (const auto& r : kept)
     {
       const double off = m.offsetFor(r.precursor, r.mz, r.charge, r.im_library);
       const double a = r.delta, b = r.delta - off;
       sum_before += a * a;
       sum_after += b * b;
+      if (m.folds > 0)
+      {
+        const std::size_t f = foldIndex(r.precursor, m.folds);
+        if (f < m.folds) { fold_before[f] += a * a; fold_after[f] += b * b; }
+      }
       corrected.push_back(b * MILLI);
     }
     m.squared_error_removed = sum_before > 0.0 ? 1.0 - sum_after / sum_before : 0.0;
+
+    // The spread of the same statistic across folds. Not a formal confidence
+    // interval -- 4 folds of heavy-tailed squared residuals do not support one --
+    // but it is the uncertainty the data can actually show, computed from folds
+    // that were fitted anyway.
+    m.fold_error_removed.clear();
+    for (std::size_t f = 0; f < m.folds; ++f)
+    {
+      if (fold_before[f] > 0.0)
+      {
+        m.fold_error_removed.push_back(1.0 - fold_after[f] / fold_before[f]);
+      }
+    }
 
     std::sort(corrected.begin(), corrected.end());
     const double cmode = MassCalibration::refineLocation(
@@ -796,6 +890,75 @@ namespace ODIA
                   m.by_charge.size(), m.form.c_str(), 100.0 * m.squared_error_removed,
                   m.sigma_before, m.sigma_after);
     m.reason = buf;
+
+    // ---- the only non-circular quality test available ----------------------
+    //
+    // `squared_error_removed` is measured OUT OF FOLD over 4 folds: it is what
+    // the fitted correction is worth on residuals it never saw. Until now it was
+    // computed here and only PRINTED, several hundred lines after the gate had
+    // already decided -- so the engine measured the one quantity that answers
+    // "is this correction worth applying" and then did not consult it.
+    //
+    // The gate it followed instead is a peakedness heuristic, and the record
+    // shows the heuristic admitting corrections that are worthless or harmful.
+    // Measured on S08, 500k precursors, 2026-08-28, all reported GATE PASSED:
+    //
+    //     arm             removed out of fold   robust scatter
+    //     m6_base_s2               67.1%        0.0118 -> 0.0113
+    //     i5_base                  56.5%        0.0085 -> 0.0090
+    //     m6_imfix_s1               4.7%        0.0117 -> 0.0118
+    //     g0_gatefix                0.8%        0.0113 -> 0.0122
+    //     i5_imfix                 -0.7%        0.0121 -> 0.0117
+    //
+    // Only the <= 0 case is refused here, and deliberately so. A correction that
+    // INCREASES held-out error is not a correction, and refusing it needs no
+    // threshold to defend. The 0.8% and 4.7% cases are just as clearly not worth
+    // their risk, but the honest position is that seven arms on one file cannot
+    // site a cutoff between 4.7% and 53%; picking one would repeat the mistake
+    // this project has already made with `accept_ratio` and with the 1.25x
+    // control margin. They are reported prominently instead.
+    //
+    // Refusing is the safe direction by this file's own reasoning: the failure
+    // path keeps the library's uncorrected 1/K0, "where a window recentred on a
+    // badly measured offset moves off the precursor entirely".
+    // Refuse on the fold-level evidence, not on the pooled point estimate.
+    //
+    // The rule is: refuse when the pooled figure is at or below the floor AND a
+    // MAJORITY of folds agree it is. That is deliberately asymmetric. A
+    // correction that is genuinely harmful is harmful in most folds; one whose
+    // pooled figure dips below zero on the instability of a small denominator is
+    // not, and refusing it costs a real correction for a noise excursion.
+    //
+    // Both adversarial reviews of the first version made the same point: zero is
+    // a defensible NULL but treating a point estimate of -0.1% identically to
+    // -50% is a threshold pretending not to be one. This is the cheapest honest
+    // improvement available from data already computed. It is still not a
+    // confidence interval, and four folds of heavy-tailed squared residuals do
+    // not support one.
+    std::size_t folds_below = 0;
+    for (double f : m.fold_error_removed)
+    {
+      if (!(f > opt.min_squared_error_removed)) { ++folds_below; }
+    }
+    const bool majority_agrees =
+      m.fold_error_removed.empty() ||
+      folds_below * 2 > m.fold_error_removed.size();
+    if (!(m.squared_error_removed > opt.min_squared_error_removed) && majority_agrees)
+    {
+      char why[420];
+      std::snprintf(why, sizeof why,
+                    "the fitted correction makes the axis WORSE on held-out residuals: "
+                    "%.1f%% of the mean squared 1/K0 error removed out of fold over %zu folds "
+                    "(robust scatter %.4f -> %.4f). A correction that increases held-out error "
+                    "is not one, whatever its residuals look like in sample "
+                    "(floor %.1f%%; %zu of %zu folds agree)",
+                    100.0 * m.squared_error_removed, m.folds, m.sigma_before, m.sigma_after,
+                    100.0 * opt.min_squared_error_removed, folds_below,
+                    m.fold_error_removed.size());
+      m.reason = why;
+      m.fitted = false;
+      return m;
+    }
 
     // ---- the window this residual would support: REPORTED, NEVER APPLIED ---
     if (m.sigma_after > 0.0 && std::isfinite(m.sigma_after))
@@ -1534,6 +1697,16 @@ namespace ODIA
            "centre " << m.sigma_before << " before the m/z shape, " << m.sigma_after
         << " after\n";
       o.precision(1);
+    if (!m.fold_error_removed.empty())
+    {
+      o << "  per fold:    ";
+      for (std::size_t i = 0; i < m.fold_error_removed.size(); ++i)
+      {
+        if (i) { o << ", "; }
+        o << 100.0 * m.fold_error_removed[i] << "%";
+      }
+      o << " -- the spread is the uncertainty on the pooled figure below\n";
+    }
       o << "  removed:     " << 100.0 * m.squared_error_removed
         << "% of the mean squared 1/K0 error, measured OUT OF FOLD over " << m.folds
         << " folds\n";
