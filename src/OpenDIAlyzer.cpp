@@ -5754,8 +5754,41 @@ private:
                       std::to_string(options.fragment_ppm_offset) + " ppm.");
         return;
       }
-      options.fragment_ppm_offset = 0.0;
+      // CENTRE-ONLY fallback: the wide width with the MEASURED centre, when
+      // pass 1's identifications supplied one (mode 'measure', the default,
+      // computes it and previously threw it away here).
+      //
+      // Two independent reviews converged on this as the highest-value fix in
+      // the gate-failure path (2026-08-30). The reasoning: this codebase's own
+      // finding (doc/16, doc/73's retraction) is "centre only, never infer the
+      // WIDTH" -- the width estimate is circular (sized from the survivors of
+      // the wrong window) and applying it halved an Astral run, but a CENTRE is
+      // a mode, robust to that censoring, and re-centring at 0 mis-centres by
+      // the reader's own systematic (~-10.5 ppm on converted S08 data) every
+      // single time the gate fails. Measured on the matched-regime grid: at
+      // 50 ppm, centred vs uncentred was +217 identifications on the raw
+      // library (886 vs 669) and +46 on the corrected one (826 vs 780).
+      //
+      // Guarded exactly as the width path: a valid, uncensored estimate from
+      // enough groups. Validated against regressions on the full suite; a
+      // natural gate failure no longer occurs on S08 since the IM prior landed,
+      // so the first real-data exercise of this branch will be another
+      // instrument -- the log line below is deliberately loud for that day.
+      const bool centre_ok = getStringOption_("mass_width_from_ids") != "off" &&
+                             mass_width_.valid && !mass_width_.censored &&
+                             std::isfinite(mass_width_.centre_ppm);
+      options.fragment_ppm_offset = centre_ok ? mass_width_.centre_ppm : 0.0;
       options.fragment_ppm = configured > 0.0 ? configured : options.fragment_ppm_uncalibrated;
+      if (centre_ok)
+      {
+        writeLogWarn_("The mass calibration gate FAILED; keeping the wide " +
+                      std::to_string(options.fragment_ppm) + " ppm window but centring it on "
+                      "the " + std::to_string(options.fragment_ppm_offset) + " ppm that pass "
+                      "1's own identifications measured (centre-only fallback: a centre is a "
+                      "mode and survives the censoring that makes the WIDTH estimate "
+                      "circular).");
+        return;
+      }
       writeLogWarn_("The mass calibration gate FAILED, so no offset is applied and the window "
                     "stays wide at " + std::to_string(options.fragment_ppm) + " ppm. An "
                     "uncentred narrow window is the worse of the two errors: it keeps the tail "
