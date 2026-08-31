@@ -51,3 +51,21 @@ below the C++ bar individually; their full-run entrapment read together is
 the natural next measurement. The guard apparatus (symmetry audits, sealed
 decoy partitions, injection-supervised gates, entrapment-first verdicts) is
 now the project's permanent instrument — and ahead of the published field.
+
+## ADDENDUM (same night, ~22:00) — the anchor confound and what survives
+
+The parallel analysis line retracted the unqualified "traces are squeezed
+dry": every cohort trace experiment (wave-1, AXIC, and this tensor's derived
+channels) scored ONE label-blind argmax anchor, and 81.5% of buried blocks
+were anchored >5 s from the true apex (median 45.7 s) — the single-anchor
+construction, not the trace evidence, produced the flat results. What
+SURVIVES of this doc: the seal's asymmetry verdict (decoy-supervision poison
+is anchor-independent), the park of THIS tensor as built, the guard
+apparatus, and MS1-iso (+2.4 buried, measured under the anti-trace bias).
+What is SOFTENED: "the lift lives in shallow structure" — the P0 factorial
+(label-blind multi-candidate reference-correlated features, DIA-NN 1.7.12
+mechanics) reaches 87.4/73.9 from BASE22 alone and 88.1/75.4 stacked (+3.9
+buried, the program's best), with the rt_dn oracle at 93.9/87.4 showing the
+trace information is real and was locked behind candidate selection. Next
+step (pre-registered by that line): port the per-candidate features into
+ODIA's own scorer and re-measure FULL-RUN at matched entrapment FDP.
