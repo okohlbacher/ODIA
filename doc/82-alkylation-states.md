@@ -71,3 +71,41 @@ same-chemistry). The corrected four-tool table lands in this document's
 companion report when the run and the ODIA own-library P1 arm finish.
 Until then: **the number 33,330 is SUPERSEDED for every purpose except
 reproducing historical comparisons.**
+
+## The corrected baseline (measured 2026-09-01, all arms CAM-correct)
+
+**The corrected reference:** DIA-NN on S08 with the CAM library = **37,334**
+precursors at 1% FDR (vs the retired CAM-free 33,330; +12.0% = the cysteine
+hole filled: 9.3% of accepted IDs are now cysteine-containing, vs 1.9%
+before). Its entrapment FDP at the operating point is **1.13%** — DIA-NN is
+essentially FDR-calibrated on this data. 5,539 genes / 4,943 protein groups.
+
+**The table** (S08 unless noted; matched entrapment FDP cells as t/e;
+r = 0.1464 shared library, 0.1465 human_v2):
+
+| arm | nominal q<=0.01 (true FDP at op) | FDP<=2% | FDP<=3% | FDP<=5% | recall vs 37,334 |
+|---|---|---|---|---|---|
+| **DIA-NN CAM (corrected ref)** | **37,334 (1.13%)** | ~37.3k | — | — | 100% |
+| ODIA + P1 port, same library | 16,965 (2.21%) | 16,233 | 19,012 | 21,668 | 64.1% @ depth 37,334 |
+| ODIA pre-port, same library | 13,735 (2.09%) | 14,894 | 17,152 | 20,626 | 63.9% |
+| ODIA + P1 port, own library (human_v2) | 16,619 (2.63%) | 15,049 | 17,038 | 18,213 | — |
+| ODIA pre-port, own library (2x2 arm) | 14,167 (**10.50%**) | 7,629 | 9,343 | 10,252 | — |
+| OpenSWATH + pyProphet | 941 (frozen record) | — | — | — | — |
+| *Astral neat (2nd instrument)* | DIA-NN 7,462 / ODIA 6,881 | flat vs control at every e>=10 cell | | | |
+
+Reading notes, binding:
+1. The samelib pair (rows 2-3) is the clean single-factor comparison; the
+   own-lib pair is NOT (the pre-port 2x2 arm ran an older binary lineage with
+   a 10.5% operating-point FDP — its matched cells show how much of the old
+   own-lib number was miscalibration; the P1 own-lib arm nearly doubles it at
+   matched FDP<=2%, 15,049 vs 7,629, but binary generations and the port are
+   confounded in that pair).
+2. ODIA's recall of the corrected reference is 64.1% at matched depth —
+   essentially unchanged from the 64.0% against the old reference: ODIA
+   recovers the newly-added cysteine peptides at the same rate as the rest
+   (it always searched CAM), so the gap analysis of docs 77-81 carries over
+   proportionally.
+3. At a common true-FDP operating point (~1-2%): DIA-NN 37,334 vs ODIA
+   16,233-16,965 — ODIA stands at ~43-45% of the corrected reference.
+4. OSW's 941 is the frozen record (CAM-correct library); no rerun was
+   performed. astral_osw remains stale (CAM-free, Mag-Net era).
