@@ -973,15 +973,17 @@ inline ScoredGroups scoreSemiSupervisedLDA(
       // Mechanism 5. Watch the positive SET, not the score. A model collapsing onto a subset of
       // its seed shows a SHRINKING positive set while its identification count rises, so a rule
       // reading the score is blind to exactly the failure worth catching.
-      if (params.stop_on_composition && iteration >= 1)
+      if (params.stop_on_composition && iteration >= 2)
       {
-        // FROM ITERATION 1 ONWARD, NOT FROM 0. Iteration 0 selects positives at
-        // train_fdr_initial (0.15) and every later iteration at train_fdr (0.05) -- a 3x stricter
-        // cut. Comparing across that change makes a HEALTHY run look collapsed at the first
-        // opportunity: the set is smaller because the threshold moved, not because the model
-        // narrowed. With the rule armed that way it broke out after a single iteration every time,
-        // so the mechanism meant to DETECT a collapse instead silently truncated training.
-        // Only sets selected at the SAME threshold are comparable.
+        // FROM ITERATION 2 ONWARD. Iteration 0 selects positives at train_fdr_initial (0.15) and
+        // every later iteration at train_fdr (0.05) -- a 3x stricter cut -- so the first pair
+        // selected at the SAME threshold is (1, 2). Comparing across the change makes a HEALTHY
+        // run look collapsed: the set is smaller because the threshold moved, not because the
+        // model narrowed, and any shrink reads as collapse. This guard was `iteration >= 1` when
+        // the mechanism first became CLI-reachable, and the very first smoke caught it: the stop
+        // fired at iteration 1 in every fold of every call (mix10k, 2762 -> 2461 positives,
+        // Jaccard 0.84), so a `-classifier_iterations 12` arm silently ran a 2-iteration loop --
+        // the same truncation this comment always warned about, one step later.
         std::vector<std::size_t> curr = positive_rows;
         std::sort(curr.begin(), curr.end());
         AnchorTrainingParams ap;
@@ -998,6 +1000,8 @@ inline ScoredGroups scoreSemiSupervisedLDA(
       }
       else if (params.stop_on_composition)
       {
+        // Iterations 0 and 1 both land here; iteration 1's store overwrites iteration 0's, so the
+        // first comparison above is train_fdr-vs-train_fdr by construction.
         prev_positives = positive_rows;
         std::sort(prev_positives.begin(), prev_positives.end());
       }
