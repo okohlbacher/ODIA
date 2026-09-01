@@ -60,3 +60,42 @@ oracle headroom (the P0 rt_dn arm reached 93.9/87.4 cohort-projected against
 the deployable 87.4/73.9) -- that gap lives in candidate SELECTION, i.e.
 iterative reselection, the mechanic DIA-NN 1.7.12 runs 12 times and ODIA runs
 once.
+
+## Replication (2026-09-01, same binary e3b4816b)
+
+**Astral neat e1** (second instrument, no ion mobility; 14,924-precursor
+library, entrapment r=0.0740), against the `an_on` control which used the
+IDENTICAL configuration (the same fitted map, 300 s window) and differs only
+in the binary:
+
+| FDP | control | port | delta |
+|---|---|---|---|
+| <=2% | 6,811 (e=10) | 6,852 (e=10) | +41 |
+| <=3% | 6,973 (e=15) | 6,932 (e=15) | -41 |
+| <=5% | 7,142 (e=26) | 7,113 (e=26) | -29 |
+| <=7.5% | 7,269 (e=40) | 7,308 (e=40) | +39 |
+| <=10% | 7,382 (e=54) | 7,400 (e=54) | +18 |
+
+Every e>=10 cell is FLAT inside the 99-ID band, in both directions: the port
+neither gains nor loses on this instrument/library. Nominal q<=0.01 agrees
+(6,881 vs 6,855). Per the pre-registered rule this REPLICATES (no loss) and
+does not block the default.
+
+The mix10k fixture said the same thing earlier (3,539 vs 3,620 at FDP<=5%,
+inside fixture noise, which by [[the fixture cannot resolve a feature]] rule
+is not a measurement of a feature anyway).
+
+**Reading all three together.** The port gains +9-11% on the 4.96M-precursor
+dn_pred_cam library and is flat on a 14.9k-precursor Astral library and a 10k
+fixture. That is the expected shape rather than a disappointment: every
+feature added describes CANDIDATE COMPETITION and interference-robust
+agreement, and neither exists in quantity when a library is three orders of
+magnitude smaller. The honest scope statement is therefore: **the port helps
+at library scale, where interference and candidate competition dominate, and
+costs nothing where they do not.**
+
+The S08 + human_v2 arm (a second full-scale library) is the outstanding
+replication; its first launch died on the CiRT seed refusing (the decoy
+control fit as well as the targets -- the guard working correctly) and it was
+relaunched with that library's own recorded map (1095.00 x libRT + 453.49,
+from odia2_ourlib).
