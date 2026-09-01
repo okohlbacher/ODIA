@@ -338,6 +338,43 @@ namespace ODIA
       /// trajectory further than a feature's information content does.
       NULL_CONTROL,
 
+      // --- added 2026-08-31, the P1 engine port (doc/80 retrospective ->
+      // RETRO_VERDICT -> a79_multicand P0 factorial). The cohort-priced recipe
+      // -- per-fragment evidence against an interference-robust best-fragment
+      // reference, plus candidate-competition context -- measured +3.9 buried
+      // / +1.8 overall cohort-projected on top of the shipped 22 (88.1/75.4,
+      // best of program). DIA-NN 1.7.12 carries the same three mechanics
+      // (per-fragment vectors vs a data-driven reference; margin-kept
+      // candidates; competition context). All computed identically for
+      // targets and decoys; appended at the enum tail so every existing
+      // index is unchanged.
+
+      /// Sum over the six area-top fragments of the Pearson correlation of
+      /// each fragment's trace against the SMOOTHED (1-2-1) trace of the
+      /// reference fragment -- the area-top-6 member maximising its summed
+      /// pairwise correlation to the other five. Unlike CORR_SUM (all-pairs,
+      /// picker-derived), this is correlation TO ONE robust reference, so a
+      /// single contaminated fragment lowers its own term without dragging
+      /// the pairs of every clean fragment.
+      REF_CORR_SUM,
+      /// The per-fragment correlations to that reference, SORTED descending
+      /// and padded with zeros -- twelve separate columns, so the classifier
+      /// sees WHICH fragments agree instead of one aggregate a contaminant
+      /// can drag (DIA-NN's pCorr[] design).
+      REF_CORR_1, REF_CORR_2, REF_CORR_3, REF_CORR_4, REF_CORR_5, REF_CORR_6,
+      REF_CORR_7, REF_CORR_8, REF_CORR_9, REF_CORR_10, REF_CORR_11, REF_CORR_12,
+      /// Each fragment's share of the group's corrected area, sorted
+      /// descending, top six (DIA-NN's pSig[] design): the spectrum's
+      /// concentration profile, which a one-fragment spike cannot fake.
+      SIG_SHARE_1, SIG_SHARE_2, SIG_SHARE_3, SIG_SHARE_4, SIG_SHARE_5,
+      SIG_SHARE_6,
+      /// This candidate's CORR_SUM rank among its precursor's candidates
+      /// (1 = best) and how many candidates the precursor produced. With
+      /// CANDIDATE_MARGIN these complete the competition context: "the only
+      /// peak found" and "best of seven near-ties" are different evidence.
+      CAND_RANK,
+      CAND_COUNT,
+
       N_SUB_SCORES
     };
 

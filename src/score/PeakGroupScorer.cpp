@@ -1165,7 +1165,14 @@ namespace
       "var_corr_sum", "var_candidate_margin", "var_peak_width_ratio",
       "var_im_delta", "var_ms1_coelution",
       "var_mass_accuracy", "var_mass_spread", "var_im_spread",
-      "var_rt_spread", "var_mass_survival", "var_null_control"};
+      "var_rt_spread", "var_mass_survival", "var_null_control",
+      "var_ref_corr_sum",
+      "var_ref_corr_1", "var_ref_corr_2", "var_ref_corr_3", "var_ref_corr_4",
+      "var_ref_corr_5", "var_ref_corr_6", "var_ref_corr_7", "var_ref_corr_8",
+      "var_ref_corr_9", "var_ref_corr_10", "var_ref_corr_11", "var_ref_corr_12",
+      "var_sig_share_1", "var_sig_share_2", "var_sig_share_3",
+      "var_sig_share_4", "var_sig_share_5", "var_sig_share_6",
+      "var_cand_rank", "var_cand_count"};
     return names;
   }
 
@@ -1900,6 +1907,77 @@ namespace
 
       // ---- features that were already computed and thrown away ----
       g.sub_scores[CORR_SUM] = cand.corr_sum;
+
+      // P1 engine port (doc/80 retrospective): per-fragment evidence against
+      // the interference-robust best-fragment reference, at THIS candidate.
+      // Identical arithmetic for targets and decoys; zero-filled below the
+      // width floor, like every other windowed sub-score.
+      if (width >= 3 && tc >= 3)
+      {
+        std::vector<std::uint32_t> area_order(tc);
+        std::iota(area_order.begin(), area_order.end(), 0u);
+        std::sort(area_order.begin(), area_order.end(),
+                  [&](std::uint32_t a, std::uint32_t b)
+                  { return corrected[a] > corrected[b]; });
+        const std::size_t top = std::min<std::size_t>(6, tc);
+        const auto pearson0 = [&](const std::vector<double>& a,
+                                  const std::vector<double>& b)
+        {
+          double ma = 0.0, mb = 0.0;
+          for (std::size_t j = 0; j < width; ++j) { ma += a[j]; mb += b[j]; }
+          ma /= static_cast<double>(width); mb /= static_cast<double>(width);
+          double num = 0.0, va = 0.0, vb = 0.0;
+          for (std::size_t j = 0; j < width; ++j)
+          {
+            const double x = a[j] - ma, y = b[j] - mb;
+            num += x * y; va += x * x; vb += y * y;
+          }
+          return (va > 0.0 && vb > 0.0) ? num / std::sqrt(va * vb) : 0.0;
+        };
+        // The reference: the area-top-6 member best correlated with the other
+        // five. A contaminated fragment cannot become the reference unless it
+        // out-correlates the clean majority -- the robustness this feature
+        // family exists for.
+        std::size_t best_ref = 0; double best_sum = -1e18;
+        for (std::size_t a = 0; a < top; ++a)
+        {
+          double s = 0.0;
+          for (std::size_t b = 0; b < top; ++b)
+          { if (a != b) { s += pearson0(traces[area_order[a]], traces[area_order[b]]); } }
+          if (s > best_sum) { best_sum = s; best_ref = a; }
+        }
+        const auto& rref = traces[area_order[best_ref]];
+        std::vector<double> refv(rref.begin(), rref.begin() + width);
+        for (std::size_t j = 1; j + 1 < width; ++j)
+        { refv[j] = 0.5 * rref[j] + 0.25 * (rref[j - 1] + rref[j + 1]); }
+        std::vector<double> pc(tc, 0.0);
+        for (std::uint32_t k = 0; k < tc; ++k) { pc[k] = pearson0(refv, traces[k]); }
+        double refsum = 0.0;
+        for (std::size_t a = 0; a < top; ++a) { refsum += pc[area_order[a]]; }
+        g.sub_scores[REF_CORR_SUM] = refsum;
+        std::sort(pc.begin(), pc.end(), [](double a, double b) { return a > b; });
+        for (std::size_t k = 0; k < 12; ++k)
+        {
+          g.sub_scores[static_cast<std::size_t>(REF_CORR_1) + k] =
+            k < pc.size() ? pc[k] : 0.0;
+        }
+        double tot_area = 0.0;
+        for (std::uint32_t k = 0; k < tc; ++k)
+        { tot_area += std::max(corrected[k], 0.0); }
+        if (tot_area > 0.0)
+        {
+          std::vector<double> sh(tc, 0.0);
+          for (std::uint32_t k = 0; k < tc; ++k)
+          { sh[k] = std::max(corrected[k], 0.0) / tot_area; }
+          std::sort(sh.begin(), sh.end(), [](double a, double b) { return a > b; });
+          for (std::size_t k = 0; k < 6; ++k)
+          {
+            g.sub_scores[static_cast<std::size_t>(SIG_SHARE_1) + k] =
+              k < sh.size() ? sh[k] : 0.0;
+          }
+        }
+      }
+
       g.sub_scores[PEAK_WIDTH_RATIO] = static_cast<double>(width);
 
       // Library 1/K0 against what the run observed for this precursor. NaN
@@ -2364,6 +2442,16 @@ namespace
         // found" look like overwhelming evidence.
         result.groups[g].sub_scores[CANDIDATE_MARGIN] =
           alone ? 0.0 : (v >= best ? best - second : v - best);
+        // P1: the rest of the competition context. Rank on the same CORR_SUM
+        // this block already reads (1 = best), and the block size itself --
+        // "the only peak found" and "best of seven near-ties" are different
+        // evidence, and no per-candidate score can express either.
+        std::size_t rank = 1;
+        for (std::size_t h = first_group; h < result.groups.size(); ++h)
+        { if (result.groups[h].sub_scores[CORR_SUM] > v) { ++rank; } }
+        result.groups[g].sub_scores[CAND_RANK] = static_cast<double>(rank);
+        result.groups[g].sub_scores[CAND_COUNT] =
+          static_cast<double>(result.groups.size() - first_group);
       }
     }
   }
