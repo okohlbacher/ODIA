@@ -23,6 +23,7 @@
 
 #include <array>
 #include <limits>
+#include <optional>
 
 #include <fstream>
 #include <unordered_map>
@@ -58,6 +59,60 @@ Currently implemented: the assay library stage.
 */
 
 /// @cond TOPPCLASSES
+
+/// One extraction, two consumers: the streaming scorer and, when `-out_chrom`
+/// asks for it, a collector for the TSV dump.
+///
+/// This class is what makes `-out_chrom` OUTPUT-ONLY. The alternative -- a
+/// separate collect-then-score pipeline -- was a measured fork, not a
+/// hypothetical one: scoring from the held `Chromatograms` lost the residual
+/// planes and the MS1 hookup the streaming Sink gets (Mass.Ppm NaN on every
+/// row, 7 sub-scores dropped against the streaming path's 4 --
+/// shared/libv2/arm_assert.py's header records the incident), and the branch
+/// skipped the refinement loop. Forwarding the SAME `accept` stream to both
+/// consumers removes the fork by construction: the TSV holds exactly the
+/// points the scorer saw, through the same calibration surface.
+class TeeChromatogramSink final : public ODIA::ChromatogramSink
+{
+public:
+  TeeChromatogramSink(ODIA::PeakGroupScorer::Sink& scorer,
+                      ODIA::ChromatogramCollector& collector)
+    : scorer_(scorer), collector_(collector) {}
+
+  void begin(const ODIA::ChromatogramLayout& layout) override
+  {
+    scorer_.begin(layout);
+    collector_.begin(layout);
+  }
+  void ms1Available(const ODIA::Ms1Traces* ms1) override
+  {
+    scorer_.ms1Available(ms1);
+    collector_.ms1Available(ms1);
+  }
+  void accept(const ODIA::PrecursorChromatogram& trace) override
+  {
+    // The view is valid for the duration of accept and both consumers only
+    // read it, so the order is a convention: the scorer -- the deliverable --
+    // goes first.
+    scorer_.accept(trace);
+    collector_.accept(trace);
+  }
+  /// The collector lays out one flat CSR and needs the per-transition counts;
+  /// the scorer ignores them. OR rather than the collector's alone, so a new
+  /// sink requirement cannot be silently swallowed by the tee.
+  bool needsLayoutCounts() const override
+  {
+    return scorer_.needsLayoutCounts() || collector_.needsLayoutCounts();
+  }
+
+  /// The scorer inside, for the caller that must hand it the applied mass
+  /// correction once the calibration has run (see extractInto_).
+  ODIA::PeakGroupScorer::Sink& scorer() { return scorer_; }
+
+private:
+  ODIA::PeakGroupScorer::Sink& scorer_;
+  ODIA::ChromatogramCollector& collector_;
+};
 
 class TOPPOpenDIAlyzer : public TOPPBase
 {
@@ -229,7 +284,11 @@ protected:
     registerInputFile_("in", "<file>", "",
                        "Run to extract from (mzPeak).", false);
     registerOutputFile_("out_chrom", "<file>", "",
-                        "Write extracted chromatograms here (TSV).", false);
+                        "Write extracted chromatograms here (TSV). OUTPUT-ONLY: "
+                        "on a scoring run the dump is collected from the same "
+                        "extraction the scorer consumes, so asking for it changes "
+                        "no score, sub-score or calibration decision -- only "
+                        "memory, which grows with the precursor count held.", false);
     setValidFormats_("out_chrom", {"tsv"}, false);
     registerInputFile_("out_chrom_ids", "<tsv>", "",
                        "Restrict -out_chrom (and -out_ms1_iso) to precursors whose "
@@ -1291,6 +1350,19 @@ protected:
                           false, true);
     registerIntOption_("classifier_iterations", "<n>", 3,
                        "Semi-supervised iterations.", false, true);
+    registerFlag_("classifier_stop_on_composition",
+                  "Stop the semi-supervised loop when consecutive positive SETS stabilise "
+                  "(Jaccard >= classifier_stop_jaccard) or SHRINK. Composition, not count: an ID "
+                  "count rises straight through a collapse, so a rule reading counts is blind to "
+                  "exactly the failure worth catching. Pair with a raised -classifier_iterations; "
+                  "the cap becomes the backstop and this rule decides.", true);
+    registerDoubleOption_("classifier_stop_jaccard", "<j>", 0.98,
+                          "Consecutive-positive-set overlap at which the loop is called converged. "
+                          "Read only when -classifier_stop_on_composition is set.", false, true);
+    registerFlag_("classifier_iteration_log",
+                  "One stderr line per (fold, iteration) of the semi-supervised loop: positive-set "
+                  "size and Jaccard to the previous iteration's set. Diagnostic only -- output "
+                  "bytes are unchanged, so any arm can carry it.", true);
     registerFlag_("use_pi0",
                   "Storey pi0 correction in the q-value. OFF is the honest/conservative setting "
                   "-- a nominal 1% is a true 1%. ON matches pyprophet and DIA-NN, which report "
@@ -1535,7 +1607,13 @@ protected:
     // fitted from the anchors is an increment to this one, and this one gets
     // charged twice when the two are compared. Safe to do here and nowhere
     // earlier: the coefficients were unknown when the Sink was built.
-    if (auto* pgs = dynamic_cast<ODIA::PeakGroupScorer::Sink*>(&sink))
+    auto* pgs = dynamic_cast<ODIA::PeakGroupScorer::Sink*>(&sink);
+    // -out_chrom wraps the scorer in a tee; the correction must reach the
+    // scorer inside it, or the tee'd arm would report deviations against a
+    // different reference than the plain one -- the exact single-factor
+    // violation the tee exists to remove.
+    if (auto* tee = dynamic_cast<TeeChromatogramSink*>(&sink)) { pgs = &tee->scorer(); }
+    if (pgs != nullptr)
     {
       pgs->setAppliedMassCorrection(options.fragment_ppm_offset,
                                     options.fragment_ppm_log_slope,
@@ -1810,58 +1888,64 @@ protected:
     return EXECUTION_OK;
   }
 
-  /// Extract into one flat `Chromatograms`, write it if asked, and hand it on.
+  /// Take the collected chromatograms, write them, and RELEASE them.
+  ///
+  /// One writer for both callers -- the -stop_after extract dump and the
+  /// scoring workflow's tee -- so the file cannot depend on which produced it.
+  /// The points are freed on return either way: the TSV is their only
+  /// consumer, and nothing downstream should run beside a retained copy of
+  /// every extracted point.
+  ExitCodes writeCollectedChromatograms_(ODIA::ChromatogramCollector& collector,
+                                         const std::string& out_chrom,
+                                         const ODIA::Library& library)
+  {
+    const ODIA::Chromatograms chromatograms = collector.take();
+    writeLogInfo_("held all of them: " +
+                  std::to_string(chromatograms.footprintBytes() / 1048576) + " MiB");
+    // Timed and reported. It was neither, despite being 33% of Phase-2 wall
+    // -- ~301 s against 613 s of extraction at 9,522 precursors -- which had
+    // to be recovered by subtracting the extractor's own timers from the
+    // total.
+    long long chrom_write_ms = 0;
+    try
+    {
+      const auto t_write = std::chrono::steady_clock::now();
+      ODIA::writeChromatogramTsv(out_chrom, library, chromatograms,
+                                 out_chrom_keep_.empty() ? nullptr : &out_chrom_keep_);
+      chrom_write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - t_write).count();
+    }
+    catch (const std::exception& e)
+    {
+      writeLogError_(std::string("Failed to write chromatograms: ") + e.what());
+      return CANNOT_WRITE_OUTPUT_FILE;
+    }
+    writeLogInfo_("wrote chromatograms to " + out_chrom + " in " +
+                  std::to_string(chrom_write_ms) + " ms");
+    return EXECUTION_OK;
+  }
+
+  /// Extract into one flat `Chromatograms` and write it: `-stop_after extract`
+  /// with `-out_chrom`, and nothing else.
   ///
   /// This is the memory-bounded path: it keeps every point, so it is for a
-  /// precursor count that fits. `-out_chrom` and every diagnostic built on it
-  /// need it; scoring does not, and takes `extractInto_` with a scoring sink.
+  /// precursor count that fits. Scoring NEVER rides on it any more -- a
+  /// scoring run that wants -out_chrom collects from its own streaming
+  /// extraction through TeeChromatogramSink, so asking for the dump cannot
+  /// change what is scored.
   ExitCodes runExtraction_(const ODIA::Library& library, const std::string& run,
-                           const std::string& out_chrom,
-                           ODIA::Chromatograms* keep = nullptr,
-                           double rt_window_override = 0.0,
-                           bool library_rt_is_run_seconds = false)
+                           const std::string& out_chrom)
   {
     // Every extraction starts the table over, so it always describes the LAST
-    // pass. The scorer's entry points must NOT also reset: on the -out_chrom
-    // path scoring runs after extraction, and a reset there would erase the two
-    // reasons only the extractor can write.
+    // pass.
     resetTerminalReasons_(library);
     // Re-resolved per pass rather than once, because the fragment floor SUBSETS
     // the library and every index shifts under it. Cheap next to an extraction.
     loadOracleRt_(library);
     ODIA::ChromatogramCollector collector;
-    const auto rc = extractInto_(library, run, collector, rt_window_override,
-                                 library_rt_is_run_seconds);
+    const auto rc = extractInto_(library, run, collector);
     if (rc != EXECUTION_OK) { return rc; }
-    ODIA::Chromatograms chromatograms = collector.take();
-    writeLogInfo_("held all of them: " +
-                  std::to_string(chromatograms.footprintBytes() / 1048576) + " MiB");
-
-    if (!out_chrom.empty())
-    {
-      // Timed and reported. It was neither, despite being 33% of Phase-2 wall
-      // -- ~301 s against 613 s of extraction at 9,522 precursors -- which had
-      // to be recovered by subtracting the extractor's own timers from the
-      // total.
-      long long chrom_write_ms = 0;
-      try
-      {
-        const auto t_write = std::chrono::steady_clock::now();
-        ODIA::writeChromatogramTsv(out_chrom, library, chromatograms,
-                                   out_chrom_keep_.empty() ? nullptr : &out_chrom_keep_);
-        chrom_write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - t_write).count();
-      }
-      catch (const std::exception& e)
-      {
-        writeLogError_(std::string("Failed to write chromatograms: ") + e.what());
-        return CANNOT_WRITE_OUTPUT_FILE;
-      }
-      writeLogInfo_("wrote chromatograms to " + out_chrom + " in " +
-                    std::to_string(chrom_write_ms) + " ms");
-    }
-    if (keep != nullptr) { *keep = std::move(chromatograms); }
-    return EXECUTION_OK;
+    return writeCollectedChromatograms_(collector, out_chrom, library);
   }
 
 
@@ -2093,34 +2177,28 @@ protected:
     // Pass 2 has scored peak groups to measure the 1/K0 axis at, so `auto`
     // waits for them instead of guessing from a blind probe in pass 1.
     mobility_anchors_expected_ = passes > 1;
-    ODIA::Chromatograms chromatograms;
 
     if (passes == 1)
     {
-      // Nobody asked for the chromatograms, so nobody has to hold them. This is
-      // the difference between a memory bill proportional to the library and
-      // one proportional to what elutes at once.
-      if (out_chrom.empty())
-      {
-        ODIA::PeakGroupScorer::Result scored;
-        const auto rc = extractAndScore_(library, run, 0.0, external_irt_, scored);
-        if (rc != EXECUTION_OK) { return rc; }
-        writeTerminalReasons_(library);
-        return writeScoreResult_(scored, out, library);
-      }
-      // external_irt_, NOT the default false. When -irt_slope/-irt_intercept or
-      // a seed supplied the map it was already APPLIED to library.irt above, so
-      // the library carries run seconds; letting the extractor map it again
-      // composes the two. Measured: every one of 600 precursors was reported
-      // "predicted to elute outside the run" and the chromatogram dump came out
-      // empty (header only). extractAndScore_ two lines up has always passed
-      // external_irt_; only this -out_chrom path did not.
-      const auto rc = runExtraction_(library, run, out_chrom, &chromatograms,
-                                     0.0, external_irt_);
+      // ONE path whether or not the chromatograms are wanted: the scorer
+      // streams, and -out_chrom only adds a collector to the SAME extraction.
+      // Nobody asked for them -> nobody holds them, which is the difference
+      // between a memory bill proportional to the library and one proportional
+      // to what elutes at once. Asking for them must not change what is scored
+      // -- it did, when the dump rode a second collect-then-score pipeline:
+      // see TeeChromatogramSink.
+      ODIA::ChromatogramCollector collector;
+      ODIA::PeakGroupScorer::Result scored;
+      const auto rc = extractAndScore_(library, run, 0.0, external_irt_, scored,
+                                       out_chrom.empty() ? nullptr : &collector);
       if (rc != EXECUTION_OK) { return rc; }
-      const auto sc1 = runScoring_(library, chromatograms, out);
+      if (!out_chrom.empty())
+      {
+        const auto wrc = writeCollectedChromatograms_(collector, out_chrom, library);
+        if (wrc != EXECUTION_OK) { return wrc; }
+      }
       writeTerminalReasons_(library);
-      return sc1;
+      return writeScoreResult_(scored, out, library);
     }
 
     // The library's own retention times, kept before anything is applied to
@@ -2976,23 +3054,27 @@ protected:
     }
 
     writeLogInfo_("pass 2 of 2: narrow extraction on the calibrated axis");
-    chromatograms = ODIA::Chromatograms{};
     // The library now carries run seconds, so the affine map is the identity.
-    if (out_chrom.empty())
-    {
-      ODIA::PeakGroupScorer::Result scored;
-      scoring_rt_is_run_seconds_ = true;
-      const auto rc = extractAndScore_(library, run, pass2_window, true, scored);
-      if (rc != EXECUTION_OK) { return rc; }
-      refineToConvergence_(library, original_irt, scored);
-      writeTerminalReasons_(library);
-      return writeScoreResult_(scored, out, library);
-    }
-    const auto rc = runExtraction_(library, run, out_chrom, &chromatograms, pass2_window, true);
+    //
+    // ONE path with or without -out_chrom, exactly as in the passes == 1
+    // branch above: the dump is collected from the same extraction the scorer
+    // consumes (TeeChromatogramSink), written, and released BEFORE the
+    // refinement loop -- which therefore runs on the -out_chrom arm too,
+    // where the old fork silently skipped it.
+    ODIA::ChromatogramCollector collector;
+    ODIA::PeakGroupScorer::Result scored;
+    scoring_rt_is_run_seconds_ = true;
+    const auto rc = extractAndScore_(library, run, pass2_window, true, scored,
+                                     out_chrom.empty() ? nullptr : &collector);
     if (rc != EXECUTION_OK) { return rc; }
-    const auto sc = runScoring_(library, chromatograms, out);
+    if (!out_chrom.empty())
+    {
+      const auto wrc = writeCollectedChromatograms_(collector, out_chrom, library);
+      if (wrc != EXECUTION_OK) { return wrc; }
+    }
+    refineToConvergence_(library, original_irt, scored);
     writeTerminalReasons_(library);
-    return sc;
+    return writeScoreResult_(scored, out, library);
   }
 
 
@@ -4180,6 +4262,9 @@ protected:
     options.train_fdr_initial = getDoubleOption_("train_fdr_initial");
     options.train_fdr = getDoubleOption_("train_fdr");
     options.classifier_iterations = getIntOption_("classifier_iterations");
+    options.classifier_stop_on_composition = getFlag_("classifier_stop_on_composition");
+    options.classifier_stop_jaccard = getDoubleOption_("classifier_stop_jaccard");
+    options.classifier_iteration_log = getFlag_("classifier_iteration_log");
     options.use_pi0 = getFlag_("use_pi0");
     options.min_fragments_at_apex = static_cast<std::size_t>(
       std::max(1, getIntOption_("min_fragments_at_apex")));
@@ -4394,17 +4479,28 @@ protected:
     }
   }
 
+  /// @p collect, when non-null, receives a copy of every chromatogram the
+  /// scorer consumes, from the SAME extraction -- that is `-out_chrom`. It is
+  /// deliberately the only way a scoring run can obtain chromatograms, so the
+  /// dump cannot fork the scoring: same sink, same sub-scores, same
+  /// calibration surface, whether or not anything collects.
   ExitCodes extractAndScore_(const ODIA::Library& library, const std::string& run,
                              double rt_window_override, bool library_rt_is_run_seconds,
-                             ODIA::PeakGroupScorer::Result& scored)
+                             ODIA::PeakGroupScorer::Result& scored,
+                             ODIA::ChromatogramCollector* collect = nullptr)
   {
     resetTerminalReasons_(library);
     loadOracleRt_(library);
     auto options = scoringOptions_();
     options.library_rt_is_run_seconds = scoring_rt_is_run_seconds_;
     ODIA::PeakGroupScorer::Sink sink(library, options);
+    std::optional<TeeChromatogramSink> tee;
+    if (collect != nullptr) { tee.emplace(sink, *collect); }
+    ODIA::ChromatogramSink& into =
+      tee ? static_cast<ODIA::ChromatogramSink&>(*tee)
+          : static_cast<ODIA::ChromatogramSink&>(sink);
     const auto t = std::chrono::steady_clock::now();
-    const auto rc = extractInto_(library, run, sink, rt_window_override,
+    const auto rc = extractInto_(library, run, into, rt_window_override,
                                  library_rt_is_run_seconds);
     if (rc != EXECUTION_OK) { return rc; }
     // Only now does the fragment mass calibration's verdict exist -- the probe
@@ -4426,35 +4522,12 @@ protected:
     return EXECUTION_OK;
   }
 
-  /// Find peak groups, score them, and write them with their q-values.
-  ExitCodes runScoring_(const ODIA::Library& library,
-                        const ODIA::Chromatograms& chromatograms,
-                        const std::string& out)
-  {
-    auto options = scoringOptions_();
-    options.disabled_sub_scores = ablatedSubScores_();
-    // Without this RT_DELTA is NaN and the constant-column guard drops
-    // var_rt_delta, so every -out_chrom path silently discarded the one feature
-    // the retention-time map exists to enable. extractAndScore_ has always set
-    // it; this path never did.
-    options.library_rt_is_run_seconds = scoring_rt_is_run_seconds_;
-
-    const auto t = std::chrono::steady_clock::now();
-    ODIA::PeakGroupScorer::Result scored;
-    try
-    {
-      scored = ODIA::PeakGroupScorer::score(library, chromatograms, options);
-    }
-    catch (const std::exception& e)
-    {
-      writeLogError_(std::string("Scoring failed: ") + e.what());
-      return INTERNAL_ERROR;
-    }
-    const auto ms = std::chrono::duration<double, std::milli>(
-                      std::chrono::steady_clock::now() - t).count();
-    reportScoring_(scored, options.classifier, ms, "scored");
-    return writeScoreResult_(scored, out, library);
-  }
+  // runScoring_ -- score from a held `Chromatograms` -- is deliberately GONE.
+  // It was the -out_chrom scoring fork: it lost the residual planes and the
+  // MS1 hookup the streaming Sink gets (Mass.Ppm NaN on every row, 7
+  // sub-scores dropped against 4), and its callers skipped the refinement
+  // loop. Every scoring run now goes through extractAndScore_; a run that
+  // wants the chromatogram dump passes a collector, see TeeChromatogramSink.
 
   /// Everything the scoring stage has to say, whichever path produced it.
   void reportScoring_(const ODIA::PeakGroupScorer::Result& scored,
@@ -5278,7 +5351,7 @@ protected:
       }
       else
       {
-        const auto rc = runExtraction_(library, in_run, out_chrom, nullptr);
+        const auto rc = runExtraction_(library, in_run, out_chrom);
         if (rc != EXECUTION_OK) { return rc; }
       }
     }

@@ -55,6 +55,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <random>
 #include <unordered_map>
@@ -165,6 +166,13 @@ struct LDAParams
   /// identifications cannot see a collapse -- they rise throughout one.
   bool stop_on_composition = false;
   double stop_jaccard = 0.98;
+  /// Stderr-only churn diagnostic: one line per (fold, iteration) with the positive-set size and
+  /// its Jaccard overlap with the previous iteration's set. Never control flow, and it shares no
+  /// state with mechanism 5 -- an iteration-sweep arm carries it precisely because it cannot
+  /// change the output bytes. Exists because the offline replay (analysis77 R0) measured 11-36%
+  /// positive-set churn per iteration with ID counts still rising; whether the REAL loop
+  /// converges is what this makes visible.
+  bool iteration_log = false;
   /// DIAGNOSTIC ONLY, and FDR-INVALID when true: every group trains the model that scores it.
   ///
   /// It exists because `n_folds = 1` cannot express this -- the fold count is clamped to >= 2 a few
@@ -861,6 +869,9 @@ inline ScoredGroups scoreSemiSupervisedLDA(
     }
 
     std::vector<std::size_t> prev_positives;   // mechanism 5's state, sorted
+    std::vector<std::size_t> log_prev;         // iteration_log's own state, sorted -- deliberately
+                                               // NOT shared with mechanism 5, whose comparison
+                                               // semantics are tested and must not gain a reader
     for (int iteration = 0; iteration < std::max(0, params.n_iter); ++iteration)
     {
       // Reduce training scores to the best candidate row per precursor, then
@@ -886,6 +897,28 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         {
           positive_rows.push_back(candidate.best_row);
         }
+      }
+      // The churn diagnostic reads the selection BEFORE the too-few-positives skip below, so a
+      // skipped iteration still shows its (tiny) positive set instead of vanishing from the log.
+      // The iteration 0 -> 1 overlap spans the train_fdr_initial -> train_fdr threshold change and
+      // is expected to be low on a HEALTHY run; it is printed rather than suppressed -- it is the
+      // first comparison anyone asks about -- and marked so nobody reads it as a collapse.
+      if (params.iteration_log)
+      {
+        std::vector<std::size_t> curr = positive_rows;
+        std::sort(curr.begin(), curr.end());
+        if (log_prev.empty())
+        {
+          std::fprintf(stderr, "[lda] fold %d iter %d: positives %zu jaccard --\n",
+                       fold, iteration, curr.size());
+        }
+        else
+        {
+          std::fprintf(stderr, "[lda] fold %d iter %d: positives %zu jaccard %.4f%s\n",
+                       fold, iteration, curr.size(), jaccardOverlap(log_prev, curr),
+                       iteration == 1 ? " (crosses the initial->main train_fdr change)" : "");
+        }
+        log_prev.swap(curr);
       }
       // Too few confident positives to fit an m-dimensional discriminant. Skipping is right, but it
       // used to be SILENT -- and silence here is dangerous: if every iteration skips, `w` stays at

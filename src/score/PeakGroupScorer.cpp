@@ -2609,6 +2609,13 @@ namespace
     // until now that experiment could not be run at all.
     if (options.classifier_iterations > 0)
     { params.n_iter = options.classifier_iterations; }
+    // Mechanism 5 rides the same pattern: the stop rule and its threshold existed in LDAParams
+    // from the start but had no CLI path, so `-classifier_iterations` was the cap AND the rule.
+    // With the stop armed, the cap becomes the backstop and composition decides.
+    params.stop_on_composition = options.classifier_stop_on_composition;
+    if (options.classifier_stop_jaccard > 0.0)
+    { params.stop_jaccard = options.classifier_stop_jaccard; }
+    params.iteration_log = options.classifier_iteration_log;
     // Two of the sub-scores are lower-is-better by construction, so their
     // weights may never come out positive. XCORR_COELUTION is the mean |lag|
     // between fragment maxima -- a peak group IS a co-elution, so more lag is

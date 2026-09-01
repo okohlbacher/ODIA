@@ -966,6 +966,13 @@ namespace ODIA
       double train_fdr_initial = 0.0;
       double train_fdr = 0.0;
       int classifier_iterations = 0;
+      /// Mechanism-5 composition stop (`Scoring::LDAParams::stop_on_composition`): implemented
+      /// and tested in lda.h since it landed, but never reachable from the CLI -- every run to
+      /// date ran the fixed-count loop. 0 / negative jaccard means "leave the LDAParams default".
+      bool classifier_stop_on_composition = false;
+      double classifier_stop_jaccard = 0.0;
+      /// Stderr-only per-(fold, iteration) churn line; never changes output bytes.
+      bool classifier_iteration_log = false;
       bool use_pi0 = false;
     };
 
