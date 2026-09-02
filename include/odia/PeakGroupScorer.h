@@ -974,7 +974,11 @@ namespace ODIA
       /// and tested in lda.h since it landed, but never reachable from the CLI -- every run to
       /// date ran the fixed-count loop. 0 / negative jaccard means "leave the LDAParams default".
       bool classifier_stop_on_composition = false;
-      double classifier_stop_jaccard = 0.0;
+      /// Negative means "leave the LDAParams default alone". 0 is a REAL boundary value (stop
+      /// only on shrink/cap, never on Jaccard) -- with 0 as the sentinel an explicit
+      /// `-classifier_stop_jaccard 0` passed validation and was then silently swallowed back
+      /// to 0.98.
+      double classifier_stop_jaccard = -1.0;
       /// Repaired collapse policy (high-water + patience); 0 / negative leave the legacy
       /// single-shot LDAParams defaults. See AnchorTrainingParams::shrink_floor.
       double classifier_stop_shrink_floor = 0.0;

@@ -960,11 +960,29 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         {
           AnchorTrainingParams ap;
           ap.stop_jaccard = params.stop_jaccard;
-          ap.max_iterations = params.n_iter;
+          // n_iter + 1, NOT n_iter: the for-loop's own bound is the cap here, and the helper's
+          // pre-fit cap check double-counted it -- an armed k12 run returned "cap" at iteration
+          // 11 BEFORE fit 11 ran, silently delivering a k11 model under a k12 label (codex S1).
+          // With the helper's cap unreachable, cap termination is the loop's natural exit, and
+          // the verdict for it prints after the loop.
+          ap.max_iterations = params.n_iter + 1;
           ap.shrink_floor = params.stop_shrink_floor;
           ap.stop_patience = params.stop_patience;
           stop_rep.iterations_run = iteration;
           go = anchorIterationShouldContinue(prev_positives, curr, ap, stop_rep);
+        }
+        else if (stop_rep.collapse_strikes >= 1 && positive_rows.size() < m + 2)
+        {
+          // A catastrophic collapse starves the patience of its second strike: the tiny set
+          // skips the fit, the fit gate then blocks every later comparison (the frozen model
+          // reproduces the same selection forever), and the loop would burn to the cap with no
+          // verdict -- silence exactly at the tail event this mechanism exists to catch
+          // (kimi F1 / codex S1, found before any armed run shipped). A starved selection
+          // arriving with a floor breach already on record IS the second strike.
+          stop_rep.collapsed = true;
+          stop_rep.note = "positive set starved below m+2 (" + std::to_string(positive_rows.size()) +
+                          ") with a floor breach already on record";
+          go = false;
         }
         prev_positives.swap(curr);
         prev_is_main_threshold = (iteration >= 1);
@@ -974,8 +992,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
           // arm cannot say whether it converged or collapsed and the readout has to be
           // reverse-engineered from the churn log.
           std::fprintf(stderr, "[lda] fold %d iter %d: STOP %s -- %s\n", fold, iteration,
-                       stop_rep.converged ? "converged" : (stop_rep.collapsed ? "collapsed" : "cap"),
-                       stop_rep.note.c_str());
+                       stop_rep.converged ? "converged" : "collapsed", stop_rep.note.c_str());
           break;
         }
       }
@@ -1033,6 +1050,18 @@ inline ScoredGroups scoreSemiSupervisedLDA(
       if (fit_learner(positive_rows, negative_rows, {}))
       { ++n_trained; fit_ok_last_iter = true; }
       else { ++n_skipped; }
+    }
+    // Every armed termination gets a verdict, not only the explicit breaks: cap exhaustion,
+    // k <= 2 (no same-threshold pair ever forms), and a final comparison gated out by a failed
+    // fit all used to end in silence, and "no verdict line" is indistinguishable from a broken
+    // log (kimi F4 / codex "every armed termination: not printed").
+    if (params.stop_on_composition && !stop_rep.converged && !stop_rep.collapsed)
+    {
+      std::fprintf(stderr,
+                   "[lda] fold %d: STOP cap -- ran all %d iterations without a convergence or "
+                   "collapse verdict (final positives %zu, last flow +%zu/-%zu)\n",
+                   fold, std::max(0, params.n_iter), prev_positives.size(),
+                   stop_rep.last_entries, stop_rep.last_exits);
     }
 
     // This model has seen no row from the groups scored.

@@ -125,9 +125,12 @@ struct AnchorTrainingReport
   /// Policy state (only advanced when the non-legacy policy is active). Lives here because the
   /// caller already owns a report per training loop; a per-iteration report resets these to zero
   /// and the patience/high-water policy silently degenerates to single-shot.
-  std::size_t high_water = 0;
+  std::size_t high_water = 0;       ///< the SUSTAINED mark: second-highest size observed
+  std::size_t high_water_top = 0;   ///< the single highest -- promoted to the mark on a repeat
   int collapse_strikes = 0;
   int converge_strikes = 0;
+  std::size_t last_entries = 0;     ///< |curr \ prev| of the latest comparison (flow, not size)
+  std::size_t last_exits = 0;       ///< |prev \ curr|
 };
 
 /// Deterministic membership test for bagging. A hash of (member, group id), never an RNG: the bag
@@ -286,31 +289,75 @@ inline bool anchorIterationShouldContinue(const std::vector<std::size_t>& prev,
     }
     return rep.iterations_run < p.max_iterations;
   }
-  // High-water + patience policy. Collapse is a CUMULATIVE decline below the largest comparable
-  // set this run has produced -- balanced churn with a one-row net loss (measured: ~31 out/~30 in
-  // at Jaccard 0.976) is not a collapse, and a slow bleed that never shrinks two iterations in a
-  // row is still caught because the high-water mark does not move down.
-  rep.high_water = std::max(rep.high_water, std::max(prev.size(), curr.size()));
+  // High-water + patience policy. Collapse is a CUMULATIVE decline below the largest SUSTAINED
+  // set size this run has produced -- balanced churn with a one-row net loss (measured: ~31
+  // out/~30 in at Jaccard 0.976) is not a collapse. Two review-driven refinements over the first
+  // version of this branch (2026-09-02, both found adversarially before any armed run shipped):
+  //  * the mark is the SECOND-highest size observed, not the maximum: a single-iteration
+  //    admission spike used to pin the mark, and a healthy settle-back to the pre-spike
+  //    equilibrium then read as two floor breaches -- the loop was amputated for returning to
+  //    its own steady state. A level must be seen twice to become the mark.
+  //  * a floor breach RESETS the convergence strikes: a smoothly contracting set has high
+  //    adjacent Jaccard by construction, and without the reset a genuine collapse could bank two
+  //    convergence strikes on the way down and be reported as "converged".
+  const int patience = std::max(1, p.stop_patience);   // 0 would make every comparison a verdict
+  const auto observe = [&rep](std::size_t s)
+  {
+    if (s > rep.high_water_top) { rep.high_water = rep.high_water_top; rep.high_water_top = s; }
+    else if (s > rep.high_water) { rep.high_water = s; }
+  };
+  // The first comparison's prev is a real same-threshold observation and must count, or a
+  // decline that starts from the very first set has no mark to decline FROM.
+  if (rep.high_water_top == 0) { observe(prev.size()); }
+  observe(curr.size());
+  // Entry/exit flow of this comparison (sorted sets). Not part of the stop decision yet: the
+  // measured k12 trajectory (entries 282-721/fold at iteration 11, exits matched) says set SIZE
+  // conflates benign sharpening with seed-nesting, and nesting is entries -> 0. Recorded so any
+  // future re-pointing of the collapse statistic can be replayed from logs.
+  {
+    std::size_t inter = 0, ia = 0, ib = 0;
+    while (ia < prev.size() && ib < curr.size())
+    {
+      if (prev[ia] == curr[ib]) { ++inter; ++ia; ++ib; }
+      else if (prev[ia] < curr[ib]) { ++ia; }
+      else { ++ib; }
+    }
+    rep.last_entries = curr.size() - inter;
+    rep.last_exits = prev.size() - inter;
+  }
   const double floor_size = static_cast<double>(rep.high_water) * (1.0 - p.shrink_floor);
-  if (static_cast<double>(curr.size()) < floor_size) { ++rep.collapse_strikes; }
-  else { rep.collapse_strikes = 0; }
-  if (rep.collapse_strikes >= p.stop_patience)
+  if (rep.high_water > 0 && static_cast<double>(curr.size()) < floor_size)
+  {
+    // A breach round both resets AND withholds the convergence strike: a smoothly contracting
+    // set has high adjacent Jaccard by construction, so counting J on a breach round lets a
+    // genuine collapse report itself as "converged" on the way down.
+    ++rep.collapse_strikes;
+    rep.converge_strikes = 0;
+  }
+  else
+  {
+    rep.collapse_strikes = 0;
+    if (j >= p.stop_jaccard) { ++rep.converge_strikes; }
+    else { rep.converge_strikes = 0; }
+  }
+  if (rep.collapse_strikes >= patience)
   {
     rep.collapsed = true;
-    rep.note = "positive set fell below the high-water mark (" + std::to_string(rep.high_water) +
-               ") by more than " + std::to_string(p.shrink_floor * 100.0) + "% on " +
+    rep.note = "positive set fell below the sustained high-water mark (" +
+               std::to_string(rep.high_water) + ") by more than " +
+               std::to_string(p.shrink_floor * 100.0) + "% on " +
                std::to_string(rep.collapse_strikes) + " consecutive comparisons (now " +
-               std::to_string(curr.size()) + ")";
+               std::to_string(curr.size()) + "; last flow +" + std::to_string(rep.last_entries) +
+               "/-" + std::to_string(rep.last_exits) + ")";
     return false;
   }
-  if (j >= p.stop_jaccard) { ++rep.converge_strikes; }
-  else { rep.converge_strikes = 0; }
-  if (rep.converge_strikes >= p.stop_patience)
+  if (rep.converge_strikes >= patience)
   {
     rep.converged = true;
     rep.note = "positive set stabilised at Jaccard >= " + std::to_string(p.stop_jaccard) + " on " +
                std::to_string(rep.converge_strikes) + " consecutive comparisons (last " +
-               std::to_string(j) + ")";
+               std::to_string(j) + "; last flow +" + std::to_string(rep.last_entries) + "/-" +
+               std::to_string(rep.last_exits) + ")";
     return false;
   }
   return rep.iterations_run < p.max_iterations;
