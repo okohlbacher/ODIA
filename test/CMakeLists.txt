@@ -579,6 +579,7 @@ add_test(NAME rt_calibration_recovers_warp COMMAND odia_rt_calibration)
 # accepted a statistic that passed 81% of decoys, so the fit was never the thing
 # being checked.
 add_test(NAME robust_line_survives_half_wrong_anchors COMMAND odia_robust_line)
+add_test(NAME anchor_stop_policies_pinned COMMAND odia_anchor_stop)
 
 # A subset must outlive the library it came from. `StringArena::Entry` is a raw
 # pointer into the arena's blocks, so the old wholesale arena copy left the

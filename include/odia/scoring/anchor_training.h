@@ -98,6 +98,19 @@ struct AnchorTrainingParams
   double stop_jaccard = 0.98;       ///< stop when consecutive positive sets overlap this much
   std::size_t min_anchors = 200;    ///< below this, do not train -- fall back to the linear path
   std::uint64_t seed = 42;
+  /// Collapse/convergence policy. The legacy rule (both fields at their defaults) is single-shot:
+  /// ANY shrink of the positive set is collapse, one Jaccard >= stop_jaccard is convergence. On a
+  /// ~2,500-row set that rule stops on the sign of a one-row fluctuation -- measured on mix10k
+  /// (2026-09-01): every fold stopped on a 1-2 row downtick (0.04-0.08%) while Jaccard was still
+  /// climbing 0.955 -> 0.976, i.e. balanced churn misread as collapse. With shrink_floor > 0 or
+  /// stop_patience > 1 the policy becomes: collapse = cumulative decline below the same-run
+  /// high-water mark by more than shrink_floor, seen on stop_patience consecutive comparisons;
+  /// convergence = Jaccard >= stop_jaccard on stop_patience consecutive comparisons. The legacy
+  /// branch is kept VERBATIM under the default parameters so existing callers cannot drift.
+  /// The report must PERSIST across a loop's calls for the strike/high-water state to mean
+  /// anything -- recreating it per iteration silently reduces patience to 1.
+  double shrink_floor = 0.0;
+  int stop_patience = 1;
 };
 
 struct AnchorTrainingReport
@@ -109,6 +122,12 @@ struct AnchorTrainingReport
   bool converged = false;
   bool collapsed = false;                     ///< positive set shrank -- see mechanism 5
   std::string note;
+  /// Policy state (only advanced when the non-legacy policy is active). Lives here because the
+  /// caller already owns a report per training loop; a per-iteration report resets these to zero
+  /// and the patience/high-water policy silently degenerates to single-shot.
+  std::size_t high_water = 0;
+  int collapse_strikes = 0;
+  int converge_strikes = 0;
 };
 
 /// Deterministic membership test for bagging. A hash of (member, group id), never an RNG: the bag
@@ -246,17 +265,52 @@ inline bool anchorIterationShouldContinue(const std::vector<std::size_t>& prev,
 
   const double j = jaccardOverlap(prev, curr);
   rep.jaccard.push_back(j);
-  if (curr.size() < prev.size())
+  if (p.shrink_floor <= 0.0 && p.stop_patience <= 1)
+  {
+    // LEGACY single-shot policy, verbatim. Kept as its own branch (not the patience path with
+    // patience 1) so callers on the defaults get bit-identical decisions to every run to date.
+    // Note the note: for a 1-row downtick "converging onto a subset of its seed" is an
+    // overstatement -- that is exactly why the policy below exists.
+    if (curr.size() < prev.size())
+    {
+      rep.collapsed = true;
+      rep.note = "positive set shrank (" + std::to_string(prev.size()) + " -> " +
+                 std::to_string(curr.size()) + "); model is converging onto a subset of its seed";
+      return false;
+    }
+    if (j >= p.stop_jaccard)
+    {
+      rep.converged = true;
+      rep.note = "positive set stabilised at Jaccard " + std::to_string(j);
+      return false;
+    }
+    return rep.iterations_run < p.max_iterations;
+  }
+  // High-water + patience policy. Collapse is a CUMULATIVE decline below the largest comparable
+  // set this run has produced -- balanced churn with a one-row net loss (measured: ~31 out/~30 in
+  // at Jaccard 0.976) is not a collapse, and a slow bleed that never shrinks two iterations in a
+  // row is still caught because the high-water mark does not move down.
+  rep.high_water = std::max(rep.high_water, std::max(prev.size(), curr.size()));
+  const double floor_size = static_cast<double>(rep.high_water) * (1.0 - p.shrink_floor);
+  if (static_cast<double>(curr.size()) < floor_size) { ++rep.collapse_strikes; }
+  else { rep.collapse_strikes = 0; }
+  if (rep.collapse_strikes >= p.stop_patience)
   {
     rep.collapsed = true;
-    rep.note = "positive set shrank (" + std::to_string(prev.size()) + " -> " +
-               std::to_string(curr.size()) + "); model is converging onto a subset of its seed";
+    rep.note = "positive set fell below the high-water mark (" + std::to_string(rep.high_water) +
+               ") by more than " + std::to_string(p.shrink_floor * 100.0) + "% on " +
+               std::to_string(rep.collapse_strikes) + " consecutive comparisons (now " +
+               std::to_string(curr.size()) + ")";
     return false;
   }
-  if (j >= p.stop_jaccard)
+  if (j >= p.stop_jaccard) { ++rep.converge_strikes; }
+  else { rep.converge_strikes = 0; }
+  if (rep.converge_strikes >= p.stop_patience)
   {
     rep.converged = true;
-    rep.note = "positive set stabilised at Jaccard " + std::to_string(j);
+    rep.note = "positive set stabilised at Jaccard >= " + std::to_string(p.stop_jaccard) + " on " +
+               std::to_string(rep.converge_strikes) + " consecutive comparisons (last " +
+               std::to_string(j) + ")";
     return false;
   }
   return rep.iterations_run < p.max_iterations;

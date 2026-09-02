@@ -965,12 +965,20 @@ namespace ODIA
       /// 0 / negative means "leave the LDAParams default alone".
       double train_fdr_initial = 0.0;
       double train_fdr = 0.0;
-      int classifier_iterations = 0;
+      /// -1 means "leave the LDAParams default alone". 0 is a REAL request -- seed-only, no
+      /// semi-supervised iterations -- which the old `default 0, guard > 0` arrangement could
+      /// not express (the one reviewer-flagged k value the loop supports but the CLI could not
+      /// reach).
+      int classifier_iterations = -1;
       /// Mechanism-5 composition stop (`Scoring::LDAParams::stop_on_composition`): implemented
       /// and tested in lda.h since it landed, but never reachable from the CLI -- every run to
       /// date ran the fixed-count loop. 0 / negative jaccard means "leave the LDAParams default".
       bool classifier_stop_on_composition = false;
       double classifier_stop_jaccard = 0.0;
+      /// Repaired collapse policy (high-water + patience); 0 / negative leave the legacy
+      /// single-shot LDAParams defaults. See AnchorTrainingParams::shrink_floor.
+      double classifier_stop_shrink_floor = 0.0;
+      int classifier_stop_patience = 0;
       /// Stderr-only per-(fold, iteration) churn line; never changes output bytes.
       bool classifier_iteration_log = false;
       bool use_pi0 = false;

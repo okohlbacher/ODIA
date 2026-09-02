@@ -1358,7 +1358,19 @@ protected:
                   "the cap becomes the backstop and this rule decides.", true);
     registerDoubleOption_("classifier_stop_jaccard", "<j>", 0.98,
                           "Consecutive-positive-set overlap at which the loop is called converged. "
-                          "Read only when -classifier_stop_on_composition is set.", false, true);
+                          "Read only when -classifier_stop_on_composition is set. The rule earns "
+                          "its keep from -classifier_iterations >= 4: the first same-threshold "
+                          "comparison is iteration 2 vs 1.", false, true);
+    registerDoubleOption_("classifier_stop_shrink_floor", "<f>", 0.01,
+                          "Collapse = the positive set falls below its own high-water mark by more "
+                          "than this fraction, on classifier_stop_patience consecutive "
+                          "comparisons. The single-shot any-shrink rule it replaces stopped on the "
+                          "sign of a one-row fluctuation (measured: every mix10k fold, 1-2 rows "
+                          "of ~2,500, Jaccard still climbing). Read only when the stop is armed.",
+                          false, true);
+    registerIntOption_("classifier_stop_patience", "<n>", 2,
+                       "Consecutive comparisons a collapse or convergence verdict must survive "
+                       "before the loop stops. Read only when the stop is armed.", false, true);
     registerFlag_("classifier_iteration_log",
                   "One stderr line per (fold, iteration) of the semi-supervised loop: positive-set "
                   "size and Jaccard to the previous iteration's set. Diagnostic only -- output "
@@ -4264,6 +4276,26 @@ protected:
     options.classifier_iterations = getIntOption_("classifier_iterations");
     options.classifier_stop_on_composition = getFlag_("classifier_stop_on_composition");
     options.classifier_stop_jaccard = getDoubleOption_("classifier_stop_jaccard");
+    options.classifier_stop_shrink_floor = getDoubleOption_("classifier_stop_shrink_floor");
+    options.classifier_stop_patience = getIntOption_("classifier_stop_patience");
+    if (options.classifier_stop_on_composition)
+    {
+      // Validated only when armed: a Jaccard outside [0,1] silently makes convergence impossible
+      // (only shrink/cap could ever fire), which is a configuration error pretending to be a
+      // scientific result. Same logic for the floor and patience.
+      if (options.classifier_stop_jaccard < 0.0 || options.classifier_stop_jaccard > 1.0)
+      { throw OpenMS::Exception::InvalidValue(__FILE__, __LINE__, OPENMS_PRETTY_FUNCTION,
+          "classifier_stop_jaccard must be in [0,1]",
+          std::to_string(options.classifier_stop_jaccard)); }
+      if (options.classifier_stop_shrink_floor < 0.0 || options.classifier_stop_shrink_floor > 0.5)
+      { throw OpenMS::Exception::InvalidValue(__FILE__, __LINE__, OPENMS_PRETTY_FUNCTION,
+          "classifier_stop_shrink_floor must be in [0,0.5]",
+          std::to_string(options.classifier_stop_shrink_floor)); }
+      if (options.classifier_stop_patience < 1)
+      { throw OpenMS::Exception::InvalidValue(__FILE__, __LINE__, OPENMS_PRETTY_FUNCTION,
+          "classifier_stop_patience must be >= 1",
+          std::to_string(options.classifier_stop_patience)); }
+    }
     options.classifier_iteration_log = getFlag_("classifier_iteration_log");
     options.use_pi0 = getFlag_("use_pi0");
     options.min_fragments_at_apex = static_cast<std::size_t>(

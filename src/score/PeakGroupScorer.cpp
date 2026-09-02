@@ -2607,7 +2607,9 @@ namespace
     // is the path by which an added column changes the labels and therefore
     // everything downstream; n_iter = 1 is the cheapest way to cut it, and
     // until now that experiment could not be run at all.
-    if (options.classifier_iterations > 0)
+    // >= 0, not > 0: zero is a real request (seed-only, no semi-supervised iterations) that the
+    // old guard made unreachable; -1 is the "leave the LDAParams default" sentinel now.
+    if (options.classifier_iterations >= 0)
     { params.n_iter = options.classifier_iterations; }
     // Mechanism 5 rides the same pattern: the stop rule and its threshold existed in LDAParams
     // from the start but had no CLI path, so `-classifier_iterations` was the cap AND the rule.
@@ -2615,6 +2617,10 @@ namespace
     params.stop_on_composition = options.classifier_stop_on_composition;
     if (options.classifier_stop_jaccard > 0.0)
     { params.stop_jaccard = options.classifier_stop_jaccard; }
+    if (options.classifier_stop_shrink_floor > 0.0)
+    { params.stop_shrink_floor = options.classifier_stop_shrink_floor; }
+    if (options.classifier_stop_patience > 0)
+    { params.stop_patience = options.classifier_stop_patience; }
     params.iteration_log = options.classifier_iteration_log;
     // Two of the sub-scores are lower-is-better by construction, so their
     // weights may never come out positive. XCORR_COELUTION is the mean |lag|

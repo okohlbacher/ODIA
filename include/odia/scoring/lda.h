@@ -166,6 +166,12 @@ struct LDAParams
   /// identifications cannot see a collapse -- they rise throughout one.
   bool stop_on_composition = false;
   double stop_jaccard = 0.98;
+  /// Collapse/convergence policy forwarded to anchorIterationShouldContinue. The library defaults
+  /// are the LEGACY single-shot rule (any shrink = collapse); the CLI registers the repaired
+  /// high-water + patience policy (floor 0.01, patience 2) as ITS defaults, so only armed CLI
+  /// runs get the new rule and non-CLI callers cannot drift. See AnchorTrainingParams.
+  double stop_shrink_floor = 0.0;
+  int stop_patience = 1;
   /// Stderr-only churn diagnostic: one line per (fold, iteration) with the positive-set size and
   /// its Jaccard overlap with the previous iteration's set. Never control flow, and it shares no
   /// state with mechanism 5 -- an iteration-sweep arm carries it precisely because it cannot
@@ -869,9 +875,24 @@ inline ScoredGroups scoreSemiSupervisedLDA(
     }
 
     std::vector<std::size_t> prev_positives;   // mechanism 5's state, sorted
+    bool prev_is_main_threshold = false;       // provenance of prev_positives: selected at
+                                               // train_fdr (iteration >= 1), never at the 0.15
+                                               // initial cut. The 2026-09-01 smoke showed a
+                                               // loop-counter guard is not provenance: any skip
+                                               // desynchronises them and the cross-threshold
+                                               // comparison comes back.
+    bool fit_ok_last_iter = false;             // whether the PREVIOUS iteration refit the model.
+                                               // A failed or skipped fit leaves the model -- and
+                                               // therefore the next selection -- unchanged, and an
+                                               // unchanged selection reads as Jaccard 1.0: a fold
+                                               // whose fits keep failing would report "converged".
+    AnchorTrainingReport stop_rep;             // PERSISTS across iterations: the high-water mark
+                                               // and patience strikes are cumulative state, and a
+                                               // per-iteration report silently reduces patience
+                                               // to single-shot.
     std::vector<std::size_t> log_prev;         // iteration_log's own state, sorted -- deliberately
-                                               // NOT shared with mechanism 5, whose comparison
-                                               // semantics are tested and must not gain a reader
+                                               // NOT shared with mechanism 5, so the diagnostic
+                                               // can never perturb the stop decision
     for (int iteration = 0; iteration < std::max(0, params.n_iter); ++iteration)
     {
       // Reduce training scores to the best candidate row per precursor, then
@@ -920,6 +941,47 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         }
         log_prev.swap(curr);
       }
+      // Mechanism 5, checked BEFORE this iteration's skips and fit. Three placement consequences,
+      // each fixing a reviewed defect of the post-fit version (analysis77, 2026-09-01/02 reviews):
+      //  * a collapse now breaks BEFORE a model is trained on the collapsed selection, so the
+      //    previous model is what survives;
+      //  * a catastrophic shrink below m+2 is seen by the comparison instead of being skipped
+      //    around (the too-few-positives `continue` used to bypass the stop entirely, i.e. the
+      //    rule went blind exactly at the largest collapse);
+      //  * comparisons are gated on PROVENANCE (prev selected at train_fdr) and on the previous
+      //    iteration having actually refit -- a failed/skipped fit repeats the same selection,
+      //    and an unchanged selection is Jaccard 1.0, which would read as "converged".
+      if (params.stop_on_composition)
+      {
+        std::vector<std::size_t> curr = positive_rows;
+        std::sort(curr.begin(), curr.end());
+        bool go = true;
+        if (prev_is_main_threshold && iteration >= 1 && fit_ok_last_iter)
+        {
+          AnchorTrainingParams ap;
+          ap.stop_jaccard = params.stop_jaccard;
+          ap.max_iterations = params.n_iter;
+          ap.shrink_floor = params.stop_shrink_floor;
+          ap.stop_patience = params.stop_patience;
+          stop_rep.iterations_run = iteration;
+          go = anchorIterationShouldContinue(prev_positives, curr, ap, stop_rep);
+        }
+        prev_positives.swap(curr);
+        prev_is_main_threshold = (iteration >= 1);
+        if (!go)
+        {
+          // The stop VERDICT is part of the run's output contract: without this line the b12-style
+          // arm cannot say whether it converged or collapsed and the readout has to be
+          // reverse-engineered from the churn log.
+          std::fprintf(stderr, "[lda] fold %d iter %d: STOP %s -- %s\n", fold, iteration,
+                       stop_rep.converged ? "converged" : (stop_rep.collapsed ? "collapsed" : "cap"),
+                       stop_rep.note.c_str());
+          break;
+        }
+      }
+      // From here to the fit, every early exit means "the model did not change this iteration" --
+      // recorded so the next iteration's stop comparison knows its selection is a repeat.
+      fit_ok_last_iter = false;
       // Too few confident positives to fit an m-dimensional discriminant. Skipping is right, but it
       // used to be SILENT -- and silence here is dangerous: if every iteration skips, `w` stays at
       // its initialisation (a single feature, weight +/-1), so the "LDA" degenerates to ranking by
@@ -968,43 +1030,9 @@ inline ScoredGroups scoreSemiSupervisedLDA(
       // A failed fit leaves the previous model in place, exactly as a failed Cholesky leaves the
       // previous w -- the iteration is skipped, not replaced with something degenerate. And it is
       // COUNTED as skipped, so a run whose every iteration failed cannot report itself as trained.
-      if (fit_learner(positive_rows, negative_rows, {})) { ++n_trained; } else { ++n_skipped; }
-
-      // Mechanism 5. Watch the positive SET, not the score. A model collapsing onto a subset of
-      // its seed shows a SHRINKING positive set while its identification count rises, so a rule
-      // reading the score is blind to exactly the failure worth catching.
-      if (params.stop_on_composition && iteration >= 2)
-      {
-        // FROM ITERATION 2 ONWARD. Iteration 0 selects positives at train_fdr_initial (0.15) and
-        // every later iteration at train_fdr (0.05) -- a 3x stricter cut -- so the first pair
-        // selected at the SAME threshold is (1, 2). Comparing across the change makes a HEALTHY
-        // run look collapsed: the set is smaller because the threshold moved, not because the
-        // model narrowed, and any shrink reads as collapse. This guard was `iteration >= 1` when
-        // the mechanism first became CLI-reachable, and the very first smoke caught it: the stop
-        // fired at iteration 1 in every fold of every call (mix10k, 2762 -> 2461 positives,
-        // Jaccard 0.84), so a `-classifier_iterations 12` arm silently ran a 2-iteration loop --
-        // the same truncation this comment always warned about, one step later.
-        std::vector<std::size_t> curr = positive_rows;
-        std::sort(curr.begin(), curr.end());
-        AnchorTrainingParams ap;
-        ap.stop_jaccard = params.stop_jaccard;
-        ap.max_iterations = params.n_iter;
-        AnchorTrainingReport rep;
-        rep.iterations_run = iteration;
-        // The production path CALLS the tested helper rather than reimplementing it. The inline
-        // copy that used to live here was the untested twin of a tested function, which is how the
-        // threshold bug above survived its own unit test.
-        const bool go = anchorIterationShouldContinue(prev_positives, curr, ap, rep);
-        prev_positives.swap(curr);
-        if (!go) { break; }
-      }
-      else if (params.stop_on_composition)
-      {
-        // Iterations 0 and 1 both land here; iteration 1's store overwrites iteration 0's, so the
-        // first comparison above is train_fdr-vs-train_fdr by construction.
-        prev_positives = positive_rows;
-        std::sort(prev_positives.begin(), prev_positives.end());
-      }
+      if (fit_learner(positive_rows, negative_rows, {}))
+      { ++n_trained; fit_ok_last_iter = true; }
+      else { ++n_skipped; }
     }
 
     // This model has seen no row from the groups scored.
