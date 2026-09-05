@@ -504,21 +504,27 @@ protected:
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
                        "in consecutive cycles to count.", false, true);
-    registerDoubleOption_("im_window_pass1_scale", "<x>", 2.0,
-                          "Widen the mobility half-window by this factor for PASS 1 ONLY. "
-                          "Pass 1 extracts around the UNCALIBRATED library 1/K0 and then "
-                          "harvests the mobility anchors the calibration is fitted on -- so a "
-                          "precursor whose library value is off by more than the window cannot "
-                          "score, cannot become an anchor, and the correction is fitted only on "
-                          "the precursors that least needed it. Measured on S08 against DIA-NN's "
-                          "observed 1/K0: fitting on a +/-0.025-truncated sample recovers a "
-                          "-1.84% scale error where the untruncated fit gives -4.66%, i.e. under "
-                          "40% of it, and leaves a p95 residual of 0.0414 against 0.0362. "
-                          "Widening only pass 1 costs interference in a pass whose only product "
-                          "is anchors, and buys the calibration its own tail. 1.0 keeps the "
-                          "previous behaviour. Mirrors -rt_window_pass1, which already gives "
-                          "pass 1 its own retention-time window for the same reason.",
-                          false);
+    registerDoubleOption_("im_window_pass1_scale", "<x>", 1.0,
+                          "Scales the mobility half-window of PASS 1 (extraction around the uncalibrated "
+                          "library 1/K0, from which the 1/K0 anchors are harvested) and, because the MS1 "
+                          "traces are built once at precursor_im_window * ms1_im_scale while that scale "
+                          "is in force and reused in pass 2, the MS1 mobility band of the whole run as "
+                          "well. Default 1.0, restored 2026-09-05: 57d72a1 had set 2.0 without a full-run "
+                          "A/B, and the single-flag A/B on one binary (4d4d73b8; S08 + dn_pred_cam, "
+                          "-im_prior off, -im_min_anchors_per_charge 120) reads w1_ctl70 (1.0) 16,965 / "
+                          "19,844 / 23,160 precursors at q<=0.01 / 0.02 / 0.05 against f1_ctl (2.0) 9,150 "
+                          "/ 15,081 / 19,888, +13.07% median at matched entrapment budget over FDP 2-10% "
+                          "(285 of 285 ordinals), the 1.0 output byte-identical to the retained best "
+                          "p1_samelib3. That gain is not extraction evidence: under one fixed classifier "
+                          "applied to both arms the two feature sets are within -7.5..+1.9% of each other "
+                          "(depth-3 GBT within 1%), and the split is the native boosted scorer landing "
+                          "compact (best DScore max 22.7) at 1.0 versus stretched (max 75.5) at 2.0; 2.0 "
+                          "also harvested FEWER anchors at full scale (pass-1 IDs 10,825 vs 14,307, 28.1% "
+                          "vs 29.3% out-of-fold MSE removed), so the calibration argument it was set for "
+                          "did not reproduce there. Unmeasured: 1.0 with the default 'timstof' prior on "
+                          "human_v2, where every full arm since 30 Aug ran 2.0 + prior and is compact at "
+                          "16,065-17,032; a value above 1.0 is an experiment against that baseline, not a "
+                          "default.", false);
     registerDoubleOption_("precursor_im_window", "<1/K0>", 0.025,
                           "Half-width of the ion-mobility window around the PRECURSOR's own "
                           "library 1/K0. 0 disables it, leaving only the isolation window's "
