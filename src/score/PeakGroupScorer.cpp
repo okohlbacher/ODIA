@@ -578,6 +578,8 @@ namespace
       /// The summed trace really is zero -- nothing extracted at all.
       std::size_t zero_trace[2] = {0, 0};
       std::size_t too_few_transitions[2] = {0, 0};   ///< [0] target, [1] decoy
+      std::size_t masked_candidates = 0;   ///< v1.15: candidates scored with a transition mask
+      std::size_t masked_fragments = 0;    ///< v1.15: transitions removed over those candidates
       /// Entered the loop, computed correlations, and found no qualifying
       /// position anywhere in the window.
       std::size_t no_hit_anywhere = 0;
@@ -1176,6 +1178,29 @@ namespace
     return names;
   }
 
+  const std::vector<std::string>& PeakGroupScorer::fragvecNames()
+  {
+    // Built rather than spelled out: 72 of the 78 are `<base>_<k>` for k = 1..12
+    // and writing them by hand is 72 chances to transpose a digit in a column
+    // order that a comparison against the reference builder would then report
+    // as an arithmetic disagreement.
+    static const std::vector<std::string> names = [] {
+      std::vector<std::string> n;
+      n.reserve(N_FRAGVEC);
+      for (const char* base : {"R1_LOGAREA", "R1_SHARE", "R1_LOGRATIO",
+                               "R1_ATAPEX", "R1_MEAS", "R1_ABSENT"})
+      {
+        for (int k = 1; k <= 12; ++k)
+        { n.push_back(std::string(base) + "_" + std::to_string(k)); }
+      }
+      for (const char* scalar : {"R1_N_MEAS", "R1_N_ABSENT", "R1_N_PRESENT",
+                                 "R1_LOGTOT", "R1_LIB_CORR", "R1_LIB_CORR_LOO"})
+      { n.emplace_back(scalar); }
+      return n;
+    }();
+    return names;
+  }
+
   namespace
   {
     // thread_local for speed -- these increment once per scan position, so a
@@ -1211,14 +1236,28 @@ namespace
       std::FILE* log = nullptr;
       std::mutex log_mu;
       std::size_t admitted_uncalibrated = 0;
+      // v1.17: what the calibration sample was made of, for the 'null armed' line.
+      std::size_t zeros = 0;                     ///< sample statistics exactly 0
+      double rt_first = std::numeric_limits<double>::quiet_NaN();
+      double rt_last = std::numeric_limits<double>::quiet_NaN();
 
-      /// Returns true if the precursor should be admitted.
-      bool admit(double stat, bool is_decoy, std::size_t n_needed, double alpha)
+      /// Returns true if the precursor should be admitted. @p rt_centre is the
+      /// window's position in run seconds; with @p rt_min > 0 a decoy before it
+      /// is admitted (as every precursor is while the null is built) but does
+      /// not enter the calibration sample (v1.17). rt_min 0 = off.
+      bool admit(double stat, bool is_decoy, std::size_t n_needed, double alpha,
+                 double rt_centre, double rt_min)
       {
         std::lock_guard<std::mutex> g(mu);
         if (!ready)
         {
-          if (is_decoy) { decoy_stats.push_back(stat); }
+          if (is_decoy && !(rt_min > 0.0 && rt_centre < rt_min))
+          {
+            decoy_stats.push_back(stat);
+            if (stat == 0.0) { ++zeros; }
+            if (decoy_stats.size() == 1) { rt_first = rt_centre; }
+            rt_last = rt_centre;
+          }
           if (decoy_stats.size() >= n_needed)
           {
             std::sort(decoy_stats.begin(), decoy_stats.end());
@@ -1226,6 +1265,15 @@ namespace
               std::size_t((1.0 - alpha) * double(decoy_stats.size())));
             tau = decoy_stats[k];
             ready = true;
+            // v1.17: say so, once per Session, on the channel the picker census
+            // uses (stderr -> the run log). Nothing was logged before, which is
+            // how tau = 0 from pre-gradient windows went unnoticed.
+            std::fprintf(stderr,
+                         "gate C null armed: n=%zu decoys, tau=%.6g, zeros=%.4f (%zu), "
+                         "first/last calibration RT %.1f-%.1f s, rt_min %.1f s\n",
+                         decoy_stats.size(), tau,
+                         double(zeros) / double(decoy_stats.size()), zeros,
+                         rt_first, rt_last, rt_min);
           }
           ++admitted_uncalibrated;
           return true;                 // admit while the null is being built
@@ -1297,6 +1345,8 @@ namespace
         for (int c = 0; c < 2; ++c) { t.few_excursions[c] += r->few_excursions[c]; }
         for (int c = 0; c < 2; ++c) { t.zero_trace[c] += r->zero_trace[c]; }
         t.too_few_at_apex += r->too_few_at_apex;
+        t.masked_candidates += r->masked_candidates;
+        t.masked_fragments += r->masked_fragments;
       }
       return t;
     }
@@ -1309,13 +1359,14 @@ namespace
   {
   }
 
-  void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram)
+  void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram_in)
   {
     Result& result = result_;
     const Options& options = options_;
     const Library& library = *library_;
     const auto& p = library.precursors();
     const auto& t = library.transitions();
+    const PrecursorChromatogram& chromatogram = chromatogram_in;   // rebound per candidate under a mask (v1.15)
 
     const std::size_t i = chromatogram.precursor;
     const std::uint32_t tb = chromatogram.transition_begin;
@@ -1433,9 +1484,17 @@ namespace
       else if (options.gate_alpha > 0.0)
       {
         was_ready = gate_null_->ready;
+        // v1.17: the window's position in run seconds -- the midpoint of the
+        // extracted cycle range, (lo+hi)/2 of the calibrated RT window after
+        // clipping to the axis; the extractor's own centre is not carried here.
+        // NaN (no axis) compares false and keeps the pre-v1.17 path.
+        const double rt_centre = chromatogram.rt != nullptr
+          ? 0.5 * (double(chromatogram.rt[0]) + double(chromatogram.rt[points - 1]))
+          : std::numeric_limits<double>::quiet_NaN();
         admitted = gate_null_->admit(m, is_decoy,
                                      options.gate_calibration_n,
-                                     options.gate_alpha);
+                                     options.gate_alpha,
+                                     rt_centre, options.gate_calibration_rt_min);
       }
       gate_null_->note(options.gate_log_path, static_cast<std::uint32_t>(i),
                        is_decoy, m, admitted, was_ready);
@@ -1585,14 +1644,63 @@ namespace
     { mark(TerminalReason::NoCandidate); ++result.precursors_without_candidate; return; }
 
     // Library intensities, in the transition order the chromatograms use.
-    std::vector<double> library_intensity(tc, 0.0);
+    std::vector<double> library_intensity_all(tc, 0.0);
     for (std::uint32_t k = 0; k < tc; ++k)
     {
-      library_intensity[k] = t.library_intensity[tb + k];
+      library_intensity_all[k] = t.library_intensity[tb + k];
+    }
+    // v1.15: transition index map. Identity unless a mask compacts this candidate's transitions.
+    std::vector<std::uint32_t> kmap_identity(tc);
+    for (std::uint32_t k = 0; k < tc; ++k) { kmap_identity[k] = k; }
+    const std::vector<Options::MaskEntry>* mask_entries = nullptr;
+    if (options.transition_mask != nullptr)
+    {
+      const auto it_m = options.transition_mask->find(static_cast<std::uint32_t>(i));
+      if (it_m != options.transition_mask->end()) { mask_entries = &it_m->second; }
     }
 
     for (const auto& cand : *use)
     {
+      // v1.15 INSTRUMENT: a candidate-scoped transition mask. When this candidate's apex RT lies
+      // inside a listed interval, the listed transitions are ABSENT for its scoring: the block
+      // below runs on a compacted VIEW of the chromatogram (same storage, fewer transitions) and a
+      // compacted library-intensity vector; every library lookup goes through kmap. Off, or for an
+      // unlisted candidate, the view IS the input and kmap is the identity: identical arithmetic.
+      std::vector<std::uint64_t> mask_off;
+      std::vector<std::uint32_t> mask_cnt, kmap_masked;
+      std::vector<double> lib_masked;
+      PrecursorChromatogram view = chromatogram_in;
+      bool mask_active = false;
+      if (mask_entries != nullptr && cand.apex < chromatogram_in.cycles)
+      {
+        const float apex_rt = chromatogram_in.retentionTime(static_cast<std::uint32_t>(cand.apex));
+        std::vector<char> drop(tc, 0);
+        for (const auto& e : *mask_entries)
+        { if (e.k < tc && apex_rt >= e.rt_lo && apex_rt <= e.rt_hi) { drop[e.k] = 1; } }
+        std::uint32_t kept = 0;
+        for (std::uint32_t k = 0; k < tc; ++k) { if (!drop[k]) { ++kept; } }
+        if (kept > 0 && kept < tc)
+        {
+          mask_active = true;
+          for (std::uint32_t k = 0; k < tc; ++k)
+          {
+            if (drop[k]) { continue; }
+            kmap_masked.push_back(k);
+            mask_off.push_back(chromatogram_in.offset[k]);
+            mask_cnt.push_back(chromatogram_in.count ? chromatogram_in.count[k] : 0u);
+            lib_masked.push_back(library_intensity_all[k]);
+          }
+          view.transition_count = kept;
+          view.offset = mask_off.data();
+          view.count = chromatogram_in.count ? mask_cnt.data() : nullptr;
+          ++rejects_.masked_candidates;
+          rejects_.masked_fragments += tc - kept;
+        }
+      }
+      const PrecursorChromatogram& chromatogram = mask_active ? view : chromatogram_in;
+      const std::uint32_t tc = chromatogram.transition_count;
+      const std::vector<double>& library_intensity = mask_active ? lib_masked : library_intensity_all;
+      const std::vector<std::uint32_t>& kmap = mask_active ? kmap_masked : kmap_identity;
       // Per CANDIDATE, not per mass block. The mass block below is guarded by
       // `hi > lo`, so a single-cycle candidate skips it -- and used to inherit
       // whatever the previous candidate staged, committing it under this
@@ -1684,6 +1792,13 @@ namespace
       // `background` collides with the scalar one the sub-scores below use.
       std::vector<double> frag_background(tc, 0.0);
       std::size_t at_apex = 0;
+      // -out_fragvec only. R1_ATAPEX_k is the PER-FRAGMENT form of the counter
+      // below, and this is the only place it exists: `at_apex` collapses it to
+      // a scalar in the same statement that computes it, so the 12 ATAPEX
+      // columns cannot be recovered at the per-candidate block downstream.
+      // Empty, and never touched, with the flag off.
+      std::vector<double> frag_at_apex;
+      if (options.fragvec) { frag_at_apex.assign(tc, 0.0); }
       for (std::uint32_t k = 0; k < tc; ++k)
       {
         const std::uint32_t n = chromatogram.pointCount(k);
@@ -1693,7 +1808,11 @@ namespace
         const double bg = localBackground(whole, lo, hi);
         frag_background[k] = bg;
         corrected[k] = std::max(0.0, observed[k] - bg * static_cast<double>(width));
-        if (cand.apex < n && points_k[cand.apex] > bg) { ++at_apex; }
+        if (cand.apex < n && points_k[cand.apex] > bg)
+        {
+          ++at_apex;
+          if (options.fragvec) { frag_at_apex[k] = 1.0; }
+        }
       }
 
       // RT_SPREAD: do this group's fragments agree about WHEN they elute?
@@ -1898,7 +2017,7 @@ namespace
         for (std::uint32_t k = 0; k < tc; ++k)
         {
           all_area += corrected[k];
-          if (t.type[tb + k] == FragmentType::Y) { y_area += corrected[k]; }
+          if (t.type[tb + kmap[k]] == FragmentType::Y) { y_area += corrected[k]; }
         }
         g.sub_scores[YSERIES_SCORE] = all_area > 0.0 ? y_area / all_area : 0.0;
         g.sub_scores[FRAGMENT_COVERAGE] =
@@ -2209,7 +2328,7 @@ namespace
             // never pushed would index the wrong group after finish().
             if (options.collect_mass_anchors)
             {
-              const double fmz = fromFixed(t.product_mz[tb + k]);
+              const double fmz = fromFixed(t.product_mz[tb + kmap[k]]);
               if (fmz > 0.0)
               {
                 // Undo the correction the extractor applied to this
@@ -2366,6 +2485,120 @@ namespace
         }
         g.sub_scores[MS1_COELUTION] = r;
       }
+      // ---- -out_fragvec: rung (i) of the sealed fragment-evidence contract ----
+      //
+      // 78 float32 per candidate: six 12-long vectors by LIBRARY-INTENSITY rank
+      // (LOGAREA, SHARE, LOGRATIO, ATAPEX, MEAS, ABSENT) and six scalars
+      // (N_MEAS, N_ABSENT, N_PRESENT, LOGTOT, LIB_CORR, LIB_CORR_LOO). Every
+      // input is a local the scorer already computed and already discards; the
+      // definition is analysis77/pick/wf_v33_fragvec_contract.md s.5.1 and the
+      // arithmetic is wf_v33_fragvec_features.py's `row_features`, which is
+      // what the measured result was produced with.
+      //
+      // Staged on the stack and appended at the push_back below, not here: the
+      // `min_library_corr` gate a few lines down `continue`s AFTER this point,
+      // and a row emitted for a candidate that never becomes a group would put
+      // the export permanently out of step with -out.
+      //
+      // TWO PLACES THIS AND THE REFERENCE BUILDER CAN DIVERGE. Both are
+      // MEASURED UNREACHABLE on the library the arm runs (dn_pred_cam.parquet,
+      // 58,576,095 transitions), so they are recorded here to make a future
+      // gate-A4 disagreement diagnosable in one step rather than fixed blind:
+      //   (1) NaN. `corrected[k]` is built with std::max(0.0, x) above, which
+      //       returns 0.0 for a NaN x, while the builder's np.maximum returns
+      //       NaN. A single non-finite exported intensity would therefore give
+      //       LOGAREA 0 here and NaN there (ABSENT agrees by accident: NaN > 0
+      //       is false either way). That line is EXISTING scoring arithmetic --
+      //       LIBRARY_CORR and the mass residuals read the same `corrected` --
+      //       so it must not be changed for this export's convenience; the
+      //       reference is what would have to move. Measured: 0 non-numeric and
+      //       0 negative Intensity over 4,294,710 exported points.
+      //   (2) A transition the extractor could not place (Product.Mz invalid)
+      //       still occupies a rank HERE -- tc counts it, it enters tot, libsum
+      //       and both Pearsons with corrected == 0 -- but contributes no row to
+      //       -out_chrom, so a reference that rebuilds tc from the export would
+      //       be shifted by one from that rank on. Measured: 0 such transitions
+      //       (Product.Mz in [200.015427, 1799.998901], no NaN, none <= 0).
+      float fv[N_FRAGVEC];
+      if (options.fragvec)
+      {
+        // Its OWN permutation, and a STABLE one. The D6 block above also orders
+        // by library intensity, but that order is `std::sort` (unstable) and is
+        // destroyed with its braced block. Reusing it would assign ranks
+        // differently from the reference builder's stable sort on every
+        // Relative.Intensity tie, and the resulting permuted columns would read
+        // as an arithmetic disagreement rather than as a different order.
+        std::vector<std::uint32_t> lib_order(tc);
+        std::iota(lib_order.begin(), lib_order.end(), 0u);
+        std::stable_sort(lib_order.begin(), lib_order.end(),
+                         [&](std::uint32_t a, std::uint32_t b_)
+                         { return library_intensity[a] > library_intensity[b_]; });
+        const std::size_t m12 = std::min<std::size_t>(tc, 12);
+        double tot = 0.0, libsum = 0.0;
+        for (std::uint32_t k = 0; k < tc; ++k)
+        { tot += corrected[k]; libsum += library_intensity[k]; }
+        const float nanf = std::numeric_limits<float>::quiet_NaN();
+        double n_absent = 0.0;
+        for (std::size_t r = 0; r < 12; ++r)
+        {
+          if (r >= m12)
+          {
+            // Rank not measured. NaN in the four value columns, ZERO in the two
+            // indicators -- the one place the contract's two missing-data
+            // conventions differ, and the reason MEAS/ABSENT are never NaN.
+            fv[r] = nanf; fv[12 + r] = nanf; fv[24 + r] = nanf; fv[36 + r] = nanf;
+            fv[48 + r] = 0.0f; fv[60 + r] = 0.0f;
+            continue;
+          }
+          const std::uint32_t k = lib_order[r];
+          const double share = tot > 0.0 ? corrected[k] / tot : 0.0;
+          const double libshare = libsum > 0.0
+            ? library_intensity[k] / libsum
+            : 1.0 / static_cast<double>(tc);
+          // A5: "measured absent" is a zero background-corrected 5-cycle AREA.
+          // It says nothing about the raw trace, which is why ATAPEX above is
+          // not forced to 0 here.
+          const double absent = corrected[k] > 0.0 ? 0.0 : 1.0;
+          n_absent += absent;
+          fv[r] = static_cast<float>(std::log1p(corrected[k]));
+          fv[12 + r] = static_cast<float>(share);
+          fv[24 + r] = static_cast<float>(std::log((share + 1e-3) / (libshare + 1e-3)));
+          fv[36 + r] = static_cast<float>(frag_at_apex[k]);
+          fv[48 + r] = 1.0f;
+          fv[60 + r] = static_cast<float>(absent);
+        }
+        fv[72] = static_cast<float>(m12);
+        fv[73] = static_cast<float>(n_absent);
+        fv[74] = static_cast<float>(static_cast<double>(m12) - n_absent);
+        fv[75] = static_cast<float>(std::log1p(tot));
+        // The same helper the LIBRARY_CORR sub-score uses: fewer than four
+        // fragments with a positive corrected area report 0, not a Pearson over
+        // three points.
+        fv[76] = static_cast<float>(libraryCorrelation(corrected, library_intensity));
+        // Leave-one-transition-out, FLOORED AT 0 by starting the max there --
+        // the builder initialises at 0.0 and never lowers it, so a group whose
+        // every LOO correlation is negative reports 0 rather than its maximum.
+        // O(tc^2): tc Pearsons of tc-1 points, ~144 multiplies at tc = 12.
+        double loo = 0.0;
+        if (tc > 1)
+        {
+          std::vector<double> obs_loo(tc - 1), lib_loo(tc - 1);
+          for (std::uint32_t drop = 0; drop < tc; ++drop)
+          {
+            std::size_t at = 0;
+            for (std::uint32_t k = 0; k < tc; ++k)
+            {
+              if (k == drop) { continue; }
+              obs_loo[at] = corrected[k];
+              lib_loo[at] = library_intensity[k];
+              ++at;
+            }
+            loo = std::max(loo, libraryCorrelation(obs_loo, lib_loo));
+          }
+        }
+        fv[77] = static_cast<float>(loo);
+      }
+
       // A candidate whose spectrum does not resemble the library is not this
       // peptide, wherever it eluted.
       //
@@ -2415,6 +2648,10 @@ namespace
         }
         staged_anchors.clear();
       }
+      // In lockstep with `groups`, and appended at the SAME statement so no
+      // path can push one without the other.
+      if (options.fragvec)
+      { result.fragvec.insert(result.fragvec.end(), fv, fv + N_FRAGVEC); }
       result.groups.push_back(std::move(g));
     }
 
@@ -2586,6 +2823,11 @@ namespace
     if (options.gbt_min_child_rows > 0)
     { params.gbt.min_child_rows = options.gbt_min_child_rows; }
     if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
+    if (options.gbt_max_delta_step > 0.0) { params.gbt.max_delta_step = options.gbt_max_delta_step; }
+    if (options.gbt_intercept_zero) { params.gbt.intercept_zero = true; }
+    if (options.gbt_clip_gain) { params.gbt.clip_gain = true; }
+    if (options.gbt_warmup_rounds > 0) { params.gbt.warmup_rounds = options.gbt_warmup_rounds; }
+    params.seed = static_cast<unsigned>(options.classifier_seed);
     params.gbt.fixed_bins = options.gbt_fixed_bins;
     // More SHALLOW trees rather than fewer deep ones. Depth 2 is the only
     // configuration measured to attribute an added column correctly, and it
@@ -2652,6 +2894,7 @@ namespace
     // separate a real group from an interference group at all.
     params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD, IM_DELTA};
     params.match_decoy_candidate_counts = options.match_decoy_candidate_counts;
+    params.fold_pool_rank = options.fold_pool_rank;
 
     // Seed the semi-supervised loop on CORR_SUM alone.
     //
@@ -2714,6 +2957,11 @@ namespace
       if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
       if (options.gbt_min_child_rows > 0) { params.gbt.min_child_rows = options.gbt_min_child_rows; }
       if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
+      if (options.gbt_max_delta_step > 0.0) { params.gbt.max_delta_step = options.gbt_max_delta_step; }
+      if (options.gbt_intercept_zero) { params.gbt.intercept_zero = true; }
+      if (options.gbt_clip_gain) { params.gbt.clip_gain = true; }
+      if (options.gbt_warmup_rounds > 0) { params.gbt.warmup_rounds = options.gbt_warmup_rounds; }
+      params.seed = static_cast<unsigned>(options.classifier_seed);
       if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
       if (options.gbt_learning_rate > 0.0) { params.gbt.learning_rate = options.gbt_learning_rate; }
       params.gbt.fixed_bins = options.gbt_fixed_bins;
@@ -2738,13 +2986,26 @@ namespace
     // interface; a class hierarchy would add ceremony and make A/B harder, not
     // easier.
     std::string engine_note;
+    // The sub-score names travel with a saved gbt model so a frozen application
+    // refuses a run whose sub-score set differs, whatever its width.
+    const std::vector<std::string> frozen_names = subScoreNames();
     const auto scored =
       options.classifier == "percolator"
         ? Scoring::scorePercolator(features, labels, group, params,
                                    subScoreNames(), &engine_note,
                                    options.classifier_model_out,
                                    options.classifier_model_in)
-        : Scoring::scoreSemiSupervisedLDA(features, labels, group, params);
+        // The gbt engine takes the same two paths as percolator: train-and-save,
+        // or load-and-apply with no training. Measured 2026-09-05: the native
+        // retraining flips between a compact and a saturated score regime
+        // under small changes to the binary or the feature distribution
+        // (pick/wf_hist.txt), while the same evidence scored by ONE model held
+        // fixed across arms does not (pick/wf_fixedmodel.txt). A frozen model
+        // is how two arms are compared on evidence rather than on retraining.
+        : Scoring::scoreSemiSupervisedLDA(features, labels, group, params,
+                                          options.classifier_model_out,
+                                          options.classifier_model_in,
+                                          &frozen_names);
     // Reported through the same channel the picker census uses, so an engine
     // swap is visible in the run log rather than only in the numbers.
     // Same channel the picker census uses, so an engine swap is visible in the
@@ -2830,7 +3091,11 @@ namespace
       if (!dev.empty())
       {
         std::nth_element(dev.begin(), dev.begin() + dev.size() / 2, dev.end());
-        const double centre = dev[dev.size() / 2];
+        // v1.16: a frozen centre (Options::mass_accuracy_centre, finite) replaces the median so that an
+        // intervention on a few candidates (a transition mask) cannot move every row's MASS_ACCURACY
+        // through this run-wide statistic. Off (NaN) = the native median, identical arithmetic.
+        const double centre = std::isfinite(options.mass_accuracy_centre) ? options.mass_accuracy_centre
+                                                                         : dev[dev.size() / 2];
         for (auto& g : result.groups)
         {
           double& s = g.sub_scores[MASS_ACCURACY];
@@ -2839,8 +3104,9 @@ namespace
         }
         std::fprintf(stderr,
                      "fragment mass accuracy as a sub-score: %zu of %zu candidates "
-                     "carried a deviation, centred on %.3f ppm\n",
-                     dev.size(), result.groups.size(), centre);
+                     "carried a deviation, centred on %.3f ppm (exact %.17g%s)\n",
+                     dev.size(), result.groups.size(), centre, centre,
+                     std::isfinite(options.mass_accuracy_centre) ? ", FROZEN by -mass_accuracy_centre" : "");
       }
     }
 
@@ -2905,6 +3171,25 @@ namespace
       result.groups.swap(reordered);
     }
 
+    // The fragvec rows are parallel to `groups`, so they take the SAME
+    // permutation. This is the whole reason the 78 floats are retained rather
+    // than streamed as each candidate finishes: the row order -out publishes --
+    // and therefore the ordinal the export is keyed on -- does not exist until
+    // the sort above has run. Costs one transient copy of 312 B x groups
+    // (6.8 GB at 21.8 M rows, against the arm's measured 716 GB peak), the same
+    // shape of transient the group reorder just above pays.
+    if (!result.fragvec.empty())
+    {
+      std::vector<float> fv_reordered;
+      fv_reordered.reserve(result.fragvec.size());
+      for (const std::uint32_t o : order)
+      {
+        const float* src = result.fragvec.data() + static_cast<std::size_t>(o) * N_FRAGVEC;
+        fv_reordered.insert(fv_reordered.end(), src, src + N_FRAGVEC);
+      }
+      result.fragvec.swap(fv_reordered);
+    }
+
     for (const auto& g : result.groups)
     {
       (g.decoy ? result.decoy_groups : result.target_groups) += 1;
@@ -2962,6 +3247,7 @@ namespace
         // Not split by class, so it prints as one number (and on its own line --
         // it previously ran on from the line above with no separator).
         << "\n  min_fragments_at_apex " << r.too_few_at_apex
+        << "\n  transition_mask candidates " << r.masked_candidates << " fragments removed " << r.masked_fragments
         << "\n  EXTRACTION losses (no usable chromatogram): "
         << pc(r.no_points[0], r.no_points[1]) << " with <3 points, "
         << pc(r.empty_trace[0], r.empty_trace[1]) << " with an all-zero trace"

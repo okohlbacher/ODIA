@@ -738,6 +738,23 @@ namespace ODIA
     struct Model
     {
       bool fitted = false;
+
+      /// Per-precursor 1/K0 offsets MEASURED ON THIS RUN, NaN where none was
+      /// trusted. When finite, `offsetFor` returns it instead of the charge
+      /// curve: a measurement of this ion beats a model of its charge.
+      ///
+      /// Why this exists. The curve is fitted per charge from anchors harvested
+      /// through the same +-0.025 window it corrects, so it recovers under 40%
+      /// of the scale error and nothing of the per-precursor spread. Measured on
+      /// S08 (analysis77/pick, 2026-09-04): 41% of DIA-NN's ids that ODIA never
+      /// picks sit >0.025 from the library 1/K0 after that curve; centring the
+      /// pass-2 slice on the truth at unchanged width gives 71% of them a
+      /// peptide-quality candidate (library correlation 0.66 vs controls' 0.77)
+      /// against a mirrored-sham control that does not. The per-precursor
+      /// offset is that centring, sourced from pass 1's own observed mobility.
+      /// Filled by the tool after pass 1 (`-im_center_from_pass1`); empty on
+      /// every other path, which leaves offsetFor exactly as it was.
+      std::vector<float> per_precursor_offset;
       /// True unless the RUN carries no 1/K0 at all, or the LIBRARY does. Those
       /// are reported separately from a failed fit because they are not failures:
       /// there is nothing on this axis to measure.
@@ -810,22 +827,40 @@ namespace ODIA
         return foldIndex(precursor, folds);
       }
 
-      /// The 1/K0 to ADD to this precursor's library value. 0 when nothing was
-      /// fitted, when this charge is unsupported, or when the precursor's
-      /// mobility is unknown -- in every case, the uncorrected library value.
+      /// The 1/K0 to ADD to this precursor's library value. A finite
+      /// `per_precursor_offset` for this precursor wins outright; otherwise 0
+      /// when nothing was fitted, when this charge is unsupported, or when the
+      /// precursor's mobility is unknown -- the uncorrected library value.
       /// @param library_im the precursor's LIBRARY 1/K0, which the linear term
       ///        is a function of. Defaults to NaN, which yields the constant
       ///        plus the m/z shape and nothing else -- so a caller that has no
       ///        mobility to hand gets exactly the pre-slope behaviour rather
       ///        than a silently wrong correction.
+      /// A constant added to EVERY precursor's pass-2 mobility centre, on top of
+      /// whatever the curve or the per-precursor measurement gives it. It exists
+      /// so a fixed offset HYPOTHESIS can be extracted without touching the
+      /// library: shifting a library's 1/K0 column instead moves the population
+      /// the fragment-mass fit probes, and three arms built that way came back
+      /// with three different mass models -- not single-factor, so not readable.
+      /// Stacking rather than replacing is load-bearing: the fitted curve removes
+      /// ~30% of the mean-squared 1/K0 error, and a hypothesis that discarded it
+      /// would be worse than production at offset 0.
+      double global_offset = 0.0;
+
       double offsetFor(std::uint32_t precursor, double mz, int charge,
                        double library_im = std::numeric_limits<double>::quiet_NaN()) const
       {
-        if (!fitted || curves.empty()) { return 0.0; }
+        // A trusted per-precursor measurement wins over the curve, fitted or
+        // not: it is allowed to exist even when the run's curve fit failed,
+        // because it does not depend on that fit.
+        if (precursor < per_precursor_offset.size() &&
+            std::isfinite(per_precursor_offset[precursor]))
+        { return static_cast<double>(per_precursor_offset[precursor]) + global_offset; }
+        if (!fitted || curves.empty()) { return global_offset; }
         const std::size_t c = static_cast<std::size_t>(
           std::clamp<int>(charge, 0, static_cast<int>(MAX_CHARGE)));
         const std::size_t f = std::min(foldOf(precursor), folds);
-        return curves[c * (folds + 1) + f].at(mz, library_im);
+        return curves[c * (folds + 1) + f].at(mz, library_im) + global_offset;
       }
     };
 

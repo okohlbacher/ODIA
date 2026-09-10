@@ -56,8 +56,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <fstream>
+#include <functional>
 #include <limits>
+#include <locale>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -187,6 +191,12 @@ struct LDAParams
   /// A flag that says what it does cannot be defeated by a clamp.
   bool disable_cv = false;
   bool normalize_folds = true;  ///< Rescale each fold's held-out scores to its own decoy null
+  bool fold_pool_rank = false;  ///< v1.13: pool the folds by WITHIN-FOLD RANK FRACTION over all groups (targets: best
+                                ///< over all rows; decoys: best over the drawn prefix, as assignQValues ranks them),
+                                ///< DScore = -log10(rank/n_f), instead of (raw - mu_f)/sigma_f. The decoy null of an
+                                ///< uncapped fold does not fix the scale of its top (w1_ctl70 fold 1: top compressed
+                                ///< 0.75x, bulk sd 1.04x), so the pooled head is partly sorted by fold. mu/sigma are
+                                ///< still computed and saved. Off = native, identical arithmetic.
                             ///< (mean 0, sd 1) before pooling. Each fold has its OWN weight vector,
                             ///< with its own arbitrary scale and offset, so the raw scores are not
                             ///< comparable across folds; pooling them into one ranking without this
@@ -197,10 +207,15 @@ struct LDAParams
 /// features[i] has the same length for all i (M sub-scores). labels[i] in {0,1}.
 /// group[i] is the precursor id shared by that precursor's candidate peak groups.
 /// Returns a d-score and q-value per input row. Deterministic given params.seed.
+/// `model_out` / `model_in` (gbt engine only) save the trained fold ensemble, or apply a saved
+/// one without training; see the definition.
 ScoredGroups scoreSemiSupervisedLDA(const std::vector<std::vector<double>>& features,
                                     const std::vector<int>& labels,
                                     const std::vector<long long>& group,
-                                    const LDAParams& params = LDAParams());
+                                    const LDAParams& params = LDAParams(),
+                                    const std::string& model_out = "",
+                                    const std::string& model_in = "",
+                                    const std::vector<std::string>* feature_names = nullptr);
 
 namespace lda_detail
 {
@@ -414,11 +429,18 @@ inline bool choleskySolve(std::vector<double> a,
 
 } // namespace lda_detail
 
+/// @param model_out  gbt engine only: after training, save the fold models, the
+///                   standardisation and each fold's decoy normalisation here.
+/// @param model_in   gbt engine only: do not train -- load that file and score every
+///                   row with it. The two paths mirror `scorePercolator`'s.
 inline ScoredGroups scoreSemiSupervisedLDA(
   const std::vector<std::vector<double>>& features,
   const std::vector<int>& labels,
   const std::vector<long long>& group,
-  const LDAParams& params)
+  const LDAParams& params,
+  const std::string& model_out,
+  const std::string& model_in,
+  const std::vector<std::string>* feature_names)
 {
   const std::size_t n = features.size();
   ScoredGroups result;
@@ -584,6 +606,230 @@ inline ScoredGroups scoreSemiSupervisedLDA(
 #endif
 
   int n_trained = 0, n_skipped = 0;
+
+  // ---- FROZEN MODEL, gbt engine only ----
+  //
+  // Score every row with a fold ensemble trained elsewhere and saved by the
+  // `model_out` path below: THAT run's standardisation, its fold models, and
+  // each fold's decoy normalisation, applied here with no training at all.
+  // Measured 2026-09-05 (pick/wf_hist.txt, wf_fixedmodel.txt): the native
+  // retraining flips between a compact and a saturated score regime under
+  // small changes to the binary or the feature distribution, and every
+  // comparison across that flip is about the scorer, not the evidence; the
+  // same evidence under ONE model held fixed across arms is stable. A frozen
+  // model is how two runs are compared on evidence, and it is the documented
+  // remedy for a run that cannot bootstrap its own positives.
+  //
+  // The per-row score is the mean over folds of each fold's DECOY-normalised
+  // score, so it sits on the same "decoy sds above the null" scale the native
+  // path pools folds on. Rows the saving run never saw are, by construction,
+  // out of sample for every fold model.
+  const bool gbt_engine = (params.classifier == LDAParams::Classifier::GBT);
+  std::vector<GBT> fold_models;
+  std::vector<double> fold_norm_mu, fold_norm_sigma;
+  bool frozen_applied = false;
+  if (!model_in.empty() && !gbt_engine)
+  {
+    std::fprintf(stderr, "[lda] -classifier_model_in is honoured by the gbt and percolator "
+                         "engines only; this engine trains as usual\n");
+  }
+  if (!model_in.empty() && !model_out.empty() && gbt_engine)
+  {
+    std::fprintf(stderr, "[gbt] both -classifier_model_in and -classifier_model_out are set: "
+                         "the frozen model is APPLIED and nothing is saved\n");
+  }
+  if (!model_in.empty() && gbt_engine)
+  {
+    // A frozen model that cannot be applied is a HARD failure, never a silent
+    // fall-back to training: the retraining is the very thing this path exists
+    // to hold fixed, and a run that quietly trained would enter a comparison
+    // as if it had not. The failure surfaces as "fitted 0 iterations", exactly
+    // as a failed percolator engine does.
+    auto refuse = [&](const std::string& why) -> ScoredGroups {
+      std::fprintf(stderr, "[gbt] FROZEN MODEL %s: REFUSED -- %s; no scores produced\n",
+                   model_in.c_str(), why.c_str());
+      result.n_iterations_skipped = 1;
+      return result;
+    };
+    if (params.fold_pool_rank)
+    { return refuse("-fold_pool_rank is not supported with -classifier_model_in (v1.13): the pooled scale is a within-fold rank, not the saved mu/sigma"); }
+    std::ifstream is(model_in);
+    is.imbue(std::locale::classic());
+    if (!is) { return refuse("cannot open"); }
+    std::string magic;
+    int version = 0;
+    std::size_t m_saved = 0, k_saved = 0;
+    if (!(is >> magic >> version >> m_saved >> k_saved) || magic != "ODIA-GBT-FOLDS" || version != 1)
+    { return refuse("not an ODIA-GBT-FOLDS version-1 file"); }
+    if (m_saved != m)
+    {
+      return refuse("saved for " + std::to_string(m_saved) + " sub-scores, this run has " +
+                    std::to_string(m));
+    }
+    if (k_saved == 0 || k_saved > 64) { return refuse("implausible fold count"); }
+    // The sub-score NAMES travel with the model and must match exactly: a
+    // different sub-score set of the same width would load and rank on
+    // nonsense with nothing downstream the wiser.
+    std::size_t n_names = 0;
+    if (!(is >> n_names) || n_names != m) { return refuse("sub-score name list missing or wrong length"); }
+    for (std::size_t j = 0; j < m; ++j)
+    {
+      std::string nm;
+      if (!(is >> nm)) { return refuse("sub-score name list truncated"); }
+      if (feature_names != nullptr && j < feature_names->size() && (*feature_names)[j] != nm)
+      {
+        return refuse("sub-score " + std::to_string(j) + " is '" + nm + "' in the model but '" +
+                      (*feature_names)[j] + "' in this run");
+      }
+    }
+    std::vector<double> mean_saved(m, 0.0), sd_saved(m, 1.0);
+    std::vector<GBT> models(k_saved);
+    std::vector<double> mus(k_saved, 0.0), sigmas(k_saved, 0.0);
+    std::vector<char> present(k_saved, 0);
+    for (std::size_t j = 0; j < m; ++j)
+    { if (!(is >> mean_saved[j]) || !std::isfinite(mean_saved[j])) { return refuse("standardisation means truncated or non-finite"); } }
+    for (std::size_t j = 0; j < m; ++j)
+    {
+      if (!(is >> sd_saved[j]) || !std::isfinite(sd_saved[j]) || !(sd_saved[j] > 0.0))
+      { return refuse("standardisation sds truncated, non-finite or non-positive"); }
+    }
+    for (std::size_t f = 0; f < k_saved; ++f)
+    {
+      int has = 0;
+      if (!(is >> has >> mus[f] >> sigmas[f])) { return refuse("fold header truncated"); }
+      if (has)
+      {
+        if (!models[f].load(is)) { return refuse("fold " + std::to_string(f) + " model malformed"); }
+        if (models[f].featureCount() != m) { return refuse("fold model feature count mismatch"); }
+        present[f] = 1;
+      }
+    }
+    std::size_t k_have = 0;
+    for (const char p : present) { k_have += (p != 0); }
+    if (k_have == 0) { return refuse("no trained fold in the file"); }
+    // Optional (files written before v1.7 lack it): the saving run's precursor-
+    // to-fold assignment. A precursor listed here was TRAINING data for every
+    // fold but its own, and is scored below by that one excluded fold only.
+    std::unordered_map<long long, int> fold_of;
+    {
+      std::string tag;
+      std::size_t n_map = 0;
+      if (is >> tag)
+      {
+        if (tag != "FOLDMAP" || !(is >> n_map) || n_map > 50000000)
+        { return refuse("trailing content is not a valid FOLDMAP"); }
+        fold_of.reserve(n_map * 2);
+        for (std::size_t g = 0; g < n_map; ++g)
+        {
+          long long pid = 0;
+          int fd = -1;
+          if (!(is >> pid >> fd)) { return refuse("FOLDMAP truncated"); }
+          if (fd < 0 || static_cast<std::size_t>(fd) >= k_saved) { return refuse("FOLDMAP fold index out of range"); }
+          fold_of.emplace(pid, fd);
+        }
+      }
+    }
+    std::size_t scored_exact = 0;
+    {
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+      for (std::size_t i = 0; i < n; ++i)
+      {
+        std::vector<double> zf(m, 0.0);
+        for (std::size_t j = 0; j < m; ++j)
+        {
+          zf[j] = std::isfinite(features[i][j]) ? (features[i][j] - mean_saved[j]) / sd_saved[j] : 0.0;
+        }
+        auto fold_score = [&](std::size_t f) -> double {
+          double v = models[f].score(zf);
+          if (sigmas[f] > std::numeric_limits<double>::epsilon() && std::isfinite(sigmas[f]))
+          { v = (v - mus[f]) / sigmas[f]; }
+          return v;
+        };
+        const auto it = fold_of.find(group[i]);
+        if (it != fold_of.end() && present[static_cast<std::size_t>(it->second)])
+        {
+          // Training data of every other fold: its own excluded fold only.
+          result.dscore[i] = fold_score(static_cast<std::size_t>(it->second));
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+          ++scored_exact;
+        }
+        else
+        {
+          double s = 0.0;
+          for (std::size_t f = 0; f < k_saved; ++f)
+          {
+            if (!present[f]) { continue; }
+            s += fold_score(f);
+          }
+          result.dscore[i] = s / static_cast<double>(k_have);
+        }
+      }
+      frozen_applied = true;
+      // Reported as trained iterations, as scorePercolator reports its frozen
+      // path: downstream derives fdr_valid from `> 0`, and a frozen model IS a
+      // valid discriminant. It is no longer "this run bootstrapped its own
+      // positives", which is what the name says -- the only consumer today is
+      // the `> 0` test, so the conflation is documented here rather than fixed.
+      n_trained = static_cast<int>(k_have);
+      std::fprintf(stderr, "[gbt] FROZEN MODEL %s: %zu fold models over %zu features applied to "
+                           "%zu rows (%zu rows of precursors the model trained on scored by their "
+                           "own excluded fold, the rest by the fold mean), no training. NOTE: "
+                           "q-values under a frozen model are an FDR "
+                           "estimate only if the saving run shared no targets with this one; when "
+                           "it did (same sample, same library) they are anti-conservative -- use "
+                           "them to COMPARE runs, not to report an FDR\n",
+                   model_in.c_str(), k_have, m, n, scored_exact);
+    }
+  }
+  // The captures below are sized only when a save was requested, so a run with
+  // neither path set allocates and copies nothing -- flag-off touches one bool.
+  if (!frozen_applied && gbt_engine && !model_out.empty())
+  {
+    fold_models.resize(static_cast<std::size_t>(folds));
+    fold_norm_mu.assign(static_cast<std::size_t>(folds), 0.0);
+    fold_norm_sigma.assign(static_cast<std::size_t>(folds), 0.0);
+  }
+
+  // How many candidates each group may draw its best from. Targets always use
+  // all of theirs; decoys are quantile-matched to the target distribution when
+  // asked. See `match_decoy_candidate_counts`.
+  std::vector<std::size_t> draw_from(group_count);
+  for (std::size_t g = 0; g < group_count; ++g) { draw_from[g] = group_rows[g].size(); }
+  if (params.match_decoy_candidate_counts)
+  {
+    std::vector<std::size_t> target_n;
+    std::vector<std::size_t> decoys;
+    for (std::size_t g = 0; g < group_count; ++g)
+    {
+      if (group_label[g] == 1) { target_n.push_back(group_rows[g].size()); }
+      else { decoys.push_back(g); }
+    }
+    if (!target_n.empty() && !decoys.empty())
+    {
+      std::sort(target_n.begin(), target_n.end());
+      // Both sides sorted by count, then matched by rank: the k-th smallest
+      // decoy takes the k-th smallest target's count. That maps the whole
+      // distribution rather than just its mean, and it is a function of the
+      // data alone, so the run stays deterministic.
+      std::stable_sort(decoys.begin(), decoys.end(),
+                       [&](std::size_t a, std::size_t b)
+                       { return group_rows[a].size() < group_rows[b].size(); });
+      for (std::size_t i = 0; i < decoys.size(); ++i)
+      {
+        const std::size_t q = i * target_n.size() / decoys.size();
+        draw_from[decoys[i]] = std::min(target_n[q], group_rows[decoys[i]].size());
+        if (draw_from[decoys[i]] == 0) { draw_from[decoys[i]] = 1; }
+      }
+    }
+  }
+
+
+  if (!frozen_applied)
+  {
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 1) reduction(+ : n_trained, n_skipped)
 #endif
@@ -1097,6 +1343,10 @@ inline ScoredGroups scoreSemiSupervisedLDA(
     // actually cares about -- "how many decoy sds above the null" -- and makes pooling valid.
     // pyprophet sidesteps the problem differently: it averages the fold weight vectors into a single
     // model and rescores everything with it (at the cost of the leakage-free property kept here).
+    // Keep this fold's trained ensemble for `model_out`. Fold-indexed slots are
+    // disjoint across the parallel loop, so no synchronisation is needed.
+    if (use_gbt && gbt.trained() && static_cast<std::size_t>(fold) < fold_models.size())
+    { fold_models[static_cast<std::size_t>(fold)] = gbt; }
     if (params.normalize_folds)
     {
       double sum = 0.0, sum_sq = 0.0;
@@ -1113,63 +1363,164 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         sum_sq += result.dscore[best_row] * result.dscore[best_row];
         ++decoy_n;
       }
+      double mu = 0.0, sigma = 0.0;
+      bool affine_ok = false;
       if (decoy_n >= 2)
       {
-        const double mu = sum / static_cast<double>(decoy_n);
+        mu = sum / static_cast<double>(decoy_n);
         const double var = std::max(0.0, (sum_sq - sum * mu) / static_cast<double>(decoy_n - 1));
-        const double sigma = std::sqrt(var);
+        sigma = std::sqrt(var);
+        if (static_cast<std::size_t>(fold) < fold_norm_mu.size())
+        {
+          // Saved with the fold model so a frozen application normalises
+          // exactly as this fold did (a degenerate sigma is saved as-is and
+          // the loader applies the same validity rule below).
+          fold_norm_mu[static_cast<std::size_t>(fold)] = mu;
+          fold_norm_sigma[static_cast<std::size_t>(fold)] = sigma;
+        }
         // A degenerate null (all decoys identical) carries no scale information; leaving those
         // scores unscaled is the only honest option, and shifting them alone would be worse.
-        if (sigma > std::numeric_limits<double>::epsilon() && std::isfinite(sigma))
+        affine_ok = (sigma > std::numeric_limits<double>::epsilon() && std::isfinite(sigma));
+      }
+      if (params.fold_pool_rank)
+      {
+        // v1.13: within-fold rank pooling. Knots = every group's best in THIS fold (targets over all
+        // rows, decoys over their drawn prefix -- exactly what assignQValues ranks), sorted descending.
+        // A group's best row lands on its knot: frac = (number of knots >= v) / n_f, so tied groups
+        // share the MAX rank (the conservative side; verified on F17: the equality branch below is
+        // unreachable because upper_bound(greater<>) stops at the first knot < v, and the
+        // interpolation branch then yields exactly k/n_f); other rows interpolate between
+        // adjacent knots so the within-group order is kept.
+        std::vector<double> knots;
+        for (std::size_t g = 0; g < group_count; ++g)
         {
+          if (group_fold[g] != fold) { continue; }
+          const std::size_t take = (group_label[g] == 1) ? group_rows[g].size()
+                                                         : std::min(draw_from[g], group_rows[g].size());
+          double best = -std::numeric_limits<double>::infinity();
+          for (std::size_t k = 0; k < take; ++k) { best = std::max(best, result.dscore[group_rows[g][k]]); }
+          if (std::isfinite(best)) { knots.push_back(best); }
+        }
+        std::sort(knots.begin(), knots.end(), std::greater<double>());
+        const std::size_t n_f = knots.size();
+        if (n_f >= 2)
+        {
+          const double nf = static_cast<double>(n_f);
           for (std::size_t g = 0; g < group_count; ++g)
           {
             if (group_fold[g] != fold) { continue; }
             for (const std::size_t row : group_rows[g])
             {
-              result.dscore[row] = (result.dscore[row] - mu) / sigma;
+              const double v = result.dscore[row];
+              const std::size_t k = static_cast<std::size_t>(
+                std::upper_bound(knots.begin(), knots.end(), v, std::greater<double>()) - knots.begin());
+              double frac;
+              if (k < n_f && v == knots[k]) { frac = static_cast<double>(k + 1) / nf; }
+              else if (k == 0)
+              { frac = (1.0 - (v - knots[0]) / (knots[0] - knots[1] + 1e-12)) / nf; }
+              else if (k < n_f)
+              { frac = (static_cast<double>(k) + (knots[k - 1] - v) / (knots[k - 1] - knots[k] + 1e-300)) / nf; }
+              else
+              { frac = 1.0 + (knots[n_f - 1] - v) / (1.0 + knots[n_f - 2] - knots[n_f - 1]); }
+              frac = std::max(frac, 1e-12);
+              result.dscore[row] = -std::log10(frac);
             }
+          }
+        }
+      }
+      else if (affine_ok)
+      {
+        for (std::size_t g = 0; g < group_count; ++g)
+        {
+          if (group_fold[g] != fold) { continue; }
+          for (const std::size_t row : group_rows[g])
+          {
+            result.dscore[row] = (result.dscore[row] - mu) / sigma;
           }
         }
       }
     }
   }
 
-  result.n_iterations_trained = n_trained;
-  result.n_iterations_skipped = n_skipped;
+  }   // if (!frozen_applied): the training path
 
-  // How many candidates each group may draw its best from. Targets always use
-  // all of theirs; decoys are quantile-matched to the target distribution when
-  // asked. See `match_decoy_candidate_counts`.
-  std::vector<std::size_t> draw_from(group_count);
-  for (std::size_t g = 0; g < group_count; ++g) { draw_from[g] = group_rows[g].size(); }
-  if (params.match_decoy_candidate_counts)
+  // ---- SAVE, gbt engine only ----
+  // The fold ensemble plus everything a frozen application needs to score a
+  // NEW run identically to how this one scored its own held-out folds: this
+  // run's standardisation (mean, sd per feature) and each fold's decoy
+  // normalisation (mu, sigma). Written after every fold has finished.
+  if (!frozen_applied && !model_out.empty())
   {
-    std::vector<std::size_t> target_n;
-    std::vector<std::size_t> decoys;
-    for (std::size_t g = 0; g < group_count; ++g)
+    if (!gbt_engine)
     {
-      if (group_label[g] == 1) { target_n.push_back(group_rows[g].size()); }
-      else { decoys.push_back(g); }
+      std::fprintf(stderr, "[lda] -classifier_model_out is honoured by the gbt and percolator "
+                           "engines only; nothing written\n");
     }
-    if (!target_n.empty() && !decoys.empty())
+    else
     {
-      std::sort(target_n.begin(), target_n.end());
-      // Both sides sorted by count, then matched by rank: the k-th smallest
-      // decoy takes the k-th smallest target's count. That maps the whole
-      // distribution rather than just its mean, and it is a function of the
-      // data alone, so the run stays deterministic.
-      std::stable_sort(decoys.begin(), decoys.end(),
-                       [&](std::size_t a, std::size_t b)
-                       { return group_rows[a].size() < group_rows[b].size(); });
-      for (std::size_t i = 0; i < decoys.size(); ++i)
+      // Written to a sibling temporary and renamed into place, so a failed or
+      // interrupted save never leaves a partial file that a later
+      // -classifier_model_in would refuse (or, worse, half-read).
+      const std::string tmp = model_out + ".partial";
+      std::size_t k_have = 0;
+      for (const auto& g : fold_models) { k_have += g.trained() ? 1 : 0; }
+      bool written = false;
+      if (k_have > 0)
       {
-        const std::size_t q = i * target_n.size() / decoys.size();
-        draw_from[decoys[i]] = std::min(target_n[q], group_rows[decoys[i]].size());
-        if (draw_from[decoys[i]] == 0) { draw_from[decoys[i]] = 1; }
+        std::ofstream os(tmp);
+        os.imbue(std::locale::classic());
+        os.precision(17);
+        os << "ODIA-GBT-FOLDS 1 " << m << ' ' << fold_models.size() << '\n';
+        // The sub-score names travel with the model; the loader refuses a
+        // run whose sub-scores differ, whatever their count.
+        os << m;
+        for (std::size_t j = 0; j < m; ++j)
+        {
+          os << ' ' << ((feature_names != nullptr && j < feature_names->size())
+                          ? (*feature_names)[j] : std::string("var_") + std::to_string(j));
+        }
+        os << '\n';
+        for (std::size_t j = 0; j < m; ++j) { os << (j ? " " : "") << mean[j]; }
+        os << '\n';
+        for (std::size_t j = 0; j < m; ++j) { os << (j ? " " : "") << sd[j]; }
+        os << '\n';
+        for (std::size_t f = 0; f < fold_models.size(); ++f)
+        {
+          const bool has = fold_models[f].trained();
+          os << (has ? 1 : 0) << ' ' << fold_norm_mu[f] << ' ' << fold_norm_sigma[f] << '\n';
+          if (has) { fold_models[f].save(os); }
+        }
+        // The precursor-to-fold assignment. A frozen application scores a
+        // precursor this ensemble TRAINED ON with the one fold that excluded
+        // it -- its native held-out score -- and only a precursor the ensemble
+        // never saw with the fold mean. Without this, re-scoring the saving
+        // run hands every row K-1 models that memorised it, and a control
+        // scored that way is optimistic against any arm it is compared to.
+        os << "FOLDMAP " << group_count << '\n';
+        for (std::size_t g = 0; g < group_count; ++g)
+        { os << group_id[g] << ' ' << group_fold[g] << '\n'; }
+        os.flush();
+        written = static_cast<bool>(os);
+        os.close();
+        written = written && !os.fail();
+        if (written) { written = (std::rename(tmp.c_str(), model_out.c_str()) == 0); }
+        if (!written) { std::remove(tmp.c_str()); }
+      }
+      if (written)
+      {
+        std::fprintf(stderr, "[gbt] TRAINED -> %s: %zu of %zu fold models saved, %zu features\n",
+                     model_out.c_str(), k_have, fold_models.size(), m);
+      }
+      else
+      {
+        std::fprintf(stderr, "[gbt] TRAINED -> %s: NOT written (%zu trained folds%s)\n",
+                     model_out.c_str(), k_have, k_have > 0 ? ", write or rename failed" : "");
       }
     }
   }
+
+  result.n_iterations_trained = n_trained;
+  result.n_iterations_skipped = n_skipped;
 
   std::vector<lda_detail::RankedGroup> final_ranked;
   final_ranked.reserve(group_count);

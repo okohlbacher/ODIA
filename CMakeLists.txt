@@ -121,6 +121,7 @@ set(ODIA_LIB_SOURCES
   src/calibrate/MassCalibration.cpp
   src/calibrate/MobilityCalibration.cpp
   src/io/ChromatogramTsv.cpp
+  src/io/FragvecTsv.cpp
   src/io/ZipArchive.cpp
   src/predict/PeptDeepEncoder.cpp
   src/predict/PeptDeepPredictor.cpp

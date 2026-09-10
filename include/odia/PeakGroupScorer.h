@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <limits>
+#include <unordered_map>
 #include <vector>
 
 namespace ODIA
@@ -380,6 +382,22 @@ namespace ODIA
 
     static const std::vector<std::string>& subScoreNames();
 
+    /// Rung (i) of the fragment-evidence contract: 78 per-candidate columns,
+    /// six 12-long vectors by LIBRARY-INTENSITY rank followed by six scalars.
+    ///
+    /// Written only by `-out_fragvec`, never fitted and never a sub-score. The
+    /// names and their order ARE the sealed definition in
+    /// analysis77/pick/wf_v33_fragvec_contract.md s.5.1, and the arithmetic is
+    /// the reference builder's (wf_v33_fragvec_features.py, `row_features`)
+    /// re-expressed on the locals the scorer already has. Kept out of
+    /// `subScoreNames()` on purpose: a column the discriminant can see would
+    /// change the scores, and this export exists to be provably score-neutral.
+    static const std::vector<std::string>& fragvecNames();
+
+    /// 6 x 12 + 6. A compile-time constant so the writer, the row stride and
+    /// the name table cannot drift apart.
+    static constexpr std::size_t N_FRAGVEC = 78;
+
     /// Test seam for the boundary rule. The rule lives in an anonymous
     /// namespace in the .cpp, which is right for it and leaves no way to assert
     /// candidate GEOMETRY -- and geometry was where the defect was: 77.4% of
@@ -618,6 +636,11 @@ namespace ODIA
       int gbt_max_depth = 0;
       int gbt_min_child_rows = 0;
       double gbt_lambda = 0.0;
+      double gbt_max_delta_step = 0.0;   ///< 0 keeps the model default (off); see GBTParams
+      bool gbt_intercept_zero = false;   ///< v1.11 experiment knobs, off = native
+      bool gbt_clip_gain = false;
+      int gbt_warmup_rounds = 0;         ///< v1.12: lr ramp over the first n rounds; 0 = native
+      int classifier_seed = 42;          ///< fold-assignment RNG seed (LDAParams::seed); 42 = native
 
       /// Compute the GBT's histogram bin edges from ALL rows rather than from
       /// the evolving semi-supervised training set. See GBTParams::fixed_bins:
@@ -730,11 +753,27 @@ namespace ODIA
       /// Aggregate percentages cannot settle this; these per-precursor
       /// decisions from the deployed code can.
       std::string gate_log_path;
+      /// v1.15 INSTRUMENT: candidate-scoped transition mask. Keyed by library precursor index; an
+      /// entry (rt_lo, rt_hi, k) makes library transition ordinal k of that precursor ABSENT for the
+      /// scoring of any candidate whose apex RT lies in [rt_lo, rt_hi] -- that candidate only; the
+      /// picker, the other candidates and every other precursor are untouched. Applied in the final
+      /// scoring only (pass 1 and the RT refinement never see it). nullptr = off, identical arithmetic.
+      struct MaskEntry { float rt_lo; float rt_hi; std::uint32_t k; };
+      /// v1.16: freeze the MASS_ACCURACY centre (ppm) instead of the per-fit median; NaN = native.
+      double mass_accuracy_centre = std::numeric_limits<double>::quiet_NaN();
+      const std::unordered_map<std::uint32_t, std::vector<MaskEntry>>* transition_mask = nullptr;
 
       /// Decoy statistics to collect before the threshold is fixed. Those
       /// precursors are admitted unconditionally and scored normally; 20,000
       /// against a ~10M library is 0.2%.
       std::size_t gate_calibration_n = 20000;
+      /// v1.17: a decoy whose extraction window sits before this run RT (seconds; the midpoint
+      /// of the extracted cycle range, (lo+hi)/2 of the calibrated window after clipping to the
+      /// axis) is admitted while the null is being built but NOT pushed into the calibration
+      /// sample. 0 = off, byte-identical. The sample is the first `gate_calibration_n` decoys in
+      /// ARRIVAL order; on a library whose predicted RTs start before the gradient (dn_pred_cam)
+      /// those windows are empty, the statistic is 0 there, tau = 0 and nothing is rejected.
+      double gate_calibration_rt_min = 0.0;
 
       /// Half-width of the smoothing window, in cycles. A real peak spans
       /// several; a single bright cycle in one transition must not carry it.
@@ -843,6 +882,14 @@ namespace ODIA
       /// does not is the documented remedy.
       std::string classifier_model_out;
       std::string classifier_model_in;
+
+      /// Compute and retain the 78 rung-(i) fragment columns per candidate.
+      ///
+      /// OUTPUT-ONLY: nothing reads `Result::fragvec` back into a score, a
+      /// sub-score, a calibration or a candidate decision, so a run with this
+      /// on must produce a byte-identical `-out`. Off on pass 1 and the RT
+      /// refinement -- they are the same arithmetic and would only pay for it.
+      bool fragvec = false;
 
       /// MS1 traces for MS1_COELUTION, or null when the run has no MS1.
       ///
@@ -960,6 +1007,7 @@ namespace ODIA
       /// Draw each decoy's best score from as many candidates as a target has.
       /// See `Scoring::LDAParams::match_decoy_candidate_counts`.
       bool match_decoy_candidate_counts = false;
+      bool fold_pool_rank = false;   ///< v1.13: within-fold rank pooling (LDAParams::fold_pool_rank)
 
       /// Semi-supervised loop knobs, previously reachable only by recompiling.
       /// 0 / negative means "leave the LDAParams default alone".
@@ -1050,6 +1098,17 @@ namespace ODIA
     struct Result
     {
       std::vector<PeakGroup> groups;
+
+      /// `N_FRAGVEC` float32 per group, row-major, parallel to `groups` --
+      /// empty unless `Options::fragvec` was on.
+      ///
+      /// A flat side array rather than a member of PeakGroup: an empty
+      /// std::vector on the group would still cost 24 B x 21.8 M groups on
+      /// every run that does NOT ask for this, and a fixed array would cost
+      /// 312 B. Here the flag-off run pays one empty vector for the whole
+      /// result. `finish()` permutes it with the groups; anything that
+      /// reorders `groups` must reorder this too or the rows silently swap.
+      std::vector<float> fragvec;
 
       /// Per-fragment mass residuals, when `collect_mass_anchors` was on.
       ///

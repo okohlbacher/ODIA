@@ -774,5 +774,9 @@ add_test(NAME rt_refiner COMMAND odia_rt_refiner)
 # values a fixture cannot hold -- subnormals, extreme exponents, NaN and inf.
 add_test(NAME tsv_writers_are_byte_identical
          COMMAND odia_tsv_writers files "${CMAKE_CURRENT_BINARY_DIR}")
+# -out_fragvec is a JOIN into -out, so its header order, its key and its
+# precision are load-bearing in a way no other writer's are.
+add_test(NAME fragvec_tsv_joins_to_out
+         COMMAND odia_tsv_writers fragvec "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME tsv_number_formatting_matches_ostream
          COMMAND odia_tsv_writers formatting)

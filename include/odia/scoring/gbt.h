@@ -56,7 +56,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ios>
+#include <istream>
 #include <limits>
+#include <locale>
+#include <ostream>
+#include <string>
+#include <utility>
 #include <numeric>
 #include <vector>
 
@@ -74,6 +80,20 @@ struct GBTParams
   double gamma = 0.0;             ///< minimum gain to split
   double min_child_weight = 1.0;  ///< minimum summed hessian in a child
   int min_child_rows = 20;        ///< minimum rows in a child; guards tiny leaves on small folds
+  double max_delta_step = 0.0;    ///< XGBoost's max_delta_step: a leaf's Newton step G/(H+lambda) is
+                                  ///< clipped to +/-this BEFORE the learning rate. 0 = off (the native
+                                  ///< unbounded step). Bounds the first rounds of a fit whose prior is
+                                  ///< extreme, where a pure-positive leaf's hessian is tiny against its
+                                  ///< gradient and the unbounded step is |G|/lambda. EXPERIMENT knob.
+  bool intercept_zero = false;    ///< Intercept 0 (XGBoost base_score 0.5) instead of logit(training prior).
+                                  ///< At a 1:155 prior a pure-positive leaf's Newton step is ~1/p (~160);
+                                  ///< at intercept 0 it is ~2. EXPERIMENT knob (v1.11).
+  int warmup_rounds = 0;          ///< Learning-rate ramp: round r (1-based) uses lr * min(1, r/warmup_rounds);
+                                  ///< 0 = off (constant lr, identical arithmetic). EXPERIMENT knob (v1.12).
+  bool clip_gain = false;         ///< With max_delta_step > 0, evaluate split gains with the CLIPPED leaf
+                                  ///< weight (XGBoost CalcGain semantics) instead of the unclipped G^2/(H+lambda),
+                                  ///< so splits are ranked by the improvement they can actually realise.
+                                  ///< Identical arithmetic when off. EXPERIMENT knob (v1.11).
   /// Bin edges from ALL rows rather than from the current training set.
   ///
   /// The default recomputes quantile edges from `pos + neg`, which in a
@@ -281,7 +301,7 @@ public:
     // than having to discover the class balance.
     const double frac = static_cast<double>(pos.size()) / static_cast<double>(rows.size());
     const double clamped = std::min(1.0 - 1e-6, std::max(1e-6, frac));
-    base_ = std::log(clamped / (1.0 - clamped));
+    base_ = p.intercept_zero ? 0.0 : std::log(clamped / (1.0 - clamped));
 
     std::vector<double> pred(n_rows, base_);
     std::vector<double> grad(n_rows), hess(n_rows);
@@ -315,6 +335,9 @@ public:
         grad[i] = pi - y[i];
         hess[i] = std::max(1e-12, pi * (1.0 - pi));
       }
+      round_lr_ = params_.learning_rate;
+      if (p.warmup_rounds > 0)
+      { round_lr_ = params_.learning_rate * std::min(1.0, static_cast<double>(t + 1) / static_cast<double>(p.warmup_rounds)); }
       gbt_detail::Tree tree;
       if (!growTree_(B, n_rows, grad, hess, n_bins_max, T, scratch, tree)) { break; }
 #ifdef _OPENMP
@@ -348,6 +371,89 @@ public:
   }
 
   bool trained() const { return !trees_.empty(); }
+  std::size_t featureCount() const { return n_features_; }
+
+  /// Serialise everything `score()` consumes -- the bin edges, the base score and the trees --
+  /// as plain text, one token per value, doubles at full precision. The training parameters are
+  /// not needed to apply a model and are not written. Returns false on a write error.
+  bool save(std::ostream& os) const
+  {
+    if (trees_.empty()) { return false; }
+    os.imbue(std::locale::classic());   // "1.5", never "1,5", whatever the process locale
+    os.unsetf(std::ios::floatfield);    // default format: a caller's std::fixed would zero 1e-20
+    os.precision(17);
+    os << "ODIA-GBT 1\n" << n_features_ << ' ' << base_ << ' ' << trees_.size() << '\n';
+    for (const auto& e : edges_)
+    {
+      os << e.size();
+      for (const double v : e) { os << ' ' << v; }
+      os << '\n';
+    }
+    for (const auto& t : trees_)
+    {
+      os << t.max_depth << ' ' << t.feature.size() << '\n';
+      for (std::size_t i = 0; i < t.feature.size(); ++i)
+      {
+        os << t.feature[i] << ' ' << static_cast<int>(t.bin[i]) << ' ' << t.value[i] << '\n';
+      }
+    }
+    return static_cast<bool>(os);
+  }
+
+  /// Inverse of save(). A model loaded here scores exactly as the one that was saved, provided
+  /// the caller feeds it features standardised the way the SAVING run standardised them -- that
+  /// transform is the caller's to carry (see scoreSemiSupervisedLDA), not the tree's.
+  bool load(std::istream& is)
+  {
+    // Every count and index is bounded before it sizes a vector or indexes one:
+    // a file that parses but describes an impossible tree must fail here, not
+    // in predict(). Bounds are generous against anything fit() can produce.
+    is.imbue(std::locale::classic());
+    std::string magic;
+    int version = 0;
+    if (!(is >> magic >> version) || magic != "ODIA-GBT" || version != 1) { return false; }
+    std::size_t n_trees = 0;
+    if (!(is >> n_features_ >> base_ >> n_trees) || n_features_ == 0 || n_features_ > 4096 ||
+        n_trees == 0 || n_trees > 100000 || !std::isfinite(base_))
+    { return false; }
+    edges_.assign(n_features_, {});
+    for (auto& e : edges_)
+    {
+      std::size_t k = 0;
+      if (!(is >> k) || k > 255) { return false; }   // bins are uint8_t; <= 255 edges
+      e.resize(k);
+      for (double& v : e) { if (!(is >> v) || !std::isfinite(v)) { return false; } }
+      // score() bins with lower_bound: the edges must be non-decreasing or a
+      // value lands in an arbitrary bin.
+      for (std::size_t i = 1; i < e.size(); ++i) { if (e[i] < e[i - 1]) { return false; } }
+    }
+    trees_.clear();
+    trees_.reserve(n_trees);
+    for (std::size_t t = 0; t < n_trees; ++t)
+    {
+      gbt_detail::Tree tree;
+      std::size_t nodes = 0;
+      if (!(is >> tree.max_depth >> nodes)) { return false; }
+      // A complete binary tree indexed 1..2^(d+1)-1 is stored in 2^(d+1) slots.
+      if (tree.max_depth < 0 || tree.max_depth > 16 ||
+          nodes != (static_cast<std::size_t>(1) << (tree.max_depth + 1)))
+      { return false; }
+      tree.feature.resize(nodes);
+      tree.bin.resize(nodes);
+      tree.value.resize(nodes);
+      for (std::size_t i = 0; i < nodes; ++i)
+      {
+        int b = 0;
+        if (!(is >> tree.feature[i] >> b >> tree.value[i])) { return false; }
+        if (tree.feature[i] < -1 || tree.feature[i] >= static_cast<int>(n_features_) ||
+            b < 0 || b > 255 || !std::isfinite(tree.value[i]))
+        { return false; }
+        tree.bin[i] = static_cast<uint8_t>(b);
+      }
+      trees_.push_back(std::move(tree));
+    }
+    return !trees_.empty();
+  }
   std::size_t nTrees() const { return trees_.size(); }
 
 private:
@@ -443,7 +549,7 @@ private:
           G += H[base + b].g;
           Hs += H[base + b].h;
         }
-        const double parent_obj = G * G / (Hs + params_.lambda);
+        const double parent_obj = nodeObj_(G, Hs);
 
         int best_f = -1;
         std::size_t best_b = 0;
@@ -468,8 +574,7 @@ private:
             const std::size_t nR = node_rows[slot] - nL;
             if (nL < static_cast<std::size_t>(params_.min_child_rows) ||
                 nR < static_cast<std::size_t>(params_.min_child_rows)) { continue; }
-            const double gain = 0.5 * (GL * GL / (HL + params_.lambda) +
-                                       GR * GR / (HR + params_.lambda) - parent_obj);
+            const double gain = 0.5 * (nodeObj_(GL, HL) + nodeObj_(GR, HR) - parent_obj);
             // Strictly greater: ties keep the lowest (feature, bin), which is what makes the fit
             // reproducible independent of iteration order.
             if (gain > best_gain)
@@ -485,7 +590,7 @@ private:
         if (best_f < 0 || leaf_level || node_rows[slot] < static_cast<std::size_t>(2 * params_.min_child_rows))
         {
           tree.feature[nd] = -1;
-          tree.value[nd] = -params_.learning_rate * G / (Hs + params_.lambda);
+          tree.value[nd] = -round_lr_ * leafStep_(G, Hs);
           continue;
         }
         tree.feature[nd] = best_f;
@@ -523,16 +628,36 @@ private:
       const std::size_t s = static_cast<std::size_t>(nd - first);
       if (H[s] <= 0.0) { continue; }
       tree.feature[nd] = -1;
-      tree.value[nd] = -params_.learning_rate * G[s] / (H[s] + params_.lambda);
+      tree.value[nd] = -round_lr_ * leafStep_(G[s], H[s]);
     }
     return any_split || true;   // a depth-0 stump is still a valid (if useless) tree
   }
 
   GBTParams params_;
+  double round_lr_ = 0.0;         ///< the learning rate in force for the tree being grown (== params_.learning_rate unless warmup_rounds > 0)
   std::vector<gbt_detail::Tree> trees_;
   std::vector<std::vector<double>> edges_;
   std::size_t n_features_ = 0;
   double base_ = 0.0;
+  /// A node's objective reduction for the split search: G^2/(H+lambda) natively; with clip_gain and a cap,
+  /// the reduction the CLIPPED weight realises, 2*G*step - (H+lambda)*step^2 (equal when unclipped).
+  double nodeObj_(double G, double H) const
+  {
+    if (params_.clip_gain && params_.max_delta_step > 0.0)
+    {
+      const double step = leafStep_(G, H);
+      return 2.0 * G * step - (H + params_.lambda) * step * step;
+    }
+    return G * G / (H + params_.lambda);
+  }
+  /// The leaf's Newton step before the learning rate, clipped to +/-max_delta_step when that is set.
+  double leafStep_(double G, double H) const
+  {
+    double step = G / (H + params_.lambda);
+    if (params_.max_delta_step > 0.0)
+    { step = std::max(-params_.max_delta_step, std::min(params_.max_delta_step, step)); }
+    return step;
+  }
 };
 
 } // namespace ODIA::Scoring

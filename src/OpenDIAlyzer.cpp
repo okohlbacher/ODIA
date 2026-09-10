@@ -8,9 +8,11 @@
 #include <odia/LibraryGenerator.h>
 #include <odia/Library.h>
 #include <fstream>
+#include <memory>
 #include <odia/SpectrumSource.h>
 #include <odia/ChromatogramExtractor.h>
 #include <odia/ChromatogramTsv.h>
+#include <odia/FragvecTsv.h>
 #include <odia/MassCalibration.h>
 #include <odia/MassWidth.h>
 #include <odia/Ms1Traces.h>
@@ -30,6 +32,7 @@
 #include <unordered_set>
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -290,6 +293,44 @@ protected:
                         "no score, sub-score or calibration decision -- only "
                         "memory, which grows with the precursor count held.", false);
     setValidFormats_("out_chrom", {"tsv"}, false);
+    registerOutputFile_("out_fragvec", "<file>", "",
+                        "Write the 78 rung-(i) PER-FRAGMENT columns here (TSV): "
+                        "R1_LOGAREA/SHARE/LOGRATIO/ATAPEX/MEAS/ABSENT_1..12 by "
+                        "descending LIBRARY intensity, then R1_N_MEAS, R1_N_ABSENT, "
+                        "R1_N_PRESENT, R1_LOGTOT, R1_LIB_CORR, R1_LIB_CORR_LOO. One "
+                        "row per scored candidate, in -out's exact row order, keyed "
+                        "(Precursor.Id, Decoy, Ordinal) so the join is checkable. "
+                        "OUTPUT-ONLY: the scorer already computes every input and "
+                        "discards it, nothing here is read back into a score, a "
+                        "sub-score, a calibration or a candidate decision, and -out "
+                        "must come out byte-identical with this on. A SEPARATE FILE "
+                        "rather than extra columns on -out, which is what makes that "
+                        "assertable. Filled by the FINAL scoring only; a run that "
+                        "exits on pass 1's scores writes nothing here. The ranks are "
+                        "over the transition set the FINAL scoring actually uses, so a "
+                        "NON-EMPTY -transition_mask silently changes what every column "
+                        "means and the rows stop matching any reference built from the "
+                        "unmasked -out_chrom. MEMORY, measured rather than budgeted: "
+                        "312 B per candidate is the retained array only, but it grows "
+                        "by doubling and finish() permutes it through a second full "
+                        "buffer, so at 21.8 M rows expect ~10.5 GB resident and ~17 GB "
+                        "at the permutation, plus ~10.9 GB of file at 497 B/row.",
+                        false);
+    setValidFormats_("out_fragvec", {"tsv"}, false);
+    registerDoubleOption_("mass_accuracy_centre", "<ppm>", 1e9,
+                          "v1.16 INSTRUMENT: freeze the centre of the fragment mass-accuracy sub-score at this "
+                          "value (ppm) in the FINAL scoring instead of the per-fit median over all candidates, so a "
+                          "-transition_mask on a few candidates cannot move every row through that statistic. Take "
+                          "the exact value from the reference run's log line 'centred on ... (exact ...)'. 1e9 = off.",
+                          false, true);
+    registerInputFile_("transition_mask", "<tsv>", "",
+                       "v1.15 INSTRUMENT: candidate-scoped transition mask, applied in the FINAL scoring "
+                       "only. TSV with header: Precursor.Id, Decoy (0/1), rt_lo, rt_hi (seconds), k (0-based "
+                       "library transition ordinal of that precursor). A candidate whose apex RT lies in "
+                       "[rt_lo, rt_hi] is scored with transition k treated as absent; nothing else changes. "
+                       "Used to measure fragment OWNERSHIP under a frozen model (-classifier_model_in).",
+                       false);
+    setValidFormats_("transition_mask", {"tsv"}, false);
     registerInputFile_("out_chrom_ids", "<tsv>", "",
                        "Restrict -out_chrom (and -out_ms1_iso) to precursors whose "
                        "Precursor.Id appears in column 1 of this TSV. The id is DIA-NN's "
@@ -500,10 +541,41 @@ protected:
                        "the window alone. Diagnostic; 120 is the production value and the "
                        "measurement behind it is in MobilityCalibration.h.",
                        false, true);
+    registerDoubleOption_("im_center_from_pass1", "<lib_corr>", 0.0,
+                          "Centre each precursor's PASS-2 mobility window on its own pass-1 "
+                          "observed 1/K0 when its best pass-1 peak group has a library "
+                          "correlation of at least this value; 0 disables; a NEGATIVE value "
+                          "centres on EVERY finite pass-1 measurement, with no gate at all -- "
+                          "which is the only setting whose OUTCOME is label-symmetric, since "
+                          "any positive gate admits targets and decoys at different rates "
+                          "(4.13:1 at 0.5, 1.65:1 at 0.01) and an asymmetric treatment makes "
+                          "the run's own decoy q-values inadmissible. A per-charge curve "
+                          "cannot express per-precursor 1/K0 error: on S08, 41% of DIA-NN's ids "
+                          "that ODIA never picks sit >0.025 from the library value after the "
+                          "curve, and centring the slice on the truth at unchanged width gives "
+                          "71% of them a peptide-quality candidate (sham-controlled; "
+                          "analysis77/pick). Pass 1 locates the true ion for 56% of those "
+                          "precursors at a 0.050 pass-1 window (72% precision behind a 0.5 "
+                          "gate; 96% on recovered ids), so use it with "
+                          "-im_window_pass1_scale 2. Offsets are clamped to the pass-1 "
+                          "half-window; targets and decoys are each centred on their OWN "
+                          "measurement, so the null is treated exactly as the targets are.",
+                          false, true);
     registerIntOption_("im_calib_cycles", "<n>", 200,
                        "Acquisition cycles probed for the 1/K0 measurement, drawn as short "
                        "CONTIGUOUS blocks so that a precursor has to be at the same mobility "
                        "in consecutive cycles to count.", false, true);
+    registerDoubleOption_("im_pass2_offset", "<1/K0>", 0.0,
+                          "Add this constant to every precursor's PASS-2 mobility centre, on "
+                          "top of the fitted curve and any per-precursor centring. It is the "
+                          "primitive for a multi-hypothesis mobility search: a +-0.025 slice "
+                          "stepped by 0.05 tiles +-0.075 and covers 99.4% of the ids ODIA "
+                          "currently never picks. Measured on the diagnostic set at 0.05, the "
+                          "mis-centred stratum goes from no excess over its chance floor to "
+                          "+44.7 points; the union of three offsets reaches +48.4 where a "
+                          "single centred pass reaches +3.7. Pass 1 is never offset -- it is "
+                          "what the centring measures from. 0 leaves the run bit-identical.",
+                          false, true);
     registerDoubleOption_("im_window_pass1_scale", "<x>", 1.0,
                           "Scales the mobility half-window of PASS 1 (extraction around the uncalibrated "
                           "library 1/K0, from which the 1/K0 anchors are harvested) and, because the MS1 "
@@ -665,6 +737,19 @@ protected:
                        "Decoy statistics to collect before Gate C's threshold is fixed. Those "
                        "precursors are admitted unconditionally and scored normally; 20,000 "
                        "against a ~10M library is 0.2%.", false, true);
+    registerDoubleOption_("gate_calibration_rt_min", "<seconds>", 0.0,
+                          "v1.17: a decoy whose extraction window lies before this run RT (seconds; "
+                          "the midpoint of the extracted cycle range) is admitted while Gate C's null "
+                          "is being built but is NOT pushed into the calibration sample. 0 = off, "
+                          "byte-identical to before.\n\nThe failure mode: the null is the first "
+                          "-gate_calibration_n decoys in ARRIVAL order, i.e. the earliest RT windows. "
+                          "On a library whose predicted RTs start before the gradient (dn_pred_cam) "
+                          "those windows are empty, the co-elution statistic is 0 there, tau comes out "
+                          "as 0 and the gate rejects nothing -- silently, because nothing was logged "
+                          "when the null armed. The run log now prints one 'gate C null armed' line per "
+                          "pass (n, tau, share of zero statistics, first/last calibration RT) whatever "
+                          "this is set to; on a library with fewer than -gate_calibration_n decoys the "
+                          "null never arms and the line is absent.", false, true);
     registerDoubleOption_("empty_trace_sigma", "<sigma>", 3.0,
                           "How far above its own local noise a transition must rise to count as "
                           "carrying signal. The trace is already scaled to sigma by "
@@ -996,11 +1081,20 @@ protected:
                        "says so rather than calibrating from noise.", false, true);
     registerStringOption_("classifier_model_out", "<file>", "",
                           "Train the discriminant on THIS run and write it here. Only with "
-                          "-classifier percolator. Use on a run where the semi-supervised loop "
+                          "-classifier percolator or gbt. Use on a run where the semi-supervised loop "
                           "ignites -- a library that is mostly present.", false, true);
     registerStringOption_("classifier_model_in", "<file>", "",
                           "Apply a frozen discriminant from this file instead of training. "
-                          "Only with -classifier percolator. This is static modelling, the "
+                          "With -classifier percolator or gbt. THE Q-VALUES OF A FROZEN RUN ARE "
+                          "AN FDR ESTIMATE ONLY IF THE SAVING RUN SHARED NO TARGETS WITH THIS ONE: "
+                          "a model that trained on this sample's targets scores them above the "
+                          "decoy null, so on the same sample and library the q-values are "
+                          "anti-conservative. Use frozen scoring to COMPARE runs on evidence "
+                          "with the scorer held fixed, or for a run that cannot bootstrap its own "
+                          "positives; do not report its q-values as an FDR on a shared sample. "
+                          "The gbt path refuses (fitted 0 iterations) rather than retrain when "
+                          "the model cannot be applied, and refuses a model whose sub-score names "
+                          "differ from this run's. This is static modelling, the "
                           "documented remedy for a run whose true-positive rate is too low to "
                           "bootstrap: on v6_50k (1.5% present) every engine certifies nothing "
                           "at 1% FDR while the same discriminant ranks 232 of DIA-NN's 738 into "
@@ -1131,6 +1225,28 @@ protected:
     registerDoubleOption_("gbt_lambda", "<v>", 0.0,
                           "L2 on leaf values for -classifier gbt; 0 keeps the model default "
                           "of 1.0.", false, true);
+    registerDoubleOption_("gbt_max_delta_step", "<v>", 0.0,
+                          "XGBoost's max_delta_step for -classifier gbt: each leaf's Newton step "
+                          "G/(H+lambda) is clipped to +/-v before the learning rate. 0 (the default) "
+                          "keeps the native unbounded step. Bounds the first rounds of a fit whose "
+                          "prior is extreme, where a pure-positive leaf's hessian is tiny against its "
+                          "gradient. An EXPERIMENT flag; the default is unchanged.", false, true);
+    registerFlag_("gbt_intercept_zero",
+                  "Start the boosted classifier at intercept 0 (XGBoost base_score 0.5) instead of the "
+                  "log-odds of the training prior. At the ~1:155 positive:decoy prior of the semi-supervised "
+                  "fit a pure-positive leaf's first Newton step is ~1/p (~160 logits); at intercept 0 it "
+                  "is ~2. EXPERIMENT flag (v1.11); the default is unchanged.", true);
+    registerFlag_("gbt_clip_gain",
+                  "With -gbt_max_delta_step > 0, rank splits by the objective reduction the CLIPPED leaf "
+                  "weight realises (XGBoost CalcGain semantics) instead of the unclipped G^2/(H+lambda). "
+                  "No effect without a cap. EXPERIMENT flag (v1.11).", true);
+    registerIntOption_("gbt_warmup_rounds", "<n>", 0,
+                       "Learning-rate warm-up for -classifier gbt: round r uses lr * min(1, r/n), so the "
+                       "first n rounds take smaller steps from the intercept. 0 (default) keeps the constant "
+                       "rate. EXPERIMENT option (v1.12).", false, true);
+    registerIntOption_("classifier_seed", "<n>", 42,
+                       "RNG seed of the classifier's fold assignment (the only randomised step). 42 is "
+                       "the value every recorded arm used; a second seed gives a fold-noise replicate.", false, true);
     registerFlag_("null_feature_dup",
                   "Make -null_feature an epsilon-jittered copy of var_corr_sum rather than a "
                   "uniform hash. The hash sits at the last column index and split ties break "
@@ -1495,6 +1611,13 @@ protected:
                           "has not run yet, so auto leaves them ON; pass 2 is where the decision "
                           "is real.", false, true);
     setValidStrings_("mass_features", {"auto", "on", "off"});
+    registerFlag_("fold_pool_rank",
+                  "Pool the classifier's cross-validation folds by WITHIN-FOLD RANK over all groups "
+                  "(DScore = -log10(rank fraction)) instead of standardising each fold by its decoy null. "
+                  "An uncapped fold model's decoy null does not fix the scale of its top, so the pooled "
+                  "head can be sorted by fold (w1_ctl70: one fold contributed 0 of the top 7,337). "
+                  "Rank pooling is parameter-free and FDR-neutral by measurement. Not combinable with "
+                  "-classifier_model_in. EXPERIMENT flag (v1.13); the default is unchanged.", true);
     registerFlag_("no_match_decoy_n",
                   "TURN OFF the decoy candidate-count matching described below, which is on by "
                   "default. Named for what the FLAG does, not for what the feature does: a flag "
@@ -2281,6 +2404,15 @@ protected:
       // COVERAGE of the uncalibrated axis, not for purity. Restored immediately
       // after, so pass 2 narrows again around the corrected centre.
       pass1_im_scale_ = std::max(1.0, getDoubleOption_("im_window_pass1_scale"));
+      pass1_im_half_ = getDoubleOption_("precursor_im_window") * pass1_im_scale_;
+      // Read RAW: a negative value means "centre on every finite pass-1
+      // measurement, with no library-correlation gate at all". The gate's
+      // OUTCOME is label-asymmetric at every positive value (4.13:1 targets to
+      // decoys at 0.5, 1.65:1 at 0.01, measured), and an asymmetric treatment
+      // is what makes an arm's decoy q-values inadmissible. Admitting every
+      // finite measurement is symmetric in outcome as well as in rule.
+      im_center_gate_ = getDoubleOption_("im_center_from_pass1");
+      im_center_on_ = (im_center_gate_ != 0.0);
       if (pass1_im_scale_ > 1.0)
       {
         std::ostringstream im;
@@ -2292,9 +2424,11 @@ protected:
            << " pass 2 uses), so the calibration can see the tail it corrects";
         writeLogInfo_(im.str());
       }
+      calibrating_ = true;   // the frozen discriminant / model save never touch pass 1
       const auto rc = extractAndScore_(library, run,
                                        pass1_window > 0.0 ? pass1_window : 1.0e9,
                                        external_irt_, pass1);
+      calibrating_ = false;
       pass1_im_scale_ = 1.0;
       if (rc != EXECUTION_OK) { return rc; }
     }
@@ -2550,6 +2684,7 @@ protected:
     // m/z-shifted control: a decoy's fragments are real fragment masses of a
     // real (shuffled) sequence, and its apex sits on real signal.
     harvestMobilityAnchors_(pass1, library.precursorCount());
+    centreFromPass1_(pass1, library);
 
     // A pass that identified nothing at 1% has no business supplying anchors.
     //
@@ -2668,7 +2803,15 @@ protected:
       const double tol_abs = std::max(0.0, getDoubleOption_("rt_converge_tol"));
       const double tol_rel = std::max(0.0, getDoubleOption_("rt_converge_rel"));
       const double anchor_q_r = getDoubleOption_("anchor_q");
+      // The refinement is calibration too: each round picks its anchors from
+      // pass 1's groups by the CURRENT score, so a frozen discriminant here
+      // moves the RT axis pass 2 extracts under (F11: round 2 diverged,
+      // median residual 0.034 s, +31 scored rows, a different chromatogram
+      // dump). Native, like pass 1; the frozen model and the model save
+      // apply to the final scoring only (see calibrating_).
+      calibrating_ = true;
       auto refit_options = scoringOptions_();
+      calibrating_ = false;
       refit_options.library_rt_is_run_seconds = true;
       refit_options.disabled_sub_scores = ablatedSubScores_();
 
@@ -3537,6 +3680,7 @@ protected:
     mass_model_ = ODIA::MassCalibration::Model{};
     mobility_model_known_ = false;
     mobility_model_ = ODIA::MobilityCalibration::Model{};
+    pass1_im_offsets_.clear();
     mobility_anchors_.clear();
     mobility_anchors_expected_ = false;
     // The MS1 traces too, and this one was MISSED when the others were cleared.
@@ -4271,12 +4415,27 @@ protected:
     options.openswath_gauss = getFlag_("openswath_gauss");
     options.openswath_peak_width = getDoubleOption_("openswath_peak_width");
     options.min_corr_score = getDoubleOption_("min_corr_score");
-    options.classifier_model_out = getStringOption_("classifier_model_out");
-    options.classifier_model_in = getStringOption_("classifier_model_in");
+    // Final scoring only: pass 1 always trains its own discriminant, so the
+    // anchor harvest and the calibration stay native whatever model pass 2 is
+    // scored with (see calibrating_).
+    options.classifier_model_out = calibrating_ ? "" : getStringOption_("classifier_model_out");
+    options.classifier_model_in = calibrating_ ? "" : getStringOption_("classifier_model_in");
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
     options.match_decoy_candidate_counts = !getFlag_("no_match_decoy_n");
+    // v1.14: rank pooling is a FINAL-scoring rule; pass 1 and the RT refinement keep the native
+    // pooling so the calibration anchors (selected at pass-1 q) are identical to the flag-off run.
+    options.fold_pool_rank = calibrating_ ? false : getFlag_("fold_pool_rank");
+    options.transition_mask = calibrating_ ? nullptr : transition_mask_.get();
+    // -out_fragvec, FINAL scoring only. Pass 1 and the RT refinement compute
+    // the identical columns and nothing would ever read them: the export is
+    // keyed on -out's row order, and -out is written from the final result.
+    options.fragvec = !calibrating_ && !out_fragvec_.empty();
+    {
+      const double mc = getDoubleOption_("mass_accuracy_centre");
+      options.mass_accuracy_centre = (calibrating_ || mc > 1e8) ? std::numeric_limits<double>::quiet_NaN() : mc;
+    }
     options.train_fdr_initial = getDoubleOption_("train_fdr_initial");
     options.train_fdr = getDoubleOption_("train_fdr");
     options.classifier_iterations = getIntOption_("classifier_iterations");
@@ -4315,6 +4474,7 @@ protected:
     options.gate_log_path = getStringOption_("gate_log");
     options.gate_calibration_n =
       static_cast<std::size_t>(std::max(100, getIntOption_("gate_calibration_n")));
+    options.gate_calibration_rt_min = getDoubleOption_("gate_calibration_rt_min");   // v1.17, both passes
     options.empty_trace_min_transitions =
       static_cast<std::size_t>(std::max(1, getIntOption_("empty_trace_min_transitions")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
@@ -4347,6 +4507,11 @@ protected:
     options.gbt_learning_rate = getDoubleOption_("gbt_learning_rate");
     options.gbt_min_child_rows = getIntOption_("gbt_min_child_rows");
     options.gbt_lambda = getDoubleOption_("gbt_lambda");
+    options.gbt_max_delta_step = getDoubleOption_("gbt_max_delta_step");
+    options.gbt_intercept_zero = getFlag_("gbt_intercept_zero");
+    options.gbt_clip_gain = getFlag_("gbt_clip_gain");
+    options.gbt_warmup_rounds = getIntOption_("gbt_warmup_rounds");
+    options.classifier_seed = getIntOption_("classifier_seed");
     options.null_feature_dup = getFlag_("null_feature_dup");
     options.null_feature_seed =
       static_cast<std::uint64_t>(std::max(0, getIntOption_("null_feature_seed")));
@@ -4393,6 +4558,25 @@ protected:
   /// around the pass-1 extraction only, so pass 2 narrows again around the
   /// centre the calibration just corrected.
   double pass1_im_scale_ = 1.0;
+  /// The half-window pass 1 ACTUALLY extracted through, in 1/K0. Recorded when
+  /// pass1_im_scale_ is set and NOT restored with it, because everything that
+  /// consumes pass 1's measurements -- the anchor harvest, centreFromPass1_ --
+  /// runs after pass 2's window has already been narrowed back. Reading
+  /// pass1_im_scale_ there silently yields 1.0: it clamped every per-precursor
+  /// offset to the pass-2 half-window (0.025) instead of pass 1's, truncating
+  /// exactly the mis-centred precursors centring exists to rescue, and it fired
+  /// the "scale 1" warning on runs that had passed a scale of 3.
+  double pass1_im_half_ = 0.0;
+  /// True while pass 1 runs. A frozen discriminant (-classifier_model_in) and a
+  /// model save (-classifier_model_out) apply to the FINAL scoring only -- pass 2
+  /// and its refinement refits -- never to pass 1. Measured 2026-09-05 (F8): the
+  /// frozen model applied in pass 1 too, which changed the anchor harvest and so
+  /// the calibration, so a "re-scored" run did not even have the native run's
+  /// features. The RT anchors are chosen by RT consistency, not by score, so with
+  /// pass 1 native the features are the native run's and a frozen re-scoring of a
+  /// run with its own model reproduces its native output.
+  bool calibrating_ = false;   // true while pass 1 / the RT refinement run: their
+                                // scoring is native, never frozen, never saved
   std::size_t pass_offset_ = 0;
 
   /// Refit the retention-time map and the discriminant, alternately, until the
@@ -4677,6 +4861,32 @@ protected:
       }
       writeLogInfo_("wrote scored peak groups to " + out);
     }
+    // -out_fragvec rides -out: same result object, same row order, written
+    // straight after it so the two files cannot come from different results.
+    if (!out_fragvec_.empty())
+    {
+      if (scored.fragvec.empty())
+      {
+        writeLogWarn_("-out_fragvec was given but this result carries no "
+                      "fragment vectors -- the run returned pass 1's scores, "
+                      "which are produced with the export off. Nothing written "
+                      "to " + out_fragvec_ + ".");
+      }
+      else
+      {
+        try
+        {
+          ODIA::writeFragvecTsv(out_fragvec_, library, scored);
+        }
+        catch (const std::exception& e)
+        {
+          writeLogError_(std::string("Failed to write -out_fragvec: ") + e.what());
+          return CANNOT_WRITE_OUTPUT_FILE;
+        }
+        writeLogInfo_("wrote " + std::to_string(scored.groups.size()) +
+                      " fragment-vector rows to " + out_fragvec_);
+      }
+    }
     return EXECUTION_OK;
   }
 
@@ -4736,6 +4946,7 @@ protected:
 
     const std::string in_run = getStringOption_("in");
     const std::string out_chrom = getStringOption_("out_chrom");
+    out_fragvec_ = getStringOption_("out_fragvec");
     out_ms1_iso_ = getStringOption_("out_ms1_iso");
     if (const std::string ids_path = getStringOption_("out_chrom_ids"); !ids_path.empty())
     {
@@ -5565,6 +5776,17 @@ private:
   ODIA::MobilityCalibration::Model mobility_model_;
   bool mobility_model_known_ = false;
 
+  /// -im_center_from_pass1: library-correlation gate above which a precursor's
+  /// pass-2 mobility window is centred on ITS OWN pass-1 observed 1/K0 instead
+  /// of the charge curve. 0 = off (the default; output-neutral).
+  double im_center_gate_ = 0.0;
+  /// Whether per-precursor centring runs at all. Separate from the gate value
+  /// because a negative gate means "on, ungated" -- 0 is the only off.
+  bool im_center_on_ = false;
+  /// The per-precursor offsets pass 1 produced under that gate (NaN = none),
+  /// handed to the mobility model before pass-2 extraction.
+  std::vector<float> pass1_im_offsets_;
+
   /// Where the 1/K0 measurement is allowed to look, and whether any such place
   /// is coming. Empty with `mobility_anchors_expected_` set means "a scored
   /// pass will fill this, do not measure yet"; empty without it means the
@@ -5572,6 +5794,81 @@ private:
   std::vector<ODIA::MobilityAnchor> mobility_anchors_;
   bool mobility_anchors_expected_ = false;
   bool mobility_anchors_loaded_ = false;
+
+  /// -im_center_from_pass1: per-precursor pass-2 mobility centres from pass 1.
+  ///
+  /// For every library entry -- target or decoy, each on its OWN best pass-1
+  /// group -- whose library correlation clears the gate and which carries an
+  /// observed 1/K0, the offset (observed - library) is recorded, clamped to
+  /// the pass-1 half-window. The mobility model returns it in place of the
+  /// charge curve at pass-2 index build. No q-value gate on purpose: q belongs
+  /// after the final extraction, and the library-correlation gate is what the
+  /// diagnostic measured the precision of (72% true on pick losses, 96% on
+  /// recovered ids at 0.5, S08, analysis77/pick).
+  void centreFromPass1_(const ODIA::PeakGroupScorer::Result& pass1,
+                        const ODIA::Library& library)
+  {
+    pass1_im_offsets_.clear();
+    if (!im_center_on_) { return; }
+    // Same trust rule as the anchor harvest beside this: a pass that identified
+    // nothing at 1% has no business supplying per-precursor centres either.
+    if (!pass1.fdr_valid)
+    {
+      writeLogWarn_("-im_center_from_pass1: pass 1 has no valid FDR, so no precursor is "
+                    "centred on it; pass 2 keeps the charge curve.");
+      return;
+    }
+    const double pass2_half = getDoubleOption_("precursor_im_window");
+    if (!(pass1_im_half_ > pass2_half))
+    {
+      writeLogWarn_("-im_center_from_pass1 with -im_window_pass1_scale 1: pass 1 extracted "
+                    "through the same slice pass 2 will use, so its observed 1/K0 is "
+                    "truncated toward the library value and centring on it recovers "
+                    "little. Use -im_window_pass1_scale 2.");
+    }
+    const auto& p = library.precursors();
+    const std::size_t n = library.precursorCount();
+    std::vector<const ODIA::PeakGroupScorer::PeakGroup*> top(n, nullptr);
+    for (const auto& g : pass1.groups)
+    {
+      if (g.precursor >= n) { continue; }
+      if (!std::isfinite(g.dscore)) { continue; }   // a NaN score must never win the race
+      auto*& b = top[g.precursor];
+      if (b == nullptr || g.dscore > b->dscore) { b = &g; }
+    }
+    // Pass 1 extracted a slice of this half-width centred on the library's own
+    // 1/K0 (it runs before any calibration), so a measured offset cannot exceed
+    // it and the clamp is a guard, not a policy. Bounding by the pass-2 window
+    // instead would truncate every offset centring is for.
+    const double half = pass1_im_half_ > 0.0 ? pass1_im_half_
+                                             : getDoubleOption_("precursor_im_window");
+    pass1_im_offsets_.assign(n, std::numeric_limits<float>::quiet_NaN());
+    std::size_t set_t = 0, set_d = 0, had_group = 0, gated_out = 0, clamped = 0, no_im = 0;
+    const std::size_t lc_idx = static_cast<std::size_t>(ODIA::PeakGroupScorer::LIBRARY_CORR);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      const auto* g = top[i];
+      if (g == nullptr) { continue; }
+      ++had_group;
+      if (!std::isfinite(g->observed_im) || i >= p.im.size() || !std::isfinite(p.im[i]))
+      { ++no_im; continue; }
+      const double lc = lc_idx < g->sub_scores.size() ? g->sub_scores[lc_idx]
+                                                       : std::numeric_limits<double>::quiet_NaN();
+      if (im_center_gate_ > 0.0 && !(lc >= im_center_gate_)) { ++gated_out; continue; }
+      double off = static_cast<double>(g->observed_im) - static_cast<double>(p.im[i]);
+      if (std::fabs(off) > half) { off = off > 0.0 ? half : -half; ++clamped; }
+      pass1_im_offsets_[i] = static_cast<float>(off);
+      if (i < p.decoy.size() && p.decoy[i]) { ++set_d; } else { ++set_t; }
+    }
+    std::ostringstream os;
+    os.setf(std::ios::fixed); os.precision(4);
+    os << "mobility centring from pass 1 (-im_center_from_pass1 " << im_center_gate_
+       << "): " << (set_t + set_d) << " of " << had_group << " entries with a pass-1 group centred on "
+       << "their own observed 1/K0 (" << set_t << " targets, " << set_d << " decoys; " << gated_out
+       << " below the gate, " << no_im << " without a mobility, " << clamped << " clamped to +-" << half
+       << "); the rest take whatever the run's mobility calibration gives them";
+    writeLogInfo_(os.str());
+  }
 
   /// Turn pass 1's peak groups into 1/K0 anchors: the confident targets, and a
   /// rank-matched null of the best-scoring decoys.
@@ -5636,6 +5933,59 @@ private:
   /// The file names precursors the way every other TSV here does -- modified
   /// sequence followed by charge -- and a target and its decoy share that name,
   /// so the Decoy column is not optional.
+  /// v1.15: load -transition_mask once the library is known (see Options::transition_mask).
+  std::unique_ptr<std::unordered_map<std::uint32_t, std::vector<ODIA::PeakGroupScorer::Options::MaskEntry>>> transition_mask_;
+  std::string out_fragvec_;   ///< -out_fragvec; empty disables the whole path
+  bool transition_mask_loaded_ = false;
+  void loadTransitionMask_(const ODIA::Library& library)
+  {
+    if (transition_mask_loaded_) { return; }
+    transition_mask_loaded_ = true;
+    const std::string path = getStringOption_("transition_mask");
+    if (path.empty()) { return; }
+    std::unordered_map<std::string, std::uint32_t> index;
+    const auto& p = library.precursors();
+    index.reserve(library.precursorCount() * 2);
+    for (std::size_t i = 0; i < library.precursorCount(); ++i)
+    {
+      std::string key(library.strings().get(p.modified_sequence[i]));
+      key += std::to_string(static_cast<int>(p.charge[i]));
+      key += p.decoy[i] ? '-' : '+';
+      index.emplace(std::move(key), static_cast<std::uint32_t>(i));
+    }
+    std::ifstream in(path);
+    if (!in) { writeLogError_("Cannot read -transition_mask " + path); return; }
+    std::string line;
+    if (!std::getline(in, line)) { writeLogWarn_("-transition_mask " + path + " is empty (header only counts as empty)."); return; }
+    std::vector<std::string> hdr; { std::string f; std::istringstream hs(line); while (std::getline(hs, f, '\t')) { hdr.push_back(f); } }
+    auto col = [&](const std::string& name) -> int { for (std::size_t c = 0; c < hdr.size(); ++c) { if (hdr[c] == name) { return static_cast<int>(c); } } return -1; };
+    const int c_id = col("Precursor.Id"), c_dec = col("Decoy"), c_lo = col("rt_lo"), c_hi = col("rt_hi"), c_k = col("k");
+    if (c_id < 0 || c_dec < 0 || c_lo < 0 || c_hi < 0 || c_k < 0)
+    { writeLogError_("-transition_mask needs columns Precursor.Id, Decoy, rt_lo, rt_hi, k"); return; }
+    auto mask = std::make_unique<std::unordered_map<std::uint32_t, std::vector<ODIA::PeakGroupScorer::Options::MaskEntry>>>();
+    std::size_t n_entries = 0, n_unmatched = 0;
+    while (std::getline(in, line))
+    {
+      if (line.empty()) { continue; }
+      std::vector<std::string> f; { std::string x; std::istringstream ls(line); while (std::getline(ls, x, '\t')) { f.push_back(x); } }
+      const int need = std::max({c_id, c_dec, c_lo, c_hi, c_k});
+      if (static_cast<int>(f.size()) <= need) { continue; }
+      std::string key = f[static_cast<std::size_t>(c_id)];
+      key += (f[static_cast<std::size_t>(c_dec)] == "1") ? '-' : '+';
+      const auto it = index.find(key);
+      if (it == index.end()) { ++n_unmatched; continue; }
+      ODIA::PeakGroupScorer::Options::MaskEntry e;
+      e.rt_lo = std::stof(f[static_cast<std::size_t>(c_lo)]);
+      e.rt_hi = std::stof(f[static_cast<std::size_t>(c_hi)]);
+      e.k = static_cast<std::uint32_t>(std::stoul(f[static_cast<std::size_t>(c_k)]));
+      (*mask)[it->second].push_back(e);
+      ++n_entries;
+    }
+    writeLogInfo_("transition mask: " + std::to_string(n_entries) + " entries for " + std::to_string(mask->size()) +
+                  " precursors (" + std::to_string(n_unmatched) + " ids not in the library); applied in the final scoring only");
+    transition_mask_ = std::move(mask);
+  }
+
   void loadMobilityAnchors_(const ODIA::Library& library)
   {
     if (mobility_anchors_loaded_) { return; }
@@ -5725,6 +6075,21 @@ private:
                                  ODIA::ChromatogramExtractor::Options& options)
   {
     options.mobility_model = nullptr;
+    // Per-precursor centring from pass 1 does not depend on the curve, so it is
+    // attached BEFORE every early return below: a run with the calibration off,
+    // or one whose curve was preloaded, still centres each entry on its own
+    // pass-1 measurement. (The fit path replaces the model object and re-attaches
+    // after the fit.) During pass 1 the staging vector is empty, so nothing is
+    // installed and pass 1 extracts on the raw axis as before.
+    mobility_model_.per_precursor_offset = pass1_im_offsets_;
+    // The constant hypothesis offset rides on the same model object, so it
+    // reaches every path -- calibration off, model preloaded, curve fitted or
+    // failed -- and stacks on whatever that path provides.
+    mobility_model_.global_offset = getDoubleOption_("im_pass2_offset");
+    if (mobility_model_.global_offset != 0.0 ||
+        std::any_of(pass1_im_offsets_.begin(), pass1_im_offsets_.end(),
+                    [](float v) { return std::isfinite(v); }))
+    { options.mobility_model = &mobility_model_; }
     const std::string mode = getStringOption_("ion_mobility_calibration");
     if (mode == "off")
     {
@@ -5733,6 +6098,7 @@ private:
       return;
     }
     loadMobilityAnchors_(library);
+    loadTransitionMask_(library);
     // auto resolves to the anchored probe exactly when a scored pass will
     // supply anchors. It is not the default because it is better in principle
     // -- it is the default because the blind probe was measured on S08 and
@@ -5801,6 +6167,13 @@ private:
     }
     writeLogInfo_(ODIA::MobilityCalibration::report(mobility_model_, &diagnostics));
 
+    // Per-precursor centring from pass 1 rides on the model object because the
+    // extractor asks the model, once per transition at index build, for each
+    // precursor's offset. It does not depend on the curve fit having succeeded.
+    // The fit above REPLACED the model object, so both the offsets and the
+    // constant hypothesis offset are re-attached here.
+    mobility_model_.per_precursor_offset = pass1_im_offsets_;
+    mobility_model_.global_offset = getDoubleOption_("im_pass2_offset");
     if (!mobility_model_.fitted)
     {
       // Deliberately not a warning when there is no axis: nothing is wrong.
@@ -5811,6 +6184,13 @@ private:
                       "library's own error, where a window recentred on a badly measured "
                       "offset moves off the precursor entirely.");
       }
+      // An unfitted model still has work to do if anything else on it is set:
+      // a per-precursor centre, or the constant hypothesis offset.
+      if (mobility_model_.global_offset != 0.0 ||
+          std::any_of(mobility_model_.per_precursor_offset.begin(),
+                      mobility_model_.per_precursor_offset.end(),
+                      [](float v) { return std::isfinite(v); }))
+      { options.mobility_model = &mobility_model_; }
       return;
     }
     options.mobility_model = &mobility_model_;

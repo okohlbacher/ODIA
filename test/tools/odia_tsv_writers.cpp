@@ -35,12 +35,16 @@
 #include <odia/ChromatogramExtractor.h>
 #include <odia/ChromatogramTsv.h>
 #include <odia/DIANNLibraryFile.h>
+#include <odia/FragvecTsv.h>
 #include <odia/Library.h>
+#include <odia/PeakGroupScorer.h>
 #include <odia/TextWriter.h>
 
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -381,6 +385,184 @@ namespace
     check(compared > 3000000, "the sweep is not vacuously small");
     check(disagree == 0, "to_chars general matches the stream's defaultfloat exactly");
   }
+
+  // ------------------------------------------------------------ -out_fragvec
+
+  /// The 78 names in the SEALED order, spelled out here rather than taken from
+  /// `PeakGroupScorer::fragvecNames()`.
+  ///
+  /// The point of this list is that it is an independent transcription of
+  /// analysis77/pick/wf_v33_fragvec_contract.md s.5.1: comparing the writer's
+  /// header against the generator that produced it would agree with any
+  /// consistent reordering, and the consumer joins these columns BY POSITION.
+  std::vector<std::string> sealedFragvecNames()
+  {
+    return {
+      "R1_LOGAREA_1", "R1_LOGAREA_2", "R1_LOGAREA_3", "R1_LOGAREA_4",
+      "R1_LOGAREA_5", "R1_LOGAREA_6", "R1_LOGAREA_7", "R1_LOGAREA_8",
+      "R1_LOGAREA_9", "R1_LOGAREA_10", "R1_LOGAREA_11", "R1_LOGAREA_12",
+      "R1_SHARE_1", "R1_SHARE_2", "R1_SHARE_3", "R1_SHARE_4",
+      "R1_SHARE_5", "R1_SHARE_6", "R1_SHARE_7", "R1_SHARE_8",
+      "R1_SHARE_9", "R1_SHARE_10", "R1_SHARE_11", "R1_SHARE_12",
+      "R1_LOGRATIO_1", "R1_LOGRATIO_2", "R1_LOGRATIO_3", "R1_LOGRATIO_4",
+      "R1_LOGRATIO_5", "R1_LOGRATIO_6", "R1_LOGRATIO_7", "R1_LOGRATIO_8",
+      "R1_LOGRATIO_9", "R1_LOGRATIO_10", "R1_LOGRATIO_11", "R1_LOGRATIO_12",
+      "R1_ATAPEX_1", "R1_ATAPEX_2", "R1_ATAPEX_3", "R1_ATAPEX_4",
+      "R1_ATAPEX_5", "R1_ATAPEX_6", "R1_ATAPEX_7", "R1_ATAPEX_8",
+      "R1_ATAPEX_9", "R1_ATAPEX_10", "R1_ATAPEX_11", "R1_ATAPEX_12",
+      "R1_MEAS_1", "R1_MEAS_2", "R1_MEAS_3", "R1_MEAS_4",
+      "R1_MEAS_5", "R1_MEAS_6", "R1_MEAS_7", "R1_MEAS_8",
+      "R1_MEAS_9", "R1_MEAS_10", "R1_MEAS_11", "R1_MEAS_12",
+      "R1_ABSENT_1", "R1_ABSENT_2", "R1_ABSENT_3", "R1_ABSENT_4",
+      "R1_ABSENT_5", "R1_ABSENT_6", "R1_ABSENT_7", "R1_ABSENT_8",
+      "R1_ABSENT_9", "R1_ABSENT_10", "R1_ABSENT_11", "R1_ABSENT_12",
+      "R1_N_MEAS", "R1_N_ABSENT", "R1_N_PRESENT", "R1_LOGTOT",
+      "R1_LIB_CORR", "R1_LIB_CORR_LOO"
+    };
+  }
+
+  std::vector<std::string> splitTabs(const std::string& line)
+  {
+    std::vector<std::string> f;
+    std::size_t at = 0;
+    for (;;)
+    {
+      const std::size_t t = line.find('\t', at);
+      if (t == std::string::npos) { f.push_back(line.substr(at)); return f; }
+      f.push_back(line.substr(at, t - at));
+      at = t + 1;
+    }
+  }
+
+  std::vector<std::string> readLines(const std::string& path)
+  {
+    std::vector<std::string> out;
+    std::ifstream in(path);
+    if (!in) { throw std::runtime_error("cannot read " + path); }
+    std::string line;
+    while (std::getline(in, line)) { out.push_back(line); }
+    return out;
+  }
+
+  /// `-out_fragvec` is a JOIN, so the things that can break it are the header
+  /// order, the key, and the precision -- not the arithmetic, which lives in
+  /// the scorer. Each is checked against something other than the code that
+  /// produces it.
+  void caseFragvec(const std::string& dir)
+  {
+    const auto lib = awkwardLibrary();
+    const auto& p = lib.precursors();
+
+    // Precursor 0 and precursor 4 reconstruct the SAME Precursor.Id (the
+    // fixture gives every precursor the same modified sequence and charge
+    // 1 + i % 4), which is exactly the case decision 4 turns on: the ordinal
+    // resets on the id STRING, not on the library index, so these two must
+    // share one block and keep counting.
+    const std::vector<std::uint32_t> from = {0, 0, 4, 0, 1, 2, 1};
+    const std::vector<bool>          dec  = {false, false, false, true, true, false, true};
+    const std::vector<std::string> want_id = {
+      "PEPT(Phospho)IDEK1", "PEPT(Phospho)IDEK1", "PEPT(Phospho)IDEK1",
+      "PEPT(Phospho)IDEK1", "PEPT(Phospho)IDEK2", "PEPT(Phospho)IDEK3",
+      "PEPT(Phospho)IDEK2" };
+    const std::vector<long long> want_ord = {0, 1, 2, 0, 0, 0, 0};
+
+    ODIA::PeakGroupScorer::Result r;
+    for (std::size_t i = 0; i < from.size(); ++i)
+    {
+      ODIA::PeakGroupScorer::PeakGroup g;
+      g.precursor = from[i];
+      g.decoy = dec[i];
+      r.groups.push_back(std::move(g));
+    }
+    check(p.charge[0] == 1 && p.charge[4] == 1,
+          "the fixture really does give two library rows the same Precursor.Id");
+
+    // Values chosen so a precision that is too low is a WRONG FILE rather than
+    // a rounded one: each needs more than six significant digits to come back
+    // as the same float32.
+    const std::vector<float> awkward = {
+      0.0f, -0.0f, 1.0f, 1.0f / 3.0f, 2.0f / 3.0f, 0.1f, 1e-5f, 1e20f, 1e-20f,
+      9.99999905f, 123456.789f, 0.000999999931f, 16777217.0f, 1.00000012f,
+      -3.14159274f, 5.87747175e-39f, NA
+    };
+    for (std::size_t i = 0; i < r.groups.size() * ODIA::PeakGroupScorer::N_FRAGVEC; ++i)
+    { r.fragvec.push_back(awkward[i % awkward.size()]); }
+
+    const std::string path = dir + "/tsv_fragvec.tsv";
+    ODIA::writeFragvecTsv(path, lib, r);
+    const auto lines = readLines(path);
+
+    check(lines.size() == r.groups.size() + 1,
+          "one header plus one row per group (" + std::to_string(lines.size()) + ")");
+
+    const auto head = splitTabs(lines.at(0));
+    const auto sealed = sealedFragvecNames();
+    check(sealed.size() == ODIA::PeakGroupScorer::N_FRAGVEC,
+          "the sealed contract really is 78 columns");
+    bool head_ok = head.size() == 3 + sealed.size() && head[0] == "Precursor.Id" &&
+                   head[1] == "Decoy" && head[2] == "Ordinal";
+    std::string head_first;
+    for (std::size_t j = 0; head_ok && j < sealed.size(); ++j)
+    {
+      if (head[3 + j] != sealed[j])
+      { head_ok = false; head_first = head[3 + j] + " != " + sealed[j]; }
+    }
+    if (!head_first.empty()) { std::printf("  first: %s\n", head_first.c_str()); }
+    check(head_ok, "the header is the sealed s.5.1 order, independently transcribed");
+
+    long long bad_key = 0, bad_width = 0, bad_roundtrip = 0, nan_cells = 0;
+    std::string first;
+    for (std::size_t i = 1; i < lines.size(); ++i)
+    {
+      const auto f = splitTabs(lines[i]);
+      if (f.size() != 3 + ODIA::PeakGroupScorer::N_FRAGVEC) { ++bad_width; continue; }
+      if (f[0] != want_id[i - 1] ||
+          f[1] != std::to_string(dec[i - 1] ? 1 : 0) ||
+          f[2] != std::to_string(want_ord[i - 1]))
+      {
+        if (first.empty())
+        { first = "row " + std::to_string(i) + ": " + f[0] + "/" + f[1] + "/" + f[2]; }
+        ++bad_key;
+      }
+      for (std::size_t j = 0; j < ODIA::PeakGroupScorer::N_FRAGVEC; ++j)
+      {
+        const float wrote = r.fragvec[(i - 1) * ODIA::PeakGroupScorer::N_FRAGVEC + j];
+        const float back = std::strtof(f[3 + j].c_str(), nullptr);
+        if (std::isnan(wrote))
+        {
+          ++nan_cells;
+          if (f[3 + j] != "nan" || !std::isnan(back)) { ++bad_roundtrip; }
+          continue;
+        }
+        std::uint32_t a = 0, b = 0;
+        std::memcpy(&a, &wrote, 4);
+        std::memcpy(&b, &back, 4);
+        if (a != b)
+        {
+          if (first.empty())
+          { first = "cell " + head[3 + j] + " wrote " + f[3 + j]; }
+          ++bad_roundtrip;
+        }
+      }
+    }
+    if (!first.empty()) { std::printf("  first: %s\n", first.c_str()); }
+    check(bad_width == 0, "every row carries exactly 81 fields");
+    check(bad_key == 0,
+          "the (Precursor.Id, Decoy, Ordinal) key is the one the join expects, "
+          "and the ordinal resets on the id string rather than the library index");
+    check(nan_cells > 0, "the fixture actually exercised the NaN rendering");
+    check(bad_roundtrip == 0,
+          "every value round-trips to the same float32 -- the precision is not 6");
+
+    // The guard that says the export is still parallel to `groups`. It is the
+    // only thing standing between a future reorder and a silently misaligned
+    // 10.9 GB file, so it has to actually fire.
+    bool threw = false;
+    r.fragvec.pop_back();
+    try { ODIA::writeFragvecTsv(dir + "/tsv_fragvec_short.tsv", lib, r); }
+    catch (const std::exception&) { threw = true; }
+    check(threw, "a fragvec that is not 78 floats per group is refused, not written");
+  }
 }
 
 int main(int argc, char** argv)
@@ -393,9 +575,11 @@ int main(int argc, char** argv)
   {
     if (which == "files") { caseFiles(dir); }
     else if (which == "formatting") { caseFormatting(); }
+    else if (which == "fragvec") { caseFragvec(dir); }
     else
     {
-      std::fprintf(stderr, "usage: odia_tsv_writers <files|formatting> [directory]\n");
+      std::fprintf(stderr,
+                   "usage: odia_tsv_writers <files|formatting|fragvec> [directory]\n");
       return 2;
     }
   }
