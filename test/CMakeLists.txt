@@ -649,6 +649,16 @@ add_test(NAME extract_cap_zero_rows COMMAND odia_extract_cases cap_zero_rows)
 add_test(NAME extract_chunk_matrix COMMAND odia_extract_cases chunk_matrix)
 add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
 
+# -alias_den_planes (doc/83 F03): the two residual denominators pointed at the
+# intensity plane must read back bit-identical to their own planes, through a
+# chunked pass that recycles blocks -- the geometry in which a block given back
+# twice would be handed to two live precursors at once. Also pins the runs
+# aliasing must NOT change: Max (inert), a run without mobility (planes dropped,
+# not aliased), and a premise that breaks mid-pass -- a non-positive intensity,
+# a 1/K0 lost or gained -- where the guard must fall back before the offending
+# spectrum writes, single- and multi-threaded.
+add_test(NAME extract_alias_den_planes COMMAND odia_extract_cases alias_planes)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing

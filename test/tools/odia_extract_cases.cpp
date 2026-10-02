@@ -30,6 +30,10 @@
 //                 spectra, missing acquisitions, no-window / outside-run /
 //                 zero-transition / zero-valid precursors, both caps at once
 //   no_assignments  nothing assigned: every precursor still handed over, empty
+//   alias_planes  -alias_den_planes: the aliased denominators read exactly
+//                 what their own planes held, through chunking and block
+//                 reuse, and the cases where aliasing would be wrong are not
+//                 aliased
 //
 // Usage: odia_extract_cases <case>
 
@@ -42,6 +46,7 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -1577,6 +1582,286 @@ namespace
     check(failed == 0, "with nothing assigned every precursor with transitions is handed "
                        "over empty, in library order, under any cap");
   }
+
+  /// Every plane of every precursor, copied out of `accept`.
+  ///
+  /// The denominators are copied through their own pointers, so an aliased
+  /// plane is read the way the scorer reads it -- through `ppm_den` and
+  /// `im_den` -- and a null plane is recorded as absent rather than as zeros.
+  class PlaneSink final : public ODIA::ChromatogramSink
+  {
+  public:
+    struct Planes
+    {
+      std::vector<float> points, ppm_num, ppm_den, im_num, im_den;
+      bool has_ppm = false, has_im = false;
+    };
+
+    void accept(const ODIA::PrecursorChromatogram& c) override
+    {
+      if (!c.extracted()) { return; }
+      Planes& out = by_precursor[c.precursor];
+      const auto copy = [&](const float* plane, std::vector<float>& to) {
+        for (std::uint32_t k = 0; k < c.transition_count; ++k)
+        {
+          const std::uint32_t n = c.pointCount(k);
+          const std::ptrdiff_t off = c.trace(k) - c.points;
+          to.insert(to.end(), plane + off, plane + off + n);
+        }
+      };
+      copy(c.points, out.points);
+      out.has_ppm = c.ppm_num != nullptr && c.ppm_den != nullptr;
+      out.has_im = c.im_num != nullptr && c.im_den != nullptr;
+      if (out.has_ppm) { copy(c.ppm_num, out.ppm_num); copy(c.ppm_den, out.ppm_den); }
+      if (out.has_im) { copy(c.im_num, out.im_num); copy(c.im_den, out.im_den); }
+    }
+
+    std::map<std::uint32_t, Planes> by_precursor;
+  };
+
+  /// -alias_den_planes (doc/83 F03).
+  ///
+  /// Under Sum the two denominator planes receive exactly what the intensity
+  /// plane receives, so pointing them at it must change NOTHING a consumer can
+  /// read. Checked cell for cell against the unaliased extraction, through a
+  /// capped, chunked pass -- the geometry where blocks are recycled, which is
+  /// where a double give would hand one block to two live precursors and the
+  /// second zero-fill would wipe the first's trace.
+  ///
+  /// And the places aliasing would be WRONG: Max (the intensity plane is a
+  /// maximum, the denominator a sum) is left alone; a run without mobility
+  /// drops the mobility planes rather than aliasing them (0/base would read as
+  /// an observed 1/K0 of 0.0 where the scorer reads NaN today); and a run that
+  /// breaks the premise MID-PASS -- a non-positive intensity, a spectrum that
+  /// loses its 1/K0, or one that gains a 1/K0 the probe did not see -- falls
+  /// back to separate planes before the offending spectrum writes, so the
+  /// output is still the unaliased output, single- and multi-threaded.
+  void caseAliasPlanes()
+  {
+    constexpr std::uint32_t CYCLES = 1024;
+    constexpr std::uint32_t PRECURSORS = 24;
+    constexpr std::uint32_t LATE = 600;   // where the premise breaks, mid-pass
+    using Opt = ODIA::ChromatogramExtractor::Options;
+    using Stats = ODIA::ChromatogramExtractor::Stats;
+
+    struct Geometry
+    {
+      bool im_early = true;      // cycles < LATE carry 1/K0
+      bool im_late = true;       // cycles >= LATE carry 1/K0
+      float odd = 4.0f;          // intensity of every fifth second peak from LATE on
+    };
+    const auto build = [&](const Geometry& g) {
+      ScriptedRun run;
+      const auto w = run.addWindow(500.0, 510.0, 0.80, 1.20);
+      ScriptedLibrary lib;
+      std::vector<double> product;
+      for (std::uint32_t i = 0; i < PRECURSORS; ++i)
+      {
+        const std::size_t at = lib.addPrecursor(505.0, 0.90f);
+        lib.library().precursors().irt[at] =
+          static_cast<float>(double(CYCLES) * double(i) / double(PRECURSORS));
+        for (int k = 0; k < 3; ++k)
+        {
+          product.push_back(200.0 + double(i) * 0.7 + 300.0 * k);
+          lib.addTransition(product.back());
+        }
+      }
+      for (std::uint32_t c = 0; c < CYCLES; ++c)
+      {
+        const auto s = run.addSpectrum(w, double(c));
+        const bool im = c < LATE ? g.im_early : g.im_late;
+        for (std::size_t j = 0; j < product.size(); ++j)
+        {
+          // Two peaks inside one tolerance, at different deviations and
+          // mobilities, so Sum and Max differ and the numerators are not a
+          // multiple of their denominators.
+          const float a = float((c * 7 + j * 3) % 23) + 1.0f;
+          const float b = (j % 5 == 0 && c >= LATE) ? g.odd : 0.5f * a;
+          run.addPeak(s, product[j] * (1.0 + 2e-6), a, im ? 0.905f : NA);
+          run.addPeak(s, product[j] * (1.0 - 3e-6), b, im ? 0.895f : NA);
+        }
+      }
+      return std::make_pair(std::move(run), std::move(lib));
+    };
+
+    Opt opt = plainOptions();
+    opt.irt_slope = 1.0;
+    opt.irt_intercept = 0.0;
+    opt.rt_window_seconds = 60.0;
+    opt.collect_mass_residuals = true;
+    opt.collect_im_residuals = true;
+    opt.max_live_precursors = 2;               // pinned: chunked, blocks recycled
+
+    const auto same = [](const std::vector<float>& a, const std::vector<float>& b) {
+      return a.size() == b.size() &&
+             std::equal(a.begin(), a.end(), b.begin(), [](float x, float y) {
+               return std::memcmp(&x, &y, sizeof(float)) == 0; });
+    };
+    const auto zero = [](const std::vector<float>& a) {
+      return std::all_of(a.begin(), a.end(), [](float v) { return v == 0.0f; });
+    };
+    const auto extractInto = [&](ScriptedRun& run, ScriptedLibrary& lib, const Opt& o,
+                                 PlaneSink& sink) {
+      Stats st;
+      ODIA::ChromatogramExtractor::extract(lib.library(), run, o, sink, &st);
+      return st;
+    };
+    // Cell for cell, every plane a consumer can read. A null mobility pair on
+    // the aliased side is accepted only where the unaliased pair is all zero:
+    // the scorer reads both as "no 1/K0" (0/0 and absent are both NaN).
+    const auto identical = [&](const PlaneSink& own, const PlaneSink& aliased,
+                               std::size_t* null_im = nullptr) {
+      if (own.by_precursor.size() != PRECURSORS ||
+          aliased.by_precursor.size() != PRECURSORS) { return false; }
+      bool ok = true;
+      for (const auto& [i, o] : own.by_precursor)
+      {
+        const auto& a = aliased.by_precursor.at(i);
+        ok = ok && o.has_ppm && a.has_ppm && o.has_im && same(o.points, a.points) &&
+             same(o.ppm_num, a.ppm_num) && same(o.ppm_den, a.ppm_den);
+        if (a.has_im) { ok = ok && same(o.im_num, a.im_num) && same(o.im_den, a.im_den); }
+        else
+        {
+          ok = ok && zero(o.im_num) && zero(o.im_den);
+          if (null_im != nullptr) { ++*null_im; }
+        }
+      }
+      return ok;
+    };
+
+    // --- Sum with mobility: each combination aliases, nothing moves.
+    {
+      auto [run, lib] = build(Geometry{});
+      PlaneSink own;
+      const Stats own_st = extractInto(run, lib, opt, own);
+      check(own_st.chunks > 1, "the pinned cap chunks the library, so blocks are recycled");
+      check(own_st.plane_note.empty() && own_st.planes_per_precursor == 0,
+            "off, the extractor says nothing about planes");
+
+      bool any_two_peak_cell = false;
+      for (const auto& [i, o] : own.by_precursor)
+      {
+        for (std::size_t j = 0; j < o.points.size(); ++j)
+        { if (o.points[j] > 0.0f && o.im_num[j] != 0.905f * o.im_den[j]) { any_two_peak_cell = true; } }
+      }
+      check(any_two_peak_cell, "cells hold two peaks at different mobilities (the test can fail)");
+
+      struct Arm { bool ppm, im; std::size_t planes; const char* name; };
+      for (const Arm arm : {Arm{true, true, 3, "ppm,im"}, Arm{true, false, 4, "ppm"},
+                            Arm{false, true, 4, "im"}})
+      {
+        Opt a_opt = opt;
+        a_opt.alias_ppm_den = arm.ppm;
+        a_opt.alias_im_den = arm.im;
+        PlaneSink aliased;
+        const Stats a_st = extractInto(run, lib, a_opt, aliased);
+        const std::string tag = std::string("[") + arm.name + "] ";
+        check(a_st.plane_note.find(arm.ppm ? "ppm_den aliased" : "ppm_den own plane") !=
+                std::string::npos &&
+              a_st.plane_note.find(arm.im ? "im_den aliased" : "im_den own plane") !=
+                std::string::npos,
+              tag + "the note names what was aliased: " + a_st.plane_note);
+        check(a_st.planes_per_precursor == arm.planes, tag + "plane count");
+        check(a_st.plane_fallback.empty(), tag + "no matched peak broke the premise");
+        check(a_st.chunks == own_st.chunks, tag + "a pinned cap chunks identically");
+        check(identical(own, aliased), tag + "every plane of every precursor is bit-identical");
+        check(a_st.peak_live_points * 5 == own_st.peak_live_points * arm.planes,
+              tag + "and the peak live footprint is planes/5 of the default's");
+      }
+
+      // The budget-derived cap counts ALLOCATED planes.
+      Opt b_opt = opt;
+      b_opt.max_live_precursors = 0;
+      b_opt.live_memory_budget_bytes = 1 << 20;
+      PlaneSink s1, s2;
+      const Stats b_own = extractInto(run, lib, b_opt, s1);
+      b_opt.alias_ppm_den = b_opt.alias_im_den = true;
+      const Stats b_alias = extractInto(run, lib, b_opt, s2);
+      check(b_own.live_budget_note.find("(5 planes)") != std::string::npos,
+            "the budget note counts 5 planes by default");
+      check(b_alias.live_budget_note.find("(3 planes)") != std::string::npos,
+            "and 3 with both denominators aliased");
+    }
+
+    // --- Max: the intensity plane is not the denominator, so nothing aliases.
+    {
+      auto [run, lib] = build(Geometry{});
+      Opt m_opt = opt;
+      m_opt.aggregate = Opt::Aggregate::Max;
+      PlaneSink own, aliased;
+      const Stats own_st = extractInto(run, lib, m_opt, own);
+      m_opt.alias_ppm_den = m_opt.alias_im_den = true;
+      const Stats a_st = extractInto(run, lib, m_opt, aliased);
+      check(a_st.plane_note.find("inert under Max") != std::string::npos,
+            "Max says the option is inert");
+      bool den_differs = false;
+      for (const auto& [i, o] : own.by_precursor)
+      { if (!same(o.ppm_den, o.points)) { den_differs = true; } }
+      check(den_differs, "under Max the denominator is not the intensity plane");
+      check(identical(own, aliased) && a_st.peak_live_points == own_st.peak_live_points,
+            "and Max with the option is Max without it, footprint included");
+    }
+
+    // --- No mobility: the mobility planes are dropped, not aliased.
+    {
+      Geometry g;
+      g.im_early = g.im_late = false;
+      auto [run, lib] = build(g);
+      PlaneSink own, aliased;
+      const Stats own_st = extractInto(run, lib, opt, own);
+      Opt a_opt = opt;
+      a_opt.alias_ppm_den = a_opt.alias_im_den = true;
+      const Stats a_st = extractInto(run, lib, a_opt, aliased);
+      check(a_st.plane_note.find("im_den dropped") != std::string::npos,
+            "a run without 1/K0 drops the mobility planes");
+      check(a_st.plane_fallback.empty(), "and no peak contradicts the probe");
+      std::size_t null_im = 0;
+      check(identical(own, aliased, &null_im) && null_im == PRECURSORS,
+            "null mobility planes where the default held all-zero ones; the rest bit-identical");
+      check(a_st.peak_live_points * 5 == own_st.peak_live_points * 2,
+            "2 planes of 5 allocated");
+    }
+
+    // --- The premise breaks mid-pass: the guard falls back, the output does not move.
+    struct Break { Geometry g; const char* why; const char* name; };
+    Geometry neg;  neg.odd = -2.0f;
+    Geometry nil;    nil.odd = 0.0f;           // 0 is not positive either
+    Geometry lose; lose.im_late = false;
+    Geometry gain; gain.im_early = false;
+    for (const Break& b : {Break{neg, "not positive and finite", "negative intensity"},
+                           Break{nil, "not positive and finite", "zero intensity"},
+                           Break{lose, "no 1/K0 under the mobility alias", "1/K0 lost"},
+                           Break{gain, "WITH a 1/K0", "1/K0 gained"}})
+    {
+      auto [run, lib] = build(b.g);
+      for (const unsigned threads : {1u, 4u})
+      {
+        Opt t_opt = opt;
+        t_opt.threads = threads;
+        PlaneSink own, aliased;
+        extractInto(run, lib, t_opt, own);
+        t_opt.alias_ppm_den = t_opt.alias_im_den = true;
+        const Stats a_st = extractInto(run, lib, t_opt, aliased);
+        const std::string tag =
+          std::string("[") + b.name + ", " + std::to_string(threads) + " threads] ";
+        check(a_st.plane_fallback.find(b.why) != std::string::npos,
+              tag + "the guard fell back: " + a_st.plane_fallback);
+        // The first offending spectrum is the first of cycle LATE: one window,
+        // one spectrum a cycle, so spectrum index == cycle.
+        check(a_st.plane_fallback.find("spectrum " + std::to_string(LATE) + " ") !=
+                std::string::npos,
+              tag + "at the first spectrum that broke it, whichever thread found it");
+        std::size_t null_im = 0;
+        check(identical(own, aliased, &null_im), tag + "and the output is the unaliased output");
+        if (!b.g.im_early)
+        {
+          check(null_im > 0 && null_im < PRECURSORS,
+                tag + "precursors emitted before the fallback kept null mobility planes, "
+                      "the ones live at it were materialised");
+        }
+      }
+    }
+  }
 }
 
 int main(int argc, char** argv)
@@ -1595,12 +1880,13 @@ int main(int argc, char** argv)
   else if (which == "cap_zero_rows") { caseCapZeroRows(); }
   else if (which == "chunk_matrix") { caseChunkMatrix(); }
   else if (which == "no_assignments") { caseNoAssignments(); }
+  else if (which == "alias_planes") { caseAliasPlanes(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
-                 "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments>\n");
+                 "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments|alias_planes>\n");
     return 2;
   }
 
