@@ -705,10 +705,17 @@ namespace ODIA
       /// peak live storage. A strict byte limit would need weighted interval
       /// accounting in the planner AND bounded pool retention.
       ///
-      /// `alias_ppm_den` / `alias_im_den` take a denominator plane back out of
-      /// the count when it really is the intensity plane, so the same budget
-      /// then buys a higher cap: pin `max_live_precursors` to compare
-      /// footprints at the same chunking.
+      /// `alias_ppm_den` / `alias_im_den` do NOT change this count: the cap is
+      /// derived from the UNALIASED plane count whatever they decide. A
+      /// mid-pass fallback that gives every live precursor its denominators
+      /// back then stays inside the budget the cap was derived from instead of
+      /// overshooting it by up to 5/3, and the chunk plan is the unaliased
+      /// pass's. (The chunking itself no longer moves the order the sink
+      /// receives precursors in -- see `max_live_precursors` -- so the same
+      /// cap is not what keeps Gate C's arrival-order sample fixed; it is
+      /// what keeps the plan and the peak live count the unaliased pass's.)
+      /// Aliasing lowers the footprint at the same cap; spending the saving
+      /// on fewer chunks is a separate decision (raise the budget).
       std::size_t live_memory_budget_bytes = 0;
 
       /// Point a residual DENOMINATOR plane at the intensity plane instead of
@@ -748,8 +755,12 @@ namespace ODIA
       /// denominator, copied from `base` -- which it equals, since every write
       /// so far met the premise -- and the spectrum is matched after. The
       /// result is the unaliased pass, cell for cell; `Stats::plane_fallback`
-      /// says where it happened and why. Aliasing can cost memory it promised
-      /// to save. It cannot change a cell.
+      /// says where it happened and why, and a line on stderr says so at the
+      /// moment it happens, before the denominators are allocated. Aliasing
+      /// can lose the memory it promised to save -- back to the unaliased
+      /// footprint at the same cap, which is what the budget was sized for
+      /// (see `live_memory_budget_bytes`). It cannot change a cell, and it
+      /// cannot change the chunking.
       ///
       /// Off by default, and off is the historical code path: the same takes,
       /// the same writes, the same gives, the same cap.

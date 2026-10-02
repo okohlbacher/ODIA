@@ -1716,6 +1716,7 @@ namespace
     void accept(const ODIA::PrecursorChromatogram& c) override
     {
       if (!c.extracted()) { return; }
+      order.push_back(c.precursor);
       Planes& out = by_precursor[c.precursor];
       const auto copy = [&](const float* plane, std::vector<float>& to) {
         for (std::uint32_t k = 0; k < c.transition_count; ++k)
@@ -1733,6 +1734,9 @@ namespace
     }
 
     std::map<std::uint32_t, Planes> by_precursor;
+    /// The order precursors ARRIVED in: what Gate C's null is drawn from, and
+    /// what the chunking decides.
+    std::vector<std::uint32_t> order;
   };
 
   /// -alias_den_planes (doc/83 F03).
@@ -1885,18 +1889,44 @@ namespace
               tag + "and the peak live footprint is planes/5 of the default's");
       }
 
-      // The budget-derived cap counts ALLOCATED planes.
+      // The budget-derived cap counts the UNALIASED planes, so a BINDING
+      // budget chunks the aliased pass exactly as the unaliased one: same
+      // cap, same chunks, same arrival order at the sink. Counting allocated
+      // planes instead (3 of 5) would derive a cap 5/3 higher here, a
+      // different chunking and a different order -- which moves Gate C's
+      // arrival-order null on a real run, invisibly to a chromatogram test.
+      // The budget is set from the per-precursor cost the extractor reports,
+      // to 2.5 precursors' worth: cap 2 at 5 planes, 4 at 3.
       Opt b_opt = opt;
       b_opt.max_live_precursors = 0;
-      b_opt.live_memory_budget_bytes = 1 << 20;
+      b_opt.live_memory_budget_bytes = std::size_t(1) << 30;
+      std::size_t per = 0;
+      {
+        PlaneSink probe;
+        const Stats p_st = extractInto(run, lib, b_opt, probe);
+        const auto slash = p_st.live_budget_note.find("/ ");
+        if (slash != std::string::npos)
+        { per = std::stoull(p_st.live_budget_note.substr(slash + 2)); }
+      }
+      check(per > 0, "the budget note reports a per-precursor cost");
+      b_opt.live_memory_budget_bytes = per * 5 / 2;
       PlaneSink s1, s2;
       const Stats b_own = extractInto(run, lib, b_opt, s1);
       b_opt.alias_ppm_den = b_opt.alias_im_den = true;
       const Stats b_alias = extractInto(run, lib, b_opt, s2);
-      check(b_own.live_budget_note.find("(5 planes)") != std::string::npos,
-            "the budget note counts 5 planes by default");
-      check(b_alias.live_budget_note.find("(3 planes)") != std::string::npos,
-            "and 3 with both denominators aliased");
+      check(b_own.live_budget_note.find("(5 planes) -> cap 2") != std::string::npos,
+            "the budget derives cap 2 at 5 planes, and the default note is unchanged: " +
+              b_own.live_budget_note);
+      check(b_own.chunks > 1, "the budget binds: the unaliased pass is chunked");
+      check(b_alias.live_budget_note.find("(5 planes, 3 allocated) -> cap 2") !=
+              std::string::npos,
+            "aliased, the same budget derives the same cap and says what is allocated: " +
+              b_alias.live_budget_note);
+      check(b_alias.chunks == b_own.chunks && s2.order == s1.order,
+            "same chunks, same arrival order at the sink");
+      check(identical(s1, s2), "and every plane bit-identical");
+      check(b_alias.peak_live_points * 5 == b_own.peak_live_points * 3,
+            "the saving is the footprint at the same cap: 3/5");
     }
 
     // --- Max: the intensity plane is not the denominator, so nothing aliases.
@@ -1955,7 +1985,7 @@ namespace
         Opt t_opt = opt;
         t_opt.threads = threads;
         PlaneSink own, aliased;
-        extractInto(run, lib, t_opt, own);
+        const Stats own_st = extractInto(run, lib, t_opt, own);
         t_opt.alias_ppm_den = t_opt.alias_im_den = true;
         const Stats a_st = extractInto(run, lib, t_opt, aliased);
         const std::string tag =
@@ -1969,6 +1999,13 @@ namespace
               tag + "at the first spectrum that broke it, whichever thread found it");
         std::size_t null_im = 0;
         check(identical(own, aliased, &null_im), tag + "and the output is the unaliased output");
+        check(aliased.order == own.order && a_st.chunks == own_st.chunks,
+              tag + "in the unaliased arrival order, through the same chunks");
+        // At the same cap the live precursors are the same at every step and
+        // each holds at most the unaliased planes, so even the fallback cannot
+        // take the footprint past the one the budget was sized for.
+        check(a_st.peak_live_points <= own_st.peak_live_points,
+              tag + "and the fallback never exceeds the unaliased footprint");
         if (!b.g.im_early)
         {
           check(null_im > 0 && null_im < PRECURSORS,

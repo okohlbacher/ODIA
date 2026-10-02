@@ -978,10 +978,13 @@ namespace ODIA
     std::size_t planes = 1;
     if (options.collect_mass_residuals) { planes += ppm_alias ? 1 : 2; }
     if (options.collect_im_residuals && !im_dropped) { planes += im_alias ? 1 : 2; }
+    // ...and the planes the BUDGET is sized for: the unaliased count, always
+    // (Options::live_memory_budget_bytes says why). Equal to `planes` with
+    // both options off.
+    const std::size_t unaliased = 1 + (options.collect_mass_residuals ? 2 : 0) +
+                                  (options.collect_im_residuals ? 2 : 0);
     if (alias_asked)
     {
-      const std::size_t unaliased = 1 + (options.collect_mass_residuals ? 2 : 0) +
-                                    (options.collect_im_residuals ? 2 : 0);
       st.planes_per_precursor = planes;
       st.plane_note += "; " + std::to_string(planes) + " of " + std::to_string(unaliased) +
                        " planes allocated per live precursor";
@@ -1015,14 +1018,18 @@ namespace ODIA
     std::size_t cap = options.max_live_precursors;
     if (options.live_memory_budget_bytes > 0)
     {
-      // `planes` counts what is allocated (see above), so with both
-      // denominators aliased the same budget derives a cap 5/3 higher -- and
-      // a different chunking. Pin -max_live_precursors to compare footprints.
+      // `unaliased`, not `planes`: an aliased pass derives the SAME cap as
+      // the unaliased one, so a fallback that gives every live slot its
+      // denominators back is still inside the budget, and the pass chunks the
+      // same. (The chunking no longer moves the sink's arrival order -- each
+      // chunk is a contiguous run of the run-wide hand-over order -- so the
+      // same cap is now about memory and the plan, not about Gate C.) The
+      // saving shows as a lower footprint.
       double mean_cells = 0.0;
       for (const Assignment& a : assignments)
       { mean_cells += double(a.valid) * double(a.hi - a.lo); }
       if (!assignments.empty()) { mean_cells /= double(assignments.size()); }
-      const double per = mean_cells * 4.0 * double(planes);
+      const double per = mean_cells * 4.0 * double(unaliased);
       // 0 when a live precursor costs nothing -- every assigned precursor has
       // zero valid transitions, which is supported input -- and then the budget
       // constrains nothing at all.
@@ -1037,7 +1044,9 @@ namespace ODIA
       st.live_budget_note = "budget " +
         std::to_string(options.live_memory_budget_bytes / (1024ull*1024*1024)) +
         " GiB / " + std::to_string(std::size_t(per)) + " B per live precursor (" +
-        std::to_string(planes) + " planes) -> cap " + std::to_string(cap);
+        std::to_string(unaliased) + " planes" +
+        (alias_asked ? ", " + std::to_string(planes) + " allocated" : std::string()) +
+        ") -> cap " + std::to_string(cap);
     }
     // Whether the chunks hand over straight from the window cursors -- only
     // when the planner did not cut the library, so the one chunk is all of it.
@@ -1429,6 +1438,31 @@ namespace ODIA
     // does; the spectrum that tripped the guard is matched after this, so not
     // one of its peaks was written under the alias.
     const auto stop_aliasing = [&](std::size_t si, int why) {
+      static const char* const premise[] = {
+        "", "an intensity that is not positive and finite",
+        "a peak with no 1/K0 under the mobility alias",
+        "a peak WITH a 1/K0 on a pass the probe found mobility-free"};
+      // Said BEFORE the denominators are allocated, not after: the summary
+      // that reports the fallback is written once extract() returns, and if
+      // what follows is an OOM kill there is no summary.
+      {
+        std::size_t live_count = 0, cells_total = 0;
+        for (std::size_t slot = 0; slot < n_slots; ++slot)
+        {
+          const LiveSlot& s = live[slot];
+          if (s.base == nullptr) { continue; }
+          ++live_count;
+          cells_total += std::size_t(assignments[slot].valid) * (s.hi - s.lo);
+        }
+        const std::size_t new_planes = (ppm_alias ? 1 : 0) + (im_alias ? 1 : 0) +
+                                       (im_dropped ? 2 : 0);
+        std::cerr << "\n  -alias_den_planes: spectrum " << si << " (RT "
+                  << info[si].retention_time << " s) carries " << premise[why]
+                  << "; falling back to separate planes NOW: " << new_planes
+                  << " plane(s) for " << live_count << " live precursors, "
+                  << double(cells_total) * double(new_planes) * 4.0 / 1073741824.0
+                  << " GiB, and the unaliased footprint from here on" << std::endl;
+      }
       std::size_t materialised = 0;
       for (std::size_t slot = 0; slot < n_slots; ++slot)
       {
@@ -1452,10 +1486,6 @@ namespace ODIA
         }
         ++materialised;
       }
-      static const char* const premise[] = {
-        "", "an intensity that is not positive and finite",
-        "a peak with no 1/K0 under the mobility alias",
-        "a peak WITH a 1/K0 on a pass the probe found mobility-free"};
       st.plane_fallback = "spectrum " + std::to_string(si) + " (RT " +
                           std::to_string(info[si].retention_time) + " s) carries " +
                           premise[why] + "; separate planes from there on, " +
