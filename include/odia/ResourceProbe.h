@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -21,8 +22,10 @@ namespace ODIA
   /// two inferred serial terms, divided by a wall time; "~165 GiB remainder" is
   /// a footer maximum minus two other maxima that need not coincide in time.
   /// A bracket that reads the same four counters the footer reads turns each of
-  /// those into a printed term, and a sum of brackets that fails to reconcile
-  /// with the footer says the decomposition is missing a stage.
+  /// those into a printed term. NOTE what reconciles by construction: phases
+  /// that telescope from one counter sum to that counter whatever they cover,
+  /// so "phases == footer" checks nothing. The decomposition check is the
+  /// nested one -- a phase against the sum of the STAGE brackets inside it.
   ///
   /// RUSAGE_SELF, not RUSAGE_THREAD, deliberately: a stage's cost is whatever
   /// the process spent while it ran, including the worker pool during match and
@@ -67,16 +70,21 @@ namespace ODIA
   /// Resident set, its split, its high-water mark and the thread count, from
   /// /proc/self/status. Zero where the file is absent (not Linux).
   ///
-  /// VmHWM is monotone, so the first line on which it reaches the footer's
-  /// peak dates the peak to that stage -- no arm at >=300,000 MB has ever had
-  /// that. But HWM alone cannot say which LATER stage still owns the pages
-  /// (codex review Q6.1): that is what the CURRENT VmRSS and its anon/file
-  /// split are for. A stage that ends with rss far below hwm released what the
-  /// peak was made of; one that ends at hwm still holds it.
+  /// VmHWM is NOT monotone as read. The kernel prints max(mm->hiwater_rss,
+  /// current RSS), and folds the current RSS into hiwater_rss only lazily (on
+  /// munmap and a few other paths); pages released with madvise(DONTNEED) --
+  /// how glibc trims non-main arenas and how mimalloc purges -- leave it
+  /// behind. A read can therefore be LOWER than an earlier one, and the footer
+  /// (ru_maxrss, the same hiwater_rss) can be lower than a VmRSS this process
+  /// observed. StatusLedger keeps the maxima of every read so the closing line
+  /// can say whether that happened. The first line on which the hwm reaches
+  /// its final value dates the peak to that stage; whether the peak was
+  /// RESIDENT at a boundary (rss within ~1% of it) or transient inside the
+  /// stage is what the current VmRSS beside it says.
   struct ProcessStatus
   {
     std::uint64_t rss_kib = 0;
-    std::uint64_t rss_anon_kib = 0;   ///< RssAnon: heap, both allocators
+    std::uint64_t rss_anon_kib = 0;   ///< RssAnon: heap (every allocator), stacks
     std::uint64_t rss_file_kib = 0;   ///< RssFile: mapped files, libraries
     std::uint64_t hwm_kib = 0;
     unsigned threads = 0;
@@ -106,7 +114,39 @@ namespace ODIA
         if (field("Threads:", thr)) { st.threads = static_cast<unsigned>(thr); }
       }
       std::fclose(f);
+      record(st);
       return st;
+    }
+
+    /// Every read of /proc/self/status, summarised: how many, the largest
+    /// VmRSS and VmHWM seen, and how often VmHWM read lower than the read
+    /// before it. Process-wide; reads happen on the driver thread.
+    struct Ledger
+    {
+      std::atomic<std::uint64_t> reads{0}, max_rss_kib{0}, max_hwm_kib{0};
+      std::atomic<std::uint64_t> last_hwm_kib{0}, hwm_decreases{0}, max_hwm_drop_kib{0};
+    };
+    static Ledger& ledger()
+    {
+      static Ledger l;
+      return l;
+    }
+
+  private:
+    static void record(const ProcessStatus& st)
+    {
+      if (st.hwm_kib == 0) { return; }
+      Ledger& l = ledger();
+      l.reads.fetch_add(1);
+      if (st.rss_kib > l.max_rss_kib.load()) { l.max_rss_kib.store(st.rss_kib); }
+      if (st.hwm_kib > l.max_hwm_kib.load()) { l.max_hwm_kib.store(st.hwm_kib); }
+      const std::uint64_t last = l.last_hwm_kib.exchange(st.hwm_kib);
+      if (last != 0 && st.hwm_kib < last)
+      {
+        l.hwm_decreases.fetch_add(1);
+        if (last - st.hwm_kib > l.max_hwm_drop_kib.load())
+        { l.max_hwm_drop_kib.store(last - st.hwm_kib); }
+      }
     }
   };
 
@@ -162,22 +202,31 @@ namespace ODIA
   }
 
   /// Who owns the resident memory at a stage BOUNDARY: the kernel's view
-  /// (proportional set size), glibc's view and Arrow's jemalloc's view.
+  /// (proportional set size), glibc malloc's view, and Arrow's memory pool's.
   ///
-  /// The process runs TWO allocators. libarrow bundles jemalloc (doc/83 §2.2;
-  /// `jemalloc_bg_thd` is visible inside the ODIA process), and the decode
-  /// path's Arrow buffers go through it; everything ODIA and OpenMS allocate
-  /// with `new` goes through glibc. So glibc's mallinfo2 covers only PART of
-  /// the heap, and the line says so: `glibc in use + jemalloc allocated` is
-  /// the heap both allocators hand out, `rss_anon - both` is what they hold
-  /// without handing it out (free lists, retained arenas) plus anything else
-  /// anonymous (thread stacks, OpenMP).
+  /// Allocators. Everything ODIA, OpenMS and libstdc++ allocate with `new` or
+  /// `malloc` goes through glibc. Arrow's buffers go through Arrow's DEFAULT
+  /// POOL, whose backend is printed: on the conda libarrow 23 this build links
+  /// it is 'mimalloc' (statically bundled; its own resident/retained totals
+  /// are not exported by libarrow, so only the pool's bytes and peak are
+  /// printed). libarrow also bundles jemalloc, but it is queried only when it
+  /// IS the pool's backend -- the first mallctl initialises jemalloc and would
+  /// add its own arenas to the process being measured. So the line separates
+  /// `glibc arena+mmap` (what glibc took from the OS), `glibc in use` (what it
+  /// handed out), the Arrow pool, and the rest of rss_anon (thread stacks,
+  /// mimalloc's retained segments, anything mmapped directly).
+  ///
+  /// glibc's mallinfo2 is resolved at RUN time (dlsym): the conda sysroot the
+  /// build compiles against is glibc 2.28, which predates mallinfo2 (2.33),
+  /// so a compile-time test compiled it out on every env.sh build. The
+  /// running libc (2.39 on the IBMI nodes) has it.
   ///
   /// Read at chunk ends and phase boundaries ONLY, never per bracket: the
   /// smaps_rollup read walks the page tables of the whole address space
-  /// (~157 M PTEs at 600 GiB), and mallinfo2 walks every free chunk of every
-  /// arena under that arena's lock. Each part times itself and prints it, so
-  /// what the probe cost is on the line beside what it measured.
+  /// (~11-18 ms/GiB measured, i.e. seconds at 600 GiB), and mallinfo2 walks
+  /// every free chunk of every arena under that arena's lock. Each part times
+  /// itself, and the callers charge the whole probe to a PROBE ledger of its
+  /// own rather than to the stage or phase that follows it.
   struct MemorySnapshot
   {
     // /proc/self/smaps_rollup, KiB.
@@ -186,18 +235,22 @@ namespace ODIA
     std::uint64_t anonymous_kib = 0, swap_kib = 0;
     double rollup_ms = 0.0;
 
-    // glibc mallinfo2, bytes, summed over all arenas.
+    // glibc mallinfo2, bytes, summed over all arenas. Absent (glibc_ok false)
+    // only when the running libc has no mallinfo2.
     bool glibc_ok = false;
     std::uint64_t glibc_arena = 0;     ///< obtained from the OS via brk/heaps
     std::uint64_t glibc_mmap = 0;      ///< in individually mmapped chunks
     std::uint64_t glibc_in_use = 0;    ///< handed out and not freed
     std::uint64_t glibc_free = 0;      ///< free but still held
+    std::uint64_t glibc_keepcost = 0;  ///< releasable from the top of the main arena
     double glibc_ms = 0.0;
+    std::string libc_version;          ///< gnu_get_libc_version() of the RUNNING libc
 
-    // Arrow's default memory pool and, if it is jemalloc, jemalloc's own
-    // totals (mallctl "stats.*", refreshed by Arrow). -1 where unavailable.
+    // Arrow's default memory pool: backend, bytes handed out now, the pool's
+    // own peak. jemalloc's mallctl totals only when jemalloc IS the backend;
+    // -1 otherwise ("not queried", never "zero").
     std::string arrow_backend;
-    std::int64_t arrow_pool_bytes = -1;
+    std::int64_t arrow_pool_bytes = -1, arrow_pool_peak = -1;
     std::int64_t je_allocated = -1, je_active = -1, je_resident = -1, je_retained = -1;
     double arrow_ms = 0.0;
 
@@ -206,9 +259,9 @@ namespace ODIA
 
   /// One line, all GiB:
   ///   smaps_rollup rss R, pss P (anon A, file F), anonymous N, swap S [t ms];
-  ///   glibc (...) arena X, mmap Y, in use U, free held H [t ms];
-  ///   arrow <backend> pool B, jemalloc allocated J, active .., resident ..,
-  ///   retained .. [t ms]
+  ///   glibc malloc (...) arena X, mmap Y, in use U, free held H, keepcost K [t ms];
+  ///   arrow pool '<backend>' B, pool peak P[, jemalloc ...] [t ms];
+  ///   anonymous not held by glibc or the arrow pool R
   std::string formatMemorySnapshot(const MemorySnapshot& m);
 
 } // namespace ODIA
