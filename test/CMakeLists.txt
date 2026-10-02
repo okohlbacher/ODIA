@@ -738,6 +738,13 @@ endif()
 # without a file; these cases are the refusals and the order independence.
 add_test(NAME mobility_band_derivation COMMAND odia_mobility_bands)
 
+# -tof_calibration frame (src/io/TofCalibration.cpp): the chord inversion back
+# to the integer TOF index, the per-frame re-evaluation, the refusal of an
+# array the chord did not produce, and the coefficient table's NULL / conflict
+# handling. Synthetic only; the real-data check is the SDK probe in
+# shared/pxd/tofcal/.
+add_test(NAME tof_calibration COMMAND odia_tof_calibration)
+
 # The per-run fragment mass calibration (src/calibrate/MassCalibration.cpp).
 # Runs on synthesised residuals only, so it needs no data: it checks that a
 # known offset is recovered from a narrow peak on a uniform background, that a

@@ -108,6 +108,7 @@ set(ODIA_LIB_SOURCES
   src/io/MiniJson.cpp
   src/io/MobilityBands.cpp
   src/io/MzPeakSource.cpp
+  src/io/TofCalibration.cpp
   src/io/VendorDiaWindows.cpp
   src/extract/ChromatogramExtractor.cpp
   src/extract/Ms1Traces.cpp
@@ -181,7 +182,7 @@ foreach(helper odia_encode_dump odia_group_dump odia_mod_symbols odia_predict_rt
                odia_prefilter_depth odia_ms1_probe odia_ms1_coelution odia_mz_residuals odia_mass_recalibration
                odia_mass_width odia_rt_refiner odia_mass_anchors odia_prefilter
                odia_empty_trace odia_robust_line odia_library_subset odia_pep_monotone
-               odia_anchor_stop)
+               odia_anchor_stop odia_tof_calibration odia_tof_dump)
   add_executable(${helper} test/tools/${helper}.cpp)
   target_link_libraries(${helper} PRIVATE OpenMS odia_core
                         ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET})
