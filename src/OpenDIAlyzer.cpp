@@ -641,6 +641,25 @@ protected:
                        "and each is a separate pass over the run, which costs a "
                        "decode. The run reports which of the two bound it.",
                        false, true);
+    registerStringOption_("alias_den_planes", "<planes>", "",
+                          "Point residual DENOMINATOR planes at the intensity plane instead of "
+                          "allocating them: 'ppm' the mass one, 'ppm,im' both, 'im' the mobility "
+                          "one alone. Under the default sum aggregation every matched peak adds the "
+                          "same intensity to all three, so 2 of the 5 live planes -- 170.4 GiB of "
+                          "425.9 on the full IH1 run -- store nothing new (doc/83 F03). Inert under "
+                          "max. 'im' is honoured only when a probe of the first MS2 spectra finds "
+                          "1/K0 on all of them; a run with none drops both mobility planes instead. "
+                          "Each spectrum is checked before it is matched, and the first that breaks "
+                          "the premise (a non-positive or non-finite intensity, a missing 1/K0) "
+                          "turns the pass back into separate planes before it writes, so the output "
+                          "is the unaliased output in every case; the log says when that happened. "
+                          "The budget-derived cap counts ALLOCATED planes, so at an unchanged "
+                          "-live_memory_gb the cap RISES and chunking changes: pin "
+                          "-max_live_precursors to compare the footprint at the same chunking.",
+                          false, true);
+    // Not setValidStrings_: OpenMS refuses a comma inside a string restriction
+    // (it would be read as a list separator), and "ppm,im" is the value the
+    // spec names. Validated in main_ instead, before any work is done.
     registerIntOption_("pass1_precursors", "<n>", 0,
                        "Sample about this many precursors for pass 1. It runs only to harvest "
                        "retention-time anchors -- 692 came from 2,450 precursors and "
@@ -1780,6 +1799,11 @@ protected:
     // observed 1/K0 per precursor. Inert on a run without mobility, so the
     // default is on: an absent feature costs more than two float planes.
     options.collect_im_residuals = getStringOption_("im_features") != "off";
+    {
+      const std::string alias = getStringOption_("alias_den_planes");
+      options.alias_ppm_den = alias == "ppm" || alias == "ppm,im";
+      options.alias_im_den = alias == "im" || alias == "ppm,im";
+    }
     options.aggregate = getStringOption_("aggregate") == "max"
                           ? ODIA::ChromatogramExtractor::Options::Aggregate::Max
                           : ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
@@ -2010,6 +2034,8 @@ protected:
         << " GiB), bound by " << stats.memory_bound_by;
     if (!stats.live_budget_note.empty())
     { msg << "\n  live budget: " << stats.live_budget_note; }
+    if (!stats.plane_note.empty())
+    { msg << "\n  planes: " << stats.plane_note; }
     if (stats.chunks > 1)
     {
       msg << "\n  " << stats.chunks << " chunks, " << stats.spectra_decoded
@@ -2026,6 +2052,15 @@ protected:
           << " precursors covered by no isolation window";
     }
     writeLogInfo_(msg.str());
+    // The output is unaffected -- the fallback exists so that it is -- but the
+    // footprint is not what the plane count above promised, and a cap derived
+    // from that count may now be above the budget it was derived from.
+    if (!stats.plane_fallback.empty())
+    {
+      writeLogWarn_("-alias_den_planes fell back to separate planes: " + stats.plane_fallback +
+                    ". Output identical to the unaliased pass; memory from that point is "
+                    "the unaliased pass's.");
+    }
     return EXECUTION_OK;
   }
 
@@ -4941,6 +4976,12 @@ protected:
     if (tr.empty() == fasta.empty())
     {
       writeLogError_("Give exactly one of -tr <library> or -fasta <proteins>.");
+      return ILLEGAL_PARAMETERS;
+    }
+    if (const std::string alias = getStringOption_("alias_den_planes");
+        !alias.empty() && alias != "ppm" && alias != "im" && alias != "ppm,im")
+    {
+      writeLogError_("-alias_den_planes takes 'ppm', 'im' or 'ppm,im', not '" + alias + "'.");
       return ILLEGAL_PARAMETERS;
     }
 

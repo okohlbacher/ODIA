@@ -655,7 +655,56 @@ namespace ODIA
       ///     valid_transitions x cycles_in_window x 4 B x planes
       /// where planes is 1, +2 with `collect_mass_residuals`, +2 with
       /// `collect_im_residuals` -- so 5 with both, which is the default.
+      /// `alias_ppm_den` / `alias_im_den` take a denominator plane back out of
+      /// the count when it really is the intensity plane, so the same budget
+      /// then buys a higher cap: pin `max_live_precursors` to compare
+      /// footprints at the same chunking.
       std::size_t live_memory_budget_bytes = 0;
+
+      /// Point a residual DENOMINATOR plane at the intensity plane instead of
+      /// allocating it, where it would hold the same number in every cell.
+      ///
+      /// Under `Aggregate::Sum` the match loop adds the same `intensity` to
+      /// `base`, to `ppm_den` and to `im_den` in the same iteration, at the same
+      /// index, on the same thread, into blocks that were all zero-filled at
+      /// `take`. The denominators are the intensity plane cell for cell
+      /// whenever every peak that reaches a cell has a positive, finite
+      /// intensity (the denominators skip `intensity <= 0`, the intensity plane
+      /// does not) and, for `im_den`, a 1/K0 that is not NaN (`im_den` skips
+      /// those too). On the full IH1 run that makes 2 of 5 planes -- 170.4 GiB
+      /// of the 425.9 GiB the live blocks hold -- store nothing new (doc/83
+      /// F03).
+      ///
+      /// Two switches, not one, because the two rest on different premises
+      /// and are tested separately (doc/83 reviews, Q6.5): the mass one only on
+      /// the intensities, the mobility one also on every peak carrying a 1/K0.
+      /// Both are decided per PASS, because a plane is shared by every
+      /// precursor of it:
+      ///   * Max keeps both separate: there `base` holds a maximum and the
+      ///     denominators a sum.
+      ///   * `alias_im_den` asks a probe of the first MS2 spectra the pass reads.
+      ///     All carrying 1/K0, none NaN: aliased. NONE carrying any: the
+      ///     mobility planes are not allocated at all -- aliasing there would
+      ///     turn the scorer's `0/0 = NaN` observed 1/K0 into `0/base = 0.0`, a
+      ///     placeholder dressed as a measurement, while a null plane and an
+      ///     all-zero one both read as NaN. Mixed or empty: separate, as before.
+      ///
+      /// The probe predicts; it does not guarantee. Every spectrum is checked
+      /// before it is matched, and the first one that could put a peak into a
+      /// cell where the premise fails (non-finite or non-positive intensity; a
+      /// NaN 1/K0 under the mobility alias; any 1/K0 where the mobility planes
+      /// were dropped) turns the pass back into separate planes BEFORE that
+      /// spectrum writes anything: each live precursor gets its own
+      /// denominator, copied from `base` -- which it equals, since every write
+      /// so far met the premise -- and the spectrum is matched after. The
+      /// result is the unaliased pass, cell for cell; `Stats::plane_fallback`
+      /// says where it happened and why. Aliasing can cost memory it promised
+      /// to save. It cannot change a cell.
+      ///
+      /// Off by default, and off is the historical code path: the same takes,
+      /// the same writes, the same gives, the same cap.
+      bool alias_ppm_den = false;
+      bool alias_im_den = false;
 
       /// How many spectra are decoded and held at once.
       ///
@@ -832,6 +881,22 @@ namespace ODIA
       /// given. Empty when the cap came from -max_live_precursors or from
       /// retention-time overlap alone.
       std::string live_budget_note;
+
+      /// What `Options::alias_ppm_den` / `alias_im_den` decided for each
+      /// residual plane, on what evidence, and how many planes a live
+      /// precursor therefore held. Empty when both were off.
+      std::string plane_note;
+      /// Planes allocated per live precursor at the START of the pass: 5 with
+      /// both residual pairs separate, 3 with both denominators aliased. Zero
+      /// when neither alias was asked for, so the default reports nothing new.
+      std::size_t planes_per_precursor = 0;
+      /// Non-empty when the guard in `Options::alias_ppm_den` found a spectrum
+      /// that broke the premise and turned the pass back into separate planes:
+      /// which spectrum, which premise, and how many live precursors had their
+      /// denominators materialised. The output is unaffected -- that is what
+      /// the fallback is for -- but the memory saving is not what the plane
+      /// count above promised from that point on.
+      std::string plane_fallback;
     };
 
     /// Extract into a sink, holding only what is live.

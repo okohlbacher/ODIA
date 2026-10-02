@@ -12,9 +12,11 @@
 #include <memory>
 #include <numeric>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -187,6 +189,10 @@ namespace ODIA
       ///
       /// Null unless Options::collect_mass_residuals. Live blocks are the
       /// extractor's dominant memory term, so this is opt-in.
+      ///
+      /// Under Options::alias_den_planes the two denominators may be `base`
+      /// itself rather than a block of their own; they are then never written
+      /// and never given back separately.
       float* ppm_num = nullptr;
       float* ppm_den = nullptr;
       /// The same construction for ION MOBILITY. Per-(row, cycle) for the same
@@ -666,6 +672,100 @@ namespace ODIA
       }
     }
 
+    // -alias_den_planes: which residual planes this pass allocates, decided
+    // once because every precursor of the pass shares the answer. See
+    // Options::alias_ppm_den for why an aliased denominator is exact and what
+    // keeps it exact. All three stay false with both options off, and every
+    // use below is guarded by one of them, so the default pass takes, writes
+    // and gives exactly what it always did.
+    bool ppm_alias = false;     // ppm_den points at base
+    bool im_alias = false;      // im_den points at base
+    bool im_dropped = false;    // no mobility planes at all: the probe found no 1/K0
+    const bool alias_asked = options.alias_ppm_den || options.alias_im_den;
+    if (alias_asked)
+    {
+      std::ostringstream note;
+      if (options.aggregate != Options::Aggregate::Sum)
+      {
+        note << "aliasing inert under Max aggregation: the intensity plane holds a "
+                "maximum and the denominators a sum, so they stay separate";
+      }
+      else
+      {
+        ppm_alias = options.alias_ppm_den && options.collect_mass_residuals;
+        if (options.alias_im_den && options.collect_im_residuals)
+        {
+          // A cheap probe of the spectra this pass reads first, because pass 1
+          // defers the run's mobility verdict until after it has scored
+          // (OpenDIAlyzer applies the mobility calibration after extraction),
+          // and the plane count has to be known before the cap is derived.
+          // The reader is stateless between requests (no inter-request cache,
+          // MzPeakSource::peaks), so decoding these twice changes nothing but
+          // the time: ~8.5 ms a request on IH1, half a second here. It only
+          // PREDICTS -- the per-spectrum guard in the match loop is what keeps
+          // a wrong prediction from reaching a cell.
+          constexpr std::size_t PROBE = 64;
+          std::size_t probe_first = 0, probe_last = info.size();
+          if (options.rt_high > options.rt_low)
+          {
+            probe_first = static_cast<std::size_t>(
+              std::lower_bound(info.begin(), info.end(), options.rt_low,
+                               [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
+              - info.begin());
+            probe_last = static_cast<std::size_t>(
+              std::lower_bound(info.begin(), info.end(), options.rt_high,
+                               [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
+              - info.begin());
+          }
+          probe_last = std::min(probe_last, probe_first + PROBE);
+          std::size_t with_im = 0, without_im = 0, nan_im = 0;
+          if (probe_first < probe_last)
+          {
+            std::vector<SpectrumPeaks> probe;
+            source.peaks(probe_first, probe_last, probe);
+            for (const auto& sp : probe)
+            {
+              if (sp.empty()) { continue; }
+              if (!sp.hasIonMobility()) { ++without_im; continue; }
+              ++with_im;
+              if (std::any_of(sp.ion_mobility.begin(), sp.ion_mobility.end(),
+                              [](float v) { return std::isnan(v); }))
+              { ++nan_im; }
+            }
+          }
+          im_alias = with_im > 0 && without_im == 0 && nan_im == 0;
+          im_dropped = with_im == 0 && without_im > 0;
+          note << "mobility probe: " << with_im << " of " << (with_im + without_im)
+               << " non-empty MS2 spectra carry 1/K0, " << nan_im << " with a NaN; ";
+        }
+        note << "ppm_den "
+             << (!options.collect_mass_residuals ? "off"
+                 : ppm_alias                     ? "aliased to intensity"
+                                                 : "own plane")
+             << ", im_den "
+             << (!options.collect_im_residuals ? "off"
+                 : im_alias                    ? "aliased to intensity"
+                 : im_dropped                  ? "dropped with im_num (no 1/K0 in the probe)"
+                 : options.alias_im_den        ? "own plane (mixed or empty probe)"
+                                               : "own plane");
+      }
+      st.plane_note = note.str();
+    }
+    // Planes ALLOCATED per live precursor, not planes read: an aliased
+    // denominator is the intensity plane and costs nothing. With both options
+    // off this is 1 + 2 + 2, the count the budget has always used.
+    std::size_t planes = 1;
+    if (options.collect_mass_residuals) { planes += ppm_alias ? 1 : 2; }
+    if (options.collect_im_residuals && !im_dropped) { planes += im_alias ? 1 : 2; }
+    if (alias_asked)
+    {
+      const std::size_t unaliased = 1 + (options.collect_mass_residuals ? 2 : 0) +
+                                    (options.collect_im_residuals ? 2 : 0);
+      st.planes_per_precursor = planes;
+      st.plane_note += "; " + std::to_string(planes) + " of " + std::to_string(unaliased) +
+                       " planes allocated per live precursor";
+    }
+
     // The library, split into chunks whose live sets each fit under the cap.
     //
     // Greedy over start time with a running set of end times, so a chunk is a
@@ -679,9 +779,9 @@ namespace ODIA
     std::size_t cap = options.max_live_precursors;
     if (options.live_memory_budget_bytes > 0)
     {
-      std::size_t planes = 1;
-      if (options.collect_mass_residuals) { planes += 2; }
-      if (options.collect_im_residuals)   { planes += 2; }
+      // `planes` counts what is allocated (see above), so with both
+      // denominators aliased the same budget derives a cap 5/3 higher -- and
+      // a different chunking. Pin -max_live_precursors to compare footprints.
       double mean_cells = 0.0;
       for (const Assignment& a : assignments)
       { mean_cells += double(a.valid) * double(a.hi - a.lo); }
@@ -745,6 +845,12 @@ namespace ODIA
     // counted rather than assumed, because the alternative to catching it is a
     // silently truncated chromatogram.
     std::atomic<std::size_t> unhoused{0};
+    // Spectra the aliasing guard held back from a batch because they could
+    // put a peak where an aliased or dropped plane would differ from its own
+    // plane, with the premise each broke. Written under the mutex, and only
+    // ever while some alias is still in force. See Options::alias_ppm_den.
+    std::mutex held_m;
+    std::vector<std::pair<std::size_t, int>> held;
 
     // One forward pass over the run in acquisition order, so the decode stays
     // contiguous -- a window's spectra are strided through the file, and
@@ -869,15 +975,21 @@ namespace ODIA
       const Assignment& a = assignments[slot];
       const std::size_t cells = std::size_t(a.valid) * (a.hi - a.lo);
       live[slot].base = blocks.take(cells);
+      // ONE take per plane actually allocated. An aliased denominator is a
+      // second pointer to `base`, not a second block, and emit() must give it
+      // back exactly once for the same reason: a block given twice sits twice
+      // in the pool's free list, so two later precursors are handed the SAME
+      // block, and the second one's zero-fill wipes the first one's live
+      // chromatogram mid-pass -- no crash, just a wrong trace.
       if (options.collect_mass_residuals)
       {
         live[slot].ppm_num = blocks.take(cells);
-        live[slot].ppm_den = blocks.take(cells);
+        live[slot].ppm_den = ppm_alias ? live[slot].base : blocks.take(cells);
       }
-      if (options.collect_im_residuals)
+      if (options.collect_im_residuals && !im_dropped)
       {
         live[slot].im_num = blocks.take(cells);
-        live[slot].im_den = blocks.take(cells);
+        live[slot].im_den = im_alias ? live[slot].base : blocks.take(cells);
       }
       live[slot].lo = a.lo;
       live[slot].hi = a.hi;
@@ -947,18 +1059,97 @@ namespace ODIA
       // giving them back leaks two per emitted precursor. Mild on a 2,665-
       // precursor benchmark (3.55 -> 3.87 GiB) because the pool retains them;
       // at the 4.26 M design scale it would be the whole live set again, twice.
+      // An aliased denominator went back with `base` above; see activate().
       if (live[slot].ppm_num != nullptr)
       {
         blocks.give(live[slot].ppm_num, std::size_t(a.valid) * cycles);
-        blocks.give(live[slot].ppm_den, std::size_t(a.valid) * cycles);
+        if (!ppm_alias) { blocks.give(live[slot].ppm_den, std::size_t(a.valid) * cycles); }
       }
       if (live[slot].im_num != nullptr)
       {
         blocks.give(live[slot].im_num, std::size_t(a.valid) * cycles);
-        blocks.give(live[slot].im_den, std::size_t(a.valid) * cycles);
+        if (!im_alias) { blocks.give(live[slot].im_den, std::size_t(a.valid) * cycles); }
       }
       live[slot] = LiveSlot{};
       --live_now;
+    };
+
+    // The aliasing guard (Options::alias_ppm_den): could this spectrum put a
+    // peak into a cell where an aliased or dropped plane would NOT hold what
+    // its own plane would? Asked of every peak that survives the match loop's
+    // two cheap filters -- the index's m/z span and the frame's mobility band,
+    // the same tests in the same form -- which is a superset of the peaks that
+    // reach a cell, so the guard can only be stricter than the truth. One
+    // linear pass over a spectrum the match is about to walk anyway.
+    //
+    // 0: no; 1: an intensity that is not positive and finite; 2: a NaN 1/K0
+    // under the mobility alias; 3: a 1/K0 on a pass whose probe found none.
+    const auto premise_broken = [&](const SpectrumPeaks& peaks, const MzIndex& x,
+                                    std::size_t si) -> int {
+      const bool has_im = peaks.hasIonMobility();
+      const bool use_band = options.use_ion_mobility && has_im;
+      const double im_low = info[si].window.im_low, im_high = info[si].window.im_high;
+      for (std::size_t k = 0; k < peaks.size(); ++k)
+      {
+        const double m = peaks.mz[k];
+        const double slack = m * options.fragment_ppm * 1e-6 * 1.01 + 1e-6;
+        if (m + slack < x.mz.front() || m - slack > x.mz.back()) { continue; }
+        const double peak_im = has_im ? double(peaks.ion_mobility[k])
+                                      : std::numeric_limits<double>::quiet_NaN();
+        if (use_band && (peak_im < im_low || peak_im >= im_high)) { continue; }
+        const float intensity = peaks.intensity[k];
+        if ((ppm_alias || im_alias) && !(intensity > 0.0f && std::isfinite(intensity)))
+        { return 1; }
+        if (im_alias && std::isnan(peak_im)) { return 2; }
+        if (im_dropped && intensity > 0.0f && !std::isnan(peak_im)) { return 3; }
+      }
+      return 0;
+    };
+
+    // ...and when one could, the pass stops aliasing, between batches where no
+    // worker is running. Every live precursor gets the planes it would have
+    // had all along: an aliased denominator becomes a block of its own holding
+    // a COPY of `base` -- equal to what the separate plane would hold, because
+    // every write so far met the premise -- and dropped mobility planes become
+    // zero blocks, which is what they would hold, because no peak so far
+    // carried a 1/K0. From here the pass takes, writes and gives as the default
+    // does; the spectrum that tripped the guard is matched after this, so not
+    // one of its peaks was written under the alias.
+    const auto stop_aliasing = [&](std::size_t si, int why) {
+      std::size_t materialised = 0;
+      for (std::size_t slot = 0; slot < n_slots; ++slot)
+      {
+        LiveSlot& s = live[slot];
+        if (s.base == nullptr) { continue; }
+        const std::size_t cells = std::size_t(assignments[slot].valid) * (s.hi - s.lo);
+        if (ppm_alias && s.ppm_num != nullptr)
+        {
+          s.ppm_den = blocks.take(cells);
+          std::copy_n(s.base, cells, s.ppm_den);
+        }
+        if (im_alias && s.im_num != nullptr)
+        {
+          s.im_den = blocks.take(cells);
+          std::copy_n(s.base, cells, s.im_den);
+        }
+        if (im_dropped)
+        {
+          s.im_num = blocks.take(cells);
+          s.im_den = blocks.take(cells);
+        }
+        ++materialised;
+      }
+      static const char* const premise[] = {
+        "", "an intensity that is not positive and finite",
+        "a peak with no 1/K0 under the mobility alias",
+        "a peak WITH a 1/K0 on a pass the probe found mobility-free"};
+      st.plane_fallback = "spectrum " + std::to_string(si) + " (RT " +
+                          std::to_string(info[si].retention_time) + " s) carries " +
+                          premise[why] + "; separate planes from there on, " +
+                          std::to_string(materialised) + " live precursors materialised";
+      ppm_alias = false;
+      im_alias = false;
+      im_dropped = false;
     };
 
     for (const auto& slots : chunks)
@@ -1136,18 +1327,38 @@ namespace ODIA
                                    std::chrono::steady_clock::now() - t_alloc).count();
 
           const auto t_match = std::chrono::steady_clock::now();
-          std::atomic<std::size_t> next{batch};
+          // The batch's spectra, [batch, batch_end) -- or, on the replay after
+          // the aliasing guard fired, only the ones it held back.
+          std::atomic<std::size_t> next{0};
+          std::size_t todo = batch_end - batch;
+          const std::size_t* replay = nullptr;
+          const bool guard = ppm_alias || im_alias || im_dropped;
           const auto work = [&]() {
             std::size_t local_nonzero = 0, local_unhoused = 0;
             for (;;)
             {
-              const std::size_t si = next.fetch_add(1);
-              if (si >= batch_end) { break; }
+              const std::size_t n = next.fetch_add(1);
+              if (n >= todo) { break; }
+              const std::size_t si = replay != nullptr ? replay[n] : batch + n;
               const std::uint32_t w = window_of[si];
               if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
               const auto& x = index[w];
               if (x.mz.empty()) { continue; }
               const auto& peaks = block[si - begin];
+              // Before the first write, not after: a spectrum held back here
+              // has touched nothing, so matching it later under separate
+              // planes is matching it for the first time. Its cells are its
+              // own -- one spectrum per cycle per window -- so the delay
+              // cannot reorder a sum.
+              if (guard && replay == nullptr)
+              {
+                if (const int why = premise_broken(peaks, x, si); why != 0)
+                {
+                  std::lock_guard<std::mutex> lock(held_m);
+                  held.emplace_back(si, why);
+                  continue;
+                }
+              }
               const std::uint32_t c = cycle_of[si];
               // The run's mobility and the FRAME BAND test are separate questions.
               // Reading the peak's mobility only inside the band's branch made
@@ -1228,7 +1439,9 @@ namespace ODIA
                       std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
                     s.ppm_num[at_i] +=
                       intensity * static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
-                    s.ppm_den[at_i] += intensity;
+                    // Aliased, `ppm_den` IS `at`, which already took this
+                    // intensity above; adding it again would double it.
+                    if (!ppm_alias) { s.ppm_den[at_i] += intensity; }
                   }
                   // The OBSERVED 1/K0 of whatever produced this peak. NaN
                   // mobility is skipped rather than accumulated as zero: a
@@ -1238,7 +1451,7 @@ namespace ODIA
                     const std::size_t at_i =
                       std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
                     s.im_num[at_i] += intensity * static_cast<float>(peak_im);
-                    s.im_den[at_i] += intensity;
+                    if (!im_alias) { s.im_den[at_i] += intensity; }
                   }
                 }
               }
@@ -1248,6 +1461,23 @@ namespace ODIA
           };
           if (threads <= 1) { work(); }
           else { pool_impl.run(work, threads); }
+          // The guard fired: leave the alias for the rest of the pass, then
+          // match what it held back. In spectrum order, so the reported
+          // spectrum is the first one in the run, whatever thread found it.
+          if (!held.empty())
+          {
+            std::sort(held.begin(), held.end());
+            stop_aliasing(held.front().first, held.front().second);
+            std::vector<std::size_t> again;
+            again.reserve(held.size());
+            for (const auto& h : held) { again.push_back(h.first); }
+            held.clear();
+            next = 0;
+            todo = again.size();
+            replay = again.data();
+            if (threads <= 1) { work(); }
+            else { pool_impl.run(work, threads); }
+          }
           st.match_seconds += std::chrono::duration<double>(
                                 std::chrono::steady_clock::now() - t_match).count();
 
