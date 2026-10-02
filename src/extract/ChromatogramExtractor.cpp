@@ -930,8 +930,14 @@ namespace ODIA
     // Points a peak fell on while the destination precursor was not live. It
     // must be zero -- the cycle test below already excludes them -- and it is
     // counted rather than assumed, because the alternative to catching it is a
-    // silently truncated chromatogram.
+    // silently truncated chromatogram. Checked after EVERY match batch, before
+    // anything that batch finished is handed over: a trace that lost a point
+    // must never reach the sink, and a defect found only at the end of a
+    // 30-hour extraction has already delivered every trace it damaged.
     std::atomic<std::size_t> unhoused{0};
+    std::mutex unhoused_m;
+    std::uint32_t unhoused_slot = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t unhoused_cycle = 0;
     // The other half of that guarantee, and the half `unhoused` cannot see: a
     // cycle the pass never READ leaves no peak to count. Per window, the cycles
     // the current chunk has read are [first_seen, seen) -- a chunk reads a
@@ -939,11 +945,24 @@ namespace ODIA
     // and a precursor handed over with its range not inside that has cells that
     // are zero because nothing looked. That is how chunked extraction lost the
     // first or last frame of a chunk for as long as the chunk's spectrum range
-    // was looked up by a float time; it is checked on every hand-over now.
+    // was looked up by a float time. It is checked BEFORE every hand-over and
+    // throws there, so an incomplete trace is never handed to the sink.
     std::vector<std::uint32_t> seen(windows.size(), 0);
     std::vector<std::uint32_t> first_seen(windows.size(),
                                           std::numeric_limits<std::uint32_t>::max());
-    std::size_t unread = 0;
+    // Where the pass is, for the two errors above.
+    std::size_t chunk_no = 0, chunk_first = first_spectrum, chunk_last = last_spectrum;
+    const auto describe = [&](std::uint32_t slot) {
+      const Assignment& a = assignments[slot];
+      const auto seq = library.strings().get(p.modified_sequence[a.precursor]);
+      return "precursor " + std::to_string(a.precursor) +
+             (seq.empty() ? std::string() : " (" + std::string(seq) + "/" +
+                                              std::to_string(int(p.charge[a.precursor])) + ")") +
+             ", window " + std::to_string(a.window) + ", cycles [" + std::to_string(a.lo) +
+             ", " + std::to_string(a.hi) + "), chunk " + std::to_string(chunk_no + 1) + " of " +
+             std::to_string(chunks.size()) + " reading spectra [" + std::to_string(chunk_first) +
+             ", " + std::to_string(chunk_last) + ")";
+    };
 
     // One forward pass over the run in acquisition order, so the decode stays
     // contiguous -- a window's spectra are strided through the file, and
@@ -1049,12 +1068,39 @@ namespace ODIA
     };
     const auto emit = [&](std::uint32_t slot) {
       const Assignment& a = assignments[slot];
-      if (a.lo < first_seen[a.window] || a.hi > seen[a.window]) { ++unread; }
-      // A precursor whose window the pass never reached still owes the sink a
-      // trace, which is what the flat array used to hand it. It can no longer
-      // happen -- the pass reads every cycle a precursor spans, even under a
-      // caller's restricted range -- and if it does, `unread` has counted it.
-      if (live[slot].base == nullptr) { activate(slot); }
+      // Every cycle the precursor spans must have been read by this chunk, and
+      // that is checked HERE, before the sink sees anything.
+      if (a.lo < first_seen[a.window] || a.hi > seen[a.window])
+      {
+        const std::uint32_t read_lo = first_seen[a.window], read_hi = seen[a.window];
+        std::string missing;
+        const auto range = [&](std::uint32_t lo, std::uint32_t hi) {
+          if (lo >= hi) { return; }
+          if (!missing.empty()) { missing += " and "; }
+          missing += "[" + std::to_string(lo) + ", " + std::to_string(hi) + ")";
+        };
+        if (read_lo >= read_hi) { range(a.lo, a.hi); }
+        else
+        {
+          range(a.lo, std::min(a.hi, read_lo));
+          range(std::max(a.lo, read_hi), a.hi);
+        }
+        throw std::logic_error(
+          describe(slot) + " was about to be handed over with cycles " + missing +
+          " never read (the chunk read cycles [" +
+          (read_lo >= read_hi ? std::string("none") :
+           std::to_string(read_lo) + ", " + std::to_string(read_hi)) +
+          ") of that window). Its cells there would be zero because nothing looked, "
+          "not because nothing was there -- the chunk's spectrum range did not cover "
+          "its precursors.");
+      }
+      // Unreachable once the test above has passed: a precursor whose first
+      // cycle the chunk read was activated by the batch that read it.
+      if (live[slot].base == nullptr)
+      {
+        throw std::logic_error(describe(slot) +
+                               " was about to be handed over without ever going live");
+      }
 
       const std::uint32_t tb = p.transition_begin[a.precursor];
       const std::uint32_t tc = p.transition_count[a.precursor];
@@ -1129,8 +1175,9 @@ namespace ODIA
       --live_now;
     };
 
-    for (const auto& slots : chunks)
+    for (chunk_no = 0; chunk_no < chunks.size(); ++chunk_no)
     {
+      const auto& slots = chunks[chunk_no];
       const auto t_chunk_index = std::chrono::steady_clock::now();
       std::fill(seen.begin(), seen.end(), 0u);
       std::fill(first_seen.begin(), first_seen.end(),
@@ -1250,7 +1297,8 @@ namespace ODIA
       // rounds the wrong way -- and that spectrum, the chunk's first or last
       // frame, was then never read. With a single chunk it is the caller's
       // range unchanged, so nothing about a run that fits changes.
-      std::size_t chunk_first = first_spectrum, chunk_last = last_spectrum;
+      chunk_first = first_spectrum;
+      chunk_last = last_spectrum;
       if (chunks.size() > 1 && !slots.empty())
       {
         chunk_first = last_spectrum;
@@ -1317,6 +1365,7 @@ namespace ODIA
           std::atomic<std::size_t> next{batch};
           const auto work = [&]() {
             std::size_t local_nonzero = 0, local_unhoused = 0;
+            std::uint32_t first_unhoused_slot = 0, first_unhoused_cycle = 0;
             for (;;)
             {
               const std::size_t si = next.fetch_add(1);
@@ -1388,7 +1437,15 @@ namespace ODIA
                   }
                   const LiveSlot& s = live[x.slot[i]];
                   if (c < s.lo || c >= s.hi) { continue; }
-                  if (s.base == nullptr) { ++local_unhoused; continue; }
+                  if (s.base == nullptr)
+                  {
+                    if (local_unhoused++ == 0)
+                    {
+                      first_unhoused_slot = x.slot[i];
+                      first_unhoused_cycle = c;
+                    }
+                    continue;
+                  }
                   float& at = s.base[std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo)];
                   // Maximum, not sum: two peaks inside one tolerance are the same
                   // ion split by centroiding far more often than they are two ions.
@@ -1422,12 +1479,33 @@ namespace ODIA
               }
             }
             nonzero.fetch_add(local_nonzero);
-            unhoused.fetch_add(local_unhoused);
+            if (local_unhoused != 0)
+            {
+              unhoused.fetch_add(local_unhoused);
+              std::lock_guard<std::mutex> lock(unhoused_m);
+              if (unhoused_slot == std::numeric_limits<std::uint32_t>::max())
+              {
+                unhoused_slot = first_unhoused_slot;
+                unhoused_cycle = first_unhoused_cycle;
+              }
+            }
           };
           if (threads <= 1) { work(); }
           else { pool_impl.run(work, threads); }
           st.match_seconds += std::chrono::duration<double>(
                                 std::chrono::steady_clock::now() - t_match).count();
+
+          // Checked before this batch hands anything over: see `unhoused`.
+          if (unhoused.load() != 0)
+          {
+            throw std::logic_error(
+              std::to_string(unhoused.load()) + " matched points in spectra [" +
+              std::to_string(batch) + ", " + std::to_string(batch_end) +
+              ") had no live chromatogram to go into, the first on cycle " +
+              std::to_string(unhoused_cycle) + " of " + describe(unhoused_slot) +
+              ". The sliding window released or had not yet allocated a precursor "
+              "inside its retention-time range, which silently truncates its trace.");
+          }
 
           // Everything the pass has now passed the end of is FINAL. This is the
           // whole change: the chromatogram goes to the consumer and the memory
@@ -1475,23 +1553,6 @@ namespace ODIA
                              - (st.sink_seconds - sink_before_flush);
     }
     if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
-
-    if (unread != 0)
-    {
-      throw std::logic_error(
-        std::to_string(unread) +
-        " precursors were handed over with cycles the pass never read. Their "
-        "cells there are zero because nothing looked, not because nothing was "
-        "there -- the chunk's spectrum range did not cover its precursors.");
-    }
-    if (unhoused.load() != 0)
-    {
-      throw std::logic_error(
-        std::to_string(unhoused.load()) +
-        " matched points had no live chromatogram to go into. The sliding "
-        "window released a precursor before the pass had left its retention-"
-        "time range, which silently truncates its trace.");
-    }
 
     // Precursors nothing extracted still owe the sink a trace, empty, so that
     // a consumer counting them sees what it saw when every precursor had a row.
