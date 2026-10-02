@@ -701,6 +701,16 @@ namespace ODIA
       /// single-threaded). The arms above ran at 4 threads and so cannot see
       /// that. 256 keeps four spectra per worker at 64 threads and still takes
       /// 3.6x of the available 7.4x. Lower it when threads are few.
+      ///
+      /// It changes NOTHING a sink can observe, at any value. Matching,
+      /// activation, expiry and hand-over move on a fixed grid of 128-spectrum
+      /// LOGICAL batches from the pass's first spectrum; a decoded block is
+      /// matched over its intersections with that grid, and a batch that
+      /// straddles two blocks hands nothing over until both parts are matched.
+      /// (Until 2026-10-02 the batches were the block's own sub-batches, so a
+      /// block that was not a multiple of 128 moved the hand-over order, which
+      /// Gate C calibrates on. 256 is a multiple, so the default's output did
+      /// not change.)
       std::size_t decode_block = 256;
 
       /// Extract only every Nth precursor. 1 is all of them.

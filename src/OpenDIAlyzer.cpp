@@ -1006,8 +1006,10 @@ protected:
                        "the largest single term in the run's memory: a heap "
                        "profile put 5.57 GiB of a 9.45 GiB live peak in the "
                        "block's peak arrays. Cost is linear in this number and "
-                       "results do not change -- only how much is resident. 0 "
-                       "means the default.",
+                       "results do not change -- only how much is resident: "
+                       "matching, the live set and the order chromatograms are "
+                       "handed to the scorer in move on a fixed 128-spectrum "
+                       "grid that does not depend on this. 0 means the default.",
                        false, true);
     registerOutputFile_("out", "<file>", "",
                         "Write scored peak groups here (TSV).", false);

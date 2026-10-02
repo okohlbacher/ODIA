@@ -686,12 +686,26 @@ namespace ODIA
     // Was a constant; now `Options::decode_block`, because a heap profile put
     // 5.57 GiB of a 9.45 GiB live peak in the block's `SpectrumPeaks` copies.
     // Zero keeps the historical default rather than degenerating to no block.
+    //
+    // The block decides ONLY how many spectra are decoded and held at once. It
+    // decides nothing a sink can observe: see MATCH_BATCH.
     const std::size_t BLOCK = options.decode_block ? options.decode_block : 256;
-    // Matching walks the decoded block in smaller batches, because the
-    // allocate/free cursors can only move between batches -- no chromatogram
-    // may appear or vanish while a worker is reading `live`. The batch is
-    // therefore the GRANULARITY OF THE SLIDING WINDOW: a precursor goes live up
-    // to one batch early and is freed up to one batch late.
+    // Matching walks the run in LOGICAL batches, because the allocate/free
+    // cursors can only move between batches -- no chromatogram may appear or
+    // vanish while a worker is reading `live`. The batch is therefore the
+    // GRANULARITY OF THE SLIDING WINDOW: a precursor goes live up to one batch
+    // early and is freed up to one batch late.
+    //
+    // The logical batches are a fixed grid of MATCH_BATCH spectra from the
+    // pass's first spectrum, independent of the decode block. They used to be
+    // the block's own sub-batches, so a block that was not a multiple of 128
+    // moved the batch boundaries -- 200 gave [128, 200) and [200, 328) where
+    // 256 gave [128, 256) -- and with them the moment each precursor was handed
+    // over, i.e. the stream's ORDER, which Gate C calibrates on. Now a block is
+    // decoded at whatever size was asked for, each logical batch is matched
+    // over its intersections with the decoded blocks, and activation, expiry
+    // and hand-over happen only at logical-batch boundaries. 256 is a multiple
+    // of 128, so the default block gives exactly the batches it always gave.
     //
     // 128 spectra is ~5 cycles across IH1's 24 windows, about 7 s of gradient
     // against retention-time windows of hundreds -- so the rounding is under 1%
@@ -727,15 +741,12 @@ namespace ODIA
     st.spectra_read = last_spectrum - first_spectrum;
 
     // The batch grid is ABSOLUTE: batch boundaries sit at first_spectrum +
-    // j*BLOCK + k*MATCH_BATCH whichever chunk is reading, so a spectrum is in
-    // the same batch in every chunk plan. A chunk that started its grid at its
-    // own first spectrum would move every boundary, and with them the moment
-    // each precursor goes live and is handed over.
-    const std::size_t batches_per_block = (BLOCK + MATCH_BATCH - 1) / MATCH_BATCH;
-    const auto batchOf = [&](std::size_t si) {
-      const std::size_t r = si - first_spectrum;
-      return (r / BLOCK) * batches_per_block + (r % BLOCK) / MATCH_BATCH;
-    };
+    // k*MATCH_BATCH whichever chunk is reading and whatever the decode block,
+    // so a spectrum is in the same batch in every chunk plan and at every
+    // block size. A chunk that started its grid at its own first spectrum
+    // would move every boundary, and with them the moment each precursor goes
+    // live and is handed over.
+    const auto batchOf = [&](std::size_t si) { return (si - first_spectrum) / MATCH_BATCH; };
     const std::size_t n_batches =
       last_spectrum > first_spectrum ? batchOf(last_spectrum - 1) + 1 : 0;
 
@@ -1319,227 +1330,238 @@ namespace ODIA
       st.index_seconds += std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t_chunk_index).count();
 
-      // Blocks and batches on the run's ABSOLUTE grid (see batchOf), clipped
-      // to the chunk: a chunk starting mid-block reads the rest of that block.
-      for (std::size_t block_at =
-             first_spectrum + ((chunk_first - first_spectrum) / BLOCK) * BLOCK;
-           block_at < chunk_last; block_at += BLOCK)
+      // Logical batches on the run's ABSOLUTE grid (see batchOf), clipped to
+      // the chunk. Decoding is per block, because that is what the reader
+      // wants: blocks sit on their own absolute grid, first_spectrum +
+      // j*BLOCK, clipped to the chunk (a chunk starting mid-block reads the
+      // rest of that block), and a block is decoded when the pass first needs
+      // one of its spectra. A logical batch that straddles two blocks is
+      // matched in two parts; nothing is activated or handed over between
+      // them, so the block size is invisible to everything but memory.
+      std::size_t block_begin = chunk_first, block_end = chunk_first;  // held in `block`
+      for (std::size_t batch_at =
+             first_spectrum + ((chunk_first - first_spectrum) / MATCH_BATCH) * MATCH_BATCH;
+           batch_at < chunk_last; batch_at += MATCH_BATCH)
       {
-        const std::size_t begin = std::max(block_at, chunk_first);
-        const std::size_t end = std::min(block_at + BLOCK, chunk_last);
+        const std::size_t batch = std::max(batch_at, chunk_first);
+        const std::size_t batch_end = std::min(batch_at + MATCH_BATCH, chunk_last);
+        if (batch >= batch_end) { continue; }
 
-        const auto t_decode = std::chrono::steady_clock::now();
-        source.peaks(begin, end, block);
-        st.decode_seconds += std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - t_decode).count();
-        st.spectra_decoded += end - begin;
-
-        // Decoding is per block, because that is what the reader wants;
-        // matching walks it in smaller batches, because that is the
-        // granularity at which the sliding window can move. See MATCH_BATCH.
-        for (std::size_t batch_at = block_at; batch_at < end; batch_at += MATCH_BATCH)
+        // Everything whose window starts inside this batch goes live. Doing it
+        // between batches rather than per spectrum is what keeps the pass free
+        // of synchronisation: no allocation happens while a worker is running.
+        const auto t_alloc = std::chrono::steady_clock::now();
+        for (std::size_t si = batch; si < batch_end; ++si)
         {
-          const std::size_t batch = std::max(batch_at, begin);
-          const std::size_t batch_end = std::min(batch_at + MATCH_BATCH, end);
-          if (batch >= batch_end) { continue; }
-
-          // Everything whose window starts inside this batch goes live. Doing it
-          // between batches rather than per spectrum is what keeps the pass free
-          // of synchronisation: no allocation happens while a worker is running.
-          const auto t_alloc = std::chrono::steady_clock::now();
-          for (std::size_t si = batch; si < batch_end; ++si)
+          const std::uint32_t w = window_of[si];
+          if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
+          seen[w] = std::max(seen[w], cycle_of[si] + 1);
+          first_seen[w] = std::min(first_seen[w], cycle_of[si]);
+        }
+        for (std::size_t w = 0; w < windows.size(); ++w)
+        {
+          while (cur_lo[w] < by_lo[w].size() &&
+                 assignments[by_lo[w][cur_lo[w]]].lo < seen[w])
           {
+            activate(by_lo[w][cur_lo[w]]);
+            ++cur_lo[w];
+          }
+        }
+        st.assemble_seconds += std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - t_alloc).count();
+
+        // The workers match the part [next, part_end) of this batch that the
+        // decoded block holds.
+        std::atomic<std::size_t> next{batch};
+        std::size_t part_end = batch;
+        const auto work = [&]() {
+          std::size_t local_nonzero = 0, local_unhoused = 0;
+          std::uint32_t first_unhoused_slot = 0, first_unhoused_cycle = 0;
+          for (;;)
+          {
+            const std::size_t si = next.fetch_add(1);
+            if (si >= part_end) { break; }
             const std::uint32_t w = window_of[si];
             if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
-            seen[w] = std::max(seen[w], cycle_of[si] + 1);
-            first_seen[w] = std::min(first_seen[w], cycle_of[si]);
-          }
-          for (std::size_t w = 0; w < windows.size(); ++w)
-          {
-            while (cur_lo[w] < by_lo[w].size() &&
-                   assignments[by_lo[w][cur_lo[w]]].lo < seen[w])
-            {
-              activate(by_lo[w][cur_lo[w]]);
-              ++cur_lo[w];
-            }
-          }
-          st.assemble_seconds += std::chrono::duration<double>(
-                                   std::chrono::steady_clock::now() - t_alloc).count();
+            const auto& x = index[w];
+            if (x.mz.empty()) { continue; }
+            const auto& peaks = block[si - block_begin];
+            const std::uint32_t c = cycle_of[si];
+            // The run's mobility and the FRAME BAND test are separate questions.
+            // Reading the peak's mobility only inside the band's branch made
+            // `use_ion_mobility` switch off the per-precursor test as well: the
+            // mobility stayed NaN, and a NaN mobility skips that test under the
+            // "absent information is not evidence of mismatch" rule meant for a
+            // run that carries no mobility at all. -no_ion_mobility is the
+            // control arm for measuring what mobility filtering buys, so it has
+            // to turn off exactly the one filter it names.
+            const bool has_im = peaks.hasIonMobility();
+            const bool use_band = options.use_ion_mobility && has_im;
+            const double im_low = info[si].window.im_low, im_high = info[si].window.im_high;
 
-          const auto t_match = std::chrono::steady_clock::now();
-          std::atomic<std::size_t> next{batch};
-          const auto work = [&]() {
-            std::size_t local_nonzero = 0, local_unhoused = 0;
-            std::uint32_t first_unhoused_slot = 0, first_unhoused_cycle = 0;
-            for (;;)
+            for (std::size_t k = 0; k < peaks.size(); ++k)
             {
-              const std::size_t si = next.fetch_add(1);
-              if (si >= batch_end) { break; }
-              const std::uint32_t w = window_of[si];
-              if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
-              const auto& x = index[w];
-              if (x.mz.empty()) { continue; }
-              const auto& peaks = block[si - begin];
-              const std::uint32_t c = cycle_of[si];
-              // The run's mobility and the FRAME BAND test are separate questions.
-              // Reading the peak's mobility only inside the band's branch made
-              // `use_ion_mobility` switch off the per-precursor test as well: the
-              // mobility stayed NaN, and a NaN mobility skips that test under the
-              // "absent information is not evidence of mismatch" rule meant for a
-              // run that carries no mobility at all. -no_ion_mobility is the
-              // control arm for measuring what mobility filtering buys, so it has
-              // to turn off exactly the one filter it names.
-              const bool has_im = peaks.hasIonMobility();
-              const bool use_band = options.use_ion_mobility && has_im;
-              const double im_low = info[si].window.im_low, im_high = info[si].window.im_high;
-
-              for (std::size_t k = 0; k < peaks.size(); ++k)
+              const double m = peaks.mz[k];
+              // The bounds must allow for the tolerance. A peak just BELOW the
+              // smallest transition can still be within ppm of it, and skipping
+              // it silently returned zero for the lowest-m/z transition of every
+              // window -- which a brute-force scan caught and nothing else would
+              // have, because a chromatogram of zeros looks like an ion that is
+              // simply not there.
+              const double slack = m * options.fragment_ppm * 1e-6 * 1.01 + 1e-6;
+              if (m + slack < x.mz.front() || m - slack > x.mz.back()) { continue; }
+              // The frame's band separates the co-packed windows. It cannot
+              // separate a precursor from its same-window neighbours, which is
+              // what the per-transition test below does.
+              const double peak_im = has_im ? double(peaks.ion_mobility[k])
+                                            : std::numeric_limits<double>::quiet_NaN();
+              // Half-open, [im_low, im_high). Co-packed windows are separated by
+              // a DERIVED band -- the split is the midpoint between their two
+              // mobility positions -- so adjacent bands share their boundary
+              // exactly, and a peak sitting on it would enter both windows and be
+              // integrated twice under Sum. Measure zero on real data, and the
+              // reason it is stated as a convention rather than left to chance.
+              if (use_band && (peak_im < im_low || peak_im >= im_high)) { continue; }
+              // The tolerance belongs to the TRANSITION, not to the peak:
+              // a match means |peak - transition| <= transition * ppm. Searching
+              // by peak makes it tempting to size the window on the peak
+              // instead, which differs at the boundary and silently includes or
+              // drops edge matches -- 11 of 240 transitions disagreed with a
+              // brute-force scan because of exactly that.
+              //
+              // So the SEARCH window is deliberately a little wide, and the
+              // exact test is applied per candidate inside it.
+              const double ppm = options.fragment_ppm * 1e-6;
+              const double im_half = options.precursor_im_window;
+              const bool sum_peaks = options.aggregate == Options::Aggregate::Sum;
+              std::size_t i = x.bucket[x.bucketOf(std::max(m - slack, x.mz.front()))];
+              const float intensity = peaks.intensity[k];
+              for (; i < x.mz.size() && x.mz[i] <= m + slack; ++i)
               {
-                const double m = peaks.mz[k];
-                // The bounds must allow for the tolerance. A peak just BELOW the
-                // smallest transition can still be within ppm of it, and skipping
-                // it silently returned zero for the lowest-m/z transition of every
-                // window -- which a brute-force scan caught and nothing else would
-                // have, because a chromatogram of zeros looks like an ion that is
-                // simply not there.
-                const double slack = m * options.fragment_ppm * 1e-6 * 1.01 + 1e-6;
-                if (m + slack < x.mz.front() || m - slack > x.mz.back()) { continue; }
-                // The frame's band separates the co-packed windows. It cannot
-                // separate a precursor from its same-window neighbours, which is
-                // what the per-transition test below does.
-                const double peak_im = has_im ? double(peaks.ion_mobility[k])
-                                              : std::numeric_limits<double>::quiet_NaN();
-                // Half-open, [im_low, im_high). Co-packed windows are separated by
-                // a DERIVED band -- the split is the midpoint between their two
-                // mobility positions -- so adjacent bands share their boundary
-                // exactly, and a peak sitting on it would enter both windows and be
-                // integrated twice under Sum. Measure zero on real data, and the
-                // reason it is stated as a convention rather than left to chance.
-                if (use_band && (peak_im < im_low || peak_im >= im_high)) { continue; }
-                // The tolerance belongs to the TRANSITION, not to the peak:
-                // a match means |peak - transition| <= transition * ppm. Searching
-                // by peak makes it tempting to size the window on the peak
-                // instead, which differs at the boundary and silently includes or
-                // drops edge matches -- 11 of 240 transitions disagreed with a
-                // brute-force scan because of exactly that.
-                //
-                // So the SEARCH window is deliberately a little wide, and the
-                // exact test is applied per candidate inside it.
-                const double ppm = options.fragment_ppm * 1e-6;
-                const double im_half = options.precursor_im_window;
-                const bool sum_peaks = options.aggregate == Options::Aggregate::Sum;
-                std::size_t i = x.bucket[x.bucketOf(std::max(m - slack, x.mz.front()))];
-                const float intensity = peaks.intensity[k];
-                for (; i < x.mz.size() && x.mz[i] <= m + slack; ++i)
+                if (std::abs(m - x.mz[i]) > x.mz[i] * ppm) { continue; }
+                // Per-precursor mobility. Skipped when either side is unknown:
+                // absent information is not evidence of mismatch.
+                if (im_half > 0.0 && !std::isnan(peak_im))
                 {
-                  if (std::abs(m - x.mz[i]) > x.mz[i] * ppm) { continue; }
-                  // Per-precursor mobility. Skipped when either side is unknown:
-                  // absent information is not evidence of mismatch.
-                  if (im_half > 0.0 && !std::isnan(peak_im))
+                  const float want = x.precursor_im[i];
+                  if (!std::isnan(want) && std::abs(peak_im - want) > im_half) { continue; }
+                }
+                const LiveSlot& s = live[x.slot[i]];
+                if (c < s.lo || c >= s.hi) { continue; }
+                if (s.base == nullptr)
+                {
+                  if (local_unhoused++ == 0)
                   {
-                    const float want = x.precursor_im[i];
-                    if (!std::isnan(want) && std::abs(peak_im - want) > im_half) { continue; }
+                    first_unhoused_slot = x.slot[i];
+                    first_unhoused_cycle = c;
                   }
-                  const LiveSlot& s = live[x.slot[i]];
-                  if (c < s.lo || c >= s.hi) { continue; }
-                  if (s.base == nullptr)
-                  {
-                    if (local_unhoused++ == 0)
-                    {
-                      first_unhoused_slot = x.slot[i];
-                      first_unhoused_cycle = c;
-                    }
-                    continue;
-                  }
-                  float& at = s.base[std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo)];
-                  // Maximum, not sum: two peaks inside one tolerance are the same
-                  // ion split by centroiding far more often than they are two ions.
-                  if (at == 0.0f && intensity > 0.0f) { ++local_nonzero; }
-                  if (sum_peaks) { at += intensity; }
-                  else if (intensity > at) { at = intensity; }
-                  // The deviation was already computed to test the match above;
-                  // it has been discarded here since the extractor was written.
-                  // Accumulated for EVERY contributing peak, not just a winner:
-                  // under Sum aggregation there is no winner, and picking one
-                  // by arrival order is picking at random.
-                  if (s.ppm_num != nullptr && intensity > 0.0f)
-                  {
-                    const std::size_t at_i =
-                      std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
-                    s.ppm_num[at_i] +=
-                      intensity * static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
-                    s.ppm_den[at_i] += intensity;
-                  }
-                  // The OBSERVED 1/K0 of whatever produced this peak. NaN
-                  // mobility is skipped rather than accumulated as zero: a
-                  // missing measurement is not a mobility of nothing.
-                  if (s.im_num != nullptr && intensity > 0.0f && !std::isnan(peak_im))
-                  {
-                    const std::size_t at_i =
-                      std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
-                    s.im_num[at_i] += intensity * static_cast<float>(peak_im);
-                    s.im_den[at_i] += intensity;
-                  }
+                  continue;
+                }
+                float& at = s.base[std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo)];
+                // Maximum, not sum: two peaks inside one tolerance are the same
+                // ion split by centroiding far more often than they are two ions.
+                if (at == 0.0f && intensity > 0.0f) { ++local_nonzero; }
+                if (sum_peaks) { at += intensity; }
+                else if (intensity > at) { at = intensity; }
+                // The deviation was already computed to test the match above;
+                // it has been discarded here since the extractor was written.
+                // Accumulated for EVERY contributing peak, not just a winner:
+                // under Sum aggregation there is no winner, and picking one
+                // by arrival order is picking at random.
+                if (s.ppm_num != nullptr && intensity > 0.0f)
+                {
+                  const std::size_t at_i =
+                    std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
+                  s.ppm_num[at_i] +=
+                    intensity * static_cast<float>((m - x.mz[i]) / x.mz[i] * 1e6);
+                  s.ppm_den[at_i] += intensity;
+                }
+                // The OBSERVED 1/K0 of whatever produced this peak. NaN
+                // mobility is skipped rather than accumulated as zero: a
+                // missing measurement is not a mobility of nothing.
+                if (s.im_num != nullptr && intensity > 0.0f && !std::isnan(peak_im))
+                {
+                  const std::size_t at_i =
+                    std::size_t(x.row[i]) * (s.hi - s.lo) + (c - s.lo);
+                  s.im_num[at_i] += intensity * static_cast<float>(peak_im);
+                  s.im_den[at_i] += intensity;
                 }
               }
             }
-            nonzero.fetch_add(local_nonzero);
-            if (local_unhoused != 0)
+          }
+          nonzero.fetch_add(local_nonzero);
+          if (local_unhoused != 0)
+          {
+            unhoused.fetch_add(local_unhoused);
+            std::lock_guard<std::mutex> lock(unhoused_m);
+            if (unhoused_slot == std::numeric_limits<std::uint32_t>::max())
             {
-              unhoused.fetch_add(local_unhoused);
-              std::lock_guard<std::mutex> lock(unhoused_m);
-              if (unhoused_slot == std::numeric_limits<std::uint32_t>::max())
-              {
-                unhoused_slot = first_unhoused_slot;
-                unhoused_cycle = first_unhoused_cycle;
-              }
+              unhoused_slot = first_unhoused_slot;
+              unhoused_cycle = first_unhoused_cycle;
             }
-          };
+          }
+        };
+        for (std::size_t part = batch; part < batch_end; part = part_end)
+        {
+          if (part >= block_end)
+          {
+            const std::size_t block_at =
+              first_spectrum + ((part - first_spectrum) / BLOCK) * BLOCK;
+            block_begin = std::max(block_at, chunk_first);
+            block_end = std::min(block_at + BLOCK, chunk_last);
+            const auto t_decode = std::chrono::steady_clock::now();
+            source.peaks(block_begin, block_end, block);
+            st.decode_seconds += std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() - t_decode).count();
+            st.spectra_decoded += block_end - block_begin;
+            if (options.progress_every && ((block_at - first_spectrum) / BLOCK) % 16 == 0)
+            {
+              std::cerr << "\r  " << st.spectra_decoded << " / " << st.spectra_read
+                        << " spectra"
+                        << std::flush;
+            }
+          }
+          part_end = std::min(batch_end, block_end);
+          next.store(part);
+          const auto t_match = std::chrono::steady_clock::now();
           if (threads <= 1) { work(); }
           else { pool_impl.run(work, threads); }
           st.match_seconds += std::chrono::duration<double>(
                                 std::chrono::steady_clock::now() - t_match).count();
-
-          // Checked before this batch hands anything over: see `unhoused`.
-          if (unhoused.load() != 0)
-          {
-            throw std::logic_error(
-              std::to_string(unhoused.load()) + " matched points in spectra [" +
-              std::to_string(batch) + ", " + std::to_string(batch_end) +
-              ") had no live chromatogram to go into, the first on cycle " +
-              std::to_string(unhoused_cycle) + " of " + describe(unhoused_slot) +
-              ". The sliding window released or had not yet allocated a precursor "
-              "inside its retention-time range, which silently truncates its trace.");
-          }
-
-          // Everything the pass has now passed the end of is FINAL. This is the
-          // whole change: the chromatogram goes to the consumer and the memory
-          // goes back, so what is resident is what is live at one retention time
-          // rather than what the library contains.
-          const auto t_free = std::chrono::steady_clock::now();
-          const double sink_before = st.sink_seconds;
-          for (std::size_t w = 0; w < windows.size(); ++w)
-          {
-            while (cur_hi[w] < by_hi[w].size() &&
-                   assignments[by_hi[w][cur_hi[w]]].hi <= seen[w])
-            {
-              emit(by_hi[w][cur_hi[w]]);
-              ++cur_hi[w];
-            }
-          }
-          // The sink's own time is reported separately, so it is taken out here
-          // rather than counted twice.
-          st.assemble_seconds += std::chrono::duration<double>(
-                                   std::chrono::steady_clock::now() - t_free).count()
-                                 - (st.sink_seconds - sink_before);
         }
 
-        if (options.progress_every && (block_at / BLOCK) % 16 == 0)
+        // Checked before this batch hands anything over: see `unhoused`.
+        if (unhoused.load() != 0)
         {
-          std::cerr << "\r  " << st.spectra_decoded << " / " << st.spectra_read
-                    << " spectra"
-                    << std::flush;
+          throw std::logic_error(
+            std::to_string(unhoused.load()) + " matched points in spectra [" +
+            std::to_string(batch) + ", " + std::to_string(batch_end) +
+            ") had no live chromatogram to go into, the first on cycle " +
+            std::to_string(unhoused_cycle) + " of " + describe(unhoused_slot) +
+            ". The sliding window released or had not yet allocated a precursor "
+            "inside its retention-time range, which silently truncates its trace.");
         }
+
+        // Everything the pass has now passed the end of is FINAL. This is the
+        // whole change: the chromatogram goes to the consumer and the memory
+        // goes back, so what is resident is what is live at one retention time
+        // rather than what the library contains.
+        const auto t_free = std::chrono::steady_clock::now();
+        const double sink_before = st.sink_seconds;
+        for (std::size_t w = 0; w < windows.size(); ++w)
+        {
+          while (cur_hi[w] < by_hi[w].size() &&
+                 assignments[by_hi[w][cur_hi[w]]].hi <= seen[w])
+          {
+            emit(by_hi[w][cur_hi[w]]);
+            ++cur_hi[w];
+          }
+        }
+        // The sink's own time is reported separately, so it is taken out here
+        // rather than counted twice.
+        st.assemble_seconds += std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - t_free).count()
+                               - (st.sink_seconds - sink_before);
       }
 
       // Whatever the pass ended inside is final too.

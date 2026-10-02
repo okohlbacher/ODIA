@@ -825,6 +825,35 @@ namespace
       check(st.peak_live_precursors <= cap, "no more precursors live than the cap" + at);
     }
     check(plans == 2, "the two caps give two different chunk plans");
+
+    // The decode block decides how many spectra are held, nothing else. It
+    // used to set the match-batch boundaries too (a block of 200 matched
+    // [128, 200) and [200, 328) where 256 matched [128, 256)), which moved the
+    // hand-over order.
+    std::size_t block_mismatches = 0;
+    for (const std::size_t block : {1, 64, 127, 128, 129, 200, 256})
+    {
+      for (const std::size_t cap : {std::size_t(0), std::size_t(2), std::size_t(5)})
+      {
+        auto o = opt;
+        o.decode_block = block;
+        o.max_live_precursors = cap;
+        RecordingSink got;
+        ODIA::ChromatogramExtractor::Stats st;
+        ODIA::ChromatogramExtractor::extract(lib.library(), run, o, got, &st);
+        bool same = got.traces.size() == reference.traces.size();
+        for (std::size_t i = 0; same && i < reference.traces.size(); ++i)
+        { same = same_trace(got.traces[i], reference.traces[i]); }
+        if (!same || (cap != 0 && st.peak_live_precursors > cap))
+        {
+          ++block_mismatches;
+          std::printf("       decode_block %zu cap %zu (%zu chunks): stream differs\n",
+                      block, cap, st.chunks);
+        }
+      }
+    }
+    check(block_mismatches == 0,
+          "the stream is the same at every decode block, chunked or not");
   }
 
   /// An explicit cap survives a byte budget that constrains nothing.
