@@ -655,10 +655,17 @@ namespace ODIA
       ///     valid_transitions x cycles_in_window x 4 B x planes
       /// where planes is 1, +2 with `collect_mass_residuals`, +2 with
       /// `collect_im_residuals` -- so 5 with both, which is the default.
-      /// `alias_ppm_den` / `alias_im_den` take a denominator plane back out of
-      /// the count when it really is the intensity plane, so the same budget
-      /// then buys a higher cap: pin `max_live_precursors` to compare
-      /// footprints at the same chunking.
+      /// `alias_ppm_den` / `alias_im_den` do NOT change this count: the cap is
+      /// derived from the UNALIASED plane count whatever they decide. Two
+      /// reasons. The chunking -- and with it the order the sink receives
+      /// precursors in, which Gate C's arrival-order null depends on -- stays
+      /// the unaliased pass's, so the scorer's output cannot move when the cap
+      /// binds. And a mid-pass fallback that gives every live precursor its
+      /// denominators back stays inside the budget the cap was derived from
+      /// instead of overshooting it by up to 5/3. Aliasing lowers the
+      /// footprint at the same cap; spending the saving on fewer chunks is a
+      /// separate decision (raise the budget), which changes the chunking
+      /// exactly as it would without aliasing.
       std::size_t live_memory_budget_bytes = 0;
 
       /// Point a residual DENOMINATOR plane at the intensity plane instead of
@@ -698,8 +705,12 @@ namespace ODIA
       /// denominator, copied from `base` -- which it equals, since every write
       /// so far met the premise -- and the spectrum is matched after. The
       /// result is the unaliased pass, cell for cell; `Stats::plane_fallback`
-      /// says where it happened and why. Aliasing can cost memory it promised
-      /// to save. It cannot change a cell.
+      /// says where it happened and why, and a line on stderr says so at the
+      /// moment it happens, before the denominators are allocated. Aliasing
+      /// can lose the memory it promised to save -- back to the unaliased
+      /// footprint at the same cap, which is what the budget was sized for
+      /// (see `live_memory_budget_bytes`). It cannot change a cell, and it
+      /// cannot change the chunking.
       ///
       /// Off by default, and off is the historical code path: the same takes,
       /// the same writes, the same gives, the same cap.

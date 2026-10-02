@@ -651,11 +651,16 @@ protected:
                           "1/K0 on all of them; a run with none drops both mobility planes instead. "
                           "Each spectrum is checked before it is matched, and the first that breaks "
                           "the premise (a non-positive or non-finite intensity, a missing 1/K0) "
-                          "turns the pass back into separate planes before it writes, so the output "
-                          "is the unaliased output in every case; the log says when that happened. "
-                          "The budget-derived cap counts ALLOCATED planes, so at an unchanged "
-                          "-live_memory_gb the cap RISES and chunking changes: pin "
-                          "-max_live_precursors to compare the footprint at the same chunking.",
+                          "turns the pass back into separate planes before it writes; the log says "
+                          "so at that moment, before the planes are allocated. The cap derived from "
+                          "-live_memory_gb is computed from the UNALIASED plane count, so the "
+                          "chunking -- and the order the scorer receives precursors in, which Gate "
+                          "C's null depends on -- is the unaliased run's, and the output is the "
+                          "unaliased output whether or not the cap binds. The saving is a lower "
+                          "footprint at the same cap; a fallback returns to the unaliased "
+                          "footprint, which is what the budget was sized for. To spend the saving "
+                          "on fewer chunks, raise -live_memory_gb (that changes the chunking "
+                          "exactly as it does without this option).",
                           false, true);
     // Not setValidStrings_: OpenMS refuses a comma inside a string restriction
     // (it would be read as a list separator), and "ppm,im" is the value the
@@ -2077,8 +2082,9 @@ protected:
     }
     writeLogInfo_(msg.str());
     // The output is unaffected -- the fallback exists so that it is -- but the
-    // footprint is not what the plane count above promised, and a cap derived
-    // from that count may now be above the budget it was derived from.
+    // footprint is not what the plane count above promised: it is back to the
+    // unaliased one, which the cap was derived for. (The extractor already said
+    // so on stderr when it happened; this is the summary's copy.)
     if (!stats.plane_fallback.empty())
     {
       writeLogWarn_("-alias_den_planes fell back to separate planes: " + stats.plane_fallback +
