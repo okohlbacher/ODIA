@@ -649,6 +649,16 @@ add_test(NAME extract_cap_zero_rows COMMAND odia_extract_cases cap_zero_rows)
 add_test(NAME extract_chunk_matrix COMMAND odia_extract_cases chunk_matrix)
 add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
 
+# Gate C hash calibration (ROUND1_PLAN D6, -gate_calibration hash): the plan's
+# pointCount(0) equals the hand-over's; the sample is the N smallest identity
+# hashes (brute force) and the same identities in a reversed library; tau and
+# every gate decision identical across chunk caps 0/2/3/7/11, decode blocks
+# 1/129/200/256 and 1-2 threads, all made against the frozen tau (no warm-up);
+# arrival mode on the same data does have a warm-up (control); too few eligible
+# decoys leaves the gate unarmed and admitting; the identity hash is pinned.
+add_test(NAME gate_calibration_hash_is_order_free COMMAND odia_gate_calibration
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing

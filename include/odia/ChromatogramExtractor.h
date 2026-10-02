@@ -832,6 +832,21 @@ namespace ODIA
 
       /// Report progress every this many spectra, 0 to stay quiet.
       std::size_t progress_every = 500;
+
+      /// PLAN OUTPUT (ROUND1_PLAN D6). Non-null: after the window/RT assignment
+      /// and before anything is decoded, this receives one entry per LIBRARY
+      /// precursor -- the point count transition 0 of that precursor will be
+      /// handed over with (`PrecursorChromatogram::pointCount(0)`): the
+      /// assigned cycle range when transition 0 has a representable product
+      /// m/z, else 0; 0 for every precursor this pass does not assign (stride,
+      /// keep-mask, no window, outside the run, beyond max_precursors). It is
+      /// what Gate C's hash calibration selects eligible decoys from, so the
+      /// test is the scorer's own `points >= 3`. Null (the default) writes
+      /// nothing and changes nothing.
+      std::vector<std::uint32_t>* plan_points = nullptr;
+      /// With `plan_points`: return right after filling it -- no sink call, no
+      /// decode. Stats carries the assignment counters only.
+      bool plan_only = false;
     };
 
     struct Stats
