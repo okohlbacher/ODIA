@@ -196,12 +196,17 @@ int main()
           "residual cap is crossed inside the run (" + std::to_string(matches) + " matches)");
   }
 
-  for (const unsigned threads : {0u, 2u, 3u, 8u, 13u, 48u})
+  // One decode's decoded bytes, as the build counts them (capacity, as the
+  // scripted source assigns exact sizes): the unit of the block cap.
+  const std::size_t frame_bytes = PEAKS_PER_FRAME * (sizeof(double) + 2 * sizeof(float));
+  const std::size_t decode_bytes = 64 * frame_bytes;
+
+  auto against_serial = [&](unsigned threads, std::size_t block_budget, const std::string& tag)
   {
     double median = 0.0;
     run.asked.clear();
     const auto par = ODIA::Ms1Traces::build(lib, run, PPM, IM_WINDOW, 0.0, &median,
-                                            0.0, nullptr, nullptr, threads);
+                                            0.0, nullptr, nullptr, threads, block_budget);
     const auto& ps = par.buildStats();
     std::size_t diff = 0;
     for (std::size_t i = 0; i < PRECURSORS; ++i)
@@ -210,7 +215,6 @@ int main()
         const float x = serial.at(i, b), y = par.at(i, b);
         if (std::memcmp(&x, &y, sizeof x) != 0) { ++diff; }
       }
-    const std::string tag = "-threads " + std::to_string(threads) + ": ";
     check(par.bins() == FRAMES && par.precursors() == PRECURSORS, tag + "same shape");
     check(diff == 0, tag + std::to_string(diff) + " cells differ from serial");
     check(par.checksum() == serial.checksum(), tag + "checksum equals serial");
@@ -221,10 +225,99 @@ int main()
     check(run.asked == serial_asked, tag + "decoder asked for the serial ranges");
     if (threads >= 2)
     {
-      check(par.buildStats().threads > 1,
-            tag + "actually matched on " + std::to_string(par.buildStats().threads) + " threads");
+      check(ps.threads > 1, tag + "actually matched on " + std::to_string(ps.threads) + " threads");
     }
+    // The memory contract (review round 2): beyond its first decode a match
+    // block holds at most the cap, residual buffers included, whatever the
+    // threads; decoded bytes alive at once are at most a block plus one decode.
+    const std::size_t cap = std::min(block_budget, ODIA::Ms1Traces::MAX_BLOCK_BYTES);
+    check(ps.block_cap_bytes == cap, tag + "cap in force is min(budget, MAX_BLOCK_BYTES)");
+    check(ps.max_block_bytes <= decode_bytes + cap,
+          tag + "largest block " + std::to_string(ps.max_block_bytes) + " B <= one decode + cap");
+    check(ps.max_held_bytes <= ps.max_block_bytes + decode_bytes,
+          tag + "held at once " + std::to_string(ps.max_held_bytes) + " B <= block + one decode");
     std::printf("      %s\n", par.describeBuild().c_str());
+    return ps;
+  };
+
+  for (const unsigned threads : {0u, 2u, 3u, 8u, 13u, 48u})
+  {
+    against_serial(threads, SIZE_MAX, "-threads " + std::to_string(threads) + ": ");
+  }
+
+  // THE CAP. Uncapped, the match block was 16 x threads frames -- the whole run
+  // once threads reach frames/16 -- and nothing charged it to a budget. Driven
+  // here at budgets that force every path: 0 (one decode per block, the serial
+  // floor), one that refuses decodes while the residual prefix is open (four
+  // 16 MB unit buffers per decode) and admits a second decode after it closes,
+  // and two decodes' worth. Output must not move; blocks must.
+  {
+    const std::size_t decodes = (FRAMES + 63) / 64;
+    const auto z = against_serial(48, 0, "-threads 48, block budget 0: ");
+    check(z.match_blocks == decodes && z.max_block_bytes <= decode_bytes,
+          "budget 0: one decode per match block (" + std::to_string(z.match_blocks) + " blocks)");
+    check(z.carried == 0 && z.max_held_bytes == z.max_block_bytes,
+          "budget 0: no decode carried, so no more held than the serial path's one decode");
+    const auto one = against_serial(48, decode_bytes + decode_bytes / 2,
+                                    "-threads 48, block budget 1.5 decodes: ");
+    check(one.match_blocks > 1 && one.match_blocks < decodes,
+          "1.5 decodes: carried decodes split the run into " +
+          std::to_string(one.match_blocks) + " blocks (uncapped: 1)");
+    // While the prefix is open each decode brings four 16 MiB unit buffers,
+    // more than the cap: only the first decode of a block (the floor) gets in.
+    check(one.max_resid_bytes > 0 && one.max_resid_bytes <= 4 * (std::size_t(1) << 21) * sizeof(double),
+          "1.5 decodes: residual buffers no more than one decode's four units (" +
+          std::to_string(one.max_resid_bytes) + " B)");
+    const auto two = against_serial(13, 2 * decode_bytes, "-threads 13, block budget 2 decodes: ");
+    check(two.match_blocks >= 3, "2 decodes at -threads 13: " +
+          std::to_string(two.match_blocks) + " blocks");
+  }
+
+  // THE CARRY. A decode is predicted from the largest so far, so it is carried
+  // only when it outgrows every earlier one: frames 64-127 are four times as
+  // dense as the rest. No residual requested (the prefix would stay open and
+  // keep every block at one decode). Blocks [0,64) | carried [64,128) |
+  // [128,192) | [192,200): the dense decode is refused after being made.
+  {
+    ScriptedMs1Run vary;
+    Lcg r{11};
+    const auto& p = lib.precursors();
+    for (std::size_t f = 0; f < 200; ++f)
+    {
+      ODIA::SpectrumInfo si;
+      si.index = f;
+      si.retention_time = 1.8 * static_cast<double>(f);
+      si.ms_level = 1;
+      vary.ms1_info.push_back(si);
+      ODIA::SpectrumPeaks sp;
+      const std::size_t npk = (f >= 64 && f < 128) ? 8000 : 2000;
+      for (std::size_t k = 0; k < npk; ++k)
+      {
+        const std::size_t i = (f * 37 + r.next() % 4000) % PRECURSORS;
+        const double target = ODIA::fromFixed(p.mz[i]);
+        sp.mz.push_back(target * (1.0 + (r.unit() - 0.5) * 8.0e-6));
+        sp.intensity.push_back(static_cast<float>(1.0 + 1e5 * r.unit()));
+        const double lib_im = std::isnan(p.im[i]) ? 1.0 : p.im[i];
+        sp.ion_mobility.push_back(static_cast<float>(lib_im + IM_WINDOW * (2.0 * r.unit() - 1.0)));
+      }
+      vary.ms1_peaks.push_back(std::move(sp));
+    }
+    const std::size_t small = 64 * 2000 * (sizeof(double) + 2 * sizeof(float));
+    const auto ref = ODIA::Ms1Traces::build(lib, vary, PPM, IM_WINDOW, 0.0, nullptr, 0.0,
+                                            nullptr, nullptr, 1);
+    const auto serial_vary_asked = vary.asked;
+    vary.asked.clear();
+    const auto cut = ODIA::Ms1Traces::build(lib, vary, PPM, IM_WINDOW, 0.0, nullptr, 0.0,
+                                            nullptr, nullptr, 48, small + small / 2);
+    const auto& cs = cut.buildStats();
+    std::printf("      %s\n", cut.describeBuild().c_str());
+    check(cut.checksum() == ref.checksum(), "carry: checksum equals serial");
+    check(vary.asked == serial_vary_asked, "carry: decoder asked for the serial ranges");
+    check(cs.carried == 1, "carry: exactly the dense decode was carried (" +
+          std::to_string(cs.carried) + ")");
+    check(cs.match_blocks == 4, "carry: 4 match blocks (" + std::to_string(cs.match_blocks) + ")");
+    check(cs.max_held_bytes == small + 4 * small && cs.max_block_bytes == 4 * small,
+          "carry: held at once = refused block + carried decode, never more");
   }
 
   // The -out_ms1_iso path: a keep mask (compact rows, slot != library index)

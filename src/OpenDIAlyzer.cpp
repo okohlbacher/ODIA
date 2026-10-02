@@ -1887,12 +1887,16 @@ protected:
           double ms1_resid = std::numeric_limits<double>::quiet_NaN();
           // -threads reaches the match only; decode stays on this thread.
           // Output is identical at every count (Ms1Traces.cpp, odia_ms1_parallel).
+          // The parallel match's extra decoded block is charged to the same
+          // budget: it may use what the matrix leaves, never more (review
+          // round 2 -- uncapped, it grew with -threads to the whole run).
           ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                                options.precursor_im_window *
                                                  getDoubleOption_("ms1_im_scale"),
                                                ms1PpmCentre_(), &ms1_resid, 0.0,
                                                nullptr, nullptr,
-                                               ms1Threads_(options.threads));
+                                               ms1Threads_(options.threads),
+                                               ms1BlockBudget_(cap, need));
           {
             // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
             // which is a hypothesis: the instrument need not err identically on
@@ -1969,6 +1973,12 @@ protected:
       const double iso_im = options.precursor_im_window * getDoubleOption_("ms1_im_scale");
       static constexpr double NEUTRON_DA = 1.003355;
       std::vector<std::uint32_t> kept_rows;
+      // Charged like the scorer's build: the budget less the scorer's matrix
+      // and the three cohort matrices, the last of which is being built.
+      const std::size_t iso_block_budget = ms1BlockBudget_(
+        double(options.live_memory_budget_bytes),
+        double(ms1_traces_.footprintBytes()) +
+          3.0 * double(kept_n) * double(source->ms1Spectra().size()) * 4.0);
       ODIA::Ms1Traces iso[3];
       for (int k = 0; k < 3; ++k)
       {
@@ -1976,7 +1986,7 @@ protected:
         iso[k] = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                         iso_im, ms1PpmCentre_(), nullptr,
                                         k * NEUTRON_DA, &mask, rows_out,
-                                        ms1Threads_(options.threads));
+                                        ms1Threads_(options.threads), iso_block_budget);
       }
       try
       {
@@ -5752,6 +5762,22 @@ private:
       return static_cast<unsigned>(std::max(1L, std::strtol(v, nullptr, 10)));
     }
     return threads;
+  }
+
+  /// What the MS1 build's parallel match may hold beyond one 64-frame decode:
+  /// the memory budget @p cap less what is already charged to it (@p need),
+  /// or SIZE_MAX (Ms1Traces::MAX_BLOCK_BYTES alone) when there is no budget.
+  /// ODIA_MS1_BLOCK_MB lowers it further -- for the identity gate alone, which
+  /// must drive the capped, carried-decode path on a fixture whose whole run
+  /// would otherwise fit in one block. Output is identical at every value.
+  static std::size_t ms1BlockBudget_(double cap, double need)
+  {
+    std::size_t b = cap > 0.0 ? std::size_t(std::max(0.0, cap - need)) : SIZE_MAX;
+    if (const char* v = std::getenv("ODIA_MS1_BLOCK_MB"); v != nullptr && *v != '\0')
+    {
+      b = std::min(b, std::size_t(std::max(0L, std::strtol(v, nullptr, 10))) << 20);
+    }
+    return b;
   }
 
   /// p95 residual of an ACCEPTED retention-time seed, seconds; 0 when none was
