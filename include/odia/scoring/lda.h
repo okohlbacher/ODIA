@@ -201,6 +201,39 @@ struct LDAParams
                             ///< with its own arbitrary scale and offset, so the raw scores are not
                             ///< comparable across folds; pooling them into one ranking without this
                             ///< mixes incommensurable scales.
+
+  // ---- v1.18 learner fixes (round-2 reviews, doc/83-reviews), each DEFAULT-OFF -------------------
+  // Each is separately toggleable and, when off, leaves every operation of the native path as it
+  // was: the new code runs only inside `if (flag)` branches and the default branch is the old code.
+  // The GBT-level fixes (class balance, depth semantics, stump reporting, missing bin) live in
+  // GBTParams; these are the loop-level ones.
+
+  /// Training negatives (and the seed and every training ranking) drawn from the SAME candidate
+  /// prefix the final ranking uses. `match_decoy_candidate_counts` builds `draw_from` and applies it
+  /// only when the final q-values are assigned, so the learner is trained against best-of-ALL decoy
+  /// rows while the FDR is computed against best-of-N: the negative class it learns is harder than
+  /// the null it is judged by. A no-op unless match_decoy_candidate_counts is on.
+  bool match_training_draw = false;
+  /// gbt only: keep non-finite feature cells as NaN into the GBT (which then routes them to a
+  /// dedicated missing bin, GBTParams::missing_bin) instead of imputing them to the column mean
+  /// before the classifier sees them. Natively the GBT's missing handling is unreachable from here.
+  /// Ignored, with a note, for the lda and nn learners, which cannot take NaN.
+  bool gbt_keep_missing = false;
+  /// Per-fold calibration on the fold's EMPIRICAL decoy tail instead of mean/sd (or rank) pooling:
+  /// DScore = -log10((1 + C(x)) / (1 + N_d)), C(x) = the number of the fold's held-out decoy groups
+  /// (best over their drawn prefix, as the final q-values rank them) scoring >= x, interpolated
+  /// linearly between decoy knots so it is strictly monotone within a fold, and extrapolated above
+  /// the top decoy with the fold's own exponential tail slope (fitted through its top 1% of decoys)
+  /// so the head is not one big tie. Mean/sd does not make heavy-tailed GBT margins comparable
+  /// across folds; a tail probability does, up to the tail extrapolation. Takes precedence over
+  /// fold_pool_rank. Not combinable with -classifier_model_in/_out.
+  bool fold_tail_calibration = false;
+  /// Repeated out-of-fold ensembles: run the whole K-fold training this many times with fold seeds
+  /// seed, seed+1, ..., and average each row's (fold-normalised) out-of-fold score over the
+  /// repeats. Every repeat scores a row only with a model that never saw its group, so the average
+  /// is still honest out-of-fold. 1 = off (one partition, the native path). Not combinable with
+  /// -classifier_model_in/_out.
+  int oof_repeats = 1;
 };
 
 /// Semi-supervised LDA scoring with cross-validation and target-decoy q-values.
@@ -235,6 +268,15 @@ inline double dot(const std::vector<double>& a, const std::vector<double>& b)
 {
   double result = 0.0;
   for (std::size_t j = 0; j < a.size(); ++j) { result += a[j] * b[j]; }
+  return result;
+}
+
+/// dot() with a non-finite cell of `b` read as 0 (the imputed mean). Only for the v1.18
+/// gbt_keep_missing path, where z carries NaN and the one-feature bootstrap may still rank.
+inline double dotFinite(const std::vector<double>& a, const std::vector<double>& b)
+{
+  double result = 0.0;
+  for (std::size_t j = 0; j < a.size(); ++j) { if (std::isfinite(b[j])) { result += a[j] * b[j]; } }
   return result;
 }
 
@@ -501,11 +543,29 @@ inline ScoredGroups scoreSemiSupervisedLDA(
       sd[j] = 1.0;
     }
   }
+  // v1.18 gbt_keep_missing: the gbt learner alone can take NaN, so only it gets them.
+  const bool keep_missing =
+    params.gbt_keep_missing && params.classifier == LDAParams::Classifier::GBT;
+  if (params.gbt_keep_missing && !keep_missing)
+  {
+    std::fprintf(stderr, "[lda] gbt_keep_missing is honoured by the gbt learner only; this learner "
+                         "imputes missing cells as usual\n");
+  }
   for (std::size_t i = 0; i < n; ++i)
   {
     for (std::size_t j = 0; j < m; ++j)
     {
       z[i][j] = std::isfinite(features[i][j]) ? (features[i][j] - mean[j]) / sd[j] : 0.0;
+    }
+  }
+  if (keep_missing)
+  {
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      for (std::size_t j = 0; j < m; ++j)
+      {
+        if (!std::isfinite(features[i][j])) { z[i][j] = std::numeric_limits<double>::quiet_NaN(); }
+      }
     }
   }
 
@@ -551,20 +611,29 @@ inline ScoredGroups scoreSemiSupervisedLDA(
   const auto by_id = [&](std::size_t a, std::size_t b) { return group_id[a] < group_id[b]; };
   std::sort(target_groups.begin(), target_groups.end(), by_id);
   std::sort(decoy_groups.begin(), decoy_groups.end(), by_id);
-  std::mt19937 rng(params.seed);
-  std::shuffle(target_groups.begin(), target_groups.end(), rng);
-  std::shuffle(decoy_groups.begin(), decoy_groups.end(), rng);
   std::vector<int> group_fold(group_count, 0);
-  for (std::size_t i = 0; i < target_groups.size(); ++i)
-  {
-    group_fold[target_groups[i]] =
-      static_cast<int>(i % static_cast<std::size_t>(folds));
-  }
-  for (std::size_t i = 0; i < decoy_groups.size(); ++i)
-  {
-    group_fold[decoy_groups[i]] =
-      static_cast<int>(i % static_cast<std::size_t>(folds));
-  }
+  // One partition per fold seed. Shuffles COPIES of the id-sorted lists, so every call is a
+  // function of (data, fold_seed) alone; called once with params.seed this is exactly the native
+  // assignment (same input order, same generator, same draws). v1.18 oof_repeats calls it again
+  // with seed+1, seed+2, ...
+  auto assign_folds = [&](unsigned fold_seed) {
+    std::vector<std::size_t> tg = target_groups;
+    std::vector<std::size_t> dg = decoy_groups;
+    std::mt19937 rng(fold_seed);
+    std::shuffle(tg.begin(), tg.end(), rng);
+    std::shuffle(dg.begin(), dg.end(), rng);
+    for (std::size_t i = 0; i < tg.size(); ++i)
+    {
+      group_fold[tg[i]] =
+        static_cast<int>(i % static_cast<std::size_t>(folds));
+    }
+    for (std::size_t i = 0; i < dg.size(); ++i)
+    {
+      group_fold[dg[i]] =
+        static_cast<int>(i % static_cast<std::size_t>(folds));
+    }
+  };
+  assign_folds(params.seed);
 
   // Folds are independent BY CONSTRUCTION: fold f trains on the groups not assigned to f and writes
   // result.dscore only for the rows of groups that ARE assigned to f. So no two iterations read or
@@ -584,6 +653,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
   // depend on this number (odia_gbt_test T8), so it is purely a speed knob.
   GBTParams gbt_params = params.gbt;
   NNParams nn_params = params.nn;
+  if (keep_missing) { gbt_params.missing_bin = true; }
   // Threads for the NESTED regions inside the fold loop. Computed once and applied to every one of
   // them: the training loop already honoured it, but the per-group scans did not, so each of the 3
   // concurrent folds opened teams of the FULL thread count -- 540 threads on 224 cores at
@@ -625,6 +695,19 @@ inline ScoredGroups scoreSemiSupervisedLDA(
   // path pools folds on. Rows the saving run never saw are, by construction,
   // out of sample for every fold model.
   const bool gbt_engine = (params.classifier == LDAParams::Classifier::GBT);
+  // v1.18: the saved format carries ONE partition, mean/sd fold normalisation and version-1 NaN
+  // binning. A run that used any of the loop-level v1.18 flags cannot be saved or applied
+  // faithfully in it, so it is REFUSED -- loudly, as "fitted 0 iterations" -- rather than written
+  // or applied in a form that scores differently from the run.
+  if ((keep_missing || params.fold_tail_calibration || params.oof_repeats > 1) &&
+      (!model_in.empty() || !model_out.empty()))
+  {
+    std::fprintf(stderr, "[lda] REFUSED: -gbt_missing_bin, -fold_tail_calibration and "
+                         "-classifier_oof_repeats > 1 are not combinable with "
+                         "-classifier_model_in/-classifier_model_out; no scores produced\n");
+    result.n_iterations_skipped = 1;
+    return result;
+  }
   std::vector<GBT> fold_models;
   std::vector<double> fold_norm_mu, fold_norm_sigma;
   bool frozen_applied = false;
@@ -830,6 +913,27 @@ inline ScoredGroups scoreSemiSupervisedLDA(
 
   if (!frozen_applied)
   {
+  // v1.18 oof_repeats: K independent partitions, each row's out-of-fold score averaged over them.
+  // At 1 (the default) `dsc` IS result.dscore and the loop body runs once on the native
+  // partition, so the arithmetic is the native arithmetic on the same memory.
+  const int oof_reps = std::max(1, params.oof_repeats);
+  std::vector<double> rep_dscore, rep_acc;
+  if (oof_reps > 1) { rep_acc.assign(n, 0.0); }
+  if (params.fold_tail_calibration && params.fold_pool_rank)
+  {
+    std::fprintf(stderr, "[lda] -fold_tail_calibration and -fold_pool_rank both set: the tail "
+                         "calibration is applied, rank pooling is not\n");
+  }
+  if (params.match_training_draw && !params.match_decoy_candidate_counts)
+  {
+    std::fprintf(stderr, "[lda] match_training_draw has no effect without decoy candidate-count "
+                         "matching (it is off in this run)\n");
+  }
+  for (int rep = 0; rep < oof_reps; ++rep)
+  {
+  if (rep > 0) { assign_folds(params.seed + static_cast<unsigned>(rep)); }
+  if (oof_reps > 1) { rep_dscore.assign(n, 0.0); }
+  std::vector<double>& dsc = (oof_reps > 1) ? rep_dscore : result.dscore;
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 1) reduction(+ : n_trained, n_skipped)
 #endif
@@ -954,7 +1058,8 @@ inline ScoredGroups scoreSemiSupervisedLDA(
     std::vector<double> w(m, 0.0);
     auto score_row = [&](std::size_t row) -> double {
       if (use_nn && !nn_members.empty()) { return baggedScore(nn_members, z[row]); }
-      return (use_gbt && gbt.trained()) ? gbt.score(z[row]) : lda_detail::dot(w, z[row]);
+      if (use_gbt && gbt.trained()) { return gbt.score(z[row]); }
+      return keep_missing ? lda_detail::dotFinite(w, z[row]) : lda_detail::dot(w, z[row]);
     };
     // Fit whichever learner this run selected, on the given rows. `mask` is honoured by the NN
     // only -- for a tree, a feature the fit never split on is already inert at scoring time, and
@@ -1014,10 +1119,25 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         const auto& rows_of_g = group_rows[groups[static_cast<std::size_t>(i)]];
         std::size_t best_row = rows_of_g.front();
         double best = score_row(best_row);
-        for (const std::size_t row : rows_of_g)
+        if (!params.match_training_draw)
         {
-          const double sc = score_row(row);
-          if (sc > best) { best = sc; best_row = row; }
+          for (const std::size_t row : rows_of_g)
+          {
+            const double sc = score_row(row);
+            if (sc > best) { best = sc; best_row = row; }
+          }
+        }
+        else
+        {
+          // v1.18: the same canonical-order prefix the final ranking draws from (draw_from is the
+          // full group for targets, and for every group when matching is off).
+          const std::size_t take =
+            std::min(draw_from[groups[static_cast<std::size_t>(i)]], rows_of_g.size());
+          for (std::size_t k = 0; k < take; ++k)
+          {
+            const double sc = score_row(rows_of_g[k]);
+            if (sc > best) { best = sc; best_row = rows_of_g[k]; }
+          }
         }
         out[static_cast<std::size_t>(i)] = best_row;
         out_score[static_cast<std::size_t>(i)] = best;
@@ -1042,6 +1162,8 @@ inline ScoredGroups scoreSemiSupervisedLDA(
       std::size_t class_n[2] = {0, 0};
       for (const std::size_t row : train_rows)
       {
+        // v1.18 gbt_keep_missing: a NaN cell is missing, not a value; native z is always finite.
+        if (keep_missing && !std::isfinite(z[row][j])) { continue; }
         const int cls = labels[row] == 1 ? 1 : 0;
         sum[cls] += z[row][j];
         sum_sq[cls] += z[row][j] * z[row][j];
@@ -1312,7 +1434,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
 
     // This model has seen no row from the groups scored.
     //
-    // Parallel over groups: each iteration writes result.dscore at indices belonging to ITS OWN
+    // Parallel over groups: each iteration writes dsc at indices belonging to ITS OWN
     // group and reads only the (now fixed) model, so there is no reduction, no shared accumulator,
     // and no ordering question -- the output is bit-identical to the serial loop at any thread
     // count. Worth doing because for the NN this is one forward pass per row through 12 nets, and
@@ -1330,7 +1452,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
     {
       for (const std::size_t row : group_rows[score_groups[static_cast<std::size_t>(k)]])
       {
-        result.dscore[row] = score_row(row);
+        dsc[row] = score_row(row);
       }
     }
 
@@ -1357,10 +1479,10 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         std::size_t best_row = group_rows[g].front();
         for (const std::size_t row : group_rows[g])
         {
-          if (result.dscore[row] > result.dscore[best_row]) { best_row = row; }
+          if (dsc[row] > dsc[best_row]) { best_row = row; }
         }
-        sum += result.dscore[best_row];
-        sum_sq += result.dscore[best_row] * result.dscore[best_row];
+        sum += dsc[best_row];
+        sum_sq += dsc[best_row] * dsc[best_row];
         ++decoy_n;
       }
       double mu = 0.0, sigma = 0.0;
@@ -1382,7 +1504,70 @@ inline ScoredGroups scoreSemiSupervisedLDA(
         // scores unscaled is the only honest option, and shifting them alone would be worse.
         affine_ok = (sigma > std::numeric_limits<double>::epsilon() && std::isfinite(sigma));
       }
-      if (params.fold_pool_rank)
+      // v1.18: the fold's empirical decoy-tail calibration (see LDAParams::fold_tail_calibration).
+      // Falls back to the affine rule when the fold has fewer than two decoy groups.
+      bool tail_done = false;
+      if (params.fold_tail_calibration)
+      {
+        std::vector<double> null;
+        for (std::size_t g = 0; g < group_count; ++g)
+        {
+          if (group_fold[g] != fold || group_label[g] == 1) { continue; }
+          const std::size_t take = std::min(draw_from[g], group_rows[g].size());
+          double best = -std::numeric_limits<double>::infinity();
+          for (std::size_t k = 0; k < take; ++k) { best = std::max(best, dsc[group_rows[g][k]]); }
+          if (std::isfinite(best)) { null.push_back(best); }
+        }
+        std::sort(null.begin(), null.end(), std::greater<double>());
+        const std::size_t nd = null.size();
+        if (nd >= 2)
+        {
+          const double eps = std::numeric_limits<double>::epsilon();
+          const double log_n1 = std::log10(static_cast<double>(nd) + 1.0);
+          // decoys >= v, for a knot value v (ties counted): the descending array's upper bound
+          auto count_ge = [&](double v) -> std::size_t {
+            return static_cast<std::size_t>(
+              std::upper_bound(null.begin(), null.end(), v, std::greater<double>()) - null.begin());
+          };
+          auto s_of_count = [&](double c) { return log_n1 - std::log10(1.0 + c); };
+          const double s_top = s_of_count(static_cast<double>(count_ge(null[0])));
+          // Exponential tail above the top decoy, slope fitted through the top 1% (>= 1 decoy).
+          const std::size_t kt = std::min(nd - 1, std::max<std::size_t>(1, nd / 100));
+          double slope = 0.0;
+          if (null[0] - null[kt] > eps)
+          { slope = (s_top - s_of_count(static_cast<double>(count_ge(null[kt])))) / (null[0] - null[kt]); }
+          else if (null[0] - null[nd - 1] > eps)
+          { slope = (s_top - s_of_count(static_cast<double>(nd))) / (null[0] - null[nd - 1]); }
+          if (!(slope > eps) || !std::isfinite(slope)) { slope = 1.0; }
+          // Below the lowest decoy: keep counting down linearly at the null's mean knot spacing.
+          const double tau_lo = (null[0] - null[nd - 1] > eps)
+                                  ? (null[0] - null[nd - 1]) / static_cast<double>(nd) : 1.0;
+          auto calib = [&](double x) -> double {
+            if (!std::isfinite(x)) { return x; }
+            if (x > null[0]) { return s_top + slope * (x - null[0]); }
+            if (x < null[nd - 1]) { return s_of_count(static_cast<double>(nd) + (null[nd - 1] - x) / tau_lo); }
+            const std::size_t k = count_ge(x);   // decoys >= x
+            if (k > 0 && null[k - 1] == x) { return s_of_count(static_cast<double>(k)); }
+            // strictly between null[k] (below, tied m times) and null[k-1] (above, count k)
+            const double hi = null[k - 1], lo = null[k];
+            const double m = static_cast<double>(count_ge(lo) - k);
+            return s_of_count(static_cast<double>(k) + m * (hi - x) / (hi - lo));
+          };
+          for (std::size_t g = 0; g < group_count; ++g)
+          {
+            if (group_fold[g] != fold) { continue; }
+            for (const std::size_t row : group_rows[g]) { dsc[row] = calib(dsc[row]); }
+          }
+          tail_done = true;
+        }
+        else
+        {
+          std::fprintf(stderr, "[lda] fold %d: %zu decoy groups, too few for the tail calibration; "
+                               "falling back to the decoy mean/sd\n", fold, nd);
+        }
+      }
+      if (tail_done) {}
+      else if (params.fold_pool_rank && !params.fold_tail_calibration)
       {
         // v1.13: within-fold rank pooling. Knots = every group's best in THIS fold (targets over all
         // rows, decoys over their drawn prefix -- exactly what assignQValues ranks), sorted descending.
@@ -1398,7 +1583,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
           const std::size_t take = (group_label[g] == 1) ? group_rows[g].size()
                                                          : std::min(draw_from[g], group_rows[g].size());
           double best = -std::numeric_limits<double>::infinity();
-          for (std::size_t k = 0; k < take; ++k) { best = std::max(best, result.dscore[group_rows[g][k]]); }
+          for (std::size_t k = 0; k < take; ++k) { best = std::max(best, dsc[group_rows[g][k]]); }
           if (std::isfinite(best)) { knots.push_back(best); }
         }
         std::sort(knots.begin(), knots.end(), std::greater<double>());
@@ -1411,7 +1596,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
             if (group_fold[g] != fold) { continue; }
             for (const std::size_t row : group_rows[g])
             {
-              const double v = result.dscore[row];
+              const double v = dsc[row];
               const std::size_t k = static_cast<std::size_t>(
                 std::upper_bound(knots.begin(), knots.end(), v, std::greater<double>()) - knots.begin());
               double frac;
@@ -1423,7 +1608,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
               else
               { frac = 1.0 + (knots[n_f - 1] - v) / (1.0 + knots[n_f - 2] - knots[n_f - 1]); }
               frac = std::max(frac, 1e-12);
-              result.dscore[row] = -std::log10(frac);
+              dsc[row] = -std::log10(frac);
             }
           }
         }
@@ -1435,13 +1620,26 @@ inline ScoredGroups scoreSemiSupervisedLDA(
           if (group_fold[g] != fold) { continue; }
           for (const std::size_t row : group_rows[g])
           {
-            result.dscore[row] = (result.dscore[row] - mu) / sigma;
+            dsc[row] = (dsc[row] - mu) / sigma;
           }
         }
       }
     }
   }
 
+  if (oof_reps > 1)
+  {
+    for (std::size_t i = 0; i < n; ++i) { rep_acc[i] += rep_dscore[i]; }
+  }
+  }   // rep
+  if (oof_reps > 1)
+  {
+    const double k = static_cast<double>(oof_reps);
+    for (std::size_t i = 0; i < n; ++i) { result.dscore[i] = rep_acc[i] / k; }
+    std::fprintf(stderr, "[lda] out-of-fold ensemble: %d partitions (fold seeds %u..%u), each row's "
+                         "fold-normalised score averaged\n",
+                 oof_reps, params.seed, params.seed + static_cast<unsigned>(oof_reps - 1));
+  }
   }   // if (!frozen_applied): the training path
 
   // ---- SAVE, gbt engine only ----

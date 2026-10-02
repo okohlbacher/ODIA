@@ -2726,74 +2726,17 @@ namespace
   /// deleted somewhere.
   bool PeakGroupScorer::refitsChangeScores() { return false; }
 
-  void PeakGroupScorer::fitAndAssign_(const Library& library, Result& result,
-                                      const Options& options)
+  /// The classifier parameters of a scoring pass, from its Options. Moved verbatim out of
+  /// PeakGroupScorer::fitAndAssign_ (v1.18) so the engine and the offline replay share one
+  /// construction; the statements and their order are unchanged.
+  Scoring::LDAParams classifierParamsFor(const PeakGroupScorer::Options& options)
   {
-    const std::size_t n_precursors = library.precursorCount();
-    // PART 4 step 1: "Columns that are constant or all-missing are dropped."
-    //
-    // BEFORE the feature matrix is built, not after. This block only zeroes
-    // `result.groups`, so building `features` first meant the classifier
-    // received the original constants and NaNs while the log announced they had
-    // been dropped -- and a later refit(), which rebuilds from the now-zeroed
-    // groups, silently trained on different inputs from the first fit.
-    //
-    // Not implemented until now, and it bites today: USABLE_FRAGMENTS is a
-    // constant 12.000 (a trace is degenerate only if constant, and in a window
-    // where 45-60% of points are non-zero none ever is) and IM_DELTA is
-    // all-NaN (Options::observed_im was added as a plumbing point and never
-    // connected). A constant column makes the within-class covariance singular,
-    // which the ridge then papers over silently; for the tree it is a wasted
-    // split candidate. Either way the discriminant is asked to learn from a
-    // column carrying no information.
-    {
-      std::vector<char> useful(N_SUB_SCORES, 0);
-      std::vector<double> first(N_SUB_SCORES, 0.0);
-      std::vector<char> seen(N_SUB_SCORES, 0);
-      for (const auto& g : result.groups)
-      {
-        for (std::size_t j = 0; j < N_SUB_SCORES && j < g.sub_scores.size(); ++j)
-        {
-          const double v = g.sub_scores[j];
-          if (!std::isfinite(v)) { continue; }
-          if (!seen[j]) { seen[j] = 1; first[j] = v; }
-          else if (v != first[j]) { useful[j] = 1; }
-        }
-      }
-      std::vector<std::size_t> dropped;
-      for (std::size_t j = 0; j < N_SUB_SCORES; ++j)
-      {
-        if (!useful[j]) { dropped.push_back(j); }
-      }
-      if (!dropped.empty())
-      {
-        std::ostringstream d;
-        d << "dropping " << dropped.size() << " sub-score(s) carrying no information:";
-        for (const std::size_t j : dropped) { d << ' ' << subScoreNames()[j]; }
-        std::fprintf(stderr, "%s\n", d.str().c_str());
-        // Zeroed rather than removed: the column indices are a contract with
-        // subScoreNames(), nonpositive_features and seed_mask, and renumbering
-        // them here would silently misalign all three.
-        for (auto& g : result.groups)
-        {
-          for (const std::size_t j : dropped) { g.sub_scores[j] = 0.0; }
-        }
-      }
-    }
-
-    std::vector<std::vector<double>> features;
-    std::vector<int> labels;
-    std::vector<long long> group;
-    features.reserve(result.groups.size());
-    labels.reserve(result.groups.size());
-    group.reserve(result.groups.size());
-    for (const auto& g : result.groups)
-    {
-      features.push_back(g.sub_scores);
-      labels.push_back(g.decoy ? 0 : 1);
-      group.push_back(static_cast<long long>(g.precursor));
-    }
-
+    using PGS = PeakGroupScorer;
+    constexpr auto XCORR_COELUTION = PGS::XCORR_COELUTION;
+    constexpr auto LIBRARY_RMSD = PGS::LIBRARY_RMSD;
+    constexpr auto IM_DELTA = PGS::IM_DELTA;
+    constexpr auto CORR_SUM = PGS::CORR_SUM;
+    constexpr auto N_SUB_SCORES = PGS::N_SUB_SCORES;
     Scoring::LDAParams params;
     // These three were registered, parsed, and stored in Options -- and never
     // copied here, so `-use_pi0`, `-train_fdr` and `-train_fdr_initial` silently
@@ -2977,6 +2920,93 @@ namespace
       params.classifier = Scoring::LDAParams::Classifier::NN;
       params.nn.n_threads = static_cast<int>(options.threads);
     }
+
+    // v1.18 learner fixes. Set AFTER the classifier branch above, which replaces params.gbt
+    // wholesale for `xgboost` and would otherwise drop them. Every value assigned here is the
+    // LDAParams/GBTParams default unless its flag was given, so a flag-off run builds exactly the
+    // params it built before.
+    params.gbt.class_balance = options.classifier_class_balance;
+    params.gbt.depth_fix = options.gbt_depth_fix;
+    params.gbt.stop_on_stump = options.gbt_stop_on_stump;
+    params.gbt_keep_missing = options.gbt_missing_bin;
+    params.match_training_draw = options.classifier_matched_train_draw;
+    params.fold_tail_calibration = options.fold_tail_calibration;
+    params.oof_repeats = std::max(1, options.classifier_oof_repeats);
+    return params;
+  }
+
+  void PeakGroupScorer::fitAndAssign_(const Library& library, Result& result,
+                                      const Options& options)
+  {
+    const std::size_t n_precursors = library.precursorCount();
+    // PART 4 step 1: "Columns that are constant or all-missing are dropped."
+    //
+    // BEFORE the feature matrix is built, not after. This block only zeroes
+    // `result.groups`, so building `features` first meant the classifier
+    // received the original constants and NaNs while the log announced they had
+    // been dropped -- and a later refit(), which rebuilds from the now-zeroed
+    // groups, silently trained on different inputs from the first fit.
+    //
+    // Not implemented until now, and it bites today: USABLE_FRAGMENTS is a
+    // constant 12.000 (a trace is degenerate only if constant, and in a window
+    // where 45-60% of points are non-zero none ever is) and IM_DELTA is
+    // all-NaN (Options::observed_im was added as a plumbing point and never
+    // connected). A constant column makes the within-class covariance singular,
+    // which the ridge then papers over silently; for the tree it is a wasted
+    // split candidate. Either way the discriminant is asked to learn from a
+    // column carrying no information.
+    {
+      std::vector<char> useful(N_SUB_SCORES, 0);
+      std::vector<double> first(N_SUB_SCORES, 0.0);
+      std::vector<char> seen(N_SUB_SCORES, 0);
+      for (const auto& g : result.groups)
+      {
+        for (std::size_t j = 0; j < N_SUB_SCORES && j < g.sub_scores.size(); ++j)
+        {
+          const double v = g.sub_scores[j];
+          if (!std::isfinite(v)) { continue; }
+          if (!seen[j]) { seen[j] = 1; first[j] = v; }
+          else if (v != first[j]) { useful[j] = 1; }
+        }
+      }
+      std::vector<std::size_t> dropped;
+      for (std::size_t j = 0; j < N_SUB_SCORES; ++j)
+      {
+        if (!useful[j]) { dropped.push_back(j); }
+      }
+      if (!dropped.empty())
+      {
+        std::ostringstream d;
+        d << "dropping " << dropped.size() << " sub-score(s) carrying no information:";
+        for (const std::size_t j : dropped) { d << ' ' << subScoreNames()[j]; }
+        std::fprintf(stderr, "%s\n", d.str().c_str());
+        // Zeroed rather than removed: the column indices are a contract with
+        // subScoreNames(), nonpositive_features and seed_mask, and renumbering
+        // them here would silently misalign all three.
+        for (auto& g : result.groups)
+        {
+          for (const std::size_t j : dropped) { g.sub_scores[j] = 0.0; }
+        }
+      }
+    }
+
+    std::vector<std::vector<double>> features;
+    std::vector<int> labels;
+    std::vector<long long> group;
+    features.reserve(result.groups.size());
+    labels.reserve(result.groups.size());
+    group.reserve(result.groups.size());
+    for (const auto& g : result.groups)
+    {
+      features.push_back(g.sub_scores);
+      labels.push_back(g.decoy ? 0 : 1);
+      group.push_back(static_cast<long long>(g.precursor));
+    }
+
+    // Built by classifierParamsFor() -- the SAME function odia_scorer_replay calls, so an offline
+    // replay of -out_scorer_input cannot drift from the engine's own parameter construction.
+    const Scoring::LDAParams params = classifierParamsFor(options);
+
 
     // THE SCORING-ENGINE SEAM.
     //
