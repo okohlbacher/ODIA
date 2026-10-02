@@ -1883,10 +1883,14 @@ protected:
         else
         {
           double ms1_resid = std::numeric_limits<double>::quiet_NaN();
+          // -threads reaches the match only; decode stays on this thread.
+          // Output is identical at every count (Ms1Traces.cpp, odia_ms1_parallel).
           ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                                options.precursor_im_window *
                                                  getDoubleOption_("ms1_im_scale"),
-                                               ms1PpmCentre_(), &ms1_resid);
+                                               ms1PpmCentre_(), &ms1_resid, 0.0,
+                                               nullptr, nullptr,
+                                               ms1Threads_(options.threads));
           {
             // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
             // which is a hypothesis: the instrument need not err identically on
@@ -1917,6 +1921,25 @@ protected:
       else
       {
         writeLogInfo_(ms1_traces_.describe() + ", in " + std::to_string(secs) + " s");
+        writeLogInfo_(ms1_traces_.describeBuild());
+        // The identity gate on the matrix itself, not through the scores: the
+        // scorer reads each row only inside its window, so a corrupted cell
+        // outside every window would pass a TSV md5. And on the residual LIST
+        // behind the logged median, since two lists can share a median (codex
+        // Q6.4(b)). An environment variable rather than -debug, which also
+        // turns up OpenMS's own logging; a full pass over 50 GiB on IH1, so
+        // never by default.
+        if (const char* want = std::getenv("ODIA_MS1_CHECKSUM"); want != nullptr && *want != '\0')
+        {
+          const auto& st = ms1_traces_.buildStats();
+          std::ostringstream c;
+          c << "MS1 matrix checksum " << std::hex << ms1_traces_.checksum() << std::dec
+            << " (" << ms1_traces_.precursors() << " rows x " << ms1_traces_.bins()
+            << " bins); residual list hash " << std::hex << st.resid_hash << std::dec
+            << " (" << st.resid_kept << " kept); matched on " << st.threads
+            << " thread(s), MS1 threads requested " << ms1Threads_(options.threads);
+          writeLogInfo_(c.str());
+        }
       }
     }
     sink.ms1Available(ms1_traces_.empty() ? nullptr : &ms1_traces_);
@@ -1950,7 +1973,8 @@ protected:
         std::vector<std::uint32_t>* rows_out = k == 0 ? &kept_rows : nullptr;
         iso[k] = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                         iso_im, ms1PpmCentre_(), nullptr,
-                                        k * NEUTRON_DA, &mask, rows_out);
+                                        k * NEUTRON_DA, &mask, rows_out,
+                                        ms1Threads_(options.threads));
       }
       try
       {
@@ -5710,6 +5734,22 @@ private:
   {
     const double v = getDoubleOption_("ms1_ppm_offset");
     return v < 1e8 ? v : extracted_ppm_offset_;
+  }
+
+  /// Threads for the MS1 trace match: -threads, unless ODIA_MS1_THREADS says
+  /// otherwise. The override exists for the identity gate alone (doc/83 F05):
+  /// ODIA_MS1_THREADS=1 runs the MS1 build down the serial path -- the old
+  /// loop, call for call -- inside an otherwise ordinary run, so the reference
+  /// matrix and residual hashes cost one fixture run (~30 min) instead of a
+  /// whole run at -threads 1. Not an option because there is nothing to tune:
+  /// the output is the same at every value.
+  unsigned ms1Threads_(unsigned threads) const
+  {
+    if (const char* v = std::getenv("ODIA_MS1_THREADS"); v != nullptr && *v != '\0')
+    {
+      return static_cast<unsigned>(std::max(1L, std::strtol(v, nullptr, 10)));
+    }
+    return threads;
   }
 
   /// p95 residual of an ACCEPTED retention-time seed, seconds; 0 when none was

@@ -94,18 +94,58 @@ namespace ODIA
     ///        GB at 4.99M precursors and is charged before extraction begins).
     ///        With @p keep, `at()` takes ROW indices, not library indices;
     ///        @p kept_indices receives the library index of each row.
+    /// @param threads  matching threads (decode stays on the caller's thread).
+    ///        0 and 1 are both serial. The matrix, the retained residual list
+    ///        and so its median are identical for every value -- see the loop
+    ///        for why, and `odia_ms1_parallel` for the test that holds it to
+    ///        that.
     static Ms1Traces build(const Library& library, SpectrumSource& source,
                            double fragment_ppm, double im_window,
                            double ppm_offset = 0.0,
                            double* observed_ppm_median = nullptr,
                            double isotope_offset_da = 0.0,
                            const std::vector<std::uint8_t>* keep = nullptr,
-                           std::vector<std::uint32_t>* kept_indices = nullptr);
+                           std::vector<std::uint32_t>* kept_indices = nullptr,
+                           unsigned threads = 1);
+
+    /// Where the build's wall went. Reported, never used for a decision.
+    ///
+    /// Exists because nothing split the 5,590 s the reference arm spent here
+    /// into decode and match (doc/83 F05): the decode is serial by
+    /// construction, so it is the floor a parallel match runs down to, and it
+    /// was only ever inferred.
+    struct BuildStats
+    {
+      std::size_t frames = 0;           ///< MS1 spectra matched
+      std::size_t blocks = 0;           ///< driver decode calls, 64 frames each
+      std::size_t units = 0;            ///< contiguous frame runs matched
+      std::size_t peaks = 0;            ///< decoded MS1 peaks, all frames
+      std::size_t max_block_bytes = 0;  ///< largest decoded block held at once
+      unsigned threads = 1;             ///< most threads any block matched on
+      double decode_s = 0.0;            ///< wall in source.ms1Peaks(), driver only
+      double match_s = 0.0;             ///< wall in matching, all blocks
+      /// The residual prefix behind the median, as kept (at most 2M samples)
+      /// and hashed in kept order before the median reorders it: the identity
+      /// gate is on the list, since two lists can share a median.
+      std::size_t resid_kept = 0;
+      std::uint64_t resid_hash = 0;
+    };
+    const BuildStats& buildStats() const { return stats_; }
+    std::string describeBuild() const;
+
+    /// A 64-bit hash of the shape, the time grid and every cell's bit pattern.
+    ///
+    /// For identity gates on the MATRIX itself rather than through the scorer,
+    /// which reads only rows inside a precursor's window and could hide a
+    /// difference outside it. A full pass over the matrix (50 GiB on IH1), so
+    /// the caller prints it only when asked (ODIA_MS1_CHECKSUM).
+    std::uint64_t checksum() const;
 
   private:
     std::vector<float> times_;
     std::vector<float> values_;      ///< precursor-major, `bins_` per precursor
     std::size_t bins_ = 0;
+    BuildStats stats_;
   };
 
 } // namespace ODIA

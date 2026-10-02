@@ -609,6 +609,15 @@ add_test(NAME extract_precursor_mobility COMMAND odia_extract_cases mobility)
 add_test(NAME extract_im_gating_is_independent COMMAND odia_extract_cases im_gating)
 add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 
+# Ms1Traces::build matches frames on several threads (doc/83 F05). The matrix,
+# the retained residual list (hashed) and its median must be bit-identical to
+# the serial build, and the decoder asked for the serial ranges, at every
+# thread count, on a scripted run that crosses the residual cap inside a unit
+# and has blocks that are not multiples of the 16-frame unit. Identity on
+# the fixture TSV alone would not show a wrong cell outside every precursor's
+# scoring window; this compares every cell.
+add_test(NAME ms1_parallel_identity COMMAND odia_ms1_parallel)
+
 # The sliding window, which is what stops memory scaling with the library: a
 # precursor's chromatogram is allocated when the pass reaches the start of its
 # retention-time window and freed when the pass leaves it. Twenty precursors
