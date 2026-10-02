@@ -99,6 +99,17 @@ namespace ODIA
     ///        and so its median are identical for every value -- see the loop
     ///        for why, and `odia_ms1_parallel` for the test that holds it to
     ///        that.
+    /// @param block_budget_bytes  how much MORE than the serial path the
+    ///        parallel match may hold at once: decoded peaks of a match block
+    ///        beyond its first 64-frame decode, plus the per-unit residual
+    ///        buffers. Further capped at MAX_BLOCK_BYTES, so the held block
+    ///        never grows with @p threads. The caller passes what the memory
+    ///        budget has left after the matrix; SIZE_MAX means "no budget",
+    ///        i.e. MAX_BLOCK_BYTES alone. 0 restricts every match block to one
+    ///        64-frame decode -- what the serial path holds -- and still
+    ///        matches it on @p threads (at most four units). Output is
+    ///        identical for every value: the block boundaries never reach a
+    ///        cell or the residual list.
     static Ms1Traces build(const Library& library, SpectrumSource& source,
                            double fragment_ppm, double im_window,
                            double ppm_offset = 0.0,
@@ -106,7 +117,14 @@ namespace ODIA
                            double isotope_offset_da = 0.0,
                            const std::vector<std::uint8_t>* keep = nullptr,
                            std::vector<std::uint32_t>* kept_indices = nullptr,
-                           unsigned threads = 1);
+                           unsigned threads = 1,
+                           std::size_t block_budget_bytes = SIZE_MAX);
+
+    /// Ceiling on the decoded bytes a parallel match block may hold beyond one
+    /// 64-frame decode, whatever the budget and -threads say. ~6 serial-size
+    /// blocks at the ~11 MiB per frame measured on PXD047793 (fixture, 2026-10-02),
+    /// i.e. ~20 sixteen-frame units per match block.
+    static constexpr std::size_t MAX_BLOCK_BYTES = std::size_t(4) << 30;
 
     /// Where the build's wall went. Reported, never used for a decision.
     ///
@@ -118,9 +136,17 @@ namespace ODIA
     {
       std::size_t frames = 0;           ///< MS1 spectra matched
       std::size_t blocks = 0;           ///< driver decode calls, 64 frames each
+      std::size_t match_blocks = 0;     ///< match blocks (one or more decodes each)
       std::size_t units = 0;            ///< contiguous frame runs matched
       std::size_t peaks = 0;            ///< decoded MS1 peaks, all frames
-      std::size_t max_block_bytes = 0;  ///< largest decoded block held at once
+      std::size_t max_block_bytes = 0;  ///< largest match block's decoded peaks
+      /// Most decoded bytes alive at once: a match block plus the decode that
+      /// did not fit it and is carried to the next one.
+      std::size_t max_held_bytes = 0;
+      /// Peak of the per-unit residual buffers' worst case charged to a block.
+      std::size_t max_resid_bytes = 0;
+      std::size_t block_cap_bytes = 0;  ///< the cap in force (budget vs MAX_BLOCK_BYTES)
+      std::size_t carried = 0;          ///< decodes that outgrew their block and moved to the next
       unsigned threads = 1;             ///< most threads any block matched on
       double decode_s = 0.0;            ///< wall in source.ms1Peaks(), driver only
       double match_s = 0.0;             ///< wall in matching, all blocks

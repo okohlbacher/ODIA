@@ -70,9 +70,14 @@ namespace ODIA
     std::ostringstream o;
     o.setf(std::ios::fixed);
     o.precision(1);
+    const double mib = 1048576.0;
     o << "MS1 build: " << stats_.frames << " frames in " << stats_.blocks
-      << " decoded blocks (largest " << stats_.max_block_bytes / 1048576.0 << " MiB, "
-      << stats_.peaks << " peaks in all); decode " << stats_.decode_s
+      << " decodes, " << stats_.match_blocks << " match blocks (largest "
+      << stats_.max_block_bytes / mib << " MiB, at most " << stats_.max_held_bytes / mib
+      << " MiB decoded at once, residual buffers <= " << stats_.max_resid_bytes / mib
+      << " MiB; cap " << stats_.block_cap_bytes / mib << " MiB beyond the first decode, "
+      << stats_.carried << " decode(s) carried), "
+      << stats_.peaks << " peaks in all; decode " << stats_.decode_s
       << " s on the driver, match " << stats_.match_s << " s over " << stats_.units
       << " frame runs on " << stats_.threads << " thread(s)";
     return o.str();
@@ -96,7 +101,7 @@ namespace ODIA
                              double isotope_offset_da,
                              const std::vector<std::uint8_t>* keep,
                              std::vector<std::uint32_t>* kept_indices,
-                             unsigned threads)
+                             unsigned threads, std::size_t block_budget_bytes)
   {
     Ms1Traces out;
     const auto& ms1 = source.ms1Spectra();
@@ -261,18 +266,41 @@ namespace ODIA
     // owns the frame. Adjacent units may share a cache LINE, which costs time,
     // never a race: distinct floats are distinct memory locations.
     //
-    // THE MATCH BLOCK GROWS WITH THE THREADS, MIN_RUN per thread; THE DECODE
-    // CALLS DO NOT. At the serial 64 frames a block holds only four units,
-    // which caps the speedup at 4x -- exactly F05's own FAIL bar -- and IH1
-    // has only 21 such blocks. So a match block is several decode blocks:
-    // `ms1Peaks` is still asked for [64k, 64k + 64), the very ranges the serial
-    // loop asks for, and the frames are moved into one vector. A decoded frame
-    // depends only on its own spectrum (MzPeakSource::ms1Peaks copies batch[k]
-    // into out[k]) but this way that is not even needed. The price is decoded
-    // peaks held at once, reported as `max_block_bytes` so the full run
-    // measures it instead of this comment guessing it. Threads are spawned per
-    // match block, not pooled as in the extractor: IH1 has 1,343 frames, so at
-    // -threads 48 that is two spawns against 3-4 s of matching per frame.
+    // THE MATCH BLOCK GROWS WITH THE THREADS, MIN_RUN per thread, UP TO A
+    // BYTE CAP; THE DECODE CALLS DO NOT GROW. At the serial 64 frames a block
+    // holds only four units, which caps the speedup at 4x -- exactly F05's own
+    // FAIL bar. So a match block is several decode blocks: `ms1Peaks` is still
+    // asked for [64k, 64k + 64), the very ranges the serial loop asks for, in
+    // the same order, and the frames are moved into one vector. A decoded
+    // frame depends only on its own spectrum (MzPeakSource::ms1Peaks copies
+    // batch[k] into out[k]) but this way that is not even needed.
+    //
+    // THE PRICE IS DECODED PEAKS HELD AT ONCE, AND IT IS CAPPED AND CHARGED
+    // (review round 2, verified on the PXD fixture: an uncapped block was
+    // MIN_RUN * threads frames, 735 MiB serial, 1,195 MiB at -threads 8,
+    // 2,188 MiB = the whole 215-frame fixture at -threads 48 -- and on a full
+    // run the whole decoded run, 23-40 GiB, once -threads reaches ~frames/16,
+    // none of it checked against -live_memory_gb). A further decode joins the
+    // block only while what the block holds BEYOND its first decode -- the
+    // extra decodes plus the worst case of the per-unit residual buffers --
+    // stays within `cap` = min(block_budget_bytes, MAX_BLOCK_BYTES). The
+    // caller passes what the memory budget leaves after the matrix, so the
+    // parallel path never holds more than the serial one plus that remainder.
+    // A decode's size is known only after it is decoded, so the next one is
+    // made only if a decode as large as the largest so far would fit; one
+    // that is decoded and then does not fit (it outgrew every earlier decode)
+    // is CARRIED to the next block rather than re-decoded, and only then are
+    // a block plus one decode alive at once (`max_held_bytes`, `carried`).
+    // The first decode of a block is always taken (the serial floor, which no
+    // budget has ever governed), so cap 0 means one 64-frame decode per block
+    // and nothing else held -- the serial footprint -- still matched as four
+    // units. Block
+    // boundaries never reach the output -- a cell's column is its frame, and
+    // the residual prefix is rebuilt in frame order whatever the blocks -- so
+    // the cap changes memory and speed, never a byte of the result.
+    //
+    // Threads are spawned per match block, not pooled as in the extractor: a
+    // block is >= 64 frames against 0.5-4 s of matching per frame.
     //
     // THE RESIDUAL PREFIX IS REBUILT EXACTLY. Serial semantics: `resid` holds
     // the first RESID_CAP residuals in (frame, peak, target) order. Each unit
@@ -283,10 +311,11 @@ namespace ODIA
     // sample -- the retained LIST, not merely its median (codex Q6.4(b)) --
     // and `resid_hash` prints it so a gate can compare it. Each buffer is
     // capped as the serial one is: the uncapped original reached 591 GB.
-    // The price is transient: while the prefix is still short, every unit of
-    // a block may fill up to `budget` (16 MB), so at most runs x 16 MB --
-    // 768 MB at -threads 48 -- for the block(s) that complete the prefix,
-    // and nothing afterwards (budget 0 allocates no buffers).
+    // The price is transient -- while the prefix is still short, every unit of
+    // a block may fill up to `budget` (16 MB) -- and it is charged to the
+    // block cap above (one unit per started MIN_RUN frames of each decode),
+    // so it shrinks the first blocks rather than adding to them; nothing
+    // afterwards (budget 0 allocates no buffers).
     //
     // threads 0 and 1 are both serial, and the serial path is the old loop
     // with the old 64-frame block, so default and -threads 1 output is the old
@@ -295,44 +324,85 @@ namespace ODIA
     static constexpr std::size_t MIN_RUN = 16;
     const unsigned T = threads > 1 ? threads : 1u;
     // A multiple of DECODE, so the decode ranges below are the serial ones.
+    // The frame target: no more frames than T threads have units for.
     const std::size_t STEP = T > 1 ? (MIN_RUN * T + DECODE - 1) / DECODE * DECODE : DECODE;
+    const std::size_t cap = std::min(block_budget_bytes, MAX_BLOCK_BYTES);
     out.stats_ = BuildStats{};
     out.stats_.frames = ms1.size();
-    std::vector<SpectrumPeaks> block, part;
-    for (std::size_t b = 0; b < ms1.size(); b += STEP)
+    out.stats_.block_cap_bytes = cap;
+    auto bytesOf = [](const std::vector<SpectrumPeaks>& v)
     {
-      const std::size_t e = std::min(b + STEP, ms1.size());
-      const auto t_dec = std::chrono::steady_clock::now();
-      if (e - b <= DECODE)
+      std::size_t bytes = 0;
+      for (const auto& sp : v)
       {
-        source.ms1Peaks(b, e, block);
-        ++out.stats_.blocks;
+        bytes += sp.mz.capacity() * sizeof(double) +
+                 sp.intensity.capacity() * sizeof(float) +
+                 sp.ion_mobility.capacity() * sizeof(float);
       }
-      else
+      return bytes;
+    };
+    std::vector<SpectrumPeaks> block, part;
+    std::size_t next_frame = 0;      // first frame not yet decoded
+    std::size_t part_lo = 0, part_bytes = 0, max_decode_bytes = 0;
+    bool carried = false;            // `part` holds a decode the last block refused
+    while (carried || next_frame < ms1.size())
+    {
+      const std::size_t b = carried ? part_lo : next_frame;
+      // What the prefix still lacks: the per-unit residual buffers' bound.
+      const std::size_t budget = observed_ppm_median != nullptr && resid.size() < RESID_CAP
+                                   ? RESID_CAP - resid.size() : 0;
+      const std::size_t resid_unit_bytes = T > 1 ? budget * sizeof(double) : 0;
+      block.clear();
+      std::size_t block_bytes = 0, charged = 0;
+      double dec_s = 0.0;
+      for (;;)
       {
-        block.clear();
-        block.reserve(e - b);
-        for (std::size_t d = b; d < e; d += DECODE)
+        if (!carried)
         {
-          source.ms1Peaks(d, std::min(d + DECODE, e), part);
+          if (next_frame >= ms1.size() || block.size() >= STEP) { break; }
+          const std::size_t e = std::min(next_frame + DECODE, ms1.size());
+          // Predicted from the largest decode so far, so a decode that cannot
+          // fit is not made at all -- at cap 0 never -- and a carry happens
+          // only when a decode outgrows every earlier one.
+          if (!block.empty() &&
+              charged + max_decode_bytes + (e - next_frame + MIN_RUN - 1) / MIN_RUN * resid_unit_bytes > cap)
+          { break; }
+          const auto t_dec = std::chrono::steady_clock::now();
+          source.ms1Peaks(next_frame, e, part);
+          dec_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_dec).count();
+          ++out.stats_.blocks;
+          part_lo = next_frame;
+          part_bytes = bytesOf(part);
+          max_decode_bytes = std::max(max_decode_bytes, part_bytes);
+          next_frame = e;
+        }
+        carried = false;
+        const std::size_t resid_cost = (part.size() + MIN_RUN - 1) / MIN_RUN * resid_unit_bytes;
+        const std::size_t cost = (block.empty() ? 0 : part_bytes) + resid_cost;
+        if (!block.empty() && charged + cost > cap)
+        {
+          // Did not fit: keep it decoded for the next block. Both are alive
+          // now, which is the most this loop ever holds.
+          out.stats_.max_held_bytes = std::max(out.stats_.max_held_bytes, block_bytes + part_bytes);
+          ++out.stats_.carried;
+          carried = true;
+          break;
+        }
+        charged += cost;
+        block_bytes += part_bytes;
+        if (block.empty()) { block.swap(part); }
+        else
+        {
           block.insert(block.end(), std::make_move_iterator(part.begin()),
                        std::make_move_iterator(part.end()));
-          ++out.stats_.blocks;
         }
       }
       const auto t_match = std::chrono::steady_clock::now();
-      out.stats_.decode_s += std::chrono::duration<double>(t_match - t_dec).count();
-      {
-        std::size_t bytes = 0;
-        for (const auto& sp : block)
-        {
-          out.stats_.peaks += sp.mz.size();
-          bytes += sp.mz.capacity() * sizeof(double) +
-                   sp.intensity.capacity() * sizeof(float) +
-                   sp.ion_mobility.capacity() * sizeof(float);
-        }
-        out.stats_.max_block_bytes = std::max(out.stats_.max_block_bytes, bytes);
-      }
+      out.stats_.decode_s += dec_s;
+      ++out.stats_.match_blocks;
+      for (const auto& sp : block) { out.stats_.peaks += sp.mz.size(); }
+      out.stats_.max_block_bytes = std::max(out.stats_.max_block_bytes, block_bytes);
+      out.stats_.max_held_bytes = std::max(out.stats_.max_held_bytes, block_bytes);
 
       const std::size_t n = block.size();
       const std::size_t runs = T > 1 ? std::max<std::size_t>(1, n / MIN_RUN) : 1;
@@ -344,8 +414,7 @@ namespace ODIA
       }
       else
       {
-        const std::size_t budget = observed_ppm_median != nullptr && resid.size() < RESID_CAP
-                                     ? RESID_CAP - resid.size() : 0;
+        out.stats_.max_resid_bytes = std::max(out.stats_.max_resid_bytes, runs * resid_unit_bytes);
         std::vector<std::vector<double>> unit_res(budget > 0 ? runs : 0);
         // Pulled, not dealt: frames in the middle of the gradient cost more
         // than those at its ends, and an atomic counter lets a thread that
