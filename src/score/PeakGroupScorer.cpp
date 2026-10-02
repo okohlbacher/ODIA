@@ -17,6 +17,11 @@
 #include <sstream>
 
 #include <atomic>
+#include <condition_variable>
+#include <exception>
+#include <functional>
+#include <stdexcept>
+#include <thread>
 
 namespace ODIA
 {
@@ -1278,17 +1283,282 @@ namespace
 
   struct PeakGroupScorer::Session::GateNull : NullCalibrationBody {};
 
+  /// One precursor's work, produced by `prepare_` and applied by `commit_`.
+  ///
+  /// `prepare_` reads only the trace, the library and the (frozen) options,
+  /// and writes only here, so any number of them can run at once. Everything
+  /// whose outcome depends on WHICH precursors came before -- Gate C's decoy
+  /// null and its log, the index a group lands at, the mass-anchor cap, the
+  /// terminal-reason table -- is left to `commit_`, which runs on the driver
+  /// in the order the serial sink would have run `add`.
+  struct PeakGroupScorer::Session::Staged
+  {
+    /// The Result-shaped part. The field names are the Result's on purpose:
+    /// `prepare_` is the former body of `add` with `result` rebound to this,
+    /// so the arithmetic is the same text it always was.
+    struct Out
+    {
+      std::vector<PeakGroup> groups;
+      std::vector<float> fragvec;
+      /// `group` is an index into `groups` HERE; `commit_` re-bases it and
+      /// applies `max_mass_anchors` in order.
+      std::vector<MassAnchor> mass_anchors;
+      std::size_t precursors_without_candidate = 0;
+      std::size_t candidates_below_library_corr = 0;
+      PickerRejects picker_rejects;
+      Ms1Census ms1_census;
+    } out;
+
+    std::uint32_t precursor = 0;
+    bool is_decoy = false;
+    /// The last TerminalReason `prepare_` asked for; applied by `commit_`
+    /// with the extractor-precedence rule `add` always used.
+    bool has_reason = false;
+    TerminalReason reason = TerminalReason::NotReached;
+
+    /// Gate C, when it ran. Prominence decides from the precursor alone, so
+    /// `prepare_` decides it; the quantile mode needs the decoy null, so
+    /// `prepare_` only PREDICTS (exactly, once the null is armed) and
+    /// `commit_` decides with `GateNull::admit`.
+    enum class Gate : std::uint8_t { None, Prominence, Quantile };
+    Gate gate = Gate::None;
+    double gate_stat = 0.0;
+    double gate_rt_centre = 0.0;
+    bool gate_admitted = true;   ///< prominence: the decision; quantile: the prediction
+    /// False when the quantile prediction was "reject" and the rest of the
+    /// precursor's work was therefore not done.
+    bool body_run = true;
+
+    std::exception_ptr error;
+  };
+
+  /// The -parallel_sink pool: `threads - 1` parked workers plus the calling
+  /// thread, all draining one shared index. Which thread runs which task is
+  /// irrelevant to the result -- every task writes only its own `Staged`.
+  struct PeakGroupScorer::Session::SinkPool
+  {
+    std::vector<std::thread> workers;
+    std::mutex m;
+    std::condition_variable cv, done_cv;
+    const std::function<void(std::size_t)>* job = nullptr;
+    std::size_t n = 0;
+    std::atomic<std::size_t> next{0};
+    std::size_t generation = 0, finished = 0;
+    bool stop = false;
+
+    explicit SinkPool(unsigned threads)
+    {
+      for (unsigned w = 1; w < threads; ++w)
+      {
+        workers.emplace_back([this] {
+          std::size_t seen = 0;
+          for (;;)
+          {
+            {
+              std::unique_lock<std::mutex> lock(m);
+              cv.wait(lock, [&] { return stop || generation != seen; });
+              if (stop) { return; }
+              seen = generation;
+            }
+            drain();
+            {
+              std::lock_guard<std::mutex> lock(m);
+              ++finished;
+            }
+            done_cv.notify_one();
+          }
+        });
+      }
+    }
+
+    void drain()
+    {
+      for (;;)
+      {
+        const std::size_t k = next.fetch_add(1, std::memory_order_relaxed);
+        if (k >= n) { return; }
+        (*job)(k);
+      }
+    }
+
+    /// Run @p f(0..count-1) and return when every call has. @p f must not throw.
+    void run(std::size_t count, const std::function<void(std::size_t)>& f)
+    {
+      {
+        std::lock_guard<std::mutex> lock(m);
+        job = &f;
+        n = count;
+        next.store(0, std::memory_order_relaxed);
+        finished = 0;
+        ++generation;
+      }
+      cv.notify_all();
+      drain();
+      std::unique_lock<std::mutex> lock(m);
+      done_cv.wait(lock, [&] { return finished >= workers.size(); });
+    }
+
+    ~SinkPool()
+    {
+      {
+        std::lock_guard<std::mutex> lock(m);
+        stop = true;
+      }
+      cv.notify_all();
+      for (auto& w : workers) { if (w.joinable()) { w.join(); } }
+    }
+  };
+
   PeakGroupScorer::Session::Session(const Library& library, const Options& options)
     : gate_null_(std::make_shared<GateNull>()), library_(&library), options_(options)
   {
   }
 
-  void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram_in)
+  bool PeakGroupScorer::Session::parallel() const
+  {
+    // The OpenSWATH picker goes through OpenMS objects whose thread safety is
+    // not established here, so it keeps the serial path.
+    return options_.parallel_sink && options_.threads > 1 && !options_.openswath_picking;
+  }
+
+  PeakGroupScorer::Session::GateView PeakGroupScorer::Session::gateView_() const
+  {
+    GateView v;
+    std::lock_guard<std::mutex> g(gate_null_->mu);
+    v.ready = gate_null_->ready;
+    v.tau = gate_null_->tau;
+    return v;
+  }
+
+  void PeakGroupScorer::Session::add(const PrecursorChromatogram& trace)
+  {
+    // The view is taken immediately before the work, so the prediction it
+    // drives is exact: before the null is armed admit() admits everything,
+    // and after it the threshold is fixed.
+    Staged staged;
+    prepare_(trace, gateView_(), staged);
+    commit_(staged);
+  }
+
+  void PeakGroupScorer::Session::addBatch(const PrecursorChromatogram* traces, std::size_t n)
+  {
+    if (!parallel() || n < 2)
+    {
+      for (std::size_t k = 0; k < n; ++k) { add(traces[k]); }
+      return;
+    }
+    if (!pool_) { pool_ = std::make_shared<SinkPool>(options_.threads); }
+    const std::size_t cap = options_.sink_batch ? options_.sink_batch : n;
+    for (std::size_t begin = 0; begin < n; begin += cap)
+    {
+      const std::size_t count = std::min(cap, n - begin);
+      std::vector<Staged> staged(count);
+      // ONE view for the whole batch. If the null arms part-way through, the
+      // precursors after that point were prepared as "admitted" and commit_
+      // decides them against the real tau -- speculation is only ever
+      // optimistic, so the commit can discard work but never needs work that
+      // was not done.
+      const GateView view = gateView_();
+      const std::function<void(std::size_t)> job = [&](std::size_t k) {
+        try { prepare_(traces[begin + k], view, staged[k]); }
+        catch (...) { staged[k].error = std::current_exception(); }
+      };
+      pool_->run(count, job);
+      for (std::size_t k = 0; k < count; ++k)
+      {
+        // Everything before the failing precursor is committed first: that is
+        // the state the serial loop would have left behind when it threw.
+        if (staged[k].error) { std::rethrow_exception(staged[k].error); }
+        commit_(staged[k]);
+      }
+      ++batches_;
+      batched_precursors_ += count;
+      batch_max_ = std::max(batch_max_, count);
+    }
+  }
+
+  void PeakGroupScorer::Session::commit_(Staged& s)
   {
     Result& result = result_;
     const Options& options = options_;
+    const std::size_t i = s.precursor;
+    const bool is_decoy = s.is_decoy;
+    // Every return records why. `mark` is a no-op unless -out_terminal_reasons
+    // asked for the table. The EXTRACTOR's reasons win -- see prepare_.
+    const auto mark = [&](TerminalReason r) {
+      if (!options.terminal_reason) { return; }
+      const std::uint8_t prior = options.terminal_reason[i];
+      if (prior == static_cast<std::uint8_t>(TerminalReason::NoWindowCoverage) ||
+          prior == static_cast<std::uint8_t>(TerminalReason::PrefilterExcluded))
+      { return; }
+      options.terminal_reason[i] = static_cast<std::uint8_t>(r);
+    };
+
+    if (s.gate != Staged::Gate::None)
+    {
+      bool was_ready = true;
+      bool admitted = s.gate_admitted;
+      if (s.gate == Staged::Gate::Quantile)
+      {
+        was_ready = gate_null_->ready;
+        admitted = gate_null_->admit(s.gate_stat, is_decoy,
+                                     options.gate_calibration_n,
+                                     options.gate_alpha,
+                                     s.gate_rt_centre, options.gate_calibration_rt_min);
+        // The prediction can only have been optimistic (see addBatch). A
+        // precursor the real gate admits whose work was skipped would be a
+        // silently missing precursor, so it is an error, not a fallback.
+        if (admitted && !s.body_run)
+        {
+          throw std::logic_error("parallel sink: precursor " + std::to_string(i) +
+                                 " was predicted rejected by Gate C but admitted at commit");
+        }
+      }
+      gate_null_->note(options.gate_log_path, static_cast<std::uint32_t>(i),
+                       is_decoy, s.gate_stat, admitted, was_ready);
+      if (!admitted)
+      {
+        // Whatever was speculated past the gate never happened.
+        if (s.body_run) { ++speculation_discarded_; }
+        mark(TerminalReason::GateC);
+        ++result.picker_rejects.empty_trace[is_decoy];
+        ++result.picker_rejects.gate_c[is_decoy];
+        ++result.precursors_without_candidate;
+        return;
+      }
+    }
+
+    Staged::Out& o = s.out;
+    result.picker_rejects.merge(o.picker_rejects);
+    result.ms1_census.merge(o.ms1_census);
+    result.precursors_without_candidate += o.precursors_without_candidate;
+    result.candidates_below_library_corr += o.candidates_below_library_corr;
+    if (!o.groups.empty())
+    {
+      // Re-based here, now that the group's global index is known, and capped
+      // in the same order the serial harvest pushed them.
+      const std::uint32_t base = static_cast<std::uint32_t>(result.groups.size());
+      for (MassAnchor& a : o.mass_anchors)
+      {
+        if (result.mass_anchors.size() >= options.max_mass_anchors)
+        { ++result.mass_anchors_dropped; continue; }
+        a.group += base;
+        result.mass_anchors.push_back(a);
+      }
+      result.fragvec.insert(result.fragvec.end(), o.fragvec.begin(), o.fragvec.end());
+      for (PeakGroup& g : o.groups) { result.groups.push_back(std::move(g)); }
+    }
+    if (s.has_reason) { mark(s.reason); }
+  }
+
+  void PeakGroupScorer::Session::prepare_(const PrecursorChromatogram& chromatogram_in,
+                                          const GateView& gate_view, Staged& staged) const
+  {
+    // `result` is this precursor's private buffer, not the Session's Result:
+    // see Staged. Nothing below writes anything else.
+    Staged::Out& result = staged.out;
+    const Options& options = options_;
     const Library& library = *library_;
-    // This pass's counters, not a thread's: see PeakGroupScorer::PickerRejects.
     PickerRejects& rejects_ = result.picker_rejects;
     Ms1Census& ms1c = result.ms1_census;
     const auto& p = library.precursors();
@@ -1298,9 +1568,9 @@ namespace
     const std::size_t i = chromatogram.precursor;
     const std::uint32_t tb = chromatogram.transition_begin;
     const std::uint32_t tc = chromatogram.transition_count;
-    // Every return below records why. `mark` is a no-op unless
-    // -out_terminal_reasons asked for the table.
-    // The EXTRACTOR's reasons win. It knows things this function cannot -- that
+    staged.precursor = static_cast<std::uint32_t>(i);
+    // Every return below records why; commit_ applies it. The EXTRACTOR's
+    // reasons win there. It knows things this function cannot -- that
     // no isolation window covers the precursor, or that the prefilter dropped
     // it -- and if the scorer overwrites them the specific reason is replaced
     // by a vaguer one that is also true.
@@ -1312,12 +1582,8 @@ namespace
     // The whole bucket was the uncovered population wearing the wrong label,
     // which is exactly the kind of misattribution this table exists to prevent.
     const auto mark = [&](TerminalReason r) {
-      if (!options.terminal_reason) { return; }
-      const std::uint8_t prior = options.terminal_reason[i];
-      if (prior == static_cast<std::uint8_t>(TerminalReason::NoWindowCoverage) ||
-          prior == static_cast<std::uint8_t>(TerminalReason::PrefilterExcluded))
-      { return; }
-      options.terminal_reason[i] = static_cast<std::uint8_t>(r);
+      staged.has_reason = true;
+      staged.reason = r;
     };
     if (tc == 0) { mark(TerminalReason::NoTransitions); return; }
 
@@ -1328,6 +1594,7 @@ namespace
     // imbalance in `reached` (137/254) while scans PER PRECURSOR were identical
     // (2014 both), so the divergence happens at exactly these two returns.
     const bool is_decoy = p.decoy[chromatogram.precursor] != 0;
+    staged.is_decoy = is_decoy;
     if (points < 3)
     { mark(TerminalReason::FewPoints); ++rejects_.no_points[is_decoy]; ++result.precursors_without_candidate; return; }
 
@@ -1372,8 +1639,11 @@ namespace
       std::size_t contributing = 0;
       const double m = coelutionEvidence(chromatogram, points,
                                          options.gate_smooth_half, &contributing);
-      bool was_ready = true;
-      bool admitted = true;
+      // DECIDED here only in prominence mode, which needs nothing but this
+      // precursor. The quantile mode is PREDICTED from the driver's view of the
+      // null and decided in commit_, which also writes the gate log: both are
+      // order-dependent and run on the driver only.
+      staged.gate_stat = m;
       if (options.gate_mode == "prominence")
       {
         // PER-PRECURSOR admission, from the statistic's own noise model rather
@@ -1406,11 +1676,11 @@ namespace
         const double w = double(2 * options.gate_smooth_half + 1);
         const double sigma = contributing > 0
                                ? std::sqrt(double(contributing) / w) : 0.0;
-        admitted = sigma > 0.0 && m >= options.gate_k * sigma;
+        staged.gate = Staged::Gate::Prominence;
+        staged.gate_admitted = sigma > 0.0 && m >= options.gate_k * sigma;
       }
       else if (options.gate_alpha > 0.0)
       {
-        was_ready = gate_null_->ready;
         // v1.17: the window's position in run seconds -- the midpoint of the
         // extracted cycle range, (lo+hi)/2 of the calibrated RT window after
         // clipping to the axis; the extractor's own centre is not carried here.
@@ -1418,15 +1688,20 @@ namespace
         const double rt_centre = chromatogram.rt != nullptr
           ? 0.5 * (double(chromatogram.rt[0]) + double(chromatogram.rt[points - 1]))
           : std::numeric_limits<double>::quiet_NaN();
-        admitted = gate_null_->admit(m, is_decoy,
-                                     options.gate_calibration_n,
-                                     options.gate_alpha,
-                                     rt_centre, options.gate_calibration_rt_min);
+        staged.gate = Staged::Gate::Quantile;
+        staged.gate_rt_centre = rt_centre;
+        // Exact, not a guess, whenever the view is armed: tau never changes
+        // after that. Unarmed, admit() admits everything, so "admitted" is
+        // the only possible prediction -- and if the null arms between the
+        // view and this precursor's commit, commit_ discards the work.
+        staged.gate_admitted = !gate_view.ready || m >= gate_view.tau;
       }
-      gate_null_->note(options.gate_log_path, static_cast<std::uint32_t>(i),
-                       is_decoy, m, admitted, was_ready);
-      if (!admitted)
-      { mark(TerminalReason::GateC); ++rejects_.empty_trace[is_decoy]; ++rejects_.gate_c[is_decoy]; ++result.precursors_without_candidate; return; }
+      if (!staged.gate_admitted)
+      {
+        // commit_ writes the note, the GateC reason and the counters.
+        staged.body_run = false;
+        return;
+      }
     }
     else if (options.noise_normalised_picking && options.empty_trace_sigma > 0.0)
     {
@@ -2563,13 +2838,16 @@ namespace
       // become a group and its index is known. `decoy` is taken from the group
       // rather than the fragment: a residual's status is the status of the
       // sequence it was matched against.
+      //
+      // `gi` is this precursor's LOCAL group index. commit_ re-bases it to the
+      // global one and applies `max_mass_anchors` there, in the same order the
+      // harvest has always pushed -- the cap is order-dependent, so it cannot
+      // be applied here.
       if (options.collect_mass_anchors && !staged_anchors.empty())
       {
         const std::uint32_t gi = static_cast<std::uint32_t>(result.groups.size());
         for (MassAnchor& a : staged_anchors)
         {
-          if (result.mass_anchors.size() >= options.max_mass_anchors)
-          { ++result.mass_anchors_dropped; continue; }
           a.group = gi;
           result.mass_anchors.push_back(a);
         }
@@ -2973,6 +3251,17 @@ namespace
     Result& result = result_;
     const Options& options = options_;
     const std::size_t n_precursors = library_->precursorCount();
+
+    // Only with -parallel_sink, so a default run's log is untouched.
+    if (options.parallel_sink)
+    {
+      std::fprintf(stderr,
+                   "parallel sink: %s, %u threads, %zu batches, %zu precursors batched, "
+                   "largest batch %zu, %zu speculative bodies discarded by Gate C at commit\n",
+                   parallel() ? "on" : "requested but OFF (needs threads > 1, not -picker openswath)",
+                   options.threads, batches_, batched_precursors_, batch_max_,
+                   speculation_discarded_);
+    }
 
     // PEAK_WIDTH_RATIO was stored as a raw cycle count per candidate, because a
     // ratio needs the run's median and no single precursor knows it. Normalise

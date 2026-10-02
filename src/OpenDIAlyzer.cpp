@@ -100,6 +100,15 @@ public:
     scorer_.accept(trace);
     collector_.accept(trace);
   }
+  /// -parallel_sink: the scorer takes the batch, then the collector copies
+  /// each trace in the same order. The collector's copy depends only on the
+  /// trace, so the order relative to the scorer is still a convention.
+  std::size_t batchCapacity() const override { return scorer_.batchCapacity(); }
+  void acceptBatch(const ODIA::PrecursorChromatogram* traces, std::size_t n) override
+  {
+    scorer_.acceptBatch(traces, n);
+    for (std::size_t k = 0; k < n; ++k) { collector_.accept(traces[k]); }
+  }
   /// The collector lays out one flat CSR and needs the per-transition counts;
   /// the scorer ignores them. OR rather than the collector's alone, so a new
   /// sink requirement cannot be silently swallowed by the tee.
@@ -1376,6 +1385,15 @@ protected:
                           "confident set dies at stage X' was inference rather than "
                           "measurement -- and two of the returns in Session::add reach no "
                           "counter at all. Records the LAST scoring pass.", false, true);
+    registerFlag_("parallel_sink",
+                  "EXPLORATORY. Score the precursors the extractor releases after each match "
+                  "batch on -threads workers instead of one at a time on the driver. Ordered "
+                  "speculation: each precursor's work runs on the pool into a private buffer and "
+                  "is committed on the driver in the serial order, together with everything "
+                  "order-dependent (Gate C's decoy null and -gate_log, group indices, the "
+                  "-max_mass_anchors cap, counters, terminal reasons). Required to give output "
+                  "byte-identical to the default at every thread count. Ignored with "
+                  "-threads 1 and with -picker openswath/union_openswath.", true);
     registerFlag_("collect_mass_residuals",
                   "Keep the m/z deviation of every matched peak and report it per peak group "
                   "as Mass.Ppm. The deviation is computed anyway to test the match and has "
@@ -4480,6 +4498,7 @@ protected:
     options.empty_trace_min_transitions =
       static_cast<std::size_t>(std::max(1, getIntOption_("empty_trace_min_transitions")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    options.parallel_sink = getFlag_("parallel_sink");
     // Built once per run and owned by the tool; null until then, and null
     // forever on a run with no MS1, in which case MS1_COELUTION is NaN for every
     // row and the constant-column guard drops it.

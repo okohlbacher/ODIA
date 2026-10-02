@@ -559,7 +559,19 @@ namespace
       traces.push_back(std::move(t));
     }
 
+    /// -parallel_sink's hand-over: with `batch` non-zero the extractor stages
+    /// released precursors and delivers them in batches of at most `batch`.
+    /// The recorded stream must not change -- only how it was delivered.
+    std::size_t batchCapacity() const override { return batch; }
+    void acceptBatch(const ODIA::PrecursorChromatogram* c, std::size_t n) override
+    {
+      ++batches;
+      largest_batch = std::max(largest_batch, n);
+      for (std::size_t i = 0; i < n; ++i) { accept(c[i]); }
+    }
+
     std::vector<Trace> traces;
+    std::size_t batch = 0, batches = 0, largest_batch = 0;
   };
 
   /// The sliding window: a precursor is allocated when the pass reaches the
@@ -1357,12 +1369,20 @@ namespace
       std::vector<std::pair<std::size_t, std::size_t>> calls;
       std::string error;
     };
-    const auto extract = [&](const ODIA::ChromatogramExtractor::Options& o) {
+    std::size_t batched_calls = 0, largest_small = 0, largest_large = 0;
+    const auto extract = [&](const ODIA::ChromatogramExtractor::Options& o,
+                             std::size_t sink_batch = 0) {
       Arm a;
       RecordingSink sink;
+      sink.batch = sink_batch;
       run.calls.clear();
       try { ODIA::ChromatogramExtractor::extract(lib, run, o, sink, &a.st); }
       catch (const std::exception& e) { a.error = e.what(); }
+      if (sink_batch == 0 && sink.batches != 0) { a.error = "a non-batching sink got a batch"; }
+      if (sink_batch != 0 && sink.largest_batch > sink_batch) { a.error = "a batch over the capacity"; }
+      batched_calls += sink.batches;
+      std::size_t& largest = sink_batch == 2 ? largest_small : largest_large;
+      largest = std::max(largest, sink.largest_batch);
       a.traces = std::move(sink.traces);
       a.calls = run.calls;
       return a;
@@ -1389,11 +1409,15 @@ namespace
       {
         for (const unsigned threads : {1u, 4u})
         {
+          // 0 is the one-at-a-time hand-over; 2 and 64 are -parallel_sink's
+          // batched one, cut mid-phase (2) and delivered whole per phase (64).
+          for (const std::size_t sink_batch : {std::size_t(0), std::size_t(2), std::size_t(64)})
+          {
           auto o = base;
           o.decode_block = block;
           o.max_live_precursors = cap;
           o.threads = threads;
-          const Arm a = extract(o);
+          const Arm a = extract(o, sink_batch);
           ++arms;
           if (a.st.chunks > 1) { plans.insert(a.st.chunks); }
           std::string why = a.error;
@@ -1410,8 +1434,8 @@ namespace
             ++failed;
             if (printed++ < 12)
             {
-              std::printf("       decode_block %zu, cap %zu, %u threads (%zu chunks): %s\n",
-                          block, cap, threads, a.st.chunks, why.c_str());
+              std::printf("       decode_block %zu, cap %zu, %u threads, sink batch %zu (%zu chunks): %s\n",
+                          block, cap, threads, sink_batch, a.st.chunks, why.c_str());
             }
           }
           // Where the chunks began and ended: a call that does not continue
@@ -1424,16 +1448,20 @@ namespace
                                     (ends && between_frame(a.calls[c].second))))
             { ++split_frames; }
           }
+          }
         }
       }
     }
-    std::printf("       %zu arms, %zu failed; chunk plans of", arms, failed);
+    std::printf("       %zu arms, %zu failed; %zu batched hand-overs, largest %zu at capacity 2, "
+                "%zu at 64; chunk plans of", arms, failed, batched_calls, largest_small, largest_large);
     for (const auto n : plans) { std::printf(" %zu", n); }
     std::printf(" chunks; %zu chunk edges between the two windows of one frame\n", split_frames);
     check(failed == 0, "every decode block x cap x thread count equals the brute force and "
                        "the default arm, bit for bit and in order");
     check(plans.size() >= 3, "the caps give at least three different chunk plans");
     check(split_frames > 0, "some chunk begins or ends between the two windows of one frame");
+    check(batched_calls > 0 && largest_small == 2 && largest_large > 2,
+          "the batched hand-over was taken, cut at its capacity and delivered whole");
 
     // Restricted RT bounds that fall between a spectrum's double time and its
     // float rounding, on both sides. In the first pair each bound admits, on

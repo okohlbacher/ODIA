@@ -1132,6 +1132,48 @@ namespace ODIA
       live[slot].hi = a.hi;
       live_peak = std::max(live_peak, ++live_now);
     };
+    // -parallel_sink: a sink that asks for batches gets the released
+    // precursors staged here and handed over together, in exactly the order
+    // the one-at-a-time path would have called accept(). Their blocks go back
+    // to the pool only after the batch returns, so the views stay valid. A
+    // sink that does not ask (batchCapacity() == 0, every sink by default)
+    // never reaches any of this: emit() below takes its historical path.
+    const std::size_t sink_batch = sink.batchCapacity();
+    struct PendingGive
+    {
+      float* base; float* ppm_num; float* ppm_den; float* im_num; float* im_den;
+      std::size_t cells;
+    };
+    std::vector<PrecursorChromatogram> pending;
+    std::vector<std::size_t> pending_at;        ///< start of each trace's offsets/counts
+    std::vector<std::uint64_t> pending_off;
+    std::vector<std::uint32_t> pending_count;
+    std::vector<PendingGive> pending_give;
+    const auto flush = [&] {
+      if (pending.empty()) { return; }
+      // Pointers fixed up only now: the flat arrays may have reallocated while
+      // the batch was being staged.
+      for (std::size_t q = 0; q < pending.size(); ++q)
+      {
+        pending[q].offset = pending_off.data() + pending_at[q];
+        pending[q].count = pending_count.data() + pending_at[q];
+      }
+      const auto t_sink = std::chrono::steady_clock::now();
+      sink.acceptBatch(pending.data(), pending.size());
+      st.sink_seconds += std::chrono::duration<double>(
+                           std::chrono::steady_clock::now() - t_sink).count();
+      for (const PendingGive& g : pending_give)
+      {
+        blocks.give(g.base, g.cells);
+        if (g.ppm_num != nullptr) { blocks.give(g.ppm_num, g.cells); blocks.give(g.ppm_den, g.cells); }
+        if (g.im_num != nullptr) { blocks.give(g.im_num, g.cells); blocks.give(g.im_den, g.cells); }
+      }
+      pending.clear();
+      pending_at.clear();
+      pending_off.clear();
+      pending_count.clear();
+      pending_give.clear();
+    };
     const auto emit = [&](std::uint32_t slot) {
       const Assignment& a = assignments[slot];
       // Every cycle the precursor spans must have been read by this chunk, and
@@ -1214,6 +1256,26 @@ namespace ODIA
       trace.im_den = live[slot].im_den;
       trace.offset = off_scratch.data();
       trace.count = count_scratch.data();
+
+      if (sink_batch != 0)
+      {
+        pending_at.push_back(pending_off.size());
+        pending_off.insert(pending_off.end(), off_scratch.begin(), off_scratch.end());
+        pending_count.insert(pending_count.end(), count_scratch.begin(), count_scratch.end());
+        pending.push_back(trace);
+        pending_give.push_back({live[slot].base, live[slot].ppm_num, live[slot].ppm_den,
+                                live[slot].im_num, live[slot].im_den,
+                                std::size_t(a.valid) * cycles});
+        // The slot's bookkeeping is released now, exactly as below -- including
+        // the kept cycle range, so `unhoused` still sees a late peak; only the
+        // memory waits for the batch.
+        live[slot] = LiveSlot{};
+        live[slot].lo = a.lo;
+        live[slot].hi = a.hi;
+        --live_now;
+        if (pending.size() >= sink_batch) { flush(); }
+        return;
+      }
 
       const auto t_sink = std::chrono::steady_clock::now();
       sink.accept(trace);
@@ -1611,6 +1673,7 @@ namespace ODIA
             ++cur_hi[w];
           }
         }
+        flush();   // no-op unless the sink batches; a barrier when it does
         // The sink's own time is reported separately, so it is taken out here
         // rather than counted twice.
         st.assemble_seconds += std::chrono::duration<double>(
@@ -1629,6 +1692,7 @@ namespace ODIA
           ++cur_hi[w];
         }
       }
+      flush();
       st.assemble_seconds += std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - t_flush).count()
                              - (st.sink_seconds - sink_before_flush);
