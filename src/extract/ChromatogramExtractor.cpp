@@ -213,44 +213,61 @@ namespace ODIA
     /// count inside a span. A segment tree with the pending add kept on the
     /// node (never pushed down), so both are O(log batches) -- the planner asks
     /// once per precursor, millions of times, over ~10^3 batches.
+    ///
+    /// reset() is O(1): every node carries the generation it was last written
+    /// in, and a node from an older generation reads as zero. Clearing the
+    /// whole tree at every chunk cut made planning O(chunks x batches) on top
+    /// of the O(N log batches) of the adds -- at a cap of 1 with everything
+    /// overlapping that is one full clear per precursor.
     class LiveCount
     {
     public:
       explicit LiveCount(std::size_t batches)
-        : n_(std::max<std::size_t>(batches, 1)), max_(4 * n_, 0), add_(4 * n_, 0) {}
+        : n_(std::max<std::size_t>(batches, 1)), max_(4 * n_, 0), add_(4 * n_, 0),
+          gen_of_(4 * n_, 0) {}
 
-      void reset()
-      {
-        std::fill(max_.begin(), max_.end(), 0u);
-        std::fill(add_.begin(), add_.end(), 0u);
-      }
+      void reset() { ++gen_; }
       void add(std::size_t first, std::size_t last) { add(1, 0, n_ - 1, first, last); }
       std::uint32_t max(std::size_t first, std::size_t last) const
       { return max(1, 0, n_ - 1, first, last); }
 
     private:
+      bool fresh(std::size_t node) const { return gen_of_[node] == gen_; }
+      std::uint32_t maxOf(std::size_t node) const { return fresh(node) ? max_[node] : 0u; }
+      std::uint32_t addOf(std::size_t node) const { return fresh(node) ? add_[node] : 0u; }
+      void touch(std::size_t node)
+      {
+        if (fresh(node)) { return; }
+        max_[node] = 0;
+        add_[node] = 0;
+        gen_of_[node] = gen_;
+      }
+
       void add(std::size_t node, std::size_t lo, std::size_t hi,
                std::size_t first, std::size_t last)
       {
         if (last < lo || hi < first) { return; }
+        touch(node);
         if (first <= lo && hi <= last) { ++max_[node]; ++add_[node]; return; }
         const std::size_t mid = lo + (hi - lo) / 2;
         add(2 * node, lo, mid, first, last);
         add(2 * node + 1, mid + 1, hi, first, last);
-        max_[node] = add_[node] + std::max(max_[2 * node], max_[2 * node + 1]);
+        max_[node] = add_[node] + std::max(maxOf(2 * node), maxOf(2 * node + 1));
       }
       std::uint32_t max(std::size_t node, std::size_t lo, std::size_t hi,
                         std::size_t first, std::size_t last) const
       {
-        if (last < lo || hi < first) { return 0; }
+        if (last < lo || hi < first || !fresh(node)) { return 0; }
         if (first <= lo && hi <= last) { return max_[node]; }
         const std::size_t mid = lo + (hi - lo) / 2;
-        return add_[node] + std::max(max(2 * node, lo, mid, first, last),
-                                     max(2 * node + 1, mid + 1, hi, first, last));
+        return addOf(node) + std::max(max(2 * node, lo, mid, first, last),
+                                      max(2 * node + 1, mid + 1, hi, first, last));
       }
 
       std::size_t n_;
       std::vector<std::uint32_t> max_, add_;
+      std::vector<std::uint64_t> gen_of_;
+      std::uint64_t gen_ = 0;
     };
 
     /// Fixed-size blocks, reused rather than returned to the allocator.
@@ -812,8 +829,9 @@ namespace ODIA
     // Unchunked, the pass hands over after each batch, window by window, every
     // precursor whose last cycle that batch read, in the order of its window's
     // end cursor. So the stream is sorted by (last_batch, window, rank in that
-    // cursor). The rank is computed here exactly as a single-chunk pass builds
-    // its cursor, which keeps a run that fits byte-identical to before.
+    // cursor). The cursors are built here exactly as a single-chunk pass
+    // always built them -- the same start-ordered input, sorted by lo and then
+    // by hi -- which keeps a run that fits byte-identical to before.
     //
     // It has to be fixed, because the sink is not order-free: Gate C's
     // threshold is the quantile of the FIRST gate_calibration_n decoys to
@@ -821,19 +839,19 @@ namespace ODIA
     // Chunks that each emitted in their own order handed the gate a different
     // calibration sample -- tau 6.61 unchunked against 6.12 at 13 chunks on the
     // PXD fixture, and 2,634,793 peak groups against 3,083,453.
-    std::vector<std::uint32_t> emission_rank(n_slots, 0);
+    //
+    // The per-window cursors are kept: they ARE the hand-over order within a
+    // window (a precursor's rank is its place in its window's cursor), so the
+    // planner merges them rather than sorting the library again, and a single
+    // chunk hands over straight from them.
+    std::vector<std::vector<std::uint32_t>> cursor(windows.size());
+    for (const std::uint32_t s : by_start) { cursor[assignments[s].window].push_back(s); }
+    for (auto& c : cursor)
     {
-      std::vector<std::vector<std::uint32_t>> cursor(windows.size());
-      for (const std::uint32_t s : by_start) { cursor[assignments[s].window].push_back(s); }
-      for (auto& c : cursor)
-      {
-        std::sort(c.begin(), c.end(), [&](std::uint32_t a, std::uint32_t b) {
-          return assignments[a].lo < assignments[b].lo; });
-        std::sort(c.begin(), c.end(), [&](std::uint32_t a, std::uint32_t b) {
-          return assignments[a].hi < assignments[b].hi; });
-        for (std::size_t r = 0; r < c.size(); ++r)
-        { emission_rank[c[r]] = static_cast<std::uint32_t>(r); }
-      }
+      std::sort(c.begin(), c.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return assignments[a].lo < assignments[b].lo; });
+      std::sort(c.begin(), c.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return assignments[a].hi < assignments[b].hi; });
     }
 
     // The library, split into chunks whose live sets each fit under the cap.
@@ -892,14 +910,36 @@ namespace ODIA
     }
     else
     {
-      std::vector<std::uint32_t> order(n_slots);
-      std::iota(order.begin(), order.end(), 0u);
-      std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
-        if (last_batch[a] != last_batch[b]) { return last_batch[a] < last_batch[b]; }
-        if (assignments[a].window != assignments[b].window)
-        { return assignments[a].window < assignments[b].window; }
-        return emission_rank[a] < emission_rank[b];
-      });
+      // The hand-over order, (last_batch, window, rank), as a MERGE of the
+      // window cursors: within a window the cursor is sorted by `hi`, and
+      // last_batch is the batch of the spectrum at hi-1, so it never decreases
+      // along a cursor. Walking the batches and, in each, the windows in index
+      // order yields exactly the order a sort on the full key would -- the key
+      // is unique, since a rank is unique within its window -- in O(N + batches
+      // x windows) rather than another O(N log N) over the library.
+      std::vector<std::uint32_t> order;
+      order.reserve(n_slots);
+      {
+        std::vector<std::size_t> head(windows.size(), 0);
+        for (std::size_t b = 0; b < n_batches; ++b)
+        {
+          for (std::size_t w = 0; w < windows.size(); ++w)
+          {
+            const auto& c = cursor[w];
+            while (head[w] < c.size() && last_batch[c[head[w]]] == b) { order.push_back(c[head[w]++]); }
+            if (head[w] < c.size() && last_batch[c[head[w]]] < b)
+            {
+              throw std::logic_error("hand-over cursor of window " + std::to_string(w) +
+                                     " is not ordered by its last batch");
+            }
+          }
+        }
+        if (order.size() != n_slots)
+        {
+          throw std::logic_error("the hand-over merge placed " + std::to_string(order.size()) +
+                                 " of " + std::to_string(n_slots) + " precursors");
+        }
+      }
       LiveCount live_count(n_batches);
       std::vector<std::uint32_t> current;
       for (const std::uint32_t s : order)
@@ -915,6 +955,7 @@ namespace ODIA
         current.push_back(s);
       }
       if (!current.empty()) { chunks.push_back(std::move(current)); }
+      std::vector<std::vector<std::uint32_t>>().swap(cursor);   // each chunk filters its own
       st.memory_bound_by = "precursor cap (" + std::to_string(cap) + "), " +
                            std::to_string(chunks.size()) + " chunks; " +
                            std::to_string(overlap_precursors) +
@@ -1297,12 +1338,16 @@ namespace ODIA
       {
         std::sort(by_lo[w].begin(), by_lo[w].end(), [&](std::uint32_t a, std::uint32_t b) {
           return assignments[a].lo < assignments[b].lo; });
-        // The hand-over cursor runs in the run-wide order fixed by the
-        // planner, not in an order sorted afresh per chunk: see emission_rank.
-        // On a single chunk the two are the same sequence.
-        by_hi[w] = by_lo[w];
-        std::sort(by_hi[w].begin(), by_hi[w].end(), [&](std::uint32_t a, std::uint32_t b) {
-          return emission_rank[a] < emission_rank[b]; });
+      }
+      // The hand-over cursors run in the run-wide order fixed above, not in an
+      // order sorted afresh per chunk. A single chunk takes the window cursors
+      // themselves. A chunk of several is a contiguous run of their merge, so
+      // its precursors of one window are a contiguous run of that window's
+      // cursor, already in order: filtering the chunk by window is enough.
+      if (chunks.size() == 1) { by_hi = std::move(cursor); }
+      else
+      {
+        for (const std::uint32_t slot : slots) { by_hi[assignments[slot].window].push_back(slot); }
       }
       std::vector<std::size_t> cur_lo(windows.size(), 0), cur_hi(windows.size(), 0);
 
