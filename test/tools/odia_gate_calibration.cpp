@@ -371,6 +371,18 @@ int main()
   check(!ref.log.empty() && all_ready, "every gate decision made against the frozen tau (no warm-up)");
   check(rule, "admitted == (statistic >= tau) for every precursor");
   check(some_reject && some_admit, "the gate both admits and rejects on this run");
+  {
+    // The pre-pass measures the SAME statistic the production pass gates on:
+    // tau recomputed from the production log's values for the selected decoys.
+    const auto sel = ODIA::PeakGroupScorer::selectGateCalibrationDecoys(
+      lib, plan, scorerOptions("hash", N, "", nullptr), nullptr);
+    std::vector<double> v;
+    for (auto i : sel) { const auto it = ref.log.find(i); if (it != ref.log.end()) { v.push_back(it->second.stat); } }
+    std::sort(v.begin(), v.end());
+    const std::size_t k = std::min(v.size() - 1, std::size_t((1.0 - 0.2) * double(v.size())));
+    check(v.size() == N && std::abs(v[k] - ref.rep.tau) <= 1e-5 * std::max(1.0, std::abs(ref.rep.tau)),
+          "tau == quantile of the production-pass statistics of the selected decoys");
+  }
   for (std::size_t j = 1; j < arms.size(); ++j)
   {
     const Arm& a = arms[j];
