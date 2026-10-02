@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
+#include <locale>
 #include <iostream>
 #include <sstream>
 
@@ -1611,6 +1612,53 @@ protected:
                           "has not run yet, so auto leaves them ON; pass 2 is where the decision "
                           "is real.", false, true);
     setValidStrings_("mass_features", {"auto", "on", "off"});
+    // v1.18 learner fixes (doc/83-reviews round 2). All FINAL-scoring only, like -fold_pool_rank:
+    // pass 1 and the RT refinement keep the native scorer, so the calibration and therefore every
+    // feature are those of the flag-off run, and an engine arm with one of these equals an offline
+    // replay (odia_scorer_replay) of the flag-off run's -out_scorer_input with the same flag.
+    registerFlag_("classifier_class_balance",
+                  "gbt/xgboost: class-balanced objective -- positives and negatives carry EQUAL total "
+                  "weight (mean weight 1, so -gbt_min_child_weight keeps its meaning), intercept 0. "
+                  "Natively the fit starts at logit(prior) ~ -5 at a 1:155 prior, where a pure-positive "
+                  "leaf's Newton step is ~1/p. EXPERIMENT flag (v1.18); the default is unchanged.", true);
+    registerFlag_("classifier_matched_train_draw",
+                  "Apply the decoy candidate-count matching (on unless -no_match_decoy_n) to TRAINING "
+                  "too: the seed, every training ranking and the negative class take each decoy's best "
+                  "over the same candidate prefix the final q-values use. Natively training sees "
+                  "best-of-ALL decoy rows and only the final ranking is matched. EXPERIMENT flag (v1.18).", true);
+    registerFlag_("gbt_missing_bin",
+                  "gbt/xgboost: hand non-finite sub-scores to the trees as MISSING, binned on their own, "
+                  "instead of imputing them to the column mean first (natively the trees' missing "
+                  "handling is unreachable). Not combinable with -classifier_model_in/_out. EXPERIMENT "
+                  "flag (v1.18).", true);
+    registerFlag_("gbt_depth_fix",
+                  "gbt/xgboost: -gbt_max_depth counts SPLIT levels (depth 4 -> up to 16 leaves). "
+                  "Natively the last level is forced to a leaf, so depth D yields at most 2^(D-1) leaves. "
+                  "EXPERIMENT flag (v1.18).", true);
+    registerFlag_("gbt_stop_on_stump",
+                  "gbt/xgboost: a boosting round that finds no split ends the fit, and a fit in which no "
+                  "tree split is reported as FAILED (the previous model is kept and the iteration counted "
+                  "as skipped). Natively a constant stump counts as a trained tree. EXPERIMENT flag (v1.18).", true);
+    registerFlag_("fold_tail_calibration",
+                  "Pool the cross-validation folds on each fold's EMPIRICAL decoy tail: DScore = "
+                  "-log10((1 + #held-out decoys >= x) / (1 + N_decoys)), interpolated between decoys and "
+                  "extrapolated above the top decoy with the fold's own tail slope. Replaces the decoy "
+                  "mean/sd standardisation (and -fold_pool_rank). Not combinable with "
+                  "-classifier_model_in/_out. EXPERIMENT flag (v1.18).", true);
+    registerIntOption_("classifier_oof_repeats", "<k>", 1,
+                       "Repeat the whole cross-validated training over k fold partitions (fold seeds "
+                       "-classifier_seed, +1, ..., +k-1) and average each row's out-of-fold score. 1 = "
+                       "one partition, the native path. Not combinable with -classifier_model_in/_out. "
+                       "EXPERIMENT option (v1.18).", false, true);
+    setMinInt_("classifier_oof_repeats", 1);
+    registerOutputFile_("out_scorer_input", "<file>", "",
+                        "Write the FINAL classifier's exact input and output here (TSV): Precursor.Id, "
+                        "Decoy, Group.Index (the library precursor index the fold assignment sorts by), "
+                        "DScore, QValue, PEP and every var_* sub-score, one row per scored peak group in "
+                        "-out's row order, all values at 17 significant digits so they read back "
+                        "bit-exactly. The input of odia_scorer_replay. OUTPUT-ONLY: -out is byte-identical "
+                        "with this on. (v1.18)", false, true);
+    setValidFormats_("out_scorer_input", {"tsv"}, false);
     registerFlag_("fold_pool_rank",
                   "Pool the classifier's cross-validation folds by WITHIN-FOLD RANK over all groups "
                   "(DScore = -log10(rank fraction)) instead of standardising each fold by its decoy null. "
@@ -4427,6 +4475,16 @@ protected:
     // v1.14: rank pooling is a FINAL-scoring rule; pass 1 and the RT refinement keep the native
     // pooling so the calibration anchors (selected at pass-1 q) are identical to the flag-off run.
     options.fold_pool_rank = calibrating_ ? false : getFlag_("fold_pool_rank");
+    // v1.18 learner fixes: FINAL scoring only (see their registration).
+    options.classifier_class_balance = calibrating_ ? false : getFlag_("classifier_class_balance");
+    options.classifier_matched_train_draw =
+      calibrating_ ? false : getFlag_("classifier_matched_train_draw");
+    options.gbt_missing_bin = calibrating_ ? false : getFlag_("gbt_missing_bin");
+    options.gbt_depth_fix = calibrating_ ? false : getFlag_("gbt_depth_fix");
+    options.gbt_stop_on_stump = calibrating_ ? false : getFlag_("gbt_stop_on_stump");
+    options.fold_tail_calibration = calibrating_ ? false : getFlag_("fold_tail_calibration");
+    options.classifier_oof_repeats =
+      calibrating_ ? 1 : std::max(1, getIntOption_("classifier_oof_repeats"));
     options.transition_mask = calibrating_ ? nullptr : transition_mask_.get();
     // -out_fragvec, FINAL scoring only. Pass 1 and the RT refinement compute
     // the identical columns and nothing would ever read them: the export is
@@ -4861,6 +4919,22 @@ protected:
       }
       writeLogInfo_("wrote scored peak groups to " + out);
     }
+    // -out_scorer_input: the final classifier's exact input, full precision. A separate
+    // file, so -out is unchanged whether or not it is written.
+    if (const std::string sin = getStringOption_("out_scorer_input"); !sin.empty())
+    {
+      try
+      {
+        writeScorerInput_(sin, library, scored);
+      }
+      catch (const std::exception& e)
+      {
+        writeLogError_(std::string("Failed to write -out_scorer_input: ") + e.what());
+        return CANNOT_WRITE_OUTPUT_FILE;
+      }
+      writeLogInfo_("wrote the classifier input of " + std::to_string(scored.groups.size()) +
+                    " peak groups to " + sin);
+    }
     // -out_fragvec rides -out: same result object, same row order, written
     // straight after it so the two files cannot come from different results.
     if (!out_fragvec_.empty())
@@ -4888,6 +4962,34 @@ protected:
       }
     }
     return EXECUTION_OK;
+  }
+
+  /// -out_scorer_input (v1.18). What fitAndAssign_ hands the classifier, row for row: the
+  /// features are g.sub_scores verbatim (the constant-column drop has already zeroed them in
+  /// place), the label is !decoy, and the group is the library precursor index -- the key the
+  /// fold assignment sorts by, which -out's sequence+charge id cannot reproduce. 17 significant
+  /// digits round-trip every double exactly through strtod.
+  static void writeScorerInput_(const std::string& path, const ODIA::Library& library,
+                                const ODIA::PeakGroupScorer::Result& scored)
+  {
+    std::ofstream out(path);
+    if (!out) { throw std::runtime_error("cannot open " + path); }
+    out.imbue(std::locale::classic());
+    out.precision(17);
+    out << "Precursor.Id\tDecoy\tGroup.Index\tDScore\tQValue\tPEP";
+    for (const auto& n : ODIA::PeakGroupScorer::subScoreNames()) { out << '\t' << n; }
+    out << '\n';
+    const auto& p = library.precursors();
+    for (const auto& g : scored.groups)
+    {
+      const auto seq = library.strings().get(p.modified_sequence[g.precursor]);
+      out << seq << static_cast<int>(p.charge[g.precursor]) << '\t'
+          << static_cast<int>(g.decoy) << '\t' << static_cast<long long>(g.precursor) << '\t'
+          << g.dscore << '\t' << g.qvalue << '\t' << g.pep;
+      for (const auto v : g.sub_scores) { out << '\t' << v; }
+      out << '\n';
+    }
+    if (!out) { throw std::runtime_error("write failed for " + path); }
   }
 
   static void writeScores_(const std::string& path, const ODIA::Library& library,

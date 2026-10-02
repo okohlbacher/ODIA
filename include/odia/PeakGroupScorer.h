@@ -648,6 +648,18 @@ namespace ODIA
       /// moves, which turns a one-column perturbation into a global one.
       bool gbt_fixed_bins = false;
 
+      /// v1.18 learner fixes (round-2 reviews), FINAL scoring only, all default-off: see
+      /// GBTParams::{class_balance, missing_bin, depth_fix, stop_on_stump} and
+      /// LDAParams::{match_training_draw, gbt_keep_missing, fold_tail_calibration, oof_repeats}.
+      /// Off (false / 1) leaves LDAParams and GBTParams at their defaults, i.e. the native path.
+      bool classifier_class_balance = false;
+      bool classifier_matched_train_draw = false;
+      bool gbt_missing_bin = false;
+      bool gbt_depth_fix = false;
+      bool gbt_stop_on_stump = false;
+      bool fold_tail_calibration = false;
+      int classifier_oof_repeats = 1;
+
       /// Boosting rounds and shrinkage. 0 keeps the model's own 120 and 0.1.
       ///
       /// The pairing that matters is depth 2 with MORE trees: shallow trees
@@ -1315,5 +1327,11 @@ namespace ODIA
 
   public:
   };
+
+  namespace Scoring { struct LDAParams; }
+  /// The classifier parameters a scoring pass with these Options trains with (v1.18). The engine's
+  /// fitAndAssign_ and the offline replay (odia_scorer_replay) both call this, so a replay is
+  /// parameterised exactly as the run it replays. Include <odia/scoring/lda.h> to use the result.
+  Scoring::LDAParams classifierParamsFor(const PeakGroupScorer::Options& options);
 
 } // namespace ODIA

@@ -108,6 +108,37 @@ struct GBTParams
   /// iterations and across feature sets, which closes the loop. Costs one extra
   /// pass over the unlabelled rows per fit.
   bool fixed_bins = false;
+
+  // ---- v1.18 learner fixes (round-2 reviews), each DEFAULT-OFF and separately toggleable. ------
+  // With all of them false the arithmetic below is the pre-v1.18 arithmetic, operation for
+  // operation: every new branch is taken only when its flag is set, and none of them touches a
+  // value the default path reads.
+
+  /// Class-balanced objective. Each row's gradient and hessian are multiplied by its class weight,
+  /// w_pos = N/(2 n_pos) and w_neg = N/(2 n_neg), so the two classes carry EQUAL total mass and the
+  /// weights average to exactly 1 over the N training rows; the intercept is 0 (the balanced prior's
+  /// logit). Because the mean weight is 1, `min_child_weight` and `lambda` keep their unweighted
+  /// meaning ("summed hessian of that many average rows") -- that normalisation IS the scaling of
+  /// min_child_weight; it is not a separate knob. Replaces intercept_zero's role (base 0) and makes
+  /// it moot. Rationale: at the native ~1:155 prior a pure-positive leaf's Newton step is ~1/p, the
+  /// suspected driver of the compact/saturated regime flip (doc/83-reviews round 2, codex Q2.2).
+  bool class_balance = false;
+  /// Non-finite feature values go to their OWN bin, one past the last value bin, instead of
+  /// sharing the last value bin with the largest finite values. Cut points then include
+  /// "all finite | missing", so the tree can route missingness on its own. Only meaningful when the
+  /// caller hands the GBT real NaNs (LDAParams::gbt_keep_missing); a model fitted this way is
+  /// refused by save(), since the version-1 file format cannot say how to bin NaN.
+  bool missing_bin = false;
+  /// max_depth = number of SPLIT levels, the conventional meaning (depth 4 -> up to 16 leaves).
+  /// Natively the last split level is forced to a leaf, so depth D yields at most 2^(D-1) leaves
+  /// (gbt.h growTree_, `leaf_level`). The tree storage already has the 2^(D+1) slots this needs.
+  bool depth_fix = false;
+  /// growTree_ reports whether it found ANY split. Natively it returns `any_split || true`, so a
+  /// constant stump counts as a trained tree and a fit that learned nothing reports success. With
+  /// this set, fit() stops at the first stump (a stump only adds a constant, so later rounds could
+  /// not reorder anything either) and returns false when not one tree split.
+  bool stop_on_stump = false;
+
   /// Threads for the histogram pass (0 = whatever OpenMP gives). fit() is normally called from
   /// inside the fold loop's parallel region, where a nested team defaults to ONE thread -- so the
   /// caller must both set this and enable a second active level, or the parallelism does nothing.
@@ -275,6 +306,11 @@ public:
     {
       edges_ = gbt_detail::computeBinEdges(X, rows, p.n_bins);
     }
+    // The missing bin sits one past the last value bin and bins are uint8_t: keep it addressable.
+    if (p.missing_bin)
+    {
+      for (auto& e : edges_) { if (e.size() > 254) { e.resize(254); } }
+    }
     // A feature with no edges cannot split; that is fine, it just never wins a gain comparison.
     //
     // FLAT, not vector<vector>: the histogram pass below is 93% of a fit and reads every feature of
@@ -291,7 +327,7 @@ public:
       for (std::size_t f = 0; f < n_features_; ++f)
       {
         const double v = X[rows[i]][f];
-        if (!std::isfinite(v)) { B[i * n_features_ + f] = static_cast<uint8_t>(edges_[f].size()); continue; }
+        if (!std::isfinite(v)) { B[i * n_features_ + f] = missingBinOf_(f); continue; }
         const auto it = std::lower_bound(edges_[f].begin(), edges_[f].end(), v);
         B[i * n_features_ + f] = static_cast<uint8_t>(it - edges_[f].begin());
       }
@@ -302,6 +338,18 @@ public:
     const double frac = static_cast<double>(pos.size()) / static_cast<double>(rows.size());
     const double clamped = std::min(1.0 - 1e-6, std::max(1e-6, frac));
     base_ = p.intercept_zero ? 0.0 : std::log(clamped / (1.0 - clamped));
+    // Class-balanced objective: equal total mass per class, mean weight 1, intercept 0. Allocated
+    // only when asked, so the default path neither sizes nor reads it.
+    std::vector<double> row_w;
+    if (p.class_balance)
+    {
+      base_ = 0.0;
+      const double nr = static_cast<double>(rows.size());
+      const double w_pos = nr / (2.0 * static_cast<double>(pos.size()));
+      const double w_neg = nr / (2.0 * static_cast<double>(neg.size()));
+      row_w.assign(rows.size(), w_neg);
+      for (std::size_t i = 0; i < pos.size(); ++i) { row_w[i] = w_pos; }
+    }
 
     std::vector<double> pred(n_rows, base_);
     std::vector<double> grad(n_rows), hess(n_rows);
@@ -310,6 +358,7 @@ public:
 
     std::size_t n_bins_max = 1;
     for (const auto& e : edges_) { n_bins_max = std::max(n_bins_max, e.size() + 1); }
+    if (p.missing_bin) { ++n_bins_max; }   // room for the dedicated missing bin
 
     // One scratch buffer for the whole fit. growTree_ clears only the slice each level needs, so
     // the shape is set by the WIDEST level (2^(depth-1) nodes) and every level after the first
@@ -332,8 +381,16 @@ public:
       {
         const std::size_t i = static_cast<std::size_t>(ii);
         const double pi = 1.0 / (1.0 + std::exp(-pred[i]));
-        grad[i] = pi - y[i];
-        hess[i] = std::max(1e-12, pi * (1.0 - pi));
+        if (row_w.empty())
+        {
+          grad[i] = pi - y[i];
+          hess[i] = std::max(1e-12, pi * (1.0 - pi));
+        }
+        else
+        {
+          grad[i] = row_w[i] * (pi - y[i]);
+          hess[i] = std::max(1e-12, row_w[i] * pi * (1.0 - pi));
+        }
       }
       round_lr_ = params_.learning_rate;
       if (p.warmup_rounds > 0)
@@ -361,7 +418,7 @@ public:
     for (std::size_t f = 0; f < n_features_; ++f)
     {
       const double v = x[f];
-      if (!std::isfinite(v)) { b[f] = static_cast<uint8_t>(edges_[f].size()); continue; }
+      if (!std::isfinite(v)) { b[f] = missingBinOf_(f); continue; }
       const auto it = std::lower_bound(edges_[f].begin(), edges_[f].end(), v);
       b[f] = static_cast<uint8_t>(it - edges_[f].begin());
     }
@@ -379,6 +436,9 @@ public:
   bool save(std::ostream& os) const
   {
     if (trees_.empty()) { return false; }
+    // The version-1 format has no field for the missing-bin rule, and a loader would bin NaN
+    // with the largest values: refuse rather than write a file that scores differently.
+    if (params_.missing_bin) { return false; }
     os.imbue(std::locale::classic());   // "1.5", never "1,5", whatever the process locale
     os.unsetf(std::ios::floatfield);    // default format: a caller's std::fixed would zero 1e-20
     os.precision(17);
@@ -409,6 +469,7 @@ public:
     // a file that parses but describes an impossible tree must fail here, not
     // in predict(). Bounds are generous against anything fit() can produce.
     is.imbue(std::locale::classic());
+    params_ = GBTParams();   // a loaded model bins NaN the version-1 way, whatever this object fitted before
     std::string magic;
     int version = 0;
     if (!(is >> magic >> version) || magic != "ODIA-GBT" || version != 1) { return false; }
@@ -586,7 +647,9 @@ private:
           }
         }
 
-        const bool leaf_level = (depth == D - 1);
+        // depth_fix: every one of the D levels may split, leaves land on level D (handled after
+        // the loop). Natively the last split level is forced to a leaf -- an off-by-one in capacity.
+        const bool leaf_level = !params_.depth_fix && (depth == D - 1);
         if (best_f < 0 || leaf_level || node_rows[slot] < static_cast<std::size_t>(2 * params_.min_child_rows))
         {
           tree.feature[nd] = -1;
@@ -630,10 +693,17 @@ private:
       tree.feature[nd] = -1;
       tree.value[nd] = -round_lr_ * leafStep_(G[s], H[s]);
     }
+    if (params_.stop_on_stump) { return any_split; }
     return any_split || true;   // a depth-0 stump is still a valid (if useless) tree
   }
 
   GBTParams params_;
+  /// Bin of a non-finite value of feature f: the last value bin natively, its own bin past it
+  /// under missing_bin.
+  uint8_t missingBinOf_(std::size_t f) const
+  {
+    return static_cast<uint8_t>(edges_[f].size() + (params_.missing_bin ? 1 : 0));
+  }
   double round_lr_ = 0.0;         ///< the learning rate in force for the tree being grown (== params_.learning_rate unless warmup_rounds > 0)
   std::vector<gbt_detail::Tree> trees_;
   std::vector<std::vector<double>> edges_;
