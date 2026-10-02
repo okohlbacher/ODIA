@@ -480,7 +480,7 @@ inline ScoredGroups scoreSemiSupervisedLDA(
   const std::vector<int>& labels,
   const std::vector<long long>& group,
   const LDAParams& params,
-  const std::string& model_out,
+  const std::string& model_out_requested,
   const std::string& model_in,
   const std::vector<std::string>* feature_names)
 {
@@ -696,17 +696,31 @@ inline ScoredGroups scoreSemiSupervisedLDA(
   // out of sample for every fold model.
   const bool gbt_engine = (params.classifier == LDAParams::Classifier::GBT);
   // v1.18: the saved format carries ONE partition, mean/sd fold normalisation and version-1 NaN
-  // binning. A run that used any of the loop-level v1.18 flags cannot be saved or applied
-  // faithfully in it, so it is REFUSED -- loudly, as "fitted 0 iterations" -- rather than written
-  // or applied in a form that scores differently from the run.
-  if ((keep_missing || params.fold_tail_calibration || params.oof_repeats > 1) &&
-      (!model_in.empty() || !model_out.empty()))
+  // binning, so a run that used any of the loop-level v1.18 flags cannot be saved or applied
+  // faithfully in it.
+  //  - APPLYING a model (-classifier_model_in) is a deliberate input: it is REFUSED -- loudly, as
+  //    "fitted 0 iterations" -- like every other frozen model that cannot be applied faithfully.
+  //  - SAVING one (-classifier_model_out) is an output-only extra: the save alone is SKIPPED with
+  //    a warning and the run scores exactly as it would without it. (Refusing the whole scoring
+  //    here zeroed every arm that carried -classifier_model_out as a common output flag.)
+  const bool loop_level_flags =
+    keep_missing || params.fold_tail_calibration || params.oof_repeats > 1;
+  if (loop_level_flags && !model_in.empty())
   {
     std::fprintf(stderr, "[lda] REFUSED: -gbt_missing_bin, -fold_tail_calibration and "
                          "-classifier_oof_repeats > 1 are not combinable with "
-                         "-classifier_model_in/-classifier_model_out; no scores produced\n");
+                         "-classifier_model_in; no scores produced\n");
     result.n_iterations_skipped = 1;
     return result;
+  }
+  static const std::string no_model_out;
+  const std::string& model_out = loop_level_flags ? no_model_out : model_out_requested;
+  if (loop_level_flags && !model_out_requested.empty())
+  {
+    std::fprintf(stderr, "[lda] -classifier_model_out %s NOT written: the model format cannot "
+                         "carry -gbt_missing_bin, -fold_tail_calibration or "
+                         "-classifier_oof_repeats > 1; scoring proceeds unchanged\n",
+                 model_out_requested.c_str());
   }
   std::vector<GBT> fold_models;
   std::vector<double> fold_norm_mu, fold_norm_sigma;

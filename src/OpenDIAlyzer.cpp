@@ -1629,7 +1629,8 @@ protected:
     registerFlag_("gbt_missing_bin",
                   "gbt/xgboost: hand non-finite sub-scores to the trees as MISSING, binned on their own, "
                   "instead of imputing them to the column mean first (natively the trees' missing "
-                  "handling is unreachable). Not combinable with -classifier_model_in/_out. EXPERIMENT "
+                  "handling is unreachable). Not combinable with -classifier_model_in; with "
+                  "-classifier_model_out the model file is not written (scores unaffected). EXPERIMENT "
                   "flag (v1.18).", true);
     registerFlag_("gbt_depth_fix",
                   "gbt/xgboost: -gbt_max_depth counts SPLIT levels (depth 4 -> up to 16 leaves). "
@@ -1644,11 +1645,13 @@ protected:
                   "-log10((1 + #held-out decoys >= x) / (1 + N_decoys)), interpolated between decoys and "
                   "extrapolated above the top decoy with the fold's own tail slope. Replaces the decoy "
                   "mean/sd standardisation (and -fold_pool_rank). Not combinable with "
-                  "-classifier_model_in/_out. EXPERIMENT flag (v1.18).", true);
+                  "-classifier_model_in; with -classifier_model_out the model file is not written "
+                  "(scores unaffected). EXPERIMENT flag (v1.18).", true);
     registerIntOption_("classifier_oof_repeats", "<k>", 1,
                        "Repeat the whole cross-validated training over k fold partitions (fold seeds "
                        "-classifier_seed, +1, ..., +k-1) and average each row's out-of-fold score. 1 = "
-                       "one partition, the native path. Not combinable with -classifier_model_in/_out. "
+                       "one partition, the native path. Not combinable with -classifier_model_in; with "
+                       "-classifier_model_out the model file is not written (scores unaffected). "
                        "EXPERIMENT option (v1.18).", false, true);
     setMinInt_("classifier_oof_repeats", 1);
     registerOutputFile_("out_scorer_input", "<file>", "",
@@ -3459,7 +3462,9 @@ protected:
       scoring_rt_is_run_seconds_ = false;
       seed_im_window_ = getDoubleOption_("precursor_im_window")
                         * std::max(1.0, getDoubleOption_("im_seed_window_scale"));
+      seeding_ = true;   // native discriminant: the seed map must not depend on final-only flags
       const auto rc = extractAndScore_(seed_lib, run, 0.0, false, scored);
+      seeding_ = false;
       seed_im_window_ = 0.0;
       scoring_rt_is_run_seconds_ = saved;
       if (rc != EXECUTION_OK) { return rc; }
@@ -4466,25 +4471,31 @@ protected:
     // Final scoring only: pass 1 always trains its own discriminant, so the
     // anchor harvest and the calibration stay native whatever model pass 2 is
     // scored with (see calibrating_).
-    options.classifier_model_out = calibrating_ ? "" : getStringOption_("classifier_model_out");
-    options.classifier_model_in = calibrating_ ? "" : getStringOption_("classifier_model_in");
+    // Classifier settings that apply to the FINAL scoring only: pass 1, the RT refinement refit
+    // (calibrating_) and the -rt_seed cirt blind seed search (seeding_) all train the native
+    // discriminant. The seed search picks each standard's best candidate BY DSCORE to fit the seed
+    // RT map, so a model change there would move the map and every feature after it, and a flagged
+    // arm would no longer be the flag-off run's -out_scorer_input replayed with the flag.
+    const bool classifier_native = calibrating_ || seeding_;
+    options.classifier_model_out = classifier_native ? "" : getStringOption_("classifier_model_out");
+    options.classifier_model_in = classifier_native ? "" : getStringOption_("classifier_model_in");
     options.max_corr_diff = getDoubleOption_("max_corr_diff");
     options.max_candidates = static_cast<std::size_t>(
       std::max(1, getIntOption_("max_candidates")));
     options.match_decoy_candidate_counts = !getFlag_("no_match_decoy_n");
     // v1.14: rank pooling is a FINAL-scoring rule; pass 1 and the RT refinement keep the native
     // pooling so the calibration anchors (selected at pass-1 q) are identical to the flag-off run.
-    options.fold_pool_rank = calibrating_ ? false : getFlag_("fold_pool_rank");
+    options.fold_pool_rank = classifier_native ? false : getFlag_("fold_pool_rank");
     // v1.18 learner fixes: FINAL scoring only (see their registration).
-    options.classifier_class_balance = calibrating_ ? false : getFlag_("classifier_class_balance");
+    options.classifier_class_balance = classifier_native ? false : getFlag_("classifier_class_balance");
     options.classifier_matched_train_draw =
-      calibrating_ ? false : getFlag_("classifier_matched_train_draw");
-    options.gbt_missing_bin = calibrating_ ? false : getFlag_("gbt_missing_bin");
-    options.gbt_depth_fix = calibrating_ ? false : getFlag_("gbt_depth_fix");
-    options.gbt_stop_on_stump = calibrating_ ? false : getFlag_("gbt_stop_on_stump");
-    options.fold_tail_calibration = calibrating_ ? false : getFlag_("fold_tail_calibration");
+      classifier_native ? false : getFlag_("classifier_matched_train_draw");
+    options.gbt_missing_bin = classifier_native ? false : getFlag_("gbt_missing_bin");
+    options.gbt_depth_fix = classifier_native ? false : getFlag_("gbt_depth_fix");
+    options.gbt_stop_on_stump = classifier_native ? false : getFlag_("gbt_stop_on_stump");
+    options.fold_tail_calibration = classifier_native ? false : getFlag_("fold_tail_calibration");
     options.classifier_oof_repeats =
-      calibrating_ ? 1 : std::max(1, getIntOption_("classifier_oof_repeats"));
+      classifier_native ? 1 : std::max(1, getIntOption_("classifier_oof_repeats"));
     options.transition_mask = calibrating_ ? nullptr : transition_mask_.get();
     // -out_fragvec, FINAL scoring only. Pass 1 and the RT refinement compute
     // the identical columns and nothing would ever read them: the export is
@@ -4633,6 +4644,11 @@ protected:
   /// features. The RT anchors are chosen by RT consistency, not by score, so with
   /// pass 1 native the features are the native run's and a frozen re-scoring of a
   /// run with its own model reproduces its native output.
+  /// True while the -rt_seed cirt blind seed search scores the CiRT sub-library. Like
+  /// calibrating_ for the CLASSIFIER settings only (frozen model, model save, -fold_pool_rank, the
+  /// v1.18 learner flags): native there. Everything else the seed search scored with before this
+  /// existed (transition mask, -out_fragvec capture, mass-accuracy centre) is unchanged.
+  bool seeding_ = false;
   bool calibrating_ = false;   // true while pass 1 / the RT refinement run: their
                                 // scoring is native, never frozen, never saved
   std::size_t pass_offset_ = 0;

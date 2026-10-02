@@ -216,13 +216,32 @@ int main(int argc, char** argv)
     }
   }
 
-  // ---- model I/O refusal --------------------------------------------------------------------------
+  // ---- model I/O with the loop-level flags ---------------------------------------------------------
+  // A model SAVE is output-only: with a loop-level flag the file is skipped and the scores are those
+  // of the same run without the save (it used to zero every row). APPLYING a model is refused.
   {
+    const std::string path = std::string(argv[1]) + ".model";
+    std::remove(path.c_str());
+    for (int k = 0; k < 3; ++k)
+    {
+      S::LDAParams p = base;
+      if (k == 0) { p.fold_tail_calibration = true; }
+      if (k == 1) { p.oof_repeats = 2; }
+      if (k == 2) { p.gbt_keep_missing = true; }
+      const auto plain = S::scoreSemiSupervisedLDA(X, labels, group, p, "", "", &names);
+      const auto saved = S::scoreSemiSupervisedLDA(X, labels, group, p, path, "", &names);
+      const std::string w = std::string(k == 0 ? "tail_calibration" : k == 1 ? "oof_repeats_2"
+                                                                       : "keep_missing") +
+                            " + model_out: scores unchanged, model file not written";
+      check(saved.n_iterations_trained > 0 && saved.dscore == plain.dscore &&
+              saved.qvalue == plain.qvalue && !std::ifstream(path).good(),
+            w.c_str());
+    }
     S::LDAParams p = base;
     p.fold_tail_calibration = true;
-    const auto r = S::scoreSemiSupervisedLDA(X, labels, group, p, std::string(argv[1]) + ".model", "", &names);
+    const auto r = S::scoreSemiSupervisedLDA(X, labels, group, p, "", "/nonexistent.model", &names);
     check(r.n_iterations_trained == 0 && r.n_iterations_skipped == 1,
-          "tail calibration with a model save is refused, not silently written");
+          "tail calibration with a model APPLY is refused, not silently applied");
   }
 
   // ---- GBT unit checks ----------------------------------------------------------------------------
