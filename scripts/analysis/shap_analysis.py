@@ -22,11 +22,11 @@ import xgboost as xgb
 D = '/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/corpus'
 S = '/scratch/kohlbach/odia2x2'
 
-lab = pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy()
 label = np.array(lab.column('Label').to_pylist())
-A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
+A0 = np.load(f'{D}/apex_ih1.npy'); A1 = np.load(f'{D}/apex_ih1shift.npy')
 lib = pq.read_table(f'{D}/corpus_lib.parquet', columns=['Precursor.Id','Decoy','Protein.Group'])
 pgm = {(p, int(d)): str(g) for p, d, g in zip(lib.column('Precursor.Id').to_pylist(),
                                               lib.column('Decoy').to_numpy(),
@@ -55,8 +55,8 @@ def shap_report(X, y, tr, te, names, title, top=12):
     return mean_abs, names
 
 # ---------- A: the shipped scalars, shifted contrast ----------
-SC0 = np.load(f'{D}/scal_s08.npy'); SC1 = np.load(f'{D}/scal_s08shift.npy')
-OK0 = np.load(f'{D}/scal_s08_ok.npy'); OK1 = np.load(f'{D}/scal_s08shift_ok.npy')
+SC0 = np.load(f'{D}/scal_ih1.npy'); SC1 = np.load(f'{D}/scal_ih1shift.npy')
+OK0 = np.load(f'{D}/scal_ih1_ok.npy'); OK1 = np.load(f'{D}/scal_ih1shift_ok.npy')
 cols = [str(c) for c in np.load(f'{D}/scal_cols.npy')]
 pos = (label == 'pos') & (A0 >= 0) & (A1 >= 0) & OK0 & OK1
 idx = np.flatnonzero(pos)
@@ -67,7 +67,7 @@ shap_report(X, y, f2 >= 3, f2 < 3, cols, 'A. shipped sub-scores, SHIFTED contras
 # ---------- C: descriptors only, entrapment contrast (the 0.7060 floor) ----------
 RI = np.load(f'{D}/desc_relint.npy'); PM = np.load(f'{D}/desc_prodmz.npy')
 FC = np.load(f'{D}/desc_frcharge.npy'); OR = np.load(f'{D}/desc_ordinal.npy')
-SE = np.load(f'{D}/desc_series.npy'); M = np.load(f'{D}/tensor_s08_mask.npy')
+SE = np.load(f'{D}/desc_series.npy'); M = np.load(f'{D}/tensor_ih1_mask.npy')
 ok = A0 >= 0
 p2 = (label == 'pos') & ok; n2 = (label == 'ent') & ok
 sel = p2 | n2

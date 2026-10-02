@@ -58,11 +58,11 @@ def scores(tr, msk, rel, k):
         iu=np.triu_indices(len(U2),1); coel=float(C2[iu].mean())
     return corr(raw), corr(proj), float(np.mean(np.clip(expl,0,1))), coel
 
-lab=pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab=pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 label=np.array(lab.column('Label').to_pylist())
-dec=np.array(pq.read_table(f'{D}/tensor_s08_meta.parquet').column('Decoy').to_pylist())
-X=np.load(f'{D}/tensor_s08_traces.npy',mmap_mode='r'); M=np.load(f'{D}/tensor_s08_mask.npy')
-REL=np.load(f'{D}/desc_relint.npy'); A0=np.load(f'{D}/apex_s08.npy')
+dec=np.array(pq.read_table(f'{D}/tensor_ih1_meta.parquet').column('Decoy').to_pylist())
+X=np.load(f'{D}/tensor_ih1_traces.npy',mmap_mode='r'); M=np.load(f'{D}/tensor_ih1_mask.npy')
+REL=np.load(f'{D}/desc_relint.npy'); A0=np.load(f'{D}/apex_ih1.npy')
 rng=np.random.default_rng(0)
 pos=rng.permutation(np.flatnonzero((label=='pos')&(A0>=0)))[:9000]
 dcy=rng.permutation(np.flatnonzero((dec==1)&(A0>=0)))[:9000]

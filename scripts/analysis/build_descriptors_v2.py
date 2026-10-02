@@ -27,7 +27,7 @@ SRC = sys.argv[1] if len(sys.argv) > 1 else '/scratch/kohlbach/odia2x2/corpus_li
 D   = sys.argv[2] if len(sys.argv) > 2 else '/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/corpus'
 F = 12
 
-meta = pq.read_table(f'{D}/tensor_s08_meta.parquet')
+meta = pq.read_table(f'{D}/tensor_ih1_meta.parquet')
 ids = meta.column('Precursor.Id').to_pylist()
 dec = meta.column('Decoy').to_numpy()
 pos_of = {(p, int(d)): i for i, (p, d) in enumerate(zip(ids, dec))}

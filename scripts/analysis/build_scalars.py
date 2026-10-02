@@ -35,12 +35,12 @@ def best(path):
             out[k] = (ds, v)
     return out, cols
 
-meta = pq.read_table(f'{OUT}/tensor_s08_meta.parquet')
+meta = pq.read_table(f'{OUT}/tensor_ih1_meta.parquet')
 ids = meta.column('Precursor.Id').to_pylist()
 dec = meta.column('Decoy').to_numpy()
 
-for tag, path in (('s08', f'{S}/corpus_scores_s08.tsv'),
-                  ('s08shift', f'{S}/corpus_scores_s08_shift.tsv')):
+for tag, path in (('ih1', f'{S}/corpus_scores_ih1.tsv'),
+                  ('ih1shift', f'{S}/corpus_scores_ih1_shift.tsv')):
     b, cols = best(path)
     A = np.full((len(ids), len(cols)), np.nan, dtype=np.float32)
     ok = np.zeros(len(ids), dtype=bool)

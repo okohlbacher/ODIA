@@ -16,7 +16,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${here}/env.sh"
 
 # The source library must live somewhere EVERY node can read. It used to default
-# to /scratch/kohlbach/bench/s23_diann/, which is node-local: the file exists on
+# to /scratch/kohlbach/bench/ih3_diann/, which is node-local: the file exists on
 # ibminode05 and has never existed on dax. The consequence was silent -- the
 # fixture-gated tests in test/CMakeLists.txt sit inside `if(EXISTS ...)`, so on
 # dax ctest reported "100% tests passed, 0 tests failed out of 52" while
@@ -26,7 +26,7 @@ source "${here}/env.sh"
 # The shared copy is sha256 ead82c2bb647db0a0cec13bdfb3882874ba705682e6d40f92fd821cb4adf7e2e.
 # Keep the node-local path as a fallback so an already-provisioned node still works.
 SHARED_SRC="/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/ref/fixture_src/report-lib.parquet"
-LOCAL_SRC="/scratch/kohlbach/bench/s23_diann/report-lib.parquet"
+LOCAL_SRC="/scratch/kohlbach/bench/ih3_diann/report-lib.parquet"
 if [[ -n "${DIANN_LIB_PARQUET:-}" ]]; then SRC="${DIANN_LIB_PARQUET}"
 elif [[ -f "${SHARED_SRC}" ]]; then SRC="${SHARED_SRC}"
 else SRC="${LOCAL_SRC}"; fi

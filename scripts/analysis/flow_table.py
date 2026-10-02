@@ -15,7 +15,7 @@ q=dn.column('Q.Value').to_numpy(); pid=dn.column('Precursor.Id').to_pylist(); rt
 allp=set(nrm(p) for p in pid)
 TRT={nrm(p):r*60.0 for p,r,k in zip(pid,rt,q<=0.01) if k}
 cands=defaultdict(list); h=None; seen=set()
-for line in open(f'{S}/corpus_scores_s08.tsv'):
+for line in open(f'{S}/corpus_scores_ih1.tsv'):
     f=line.rstrip('\n').split('\t')
     if h is None: h={n:i for i,n in enumerate(f)}; continue
     if f[h['Decoy']]!='0': continue

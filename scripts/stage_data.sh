@@ -23,7 +23,7 @@ source "${here}/env.sh"
 ODIA_DATA="${ODIA_DATA:-${ODIA_ROOT}/data}"
 STAGE_DIR="${STAGE_DIR:-${ODIA_SCRATCH}/data}"
 
-ALL_RUNS=(12_80 astral S08_diaPASEF)
+ALL_RUNS=(12_80 astral IH1_diaPASEF)
 
 if [[ $# -eq 0 ]]; then
   runs=(12_80)

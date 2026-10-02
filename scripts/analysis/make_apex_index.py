@@ -33,10 +33,10 @@ def best_rt(path):
         if k not in out or ds > out[k][0]: out[k] = (ds, rt)
     return out
 
-for tag, scores in (('s08', f'{S}/corpus_scores_s08.tsv'),
-                    ('s08shift', f'{S}/corpus_scores_s08_shift.tsv')):
+for tag, scores in (('ih1', f'{S}/corpus_scores_ih1.tsv'),
+                    ('ih1shift', f'{S}/corpus_scores_ih1_shift.tsv')):
     b = best_rt(scores)
-    m = pq.read_table(f'{S}/tensor_{"s08" if tag=="s08" else "s08shift"}_meta.parquet')
+    m = pq.read_table(f'{S}/tensor_{"ih1" if tag=="ih1" else "ih1shift"}_meta.parquet')
     ids = m.column('Precursor.Id').to_pylist()
     dec = m.column('Decoy').to_numpy()
     rt0 = m.column('RT0').to_numpy()

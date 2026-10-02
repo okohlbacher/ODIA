@@ -26,9 +26,9 @@ def rollmax(a,h):
         out=np.maximum(out,np.pad(a[:,d:],((0,0),(0,d)),constant_values=-np.inf))
         out=np.maximum(out,np.pad(a[:,:-d],((0,0),(d,0)),constant_values=-np.inf))
     return out
-meta=pq.read_table(f'{D}/tensor_s08_meta.parquet')
+meta=pq.read_table(f'{D}/tensor_ih1_meta.parquet')
 dec=np.array(meta.column('Decoy').to_pylist())
-X=np.load(f'{D}/tensor_s08_traces.npy',mmap_mode='r'); M=np.load(f'{D}/tensor_s08_mask.npy')
+X=np.load(f'{D}/tensor_ih1_traces.npy',mmap_mode='r'); M=np.load(f'{D}/tensor_ih1_mask.npy')
 rng=np.random.default_rng(0)
 sel=rng.permutation(np.flatnonzero(dec==0))[:6000]
 n_hit=0; n_notmax=0; defl=[]; flip=0; n_prec=0; flipped_prec=0

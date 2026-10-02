@@ -32,11 +32,11 @@ def best_rows(path):
             out[k] = (ds, v)
     return out, cols
 
-own,  cols = best_rows(f'{S}/corpus_scores_s08.tsv')
-shift, _   = best_rows(f'{S}/corpus_scores_s08_shift.tsv')
+own,  cols = best_rows(f'{S}/corpus_scores_ih1.tsv')
+shift, _   = best_rows(f'{S}/corpus_scores_ih1_shift.tsv')
 print(f'{len(cols)} sub-scores; scored precursors own {len(own):,} shifted {len(shift):,}')
 
-lab = pq.read_table(f'{S}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{S}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy()
 label = np.array(lab.column('Label').to_pylist())

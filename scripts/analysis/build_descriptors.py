@@ -17,7 +17,7 @@ import sys, numpy as np, pyarrow.parquet as pq
 
 S = sys.argv[1] if len(sys.argv) > 1 else '/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/corpus'
 F = 12
-meta = pq.read_table(f'{S}/tensor_s08_meta.parquet')
+meta = pq.read_table(f'{S}/tensor_ih1_meta.parquet')
 ids = meta.column('Precursor.Id').to_pylist()
 dec = meta.column('Decoy').to_numpy()
 pos_of = {(p, int(d)): i for i, (p, d) in enumerate(zip(ids, dec))}

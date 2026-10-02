@@ -80,10 +80,10 @@ def auc(pos, neg):
     n1 = len(pos)
     return (r[:n1].sum() - n1*(n1+1)/2) / (n1*len(neg)), n1
 
-lab = pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist()); label = np.array(lab.column('Label').to_pylist())
-RT0 = pq.read_table(f'{D}/tensor_s08_meta.parquet').column('RT0').to_numpy()
-X = np.load(f'{D}/tensor_s08_traces.npy', mmap_mode='r'); M = np.load(f'{D}/tensor_s08_mask.npy')
+RT0 = pq.read_table(f'{D}/tensor_ih1_meta.parquet').column('RT0').to_numpy()
+X = np.load(f'{D}/tensor_ih1_traces.npy', mmap_mode='r'); M = np.load(f'{D}/tensor_ih1_mask.npy')
 REL = np.load(f'{D}/desc_relint.npy')
 ALIAS = {'UniMod:4': 'Carbamidomethyl'}
 nrm = lambda p: re.sub(r'\((.*?)\)', lambda m: '('+ALIAS.get(m.group(1), m.group(1))+')', str(p))

@@ -22,7 +22,7 @@ TRT = {nrm(p): r*60.0 for p, r, k in zip(dn.column('Precursor.Id').to_pylist(),
                                          dn.column('RT').to_numpy(), q <= 0.01) if k}
 cands = defaultdict(list)
 h = None
-for line in open(f'{S}/corpus_scores_s08.tsv'):
+for line in open(f'{S}/corpus_scores_ih1.tsv'):
     f = line.rstrip('\n').split('\t')
     if h is None:
         h = {n: i for i, n in enumerate(f)}; continue

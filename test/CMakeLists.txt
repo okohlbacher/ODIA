@@ -694,14 +694,14 @@ if(EXISTS "${ODIA_DATA_DIR}/12_80.mzpeak" AND
     PASS_REGULAR_EXPRESSION "decoded spectra, [1-9][0-9]* of [0-9]+ points non-zero, 0 disagree")
 endif()
 
-if(EXISTS "${ODIA_DATA_DIR}/S08_diaPASEF.mzpeak" AND
+if(EXISTS "${ODIA_DATA_DIR}/IH1_diaPASEF.mzpeak" AND
    EXISTS "${ODIA_FIXTURE_DIR}/diann_library_small.tsv")
   add_test(NAME extract_matches_brute_force_mobility
            COMMAND ${CMAKE_COMMAND} -E env ODIA_EXTRACT_VERIFY=1
                    ODIA_EXTRACT_VERIFY_MAX=200 ODIA_EXTRACT_PPM=100
                    $<TARGET_FILE:odia_extract>
                    "${ODIA_FIXTURE_DIR}/diann_library_small.tsv"
-                   "${ODIA_DATA_DIR}/S08_diaPASEF.mzpeak" 0 300 320)
+                   "${ODIA_DATA_DIR}/IH1_diaPASEF.mzpeak" 0 300 320)
   set_tests_properties(extract_matches_brute_force_mobility PROPERTIES
     PASS_REGULAR_EXPRESSION "decoded spectra, [1-9][0-9]* of [0-9]+ points non-zero, 0 disagree")
 endif()

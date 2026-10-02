@@ -25,17 +25,17 @@ FEAT, NDESC, NSCAL = ck['feat'], ck['ndesc'], ck['nscal']
 print(f"checkpoint: feat={FEAT} contrast={ck['contrast']} seed={ck['seed']} "
       f"val={ck['val']:.4f} epoch={ck['epoch']}")
 
-lab = pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy(); label = np.array(lab.column('Label').to_pylist())
-A0  = np.load(f'{D}/apex_s08.npy')
-X0  = np.ascontiguousarray(np.load(f'{D}/tensor_s08_traces.npy'))
-M   = np.load(f'{D}/tensor_s08_mask.npy')
+A0  = np.load(f'{D}/apex_ih1.npy')
+X0  = np.ascontiguousarray(np.load(f'{D}/tensor_ih1_traces.npy'))
+M   = np.load(f'{D}/tensor_ih1_mask.npy')
 RI  = np.load(f'{D}/desc_relint.npy'); PM = np.load(f'{D}/desc_prodmz.npy') / 1000.0
 FC  = np.load(f'{D}/desc_frcharge.npy'); OR = np.load(f'{D}/desc_ordinal.npy') / 20.0
 SE  = np.load(f'{D}/desc_series.npy');  PD = np.load(f'{D}/desc_precursor.npy')
-SC0 = np.load(f'{D}/scal_s08.npy'); OK0 = np.load(f'{D}/scal_s08_ok.npy')
-DS  = np.load(f'{D}/dscore_s08.npy'); DSOK = np.load(f'{D}/dscore_s08_ok.npy')
+SC0 = np.load(f'{D}/scal_ih1.npy'); OK0 = np.load(f'{D}/scal_ih1_ok.npy')
+DS  = np.load(f'{D}/dscore_ih1.npy'); DSOK = np.load(f'{D}/dscore_ih1_ok.npy')
 
 C, W = 128, 96
 GAUSS = np.exp(-0.5 * ((np.arange(W) - (W - 1) / 2.0) / 1.07) ** 2).astype(np.float32)

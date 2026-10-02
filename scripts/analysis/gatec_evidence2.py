@@ -51,11 +51,11 @@ def evidence(tr, msk, rel, mode):
     c = np.convolve(s, np.ones(k), mode='same')/k
     return float(c.max()), contributing
 
-lab=pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab=pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 label=np.array(lab.column('Label').to_pylist())
-meta=pq.read_table(f'{D}/tensor_s08_meta.parquet')
+meta=pq.read_table(f'{D}/tensor_ih1_meta.parquet')
 dec=np.array(meta.column('Decoy').to_pylist())
-X=np.load(f'{D}/tensor_s08_traces.npy',mmap_mode='r'); M=np.load(f'{D}/tensor_s08_mask.npy')
+X=np.load(f'{D}/tensor_ih1_traces.npy',mmap_mode='r'); M=np.load(f'{D}/tensor_ih1_mask.npy')
 REL=np.load(f'{D}/desc_relint.npy')
 
 rng=np.random.default_rng(0)

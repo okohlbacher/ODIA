@@ -59,23 +59,23 @@ if _os.environ.get('TORCH_NUM_THREADS'):
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f'device {dev}  feat {FEAT}  centre {CENTRE}  epochs {EPOCHS}  seeds {SEEDS}')
 
-lab = pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy()
 label = np.array(lab.column('Label').to_pylist())
-m2 = pq.read_table(f'{D}/tensor_s08shift_meta.parquet')
+m2 = pq.read_table(f'{D}/tensor_ih1shift_meta.parquet')
 assert (np.array(m2.column('Precursor.Id').to_pylist()) == ids).all() and \
        (m2.column('Decoy').to_numpy() == dec).all(), 'arms not row-aligned'
 
-X0 = np.ascontiguousarray(np.load(f'{D}/tensor_s08_traces.npy'))
-X1 = np.ascontiguousarray(np.load(f'{D}/tensor_s08shift_traces.npy'))
-M  = np.load(f'{D}/tensor_s08_mask.npy')
+X0 = np.ascontiguousarray(np.load(f'{D}/tensor_ih1_traces.npy'))
+X1 = np.ascontiguousarray(np.load(f'{D}/tensor_ih1shift_traces.npy'))
+M  = np.load(f'{D}/tensor_ih1_mask.npy')
 RI = np.load(f'{D}/desc_relint.npy')
 PM = np.load(f'{D}/desc_prodmz.npy') / 1000.0
 FC = np.load(f'{D}/desc_frcharge.npy')
 OR = np.load(f'{D}/desc_ordinal.npy') / 20.0
 SE = np.load(f'{D}/desc_series.npy')
-A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
+A0 = np.load(f'{D}/apex_ih1.npy'); A1 = np.load(f'{D}/apex_ih1shift.npy')
 
 C, W = 128, 96
 NDESC = {'anon': 2, 'lib': 3, 'full': 7, 'all': 7,
@@ -123,8 +123,8 @@ SIDE_NAMES = ['var_ms1_coelution', 'var_mass_accuracy', 'var_mass_spread',
 # fragment) and are therefore concatenated after pooling rather than tokenised.
 USE_SCAL = FEAT in ('all', 'allside', 'allint')
 if USE_SCAL:
-    SC0 = np.load(f'{D}/scal_s08.npy'); SC1 = np.load(f'{D}/scal_s08shift.npy')
-    OK0 = np.load(f'{D}/scal_s08_ok.npy'); OK1 = np.load(f'{D}/scal_s08shift_ok.npy')
+    SC0 = np.load(f'{D}/scal_ih1.npy'); SC1 = np.load(f'{D}/scal_ih1shift.npy')
+    OK0 = np.load(f'{D}/scal_ih1_ok.npy'); OK1 = np.load(f'{D}/scal_ih1shift_ok.npy')
     _cols = [str(c) for c in np.load(f'{D}/scal_cols.npy')]
     if FEAT == 'allside':
         keep = [i for i, c in enumerate(_cols) if c in SIDE_NAMES]

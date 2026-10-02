@@ -17,14 +17,14 @@ from sklearn.metrics import roc_auc_score
 import xgboost as xgb
 
 D = sys.argv[1] if len(sys.argv) > 1 else '/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/corpus'
-lab = pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy()
 label = np.array(lab.column('Label').to_pylist())
-A0 = np.load(f'{D}/apex_s08.npy')
+A0 = np.load(f'{D}/apex_ih1.npy')
 RI = np.load(f'{D}/desc_relint.npy'); PM = np.load(f'{D}/desc_prodmz.npy')
 FC = np.load(f'{D}/desc_frcharge.npy'); OR = np.load(f'{D}/desc_ordinal.npy')
-SE = np.load(f'{D}/desc_series.npy');  M = np.load(f'{D}/tensor_s08_mask.npy')
+SE = np.load(f'{D}/desc_series.npy');  M = np.load(f'{D}/tensor_ih1_mask.npy')
 
 lib = pq.read_table(f'{D}/corpus_lib.parquet', columns=['Precursor.Id','Decoy','Protein.Group'])
 pgm = {(p, int(d)): str(g) for p, d, g in zip(lib.column('Precursor.Id').to_pylist(),

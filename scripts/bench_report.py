@@ -62,7 +62,7 @@ true = tt - e / r
 # a suffix (bench.sh writes <arm>_<fixture>); anything unsuffixed is IH1, which
 # is what every stored row was measured on.
 REFS = {
-  's08': [('full v5  (3h00, 124GB)', 13268, 130, 5.72, 0.50, 12387),
+  'ih1': [('full v5  (3h00, 124GB)', 13268, 130, 5.72, 0.50, 12387),
           ('fx baseline', 3282, 42, 7.49, 1.16, 2997),
           ('fx no-floor', 2986, 44, 8.64, 1.30, 2688),
           ('fx DIA-NN', 4606, 35, 4.44, 0.75, 4404)],
@@ -71,11 +71,11 @@ REFS = {
   # in from the first arm that runs here.
   'astral': [('fx DIA-NN (full lib)', 1533, None, None, None, None)],
 }
-fixture = 'astral' if arm.endswith('_astral') else 's08'
+fixture = 'astral' if arm.endswith('_astral') else 'ih1'
 REF = REFS[fixture]
 # What the new arm is judged against: the stored ODIA baseline for this fixture,
 # or nothing when there is not one yet.
-BASE = {'s08': (7.49, 1.16)}.get(fixture)
+BASE = {'ih1': (7.49, 1.16)}.get(fixture)
 print(f"\n{'arm':>24}{'IDs':>8}{'entrap':>8}{'FDP':>9}{'+-':>7}{'est.true':>10}")
 for n, i, en, f, p, tr in REF:
     if f is None:

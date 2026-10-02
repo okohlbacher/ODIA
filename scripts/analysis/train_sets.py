@@ -35,7 +35,7 @@ dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 torch.manual_seed(20260824); np.random.seed(20260824)
 print(f'device {dev}  arch {ARCH}')
 
-lab = pq.read_table(f'{D}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{D}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy()
 label = np.array(lab.column('Label').to_pylist())
@@ -43,9 +43,9 @@ label = np.array(lab.column('Label').to_pylist())
 # training loop fancy-indexes a random batch every step -- mmap turns that into
 # thousands of small remote reads and the GPU sits at 0% while it waits. 0.87 GB
 # per arm against 2.3 TB of node memory.
-X0 = np.ascontiguousarray(np.load(f'{D}/tensor_s08_traces.npy'))
-X1 = np.ascontiguousarray(np.load(f'{D}/tensor_s08shift_traces.npy'))
-M  = np.load(f'{D}/tensor_s08_mask.npy')
+X0 = np.ascontiguousarray(np.load(f'{D}/tensor_ih1_traces.npy'))
+X1 = np.ascontiguousarray(np.load(f'{D}/tensor_ih1shift_traces.npy'))
+M  = np.load(f'{D}/tensor_ih1_mask.npy')
 
 lib = pq.read_table(f'{D}/corpus_lib.parquet', columns=['Precursor.Id','Decoy','Protein.Group'])
 pgm = {(p, int(d)): str(g) for p, d, g in zip(lib.column('Precursor.Id').to_pylist(),
@@ -55,7 +55,7 @@ fold = np.array([int(hashlib.md5(pgm.get((p, int(d)), p).encode()).hexdigest(), 
                  for p, d in zip(ids, dec)])
 pos = label == 'pos'
 if CENTRE == 'apex':
-    A0 = np.load(f'{D}/apex_s08.npy'); A1 = np.load(f'{D}/apex_s08shift.npy')
+    A0 = np.load(f'{D}/apex_ih1.npy'); A1 = np.load(f'{D}/apex_ih1shift.npy')
     # Both arms must have a located candidate, or the pair is not on the
     # deployment distribution and the two arms would be centred differently --
     # which is the very asymmetry this evaluation exists to rule out.

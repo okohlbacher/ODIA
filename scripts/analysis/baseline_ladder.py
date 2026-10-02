@@ -23,21 +23,21 @@ import xgboost as xgb
 S = sys.argv[1] if len(sys.argv) > 1 else '/scratch/kohlbach/odia2x2'
 rng = np.random.default_rng(20260824)
 
-lab = pq.read_table(f'{S}/tensor_s08_labels.parquet')
+lab = pq.read_table(f'{S}/tensor_ih1_labels.parquet')
 ids = np.array(lab.column('Precursor.Id').to_pylist())
 dec = lab.column('Decoy').to_numpy()
 label = np.array(lab.column('Label').to_pylist())
 
-m2 = pq.read_table(f'{S}/tensor_s08shift_meta.parquet')
+m2 = pq.read_table(f'{S}/tensor_ih1shift_meta.parquet')
 ids2 = np.array(m2.column('Precursor.Id').to_pylist())
 dec2 = m2.column('Decoy').to_numpy()
 assert len(ids) == len(ids2) and (ids == ids2).all() and (dec == dec2).all(), \
     'the two arms are not row-aligned; the paired design depends on it'
 print(f'{len(ids):,} rows, both arms row-aligned')
 
-X0 = np.load(f'{S}/tensor_s08_traces.npy', mmap_mode='r')
-X1 = np.load(f'{S}/tensor_s08shift_traces.npy', mmap_mode='r')
-M  = np.load(f'{S}/tensor_s08_mask.npy')
+X0 = np.load(f'{S}/tensor_ih1_traces.npy', mmap_mode='r')
+X1 = np.load(f'{S}/tensor_ih1shift_traces.npy', mmap_mode='r')
+M  = np.load(f'{S}/tensor_ih1_mask.npy')
 
 def features(T, mask, chunk=8192):
     """Per-fragment quantities, then sorted across fragments."""

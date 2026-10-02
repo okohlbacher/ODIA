@@ -18,7 +18,7 @@ L='/ceph/ibmi/abi/oliver/AI/OpenDIAlyzer/shared/libv2'
 ARMS=['inertcol','nullfeat','null2','null3']
 def load(tag):
     d={}
-    for line in open(f'{L}/rank_bench_{tag}_s08.tsv'):
+    for line in open(f'{L}/rank_bench_{tag}_ih1.tsv'):
         f=line.rstrip('\n').split('\t')
         if len(f)<3: continue
         try: d[f[0]]=(float(f[1]), float(f[2]))

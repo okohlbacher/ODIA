@@ -9,7 +9,7 @@
 #   scripts/bench.sh no-floor -min_library_fragments 0
 #   scripts/bench.sh wide-im  -precursor_im_window 0.05
 #
-# BENCH_FIXTURES picks the instrument: s08 (default), astral, or both. Both
+# BENCH_FIXTURES picks the instrument: ih1 (default), astral, or both. Both
 # search the same 4,986,616-precursor library -- see the note below the option,
 # because the Astral arm did not always.
 #
@@ -41,7 +41,7 @@ S=/scratch/kohlbach/odia2x2
 L=$R/shared/libv2
 source $R/ODIA/scripts/env.sh
 
-# BENCH_FIXTURES=s08 (default, ~25 min) | astral | both.
+# BENCH_FIXTURES=ih1 (default, ~25 min) | astral | both.
 #
 # Both instruments now search the SAME 4,986,616-precursor library. The Astral
 # arm used to search shared/lib/astral_lib_own.tsv -- 10,891 precursors,
@@ -53,8 +53,8 @@ source $R/ODIA/scripts/env.sh
 # (doc/47). The Astral map comes from shared/libv2/astral_map.py, fitted on
 # DIA-NN's full-library run; its p95 residual is 134.5 s against IH1's 37.7 s,
 # so the wider Astral window is measured, not careless.
-fixtures=${BENCH_FIXTURES:-s08}
-[[ $fixtures == both ]] && fixtures="s08 astral"
+fixtures=${BENCH_FIXTURES:-ih1}
+[[ $fixtures == both ]] && fixtures="ih1 astral"
 
 # WHICH BINARY. This used to name $R/build-gpu/OpenDIAlyzer, a second CMake tree
 # that scripts/build_odia.sh does not write -- it builds into
@@ -93,9 +93,9 @@ fi
 
 for fx in $fixtures; do
   case $fx in
-    s08)    FX=/scratch/kohlbach/fixtures/s08_6x60/s08_6x60.mzpeak
+    ih1)    FX=/scratch/kohlbach/fixtures/ih1_6x60/ih1_6x60.mzpeak
             MAP="-irt_slope 1086.50 -irt_intercept 473.77 -rt_window_pass1 75.4069"
-            desc="s08_6x60 (6 x 60 s, 19.0% of spectra)" ;;
+            desc="ih1_6x60 (6 x 60 s, 19.0% of spectra)" ;;
     astral) FX=/scratch/kohlbach/fixtures/astral_7x60/astral_7x60.mzpeak
             MAP="-irt_slope 1706.1148 -irt_intercept 472.3459 -rt_window_pass1 269.0154"
             desc="astral_7x60 (7 x 60 s)" ;;
