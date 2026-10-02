@@ -19,6 +19,7 @@
 #include <odia/MobilityCalibration.h>
 #include <odia/PeakGroupScorer.h>
 #include <odia/PrecursorPrefilter.h>
+#include <odia/ResourceProbe.h>
 #include <OpenMS/FORMAT/TransformationXMLFile.h>
 #include <odia/RtCalibration.h>
 #include <odia/RtRefiner.h>
@@ -34,6 +35,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -1390,6 +1392,15 @@ protected:
                   "under the default Sum aggregation. The decode path, not the live blocks, is "
                   "what sets this tool's memory floor, so the cost is real but not binding.",
                   true);
+    registerFlag_("debug_plane_identity",
+                  "Instrumentation, print-only: count, per extraction pass, the cells where "
+                  "the residual DENOMINATOR planes (ppm_den, im_den) differ bitwise from the "
+                  "intensity plane, as each block is emitted and before the sink reads it. "
+                  "A zero count on a run is the precondition for aliasing those planes to "
+                  "the intensity plane there (doc/83 F03) -- a measurement on that run, not "
+                  "a proof for the next. Reads the planes, never writes them: the output is "
+                  "byte-identical with or without it. Costs one pass over every emitted block.",
+                  true);
     registerStringOption_("entrapment_prefix", "<text>", "",
                           "Protein-name prefix marking ENTRAPMENT precursors in the library: "
                           "real peptides known to be absent from the sample, so every one "
@@ -1693,6 +1704,12 @@ protected:
                          double rt_window_override = 0.0,
                          bool library_rt_is_run_seconds = false)
   {
+    // Phase ledger: whatever ran since the last mark (library load, seeds, the
+    // RT fit and prefilter between passes, writing the previous pass's output)
+    // closes here, and this extraction's phases follow. Print-only.
+    const std::string ex = "e" + std::to_string(++extraction_index_);
+    phase_("before " + ex + " (since the previous mark)");
+
     std::unique_ptr<ODIA::SpectrumSource> source;
     try
     {
@@ -1743,7 +1760,9 @@ protected:
     options.terminal_reason = terminal_reasons_.empty() ? nullptr
                                                         : terminal_reasons_.data();
 
+    phase_(ex + " open run");
     applyMassCalibration_(library, *source, options, rt_window_override);
+    phase_(ex + " fragment mass calibration");
     // The harvest records deviations against the target the extractor actually
     // searched, which is the corrected one. Hand it the correction so it can
     // report against the uncorrected theoretical instead -- otherwise a model
@@ -1791,8 +1810,10 @@ protected:
     // through the mass window and a mis-centred one fills its sample with the
     // interference that calibration exists to exclude; and after the iRT map,
     // because the probe uses it to look only where a precursor should elute.
+    phase_(ex + " extraction options");
     applyMobilityCalibration_(library, *source, options);
-    options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));
+    phase_(ex + " mobility calibration");
+    options.threads =static_cast<unsigned>(std::max(1, getIntOption_("threads")));
     options.max_live_precursors = static_cast<std::size_t>(
       std::max(0, getIntOption_("max_live_precursors")));
     {
@@ -1820,6 +1841,9 @@ protected:
     }
     options.decode_block = static_cast<std::size_t>(
       std::max(0, getIntOption_("decode_block")));
+    // Instrumentation only -- neither is read by anything that is extracted.
+    options.stage_label = ex;
+    options.count_plane_identity = getFlag_("debug_plane_identity");
 
     // MS1 traces are built HERE, and the position is the fix for three defects
     // that together made MS1_COELUTION report `0 finite, 11,877 null ptr`:
@@ -1885,10 +1909,34 @@ protected:
         else
         {
           double ms1_resid = std::numeric_limits<double>::quiet_NaN();
+          phase_(ex + " options, MS1 sizing");
+          ODIA::Ms1Traces::BuildCost ms1_cost;
           ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                                options.precursor_im_window *
                                                  getDoubleOption_("ms1_im_scale"),
-                                               ms1PpmCentre_(), &ms1_resid);
+                                               ms1PpmCentre_(), &ms1_resid,
+                                               0.0, nullptr, nullptr, &ms1_cost);
+          {
+            // The build's five contiguous stages, then the phase that encloses
+            // them: the phase minus their sum is what no stage bracket covered.
+            const ODIA::ProcessStatus ps = ODIA::ProcessStatus::now();
+            const std::pair<const char*, const ODIA::StageCost*> parts[] = {
+              {"alloc (zero-fill)", &ms1_cost.alloc}, {"index", &ms1_cost.index},
+              {"decode", &ms1_cost.decode}, {"match", &ms1_cost.match},
+              {"median", &ms1_cost.median}};
+            ODIA::StageCost sum;
+            for (const auto& pr : parts)
+            {
+              stageLine_(ex + " ms1", pr.first, *pr.second, ps);
+              sum += *pr.second;
+            }
+            stageLine_(ex + " ms1", "sum of stages", sum, ps);
+            phase_(ex + " MS1 build");
+            const ODIA::StageCost gap = minus_(phases_.back().second, sum);
+            stageLine_(ex + " ms1", "unbracketed (phase - stages)", gap, ps);
+            stage_bracketed_ += sum;
+            stage_unbracketed_ += gap;
+          }
           {
             // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
             // which is a hypothesis: the instrument need not err identically on
@@ -1979,6 +2027,19 @@ protected:
                     "Treat the output as a smoke test, not a result.");
     }
 
+    // Moved here from ChromatogramExtractor::extract, where it went to stderr
+    // on every extraction of every run. Same text, now behind -debug.
+    {
+      char rt_line[256];
+      std::snprintf(rt_line, sizeof rt_line,
+                    "RT-RESTRICT DIAGNOSTIC: restrict_rt=%d irt_slope=%.6g irt_intercept=%.6g "
+                    "rt_window_seconds=%.6g",
+                    int(options.irt_slope != 0.0), options.irt_slope, options.irt_intercept,
+                    options.rt_window_seconds);
+      writeDebug_(rt_line, 1);
+    }
+
+    phase_(ex + " pre-extraction (MS1 report, -out_ms1_iso, checks)");
     ODIA::ChromatogramExtractor::Stats stats;
     const auto t = std::chrono::steady_clock::now();
     try
@@ -1992,6 +2053,54 @@ protected:
     }
     const auto ms = std::chrono::duration<double, std::milli>(
                       std::chrono::steady_clock::now() - t).count();
+    {
+      // The extraction's stages summed over its chunks, then the phase that
+      // encloses them. `emit` is the serial release loop (the sink plus handing
+      // blocks back), so its cpu/wall near 1 is the check that it ran alone.
+      const ODIA::ProcessStatus ps = ODIA::ProcessStatus::now();
+      const std::pair<const char*, const ODIA::StageCost*> parts[] = {
+        {"setup", &stats.setup}, {"index", &stats.index}, {"decode", &stats.decode},
+        {"activate", &stats.activate}, {"match", &stats.match},
+        {"emit (sink+release)", &stats.emit}, {"empty traces", &stats.empty}};
+      ODIA::StageCost sum;
+      for (const auto& pr : parts)
+      {
+        stageLine_(ex + " pass", pr.first, *pr.second, ps);
+        sum += *pr.second;
+      }
+      stageLine_(ex + " pass", "sum of stages", sum, ps);
+      phase_(ex + " extraction");
+      const ODIA::StageCost gap = minus_(phases_.back().second, sum);
+      stageLine_(ex + " pass", "unbracketed (phase - stages)", gap, ps);
+      stage_bracketed_ += sum;
+      stage_unbracketed_ += gap;
+      // Points are floats: x4 for bytes.
+      const auto gib = [](std::uint64_t pts) { return double(pts) * 4.0 / 1073741824.0; };
+      std::ostringstream pm;
+      pm.setf(std::ios::fixed); pm.precision(3);
+      pm << "STAGE " << ex << " pass pool: peak live " << stats.peak_live_points
+         << " points (" << gib(stats.peak_live_points) << " GiB), reserved "
+         << stats.pool_reserved_points << " points (" << gib(stats.pool_reserved_points)
+         << " GiB, "
+         << (stats.peak_live_points ? double(stats.pool_reserved_points) /
+                                        double(stats.peak_live_points) : 0.0)
+         << "x peak), " << stats.pool_blocks << " blocks in " << stats.pool_size_classes
+         << " size classes";
+      writeLogInfo_(pm.str());
+      if (options.count_plane_identity)
+      {
+        std::ostringstream pi;
+        pi << "PLANE-IDENTITY " << ex << ": " << stats.plane_cells
+           << " cells in blocks with residual planes; ppm_den != base in "
+           << stats.ppm_den_differs << " (ppm planes "
+           << (options.collect_mass_residuals ? "on" : "off") << "), im_den != base in "
+           << stats.im_den_differs << " (of which im_den == 0 while base != 0: "
+           << stats.im_den_zero << "; im planes "
+           << (options.collect_im_residuals ? "on" : "off") << "); base non-finite "
+           << stats.base_nonfinite << ", base negative " << stats.base_negative;
+        writeLogInfo_(pi.str());
+      }
+    }
 
     std::ostringstream msg;
     msg << "extracted " << stats.transitions << " transitions of "
@@ -2467,6 +2576,8 @@ protected:
        << pass1.target_groups << " target / " << pass1.decoy_groups << " decoy, "
        << pass1.iterations_trained << " iterations trained";
     writeLogInfo_(p1.str());
+    phase_("after e" + std::to_string(extraction_index_) +
+           ": pass-1 mass width, mass anchors, entrapment reports");
 
     // Anchors: the best group of each confidently identified target, paired
     // with the library RT it came from.
@@ -2687,6 +2798,7 @@ protected:
     // real (shuffled) sequence, and its apex sits on real signal.
     harvestMobilityAnchors_(pass1, library.precursorCount());
     centreFromPass1_(pass1, library);
+    phase_("RT anchor selection, mobility anchor harvest, pass-1 IM centring");
 
     // A pass that identified nothing at 1% has no business supplying anchors.
     //
@@ -2799,6 +2911,7 @@ protected:
     // the candidate picker is retention-time agnostic, so a new axis changes
     // RT_DELTA and nothing else; `PeakGroupScorer::refit` recomputes that one
     // column and refits the discriminant.
+    phase_("RT calibration: map fit and residuals");
     if (getStringOption_("rt_refine") != "off" && !refine_rows.empty())
     {
       const int rounds = std::max(1, getIntOption_("rt_refine_rounds"));
@@ -3070,6 +3183,7 @@ protected:
     // After this the library's `irt` holds RUN SECONDS, not normalised iRT,
     // which is what lets the mass probe be re-measured against it below with
     // an identity map.
+    phase_("RT refinement (-rt_refine)");
     rt_map_fitted_ = true;
 
     // ON DEMAND ONLY. A run that was not asked for the map writes nothing.
@@ -3181,6 +3295,7 @@ protected:
     // At this point the library's irt holds RUN SECONDS, so the map is the
     // identity, and the fragment window is the calibrated one pass 2 is about
     // to use.
+    phase_("RT map applied, pass-2 window");
     const std::string prefilter_mode = getStringOption_("prefilter");
     if (prefilter_mode != "off")
     {
@@ -3235,7 +3350,9 @@ protected:
       const auto wrc = writeCollectedChromatograms_(collector, out_chrom, library);
       if (wrc != EXECUTION_OK) { return wrc; }
     }
+    phase_("after e" + std::to_string(extraction_index_) + ": -out_chrom write");
     refineToConvergence_(library, original_irt, scored);
+    phase_("refine loop (-refine_rounds)");
     writeTerminalReasons_(library);
     return writeScoreResult_(scored, out, library);
   }
@@ -4731,6 +4848,7 @@ protected:
     // runs during extraction setup, after the Sink was built. Deciding earlier
     // ran pass 1 with features pass 2 rejects, and pass 1 supplies the anchors.
     sink.disableSubScores(ablatedSubScores_());
+    const auto t_finish = std::chrono::steady_clock::now();
     try
     {
       scored = sink.finish();
@@ -4740,9 +4858,20 @@ protected:
       writeLogError_(std::string("Scoring failed: ") + e.what());
       return INTERNAL_ERROR;
     }
-    const auto ms = std::chrono::duration<double, std::milli>(
-                      std::chrono::steady_clock::now() - t).count();
-    reportScoring_(scored, options.classifier, ms, "scored on the fly");
+    const auto now = std::chrono::steady_clock::now();
+    const double finish_s = std::chrono::duration<double>(now - t_finish).count();
+    const auto ms = std::chrono::duration<double, std::milli>(now - t).count();
+    phase_("e" + std::to_string(extraction_index_) + " finish() (classifier, FDR)");
+    // This bracket was labelled "scored on the fly", and its time was read as
+    // the scorer's. It is not: it opens before extractInto_ and so encloses
+    // the run open, both calibration probes, the MS1 build, the extraction
+    // (with the streaming sink) and finish(). Said on the line now, with
+    // finish() split out; the PHASE lines carry the full decomposition.
+    std::ostringstream how;
+    how.setf(std::ios::fixed); how.precision(3);
+    how << "extracted+scored (bracket = calibration probes + MS1 build + extraction "
+           "with streaming sink + finish(); finish() alone " << finish_s << " s):";
+    reportScoring_(scored, options.classifier, ms, how.str());
     return EXECUTION_OK;
   }
 
@@ -4927,6 +5056,24 @@ protected:
 
   ExitCodes main_(int, const char**) override
   {
+    // The phase ledger (see phase_()). getrusage counts from process start, so
+    // a zero baseline makes the first phase everything OpenMS did before main_;
+    // its wall is not measurable from a steady clock that starts here and
+    // reads ~0. The guard is declared FIRST so it is destroyed LAST, after the
+    // library and every other local of main_, on every return path.
+    phase_mark_ = ODIA::ResourceSample{};
+    phase_mark_.wall = ODIA::ResourceSample::now().wall;
+    phase_("startup (before main_; cpu since process start, wall not measured)");
+    struct PhaseGuard
+    {
+      TOPPOpenDIAlyzer* self;
+      ~PhaseGuard()
+      {
+        try { self->closePhases_(); }
+        catch (...) {}   // a report must not turn an exit into a terminate
+      }
+    } phase_guard{this};
+
     const std::string tr = getStringOption_("tr");
     const std::string fasta = getStringOption_("fasta");
     const std::string out_lib = getStringOption_("out_lib");
@@ -5676,6 +5823,96 @@ private:
   ODIA::MassCalibration::Model mass_model_;
   /// The run's MS1 precursor traces, built once before the first scoring pass.
   ODIA::Ms1Traces ms1_traces_;
+
+  /// The run's timeline as CONTIGUOUS phases, each printed as it closes.
+  ///
+  /// Every wall/CPU share in doc/83 §2.3 was obtained by subtraction from a
+  /// footer -- "untimed tail <=587 s", "finish() ~420 s INFERRED by
+  /// subtraction", "the 'scored on the fly' bracket encloses MS1 build +
+  /// extraction + finish". Phases fix that by construction: each phase_() call
+  /// closes the phase that ends there and opens the next, so the phases
+  /// partition the process from its start to the last mark and their sum IS
+  /// the process total; the only term left over is what runs after main_
+  /// returns. The finer STAGE lines (inside an extraction, inside the MS1
+  /// build) nest inside one phase each, and what they leave unbracketed is
+  /// printed beside them rather than inferred.
+  ///
+  /// Print-only. No phase changes what is computed.
+  ODIA::ResourceSample phase_mark_{};
+  std::vector<std::pair<std::string, ODIA::StageCost>> phases_;
+  /// Labels the extractions e1, e2, ... in the order they run, so a STAGE line
+  /// names which one it belongs to without the extractor knowing about passes.
+  unsigned extraction_index_ = 0;
+
+  /// Close the phase that ends here, print it, and open the next.
+  void phase_(const std::string& name)
+  {
+    const ODIA::ResourceSample now = ODIA::ResourceSample::now();
+    ODIA::StageCost c;
+    c.add(phase_mark_, now);
+    phase_mark_ = now;
+    phases_.emplace_back(name, c);
+    writeLogInfo_("PHASE " + name + ": " +
+                  ODIA::formatStageCost(c, ODIA::ProcessStatus::now()));
+    // Who holds the resident set at this boundary (proportional set size and
+    // both allocators' own totals). Read here and at chunk ends only -- the
+    // smaps_rollup walk and mallinfo2 time themselves on the line. Never
+    // called while the extraction's workers or finish()'s OpenMP team run.
+    writeLogInfo_("PHASE " + name + " memory: " +
+                  ODIA::formatMemorySnapshot(ODIA::MemorySnapshot::now()));
+  }
+
+  /// One STAGE line, the format phase_() uses.
+  void stageLine_(const std::string& scope, const std::string& name,
+                  const ODIA::StageCost& c, const ODIA::ProcessStatus& ps)
+  {
+    writeLogInfo_("STAGE " + scope + " " + name + ": " + ODIA::formatStageCost(c, ps));
+  }
+
+  /// The closing reconciliation, from main_'s exit guard: the last phase, the
+  /// phase sum against getrusage, and the leaf sum -- phases with each
+  /// extraction and MS1 build replaced by their STAGE lines -- whose gap to the
+  /// phase sum is exactly the time no STAGE bracket covered.
+  void closePhases_()
+  {
+    phase_("tail (results, cleanup in main_)");
+    ODIA::StageCost sum;
+    for (const auto& ph : phases_) { sum += ph.second; }
+    const ODIA::ResourceSample end = ODIA::ResourceSample::now();
+    const ODIA::ProcessStatus ps_end = ODIA::ProcessStatus::now();
+    std::ostringstream m;
+    m.setf(std::ios::fixed); m.precision(3);
+    m << "PHASE total: " << phases_.size() << " phases, cpu " << sum.cpu()
+      << " s (user " << sum.user << ", sys " << sum.sys << "), wall "
+      << sum.wall << " s after main_ began; process getrusage at exit of main_: cpu "
+      << end.user + end.sys << " s (user " << end.user << ", sys " << end.sys
+      << "), minflt " << end.minflt << ", majflt " << end.majflt
+      << ". Compare against the footer's CPU; what differs ran after main_ returned.\n"
+      << "PHASE peak: VmHWM " << double(ps_end.hwm_kib) / 1048576.0 << " GiB ("
+      << ps_end.hwm_kib << " KiB), getrusage ru_maxrss " << end.maxrss_kib
+      << " KiB (the number a `time -v` footer prints as Maximum resident set size), "
+         "VmRSS now " << double(ps_end.rss_kib) / 1048576.0 << " GiB, threads "
+      << ps_end.threads << "\n"
+      << "PHASE leaves: STAGE-bracketed cpu inside extractions " << stage_bracketed_.cpu()
+      << " s and unbracketed " << stage_unbracketed_.cpu() << " s (wall "
+      << stage_bracketed_.wall << " / " << stage_unbracketed_.wall << " s)";
+    writeLogInfo_(m.str());
+  }
+  /// Summed over every extraction and MS1 build, for closePhases_().
+  ODIA::StageCost stage_bracketed_, stage_unbracketed_;
+
+  /// Unbracketed = phase - sum of its stages. A negative field would mean the
+  /// stages overlapped, which the brackets are built not to do.
+  static ODIA::StageCost minus_(const ODIA::StageCost& whole, const ODIA::StageCost& parts)
+  {
+    ODIA::StageCost r;
+    r.wall = whole.wall - parts.wall;
+    r.user = whole.user - parts.user;
+    r.sys = whole.sys - parts.sys;
+    r.minflt = whole.minflt >= parts.minflt ? whole.minflt - parts.minflt : 0;
+    r.majflt = whole.majflt >= parts.majflt ? whole.majflt - parts.majflt : 0;
+    return r;
+  }
 
   /// -out_chrom_ids: reconstructed Precursor.Ids that restrict the chromatogram
   /// and MS1-isotope output. Empty = no restriction.

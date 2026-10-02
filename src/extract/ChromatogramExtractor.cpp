@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -307,6 +309,7 @@ namespace ODIA
         std::fill_n(p, n, 0.0f);
         live_ += n;
         peak_ = std::max(peak_, live_);
+        chunk_peak_ = std::max(chunk_peak_, live_);
         return p;
       }
 
@@ -317,13 +320,26 @@ namespace ODIA
         live_ -= n;
       }
 
+      /// Points the pool ever allocated. It never shrinks: a block given back
+      /// waits on the free list of its EXACT size, so a request of any other
+      /// size allocates afresh. `reserved - peak` is therefore what exact-size
+      /// free lists cost; doc/83 §2.2 lists it as the first candidate owner of
+      /// the ~165 GiB nobody attributes, and until now it was tracked and never
+      /// printed (no caller since a0989fc).
       std::uint64_t reservedPoints() const { return reserved_; }
       std::uint64_t peakPoints() const { return peak_; }
+      std::uint64_t livePoints() const { return live_; }
+      /// The peak since the last resetChunkPeak(): what ONE chunk held at once,
+      /// where peakPoints() is the pass's maximum over all of them.
+      std::uint64_t chunkPeakPoints() const { return chunk_peak_; }
+      void resetChunkPeak() { chunk_peak_ = live_; }
+      std::uint64_t blocks() const { return owned_.size(); }
+      std::uint64_t sizeClasses() const { return free_.size(); }
 
     private:
       std::unordered_map<std::size_t, std::vector<float*>> free_;
       std::vector<std::unique_ptr<float[]>> owned_;
-      std::uint64_t live_ = 0, peak_ = 0, reserved_ = 0;
+      std::uint64_t live_ = 0, peak_ = 0, reserved_ = 0, chunk_peak_ = 0;
       float dummy_ = 0.0f;
     };
   } // namespace
@@ -472,6 +488,7 @@ namespace ODIA
     Stats& st = stats == nullptr ? local : *stats;
     st = Stats{};
     const auto t_index = std::chrono::steady_clock::now();
+    const ResourceSample r_setup = ResourceSample::now();
 
     const auto& p = library.precursors();
     const auto& t = library.transitions();
@@ -528,15 +545,15 @@ namespace ODIA
     const std::size_t n_trans =
       n_prec == 0 ? 0 : p.transition_begin[n_prec - 1] + p.transition_count[n_prec - 1];
 
-    const bool restrict_rt = options.irt_slope != 0.0;
     // Three runs -- uncalibrated, calibrated at 600 s, calibrated at 60 s --
     // extracted 119,088,506 transitions each, identical to the digit. The RT
     // window has never restricted anything, and reading the code cannot say why.
-    std::fprintf(stderr,
-      "RT-RESTRICT DIAGNOSTIC: restrict_rt=%d irt_slope=%.6g irt_intercept=%.6g "
-      "rt_window_seconds=%.6g\n",
-      int(restrict_rt), options.irt_slope, options.irt_intercept,
-      options.rt_window_seconds);
+    // The "RT-RESTRICT DIAGNOSTIC" line that asked was printed from HERE to
+    // stderr on every extraction of every run, shipped included; it now comes
+    // from the caller at -debug 1 (OpenDIAlyzer::extractInto_), with the same
+    // text, because a library writing its caller's options to stderr is not a
+    // diagnostic anyone can turn off.
+    const bool restrict_rt = options.irt_slope != 0.0;
     std::uint64_t total_points = 0;
     std::uint64_t live_sum = 0;
 
@@ -1215,6 +1232,33 @@ namespace ODIA
       trace.offset = off_scratch.data();
       trace.count = count_scratch.data();
 
+      // The aliasing precondition, counted on the block exactly as the match
+      // left it and BEFORE the sink sees it. Bits, not ==, because aliasing
+      // is exact or it is a change of output: NaN != NaN would hide a NaN
+      // cell that both planes share, and -0 == +0 would hide one they do not.
+      if (options.count_plane_identity &&
+          (live[slot].ppm_den != nullptr || live[slot].im_den != nullptr))
+      {
+        const std::size_t cells = std::size_t(a.valid) * cycles;
+        const float* b = live[slot].base;
+        const float* pd = live[slot].ppm_den;
+        const float* id = live[slot].im_den;
+        st.plane_cells += cells;
+        for (std::size_t i = 0; i < cells; ++i)
+        {
+          const auto bits = std::bit_cast<std::uint32_t>(b[i]);
+          if (!std::isfinite(b[i])) { ++st.base_nonfinite; }
+          else if (b[i] < 0.0f) { ++st.base_negative; }
+          if (pd != nullptr && std::bit_cast<std::uint32_t>(pd[i]) != bits)
+          { ++st.ppm_den_differs; }
+          if (id != nullptr && std::bit_cast<std::uint32_t>(id[i]) != bits)
+          {
+            ++st.im_den_differs;
+            if (id[i] == 0.0f && b[i] != 0.0f) { ++st.im_den_zero; }
+          }
+        }
+      }
+
       const auto t_sink = std::chrono::steady_clock::now();
       sink.accept(trace);
       st.sink_seconds += std::chrono::duration<double>(
@@ -1241,9 +1285,58 @@ namespace ODIA
       --live_now;
     };
 
+    st.setup.add(r_setup, ResourceSample::now());
+
+    // One line per stage per chunk, printed as the chunk ends -- see
+    // Options::stage_label for why as-you-go. rss/hwm/threads are read once,
+    // at the end of the chunk, and shared by its lines.
+    const auto report_chunk = [&](std::size_t c, const StageCost* const* costs,
+                                  const char* const* names, std::size_t n) {
+      if (options.stage_label.empty()) { return; }
+      const ProcessStatus ps = ProcessStatus::now();
+      const std::string head = "STAGE " + options.stage_label + " chunk " +
+                               std::to_string(c + 1) + "/" + std::to_string(chunks.size()) + " ";
+      if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
+      for (std::size_t k = 0; k < n; ++k)
+      { std::cerr << head << names[k] << ": " << formatStageCost(*costs[k], ps) << "\n"; }
+      // Points are floats, so x4 for bytes. Peak and reserved count every
+      // plane: a 5-plane block is five takes.
+      const auto gib = [](std::uint64_t pts) { return double(pts) * 4.0 / 1073741824.0; };
+      char buf[512];
+      std::snprintf(buf, sizeof buf,
+                    "pool: chunk peak %llu points (%llu B, %.3f GiB), pass peak %llu points "
+                    "(%.3f GiB), reserved %llu points (%llu B, %.3f GiB, %.3fx chunk peak), "
+                    "live at chunk end %llu points, %llu blocks in %llu size classes",
+                    static_cast<unsigned long long>(blocks.chunkPeakPoints()),
+                    static_cast<unsigned long long>(blocks.chunkPeakPoints() * 4),
+                    gib(blocks.chunkPeakPoints()),
+                    static_cast<unsigned long long>(blocks.peakPoints()), gib(blocks.peakPoints()),
+                    static_cast<unsigned long long>(blocks.reservedPoints()),
+                    static_cast<unsigned long long>(blocks.reservedPoints() * 4),
+                    gib(blocks.reservedPoints()),
+                    blocks.chunkPeakPoints()
+                      ? double(blocks.reservedPoints()) / double(blocks.chunkPeakPoints()) : 0.0,
+                    static_cast<unsigned long long>(blocks.livePoints()),
+                    static_cast<unsigned long long>(blocks.blocks()),
+                    static_cast<unsigned long long>(blocks.sizeClasses()));
+      std::cerr << head << buf << "\n";
+      // Who holds the resident set now that the chunk has emitted everything:
+      // at this point the pool's live set is ~0 and its reserve is not, so
+      // `rss_anon` against `reserved` and the allocators' own totals is what
+      // separates (a) pool over-reservation from (b) allocator retention in
+      // doc/83 §2.2's list of owners.
+      std::cerr << head << "memory: " << formatMemorySnapshot(MemorySnapshot::now())
+                << std::endl;
+    };
+
     for (chunk_no = 0; chunk_no < chunks.size(); ++chunk_no)
     {
       const auto& slots = chunks[chunk_no];
+      // This chunk's share of each stage; added to the pass totals in `st`
+      // when the chunk ends.
+      StageCost c_index, c_decode, c_activate, c_match, c_emit;
+      blocks.resetChunkPeak();
+      const ResourceSample r_index = ResourceSample::now();
       const auto t_chunk_index = std::chrono::steady_clock::now();
       std::fill(seen.begin(), seen.end(), 0u);
       std::fill(first_seen.begin(), first_seen.end(),
@@ -1383,6 +1476,7 @@ namespace ODIA
 
       st.index_seconds += std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t_chunk_index).count();
+      c_index.add(r_index, ResourceSample::now());
 
       // Logical batches on the run's ABSOLUTE grid (see batchOf), clipped to
       // the chunk. Decoding is per block, because that is what the reader
@@ -1404,6 +1498,7 @@ namespace ODIA
         // Everything whose window starts inside this batch goes live. Doing it
         // between batches rather than per spectrum is what keeps the pass free
         // of synchronisation: no allocation happens while a worker is running.
+        const ResourceSample r_activate = ResourceSample::now();
         const auto t_alloc = std::chrono::steady_clock::now();
         for (std::size_t si = batch; si < batch_end; ++si)
         {
@@ -1423,6 +1518,13 @@ namespace ODIA
         }
         st.assemble_seconds += std::chrono::duration<double>(
                                  std::chrono::steady_clock::now() - t_alloc).count();
+        // The stage brackets of this batch are chained: each starts on the
+        // sample the previous one ended on, so the batch has no unbracketed
+        // gap. Since the fixed 128-spectrum grid a batch can straddle two
+        // decode blocks, so a batch is activate, then per part an optional
+        // decode and a match, then emit.
+        ResourceSample r_mark = ResourceSample::now();
+        c_activate.add(r_activate, r_mark);
 
         // The workers match the part [next, part_end) of this batch that the
         // decoded block holds.
@@ -1567,6 +1669,7 @@ namespace ODIA
             source.peaks(block_begin, block_end, block);
             st.decode_seconds += std::chrono::duration<double>(
                                    std::chrono::steady_clock::now() - t_decode).count();
+            c_decode.add(r_mark, ResourceSample::now());
             st.spectra_decoded += block_end - block_begin;
             if (options.progress_every && ((block_at - first_spectrum) / BLOCK) % 16 == 0)
             {
@@ -1574,6 +1677,9 @@ namespace ODIA
                         << " spectra"
                         << std::flush;
             }
+            // The progress line is the pass's, not a stage's: it falls in the
+            // unbracketed remainder, as it always did.
+            r_mark = ResourceSample::now();
           }
           part_end = std::min(batch_end, block_end);
           next.store(part);
@@ -1582,7 +1688,15 @@ namespace ODIA
           else { pool_impl.run(work, threads); }
           st.match_seconds += std::chrono::duration<double>(
                                 std::chrono::steady_clock::now() - t_match).count();
+          const ResourceSample r_matched = ResourceSample::now();
+          c_match.add(r_mark, r_matched);
+          r_mark = r_matched;
         }
+        // The pool's workers are parked on the condvar from here on, so
+        // whatever the process spends from here to the end of the hand-over
+        // loop below is the driver's: the emit bracket is the serial sink,
+        // measured, with the unhoused guard (one atomic load) in front of it.
+        const ResourceSample r_emit = r_mark;
 
         // Checked before this batch hands anything over: see `unhoused`.
         if (unhoused.load() != 0)
@@ -1616,9 +1730,11 @@ namespace ODIA
         st.assemble_seconds += std::chrono::duration<double>(
                                  std::chrono::steady_clock::now() - t_free).count()
                                - (st.sink_seconds - sink_before);
+        c_emit.add(r_emit, ResourceSample::now());
       }
 
       // Whatever the pass ended inside is final too.
+      const ResourceSample r_flush = ResourceSample::now();
       const auto t_flush = std::chrono::steady_clock::now();
       const double sink_before_flush = st.sink_seconds;
       for (std::size_t w = 0; w < windows.size(); ++w)
@@ -1632,11 +1748,24 @@ namespace ODIA
       st.assemble_seconds += std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - t_flush).count()
                              - (st.sink_seconds - sink_before_flush);
+      c_emit.add(r_flush, ResourceSample::now());
+
+      st.index += c_index;
+      st.decode += c_decode;
+      st.activate += c_activate;
+      st.match += c_match;
+      st.emit += c_emit;
+      {
+        const StageCost* costs[] = {&c_index, &c_decode, &c_activate, &c_match, &c_emit};
+        const char* names[] = {"index", "decode", "activate", "match", "emit (sink+release)"};
+        report_chunk(chunk_no, costs, names, 5);
+      }
     }
     if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
 
     // Precursors nothing extracted still owe the sink a trace, empty, so that
     // a consumer counting them sees what it saw when every precursor had a row.
+    const ResourceSample r_empty = ResourceSample::now();
     const auto t_empty = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < n_prec; ++i)
     {
@@ -1649,6 +1778,7 @@ namespace ODIA
     }
     st.sink_seconds += std::chrono::duration<double>(
                          std::chrono::steady_clock::now() - t_empty).count();
+    st.empty.add(r_empty, ResourceSample::now());
 
     st.precursors = n_prec;
     st.transitions = n_trans;
@@ -1660,6 +1790,9 @@ namespace ODIA
     // early, and a chunked run never reaches the sweep's number at all.
     st.peak_live_precursors = live_peak;
     st.peak_live_points = blocks.peakPoints();
+    st.pool_reserved_points = blocks.reservedPoints();
+    st.pool_blocks = blocks.blocks();
+    st.pool_size_classes = blocks.sizeClasses();
   }
 
 } // namespace ODIA

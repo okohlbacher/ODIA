@@ -5,6 +5,7 @@
 
 #include <odia/Library.h>
 #include <odia/MobilityCalibration.h>
+#include <odia/ResourceProbe.h>
 #include <odia/SpectrumSource.h>
 
 #include <algorithm>
@@ -832,6 +833,31 @@ namespace ODIA
 
       /// Report progress every this many spectra, 0 to stay quiet.
       std::size_t progress_every = 500;
+
+      /// Prefix of the per-chunk resource lines ("STAGE <label> chunk c/C
+      /// <stage>: wall ..., cpu ..."), printed to stderr as each chunk ends.
+      /// Empty prints nothing; the stage costs are still summed into `Stats`.
+      ///
+      /// Printed AS THE CHUNK ENDS rather than returned, because the question
+      /// they exist for is WHEN the high-water mark happens, and a run killed at
+      /// that moment never returns its Stats. Instrumentation only: nothing
+      /// that is extracted depends on it.
+      std::string stage_label;
+
+      /// Count, in emit(), the cells where the residual DENOMINATOR planes
+      /// differ from the intensity plane -- the precondition for aliasing them
+      /// (doc/83 F03). Off by default; costs one pass over every emitted block.
+      ///
+      /// Under Aggregate::Sum the match loop adds `intensity` to `at` for every
+      /// matched peak, and to `ppm_den` only for `intensity > 0`, and to
+      /// `im_den` only for `intensity > 0` with a finite peak 1/K0 -- same
+      /// thread, same iteration order, blocks zeroed at take. So the planes are
+      /// bit-identical unless a contributing peak was negative or NaN (ppm and
+      /// im) or carried no mobility (im only). A count of zero on a run is what
+      /// makes `ppm_den := base` an exact transformation there; it is a
+      /// measurement on that run, not a proof for the next one. Read-only: the
+      /// planes are compared, never written.
+      bool count_plane_identity = false;
     };
 
     struct Stats
@@ -896,6 +922,42 @@ namespace ODIA
       /// given. Empty when the cap came from -max_live_precursors or from
       /// retention-time overlap alone.
       std::string live_budget_note;
+
+      /// Process resources charged to each stage, summed over chunks. See
+      /// ResourceProbe.h for what the counters are and what they are not.
+      ///
+      /// The brackets are not the `*_seconds` timers above, and two of them
+      /// differ on purpose: `emit` is the whole release loop -- the sink PLUS
+      /// handing the blocks back -- because the sink is entered once per
+      /// precursor and a getrusage per precursor would cost tens of seconds of
+      /// the time it measures (`sink_seconds` stays the per-call wall timer);
+      /// `activate` is the allocate-and-zero half of `assemble_seconds`.
+      /// `setup` is everything before the first chunk (assignment, overlap
+      /// sweep, chunking, the live-slot table, starting the pool); `empty` is
+      /// the trailing loop that hands never-extracted precursors to the sink.
+      StageCost setup, index, decode, activate, match, emit, empty;
+
+      /// The block pool's own accounting, which nothing printed before.
+      /// `reserved` is what the pool ever allocated -- it never shrinks and is
+      /// keyed by exact block size, so `reserved - peak` is what exact-size
+      /// free lists cost -- against `peak_live_points`, what was live at once.
+      /// Points are floats: x4 for bytes.
+      std::uint64_t pool_reserved_points = 0;
+      std::uint64_t pool_blocks = 0;          ///< blocks the pool owns
+      std::uint64_t pool_size_classes = 0;    ///< distinct block sizes seen
+
+      /// Options::count_plane_identity, summed over the pass. All zero when it
+      /// was off. `plane_cells` is every cell of every emitted block that had
+      /// residual planes; the rest count cells within it.
+      std::uint64_t plane_cells = 0;
+      std::uint64_t ppm_den_differs = 0;      ///< ppm_den bits != base bits
+      std::uint64_t im_den_differs = 0;       ///< im_den bits != base bits
+      /// Of `im_den_differs`, cells whose im_den stayed exactly 0 while base
+      /// did not -- every match there lacked a finite 1/K0 (a run or frame
+      /// with no mobility), as opposed to a negative/NaN contribution.
+      std::uint64_t im_den_zero = 0;
+      std::uint64_t base_nonfinite = 0;       ///< NaN/inf intensity sums
+      std::uint64_t base_negative = 0;        ///< negative intensity sums
     };
 
     /// Extract into a sink, holding only what is live.

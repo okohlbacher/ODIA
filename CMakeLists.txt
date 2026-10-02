@@ -105,6 +105,7 @@ set(ODIA_LIB_SOURCES
   src/library/LibraryGenerator.cpp
   src/library/OSWPQLibraryFile.cpp
   src/io/ArrowColumn.cpp
+  src/io/ResourceProbe.cpp
   src/io/MiniJson.cpp
   src/io/MobilityBands.cpp
   src/io/MzPeakSource.cpp
