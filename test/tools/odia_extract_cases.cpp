@@ -33,6 +33,8 @@
 //   plane_identity  the -debug_plane_identity counter fires where the residual
 //                 denominators differ from the intensity plane (positive
 //                 control) and not where they do not
+//   instr_matrix  the stage ledger and plane counter on the chunked path: the
+//                 stream unchanged, every chunk/block/batch/part bracketed once
 //
 // Usage: odia_extract_cases <case>
 
@@ -1639,6 +1641,111 @@ namespace
     check(both_failed == 0, "with both caps the tighter binds, and the stream is unchanged");
   }
 
+  /// The instrumentation on the chunked path: the per-chunk stage ledger and
+  /// the plane-identity counter must change nothing the sink sees, at any
+  /// decode block x cap x thread count, and the ledger must account for the
+  /// pass's actual structure -- one index bracket and one snapshot per chunk,
+  /// one decode bracket per decoded block, one activate bracket per batch, a
+  /// match bracket per part of a batch (a batch straddling two decode blocks is
+  /// matched in two parts), one emit bracket per batch plus the chunk's flush,
+  /// and no bracket overlapping another. The plane-identity counts are a
+  /// property of the cells, so they must not move with the chunk plan either.
+  void caseInstrumentMatrix()
+  {
+    MatrixRun m;
+    auto& run = m.run;
+    const auto& lib = m.lib.library();
+    const auto base = matrixOptions();
+    const Oracle oracle = bruteForce(run, lib, base);
+
+    const auto extract = [&](const ODIA::ChromatogramExtractor::Options& o,
+                             ODIA::ChromatogramExtractor::Stats& st, std::size_t& decodes,
+                             std::string& error) {
+      RecordingSink sink;
+      run.calls.clear();
+      try { ODIA::ChromatogramExtractor::extract(lib, run, o, sink, &st); }
+      catch (const std::exception& e) { error = e.what(); }
+      decodes = run.calls.size();
+      return std::move(sink.traces);
+    };
+
+    ODIA::ChromatogramExtractor::Stats ref_st;
+    std::size_t ref_decodes = 0;
+    std::string ref_error;
+    const auto reference = extract(base, ref_st, ref_decodes, ref_error);
+    check(ref_error.empty() && againstOracle(oracle, reference).empty(),
+          "the uninstrumented default arm equals the brute force");
+
+    std::size_t arms = 0, failed = 0, printed = 0, multi = 0;
+    bool counted = false;
+    std::uint64_t cells = 0, ppm = 0, im = 0, im_zero = 0, nonfinite = 0, negative = 0;
+    for (const std::size_t block : {1, 128, 129, 200, 256})
+    {
+      for (const std::size_t cap : {0, 2, 7})
+      {
+        for (const unsigned threads : {1u, 4u})
+        {
+          auto o = base;
+          o.decode_block = block;
+          o.max_live_precursors = cap;
+          o.threads = threads;
+          o.stage_label = "instr_matrix";
+          o.count_plane_identity = true;
+          ODIA::ChromatogramExtractor::Stats st;
+          std::size_t decodes = 0;
+          std::string why;
+          const auto traces = extract(o, st, decodes, why);
+          ++arms;
+          if (st.chunks > 1) { ++multi; }
+          const auto bad = [&](bool ok, const std::string& what) {
+            if (why.empty() && !ok) { why = what; }
+          };
+          if (why.empty()) { why = againstOracle(oracle, traces); }
+          bad(sameStream(traces, reference), "not the uninstrumented default stream");
+          bad(st.index.brackets == st.chunks, "index brackets " +
+              std::to_string(st.index.brackets) + " != chunks " + std::to_string(st.chunks));
+          bad(st.probe.brackets == st.chunks, "probe brackets != chunks");
+          bad(st.decode.brackets == decodes, "decode brackets " +
+              std::to_string(st.decode.brackets) + " != decode calls " + std::to_string(decodes));
+          bad(st.emit.brackets == st.activate.brackets + st.chunks,
+              "emit brackets != batches + chunk flushes");
+          bad(st.match.brackets >= st.activate.brackets &&
+              st.match.brackets <= st.activate.brackets + st.decode.brackets,
+              "match brackets outside [batches, batches + decodes]");
+          bad(st.bracket_overlaps == 0, "a bracket overlaps another");
+          bad(st.setup.brackets == 1 && st.empty.brackets == 1, "setup/empty not one bracket each");
+          bad(st.plane_cells > 0, "the plane counter saw no cells");
+          if (!counted)
+          {
+            counted = true;
+            cells = st.plane_cells; ppm = st.ppm_den_differs; im = st.im_den_differs;
+            im_zero = st.im_den_zero; nonfinite = st.base_nonfinite; negative = st.base_negative;
+          }
+          bad(st.plane_cells == cells && st.ppm_den_differs == ppm && st.im_den_differs == im &&
+              st.im_den_zero == im_zero && st.base_nonfinite == nonfinite &&
+              st.base_negative == negative, "plane-identity counts move with the chunk plan");
+          if (!why.empty())
+          {
+            ++failed;
+            if (printed++ < 12)
+            {
+              std::printf("       decode_block %zu, cap %zu, %u threads (%zu chunks): %s\n",
+                          block, cap, threads, st.chunks, why.c_str());
+            }
+          }
+        }
+      }
+    }
+    std::printf("       %zu instrumented arms (%zu chunked), %zu failed; plane cells %llu, "
+                "ppm_den differs %llu, im_den differs %llu\n", arms, multi, failed,
+                static_cast<unsigned long long>(cells), static_cast<unsigned long long>(ppm),
+                static_cast<unsigned long long>(im));
+    check(multi > 0, "some instrumented arm is chunked");
+    check(failed == 0, "the stage ledger and the plane counter change nothing extracted, "
+                       "account for every chunk, block, batch and part, and do not move "
+                       "with the chunk plan");
+  }
+
   /// Nothing assigned: no precursor has a covering window. Every precursor
   /// with transitions is still handed over, empty, in library order -- chunked
   /// or not, budgeted or not -- and nothing throws.
@@ -1703,13 +1810,14 @@ int main(int argc, char** argv)
   else if (which == "chunk_matrix") { caseChunkMatrix(); }
   else if (which == "no_assignments") { caseNoAssignments(); }
   else if (which == "plane_identity") { casePlaneIdentity(); }
+  else if (which == "instr_matrix") { caseInstrumentMatrix(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
                  "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments|"
-                 "plane_identity>\n");
+                 "plane_identity|instr_matrix>\n");
     return 2;
   }
 

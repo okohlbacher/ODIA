@@ -935,6 +935,16 @@ namespace ODIA
       /// `setup` is everything before the first chunk (assignment, overlap
       /// sweep, chunking, the live-slot table, starting the pool); `empty` is
       /// the trailing loop that hands never-extracted precursors to the sink.
+      ///
+      /// Bracket granularity follows the pass's fixed 128-spectrum batch grid
+      /// (MATCH_BATCH): `index` once per chunk; `decode` once per decoded
+      /// block; `activate` once per batch (it includes the batch's read-cycle
+      /// bookkeeping); `match` once per PART of a batch -- a batch straddling
+      /// two decode blocks is matched in two parts; `emit` once per batch (the
+      /// unhoused guard plus the hand-over loop, whose coverage guard runs
+      /// before every sink call) plus once per chunk for its final flush. A
+      /// batch's brackets are chained on shared samples, so only the progress
+      /// line falls between them.
       StageCost setup, index, decode, activate, match, emit, empty;
       /// The per-chunk memory snapshot (smaps_rollup, mallinfo2, the chunk's
       /// lines), bracketed on its own so it is neither in a stage nor in the

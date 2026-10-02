@@ -652,6 +652,11 @@ add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
 # -debug_plane_identity's positive and negative controls: a zero on the fixture
 # means "the planes are identical there" only if this counter can fire.
 add_test(NAME extract_plane_identity_counter COMMAND odia_extract_cases plane_identity)
+# The same instruments on the chunked path since 73d7a88 rewrote it: decode
+# block x cap x threads, stream bitwise equal to the uninstrumented arm and the
+# brute force, the ledger's bracket counts tied to chunks, decoded blocks,
+# batches and batch parts, and plane counts invariant to the chunk plan.
+add_test(NAME extract_instrument_matrix COMMAND odia_extract_cases instr_matrix)
 
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
