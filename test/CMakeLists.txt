@@ -632,6 +632,12 @@ add_test(NAME extract_sliding_window COMMAND odia_extract_cases sliding)
 # spectrum writes, single- and multi-threaded.
 add_test(NAME extract_alias_den_planes COMMAND odia_extract_cases alias_planes)
 
+# -ms1_drop_uncovered: the MS1 matrix's rows are cut by the extractor's own
+# coverage predicate (checked against precursors_without_window, including a
+# window that has bounds but no spectrum), kept rows read bit-identically by
+# library index through the row map, and a removed-row read is counted.
+add_test(NAME extract_ms1_drop_uncovered COMMAND odia_extract_cases ms1_drop)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing

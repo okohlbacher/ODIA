@@ -6,7 +6,10 @@
 #include <odia/Library.h>
 #include <odia/SpectrumSource.h>
 
+#include <atomic>
+#include <cassert>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -50,22 +53,58 @@ namespace ODIA
     const std::vector<float>& times() const { return times_; }
 
     std::size_t bins() const { return times_.size(); }
-    std::size_t precursors() const { return bins_ ? values_.size() / bins_ : 0; }
+    /// How many precursors `at()` answers for: the dense matrix's rows, or,
+    /// with a library->row map (@p library_rows of build), the LIBRARY size,
+    /// so a caller's `i < precursors()` guard means what it always meant.
+    std::size_t precursors() const
+    {
+      if (!row_of_.empty()) { return row_of_.size(); }
+      return bins_ ? values_.size() / bins_ : 0;
+    }
+    /// Rows actually stored.
+    std::size_t rows() const { return bins_ ? values_.size() / bins_ : 0; }
     bool empty() const { return times_.empty() || values_.empty(); }
 
     /// Monoisotopic intensity of @p precursor at MS1 bin @p b, or 0.
+    ///
+    /// With a library->row map the index is still a LIBRARY index and goes
+    /// through the map. A precursor the map gave no row (no isolation window
+    /// covers it, so it is never extracted and never scored) must never be
+    /// asked for: debug builds assert it, and every build counts it
+    /// (`droppedRowReads()`), returning the 0.0f an all-zero dense row would.
+    /// The count is the release-mode guard: nonzero means the drop changed a
+    /// read, and the run says so.
     float at(std::size_t precursor, std::size_t b) const
     {
-      const std::size_t i = precursor * bins_ + b;
+      std::size_t row = precursor;
+      if (!row_of_.empty())
+      {
+        if (precursor >= row_of_.size()) { return 0.0f; }
+        row = row_of_[precursor];
+        if (row == NO_ROW)
+        {
+          assert(!"Ms1Traces::at() read a row -ms1_drop_uncovered removed");
+          dropped_reads_->fetch_add(1, std::memory_order_relaxed);
+          return 0.0f;
+        }
+      }
+      const std::size_t i = row * bins_ + b;
       return i < values_.size() ? values_[i] : 0.0f;
     }
+
+    /// Precursors that have no row because @p library_rows excluded them.
+    std::size_t droppedRows() const { return dropped_rows_; }
+    /// Reads of such a row since build. Must stay 0; see at().
+    std::size_t droppedRowReads() const
+    { return dropped_reads_ ? dropped_reads_->load(std::memory_order_relaxed) : 0; }
 
     /// The MS1 bin nearest a retention time. Binary search; the grid is sorted.
     std::size_t binFor(double rt) const;
 
     std::size_t footprintBytes() const
     {
-      return times_.capacity() * sizeof(float) + values_.capacity() * sizeof(float);
+      return times_.capacity() * sizeof(float) + values_.capacity() * sizeof(float) +
+             row_of_.capacity() * sizeof(std::uint32_t);
     }
 
     std::string describe() const;
@@ -94,18 +133,39 @@ namespace ODIA
     ///        GB at 4.99M precursors and is charged before extraction begins).
     ///        With @p keep, `at()` takes ROW indices, not library indices;
     ///        @p kept_indices receives the library index of each row.
+    /// @param library_rows  optional per-precursor mask (size precursorCount),
+    ///        the scorer's counterpart of @p keep: only masked-in precursors
+    ///        get a row, but `at()` keeps taking LIBRARY indices, through an
+    ///        explicit library->row map built here and consulted on every
+    ///        read -- the scorer never learns that rows moved. A kept row holds
+    ///        exactly what the dense matrix's row held: the matrix is a max per
+    ///        (precursor, spectrum) over that precursor's own matches, so
+    ///        removing other precursors' targets changes no kept cell. Only the
+    ///        @p observed_ppm_median diagnostic sees fewer matches. Used by
+    ///        -ms1_drop_uncovered with ChromatogramExtractor::windowCoverage.
+    ///        Not combinable with @p keep (throws).
     static Ms1Traces build(const Library& library, SpectrumSource& source,
                            double fragment_ppm, double im_window,
                            double ppm_offset = 0.0,
                            double* observed_ppm_median = nullptr,
                            double isotope_offset_da = 0.0,
                            const std::vector<std::uint8_t>* keep = nullptr,
-                           std::vector<std::uint32_t>* kept_indices = nullptr);
+                           std::vector<std::uint32_t>* kept_indices = nullptr,
+                           const std::vector<std::uint8_t>* library_rows = nullptr);
 
   private:
+    static constexpr std::uint32_t NO_ROW = UINT32_MAX;
+
     std::vector<float> times_;
-    std::vector<float> values_;      ///< precursor-major, `bins_` per precursor
+    std::vector<float> values_;      ///< row-major, `bins_` per row
     std::size_t bins_ = 0;
+    /// library index -> row, NO_ROW where @p library_rows excluded it. Empty
+    /// without a map: row == library index (or == mask row under @p keep).
+    std::vector<std::uint32_t> row_of_;
+    std::size_t dropped_rows_ = 0;
+    /// Shared so the object stays copyable and movable; the count belongs to
+    /// the matrix, not to one copy of the handle.
+    std::shared_ptr<std::atomic<std::size_t>> dropped_reads_;
   };
 
 } // namespace ODIA

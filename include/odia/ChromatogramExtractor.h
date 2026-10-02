@@ -912,6 +912,21 @@ namespace ODIA
     /// human library is 274 GiB here and a few GiB through the sink.
     static Chromatograms extract(const Library& library, SpectrumSource& source,
                                  const Options& options, Stats* stats = nullptr);
+
+    /// Which library precursors SOME isolation window of @p source covers:
+    /// 1 where `extract` could assign one, 0 where it would count it in
+    /// `Stats::precursors_without_window` and never extract it, in any pass.
+    ///
+    /// The extractor's own predicate, not a copy of it: `extract` asks the
+    /// same function per window, and a spectrum belongs to the FIRST window
+    /// whose m/z bounds it matches in both, so a window that only duplicates
+    /// an earlier one's bounds covers nothing here either. It depends on the
+    /// library's precursor m/z and the run's windows alone -- not on the
+    /// retention-time window, the stride, the prefilter or a calibration -- so
+    /// it is the same answer for every pass over the run. -ms1_drop_uncovered
+    /// uses it to give such precursors no MS1 row (Ms1Traces::build).
+    static std::vector<std::uint8_t> windowCoverage(const Library& library,
+                                                    const SpectrumSource& source);
   };
 
 } // namespace ODIA

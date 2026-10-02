@@ -18,6 +18,8 @@
 //                 windows belongs to one of them, not to both
 //   wide_csr      more than 2^32 chromatogram points, which the 32-bit CSR
 //                 offsets refused outright (needs ~17.2 GiB)
+//   ms1_drop      -ms1_drop_uncovered: MS1 rows only for covered precursors,
+//                 read through the library->row map, bit-identical where kept
 //   alias_planes  -alias_den_planes: the aliased denominators read exactly
 //                 what their own planes held, through chunking and block
 //                 reuse, and the cases where aliasing would be wrong are not
@@ -26,14 +28,17 @@
 // Usage: odia_extract_cases <case>
 
 #include <odia/ChromatogramExtractor.h>
+#include <odia/Ms1Traces.h>
 #include <odia/SpectrumSource.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -92,10 +97,34 @@ namespace
       out.assign(peaks_.begin() + begin, peaks_.begin() + end);
     }
 
+    /// MS1 survey spectra, kept apart from the MS2 list as the interface does.
+    std::size_t addMs1Spectrum(double rt)
+    {
+      ODIA::SpectrumInfo s;
+      s.index = ms1_info_.size();
+      s.retention_time = rt;
+      ms1_info_.push_back(s);
+      ms1_peaks_.emplace_back();
+      return ms1_info_.size() - 1;
+    }
+    void addMs1Peak(std::size_t spectrum, double mz, float intensity)
+    {
+      ms1_peaks_[spectrum].mz.push_back(mz);
+      ms1_peaks_[spectrum].intensity.push_back(intensity);
+    }
+    const std::vector<ODIA::SpectrumInfo>& ms1Spectra() const override { return ms1_info_; }
+    void ms1Peaks(std::size_t begin, std::size_t end,
+                  std::vector<ODIA::SpectrumPeaks>& out) override
+    {
+      out.assign(ms1_peaks_.begin() + begin, ms1_peaks_.begin() + end);
+    }
+
   private:
     std::vector<ODIA::SpectrumInfo> info_;
     std::vector<ODIA::IsolationWindow> windows_;
     std::vector<ODIA::SpectrumPeaks> peaks_;
+    std::vector<ODIA::SpectrumInfo> ms1_info_;
+    std::vector<ODIA::SpectrumPeaks> ms1_peaks_;
   };
 
   /// A library written out precursor by precursor.
@@ -687,6 +716,93 @@ namespace
                 chunk_stats.chunks, chunk_stats.spectra_decoded, chunk_stats.spectra_read);
   }
 
+  /// -ms1_drop_uncovered.
+  ///
+  /// The coverage the MS1 matrix is cut by must be the extractor's own: every
+  /// precursor `windowCoverage` calls uncovered is one `extract` counts in
+  /// precursors_without_window, and vice versa -- including the precursor that
+  /// sits inside a window's m/z bounds but whose window holds no spectrum.
+  /// Every kept row must read bit-identically through the library->row map,
+  /// `precursors()` must still answer the library size (the scorer's bounds
+  /// check), and a read of a removed row must be counted.
+  void caseMs1Drop()
+  {
+    ScriptedRun run;
+    const auto w0 = run.addWindow(500.0, 510.0);
+    const auto w1 = run.addWindow(520.0, 530.0);
+    run.addWindow(540.0, 550.0);                       // no MS2 spectrum ever
+    const double precursor_mz[] = {505.0, 525.0, 545.0, 600.0, 505.0, 509.0};
+    ScriptedLibrary lib;
+    for (const double mz : precursor_mz)
+    {
+      lib.addPrecursor(mz);
+      lib.addTransition(300.0);
+    }
+    for (int c = 0; c < 8; ++c)
+    {
+      const auto ms1 = run.addMs1Spectrum(10.0 * c);
+      for (std::size_t i = 0; i < std::size(precursor_mz); ++i)
+      {
+        // Two peaks on each precursor's m/z inside the tolerance, so a cell
+        // is a max over several matches, and every precursor has signal.
+        run.addMs1Peak(ms1, precursor_mz[i] * (1.0 + 2e-6), float(1 + (c * 3 + i) % 7));
+        run.addMs1Peak(ms1, precursor_mz[i] * (1.0 - 1e-6), float(1 + (c * 5 + i) % 4));
+      }
+      run.addSpectrum(w0, 10.0 * c + 1.0);
+      run.addSpectrum(w1, 10.0 * c + 2.0);
+    }
+
+    const auto covered = ODIA::ChromatogramExtractor::windowCoverage(lib.library(), run);
+    const std::vector<std::uint8_t> want = {1, 1, 0, 0, 1, 1};
+    check(covered == want, "windowCoverage: in-bounds of a spectrum-less window is uncovered");
+    const std::size_t dropped = std::count(covered.begin(), covered.end(), std::uint8_t(0));
+    {
+      ODIA::ChromatogramExtractor::Stats st;
+      ODIA::ChromatogramExtractor::extract(lib.library(), run, plainOptions(), &st);
+      check(st.precursors_without_window == dropped,
+            "and it is exactly the extractor's precursors_without_window");
+    }
+
+    const auto full = ODIA::Ms1Traces::build(lib.library(), run, 10.0, 0.0);
+    const auto cut = ODIA::Ms1Traces::build(lib.library(), run, 10.0, 0.0, 0.0, nullptr, 0.0,
+                                            nullptr, nullptr, &covered);
+    check(full.rows() == std::size(precursor_mz) && cut.rows() == std::size(precursor_mz) - dropped,
+          "one row per covered precursor");
+    check(cut.precursors() == full.precursors(),
+          "precursors() still answers the library size, so the scorer's guard is unchanged");
+    check(cut.droppedRows() == dropped && full.droppedRows() == 0, "the dropped count");
+    check(cut.footprintBytes() < full.footprintBytes(), "and the matrix is smaller");
+    bool same = full.bins() == cut.bins() && full.times() == cut.times();
+    bool any_signal = false;
+    for (std::size_t i = 0; i < covered.size(); ++i)
+    {
+      if (!covered[i]) { continue; }
+      for (std::size_t b = 0; b < full.bins(); ++b)
+      {
+        const float x = full.at(i, b), y = cut.at(i, b);
+        same = same && std::memcmp(&x, &y, sizeof(float)) == 0;
+        any_signal = any_signal || x > 0.0f;
+      }
+    }
+    check(any_signal, "kept rows carry signal (the comparison can fail)");
+    check(same, "every kept cell is bit-identical, read by LIBRARY index");
+    check(cut.droppedRowReads() == 0, "and none of those reads touched a removed row");
+#ifdef NDEBUG
+    // Release only: a debug build asserts on exactly this read.
+    check(cut.at(2, 0) == 0.0f && cut.droppedRowReads() == 1,
+          "a read of a removed row returns 0 and is counted");
+#endif
+    bool threw = false;
+    try
+    {
+      std::vector<std::uint32_t> kept;
+      ODIA::Ms1Traces::build(lib.library(), run, 10.0, 0.0, 0.0, nullptr, 0.0, &covered, &kept,
+                             &covered);
+    }
+    catch (const std::invalid_argument&) { threw = true; }
+    check(threw, "the row-indexed export mask and the library-indexed map do not combine");
+  }
+
   /// Every plane of every precursor, copied out of `accept`.
   ///
   /// The denominators are copied through their own pointers, so an aliased
@@ -981,11 +1097,12 @@ int main(int argc, char** argv)
   else if (which == "wide_csr") { caseWideCsr(); }
   else if (which == "sliding") { caseSlidingWindow(); }
   else if (which == "alias_planes") { caseAliasPlanes(); }
+  else if (which == "ms1_drop") { caseMs1Drop(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
-                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|alias_planes>\n");
+                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|alias_planes|ms1_drop>\n");
     return 2;
   }
 

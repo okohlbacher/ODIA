@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <stdexcept>
 
 namespace ODIA
 {
@@ -25,16 +26,24 @@ namespace ODIA
     std::ostringstream o;
     if (empty()) { return "MS1 traces: none (the run carries no MS1)"; }
     std::size_t live = 0;
-    for (std::size_t i = 0; i < precursors(); ++i)
+    for (std::size_t i = 0; i < rows(); ++i)
     {
       for (std::size_t b = 0; b < bins_; ++b)
       { if (values_[i * bins_ + b] > 0.0f) { ++live; break; } }
     }
     o.precision(1);
-    o << std::fixed << "MS1 traces: " << bins_ << " bins over " << precursors()
+    // Rows, not precursors(): the loop above walks stored rows, and with a
+    // library->row map those are fewer than the library.
+    const std::size_t rows = this->rows();
+    o << std::fixed << "MS1 traces: " << bins_ << " bins over " << rows
       << " precursors, " << live << " with signal ("
-      << (precursors() ? 100.0 * live / precursors() : 0.0) << "%), "
+      << (rows ? 100.0 * live / rows : 0.0) << "%), "
       << footprintBytes() / 1048576.0 << " MiB";
+    if (!row_of_.empty())
+    {
+      o << "; " << dropped_rows_ << " of " << row_of_.size()
+        << " library precursors given no row (no isolation window covers them)";
+    }
     return o.str();
   }
 
@@ -43,8 +52,15 @@ namespace ODIA
                              double ppm_offset, double* observed_ppm_median,
                              double isotope_offset_da,
                              const std::vector<std::uint8_t>* keep,
-                             std::vector<std::uint32_t>* kept_indices)
+                             std::vector<std::uint32_t>* kept_indices,
+                             const std::vector<std::uint8_t>* library_rows)
   {
+    if (keep != nullptr && library_rows != nullptr)
+    {
+      throw std::invalid_argument(
+        "Ms1Traces::build: `keep` (row-indexed export) and `library_rows` (library-indexed "
+        "scorer map) are different contracts for at() and cannot be combined");
+    }
     Ms1Traces out;
     const auto& ms1 = source.ms1Spectra();
     if (ms1.empty()) { return out; }
@@ -79,6 +95,20 @@ namespace ODIA
         { if (row[i] != UINT32_MAX) { kept_indices->push_back(static_cast<std::uint32_t>(i)); } }
       }
     }
+    // -ms1_drop_uncovered: the same row assignment as `keep`, but the map is
+    // KEPT on the object so at() can go on taking library indices.
+    if (library_rows != nullptr)
+    {
+      out.row_of_.assign(np, UINT32_MAX);
+      std::uint32_t r = 0;
+      for (std::size_t i = 0; i < np; ++i)
+      {
+        if (i < library_rows->size() && (*library_rows)[i]) { out.row_of_[i] = r++; }
+      }
+      rows = r;
+      out.dropped_rows_ = np - r;
+      out.dropped_reads_ = std::make_shared<std::atomic<std::size_t>>(0);
+    }
     out.values_.assign(rows * out.bins_, 0.0f);
 
     // Search the sorted LIBRARY side and iterate the peaks: SpectrumSource
@@ -92,6 +122,7 @@ namespace ODIA
     for (std::size_t i = 0; i < np; ++i)
     {
       if (keep != nullptr && row[i] == UINT32_MAX) { continue; }
+      if (library_rows != nullptr && out.row_of_[i] == UINT32_MAX) { continue; }
       // CALIBRATED, like the fragment axis. This matched on the library's
       // THEORETICAL m/z with a symmetric window and no offset, while the
       // fragment extractor was centred on the fitted deviation -- on IH1 that
@@ -110,7 +141,9 @@ namespace ODIA
       const int z = p.charge[i] > 0 ? static_cast<int>(p.charge[i]) : 1;
       const double mz = (fromFixed(p.mz[i]) + isotope_offset_da / z) *
                         (1.0 + ppm_offset * 1e-6);
-      const std::uint32_t slot = keep != nullptr ? row[i] : static_cast<std::uint32_t>(i);
+      const std::uint32_t slot = keep != nullptr           ? row[i]
+                                 : library_rows != nullptr ? out.row_of_[i]
+                                                           : static_cast<std::uint32_t>(i);
       if (mz > 0.0) { idx.push_back({mz, slot, p.im[i]}); }
     }
     std::sort(idx.begin(), idx.end(),
