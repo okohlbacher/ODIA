@@ -42,6 +42,29 @@ namespace ODIA
       return std::abs(a.mz_low - b.mz_low) < 1e-6 && std::abs(a.mz_high - b.mz_high) < 1e-6;
     }
 
+    constexpr std::uint32_t NO_WINDOW = std::numeric_limits<std::uint32_t>::max();
+
+    /// The window a spectrum belongs to: the FIRST whose m/z bounds it
+    /// matches, or NO_WINDOW. Shared by `extract` and `windowCoverage`, so the
+    /// two cannot disagree about which windows hold spectra.
+    std::uint32_t firstWindowOf(const IsolationWindow& spectrum_window,
+                                const std::vector<IsolationWindow>& windows)
+    {
+      for (std::size_t w = 0; w < windows.size(); ++w)
+      {
+        if (sameWindow(spectrum_window, windows[w])) { return static_cast<std::uint32_t>(w); }
+      }
+      return NO_WINDOW;
+    }
+
+    /// Whether window @p w can carry a precursor at @p mz: its bounds contain
+    /// it AND at least one spectrum belongs to it (an empty window has no
+    /// axis to extract on). The one coverage predicate, for the same reason.
+    bool windowCovers(const IsolationWindow& w, bool has_spectra, double mz)
+    {
+      return has_spectra && w.contains(mz);
+    }
+
     /// The spectra of one isolation window, in acquisition order.
     ///
     /// A DIA run cycles through its windows, so a window's spectra ARE its
@@ -470,6 +493,30 @@ namespace ODIA
     return out;
   }
 
+  std::vector<std::uint8_t> ChromatogramExtractor::windowCoverage(const Library& library,
+                                                                 const SpectrumSource& source)
+  {
+    const auto& windows = source.windows();
+    const auto& info = source.spectra();
+    std::vector<char> has_spectra(windows.size(), 0);
+    for (const SpectrumInfo& s : info)
+    {
+      const std::uint32_t w = firstWindowOf(s.window, windows);
+      if (w != NO_WINDOW) { has_spectra[w] = 1; }
+    }
+    const auto& p = library.precursors();
+    std::vector<std::uint8_t> covered(library.precursorCount(), 0);
+    for (std::size_t i = 0; i < covered.size(); ++i)
+    {
+      const double mz = fromFixed(p.mz[i]);
+      for (std::size_t w = 0; w < windows.size(); ++w)
+      {
+        if (windowCovers(windows[w], has_spectra[w] != 0, mz)) { covered[i] = 1; break; }
+      }
+    }
+    return covered;
+  }
+
   void ChromatogramExtractor::extract(const Library& library, SpectrumSource& source,
                                       const Options& options, ChromatogramSink& sink,
                                       Stats* stats)
@@ -495,18 +542,13 @@ namespace ODIA
     std::vector<std::uint32_t> cycle_of(info.size(), 0);
     for (std::size_t si = 0; si < info.size(); ++si)
     {
-      for (std::size_t w = 0; w < windows.size(); ++w)
-      {
-        if (sameWindow(info[si].window, windows[w]))
-        {
-          window_of[si] = static_cast<std::uint32_t>(w);
-          cycle_of[si] = static_cast<std::uint32_t>(axis[w].rt.size());
-          axis[w].spectrum.push_back(info[si].index);
-          axis[w].position.push_back(si);
-          axis[w].rt.push_back(static_cast<float>(info[si].retention_time));
-          break;
-        }
-      }
+      const std::uint32_t w = firstWindowOf(info[si].window, windows);
+      if (w == NO_WINDOW) { continue; }
+      window_of[si] = w;
+      cycle_of[si] = static_cast<std::uint32_t>(axis[w].rt.size());
+      axis[w].spectrum.push_back(info[si].index);
+      axis[w].position.push_back(si);
+      axis[w].rt.push_back(static_cast<float>(info[si].retention_time));
     }
     for (auto& a : axis) { a.finish(); }
 
@@ -607,7 +649,7 @@ namespace ODIA
       std::size_t covering = 0;
       for (std::size_t w = 0; w < windows.size(); ++w)
       {
-        if (!windows[w].contains(mz) || axis[w].rt.empty()) { continue; }
+        if (!windowCovers(windows[w], !axis[w].rt.empty(), mz)) { continue; }
         ++covering;
         const double offset_from_centre = std::abs(mz - windows[w].centre());
         if (offset_from_centre < best_offset) { best_offset = offset_from_centre; best = w; }

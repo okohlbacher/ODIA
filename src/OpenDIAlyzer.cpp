@@ -1695,6 +1695,17 @@ protected:
                   "13.7x enrichment in its top bin and 1.4-1.5x in bulk on IH1 + v6_50k. Use "
                   "this to A/B it or on a run whose MS1 is not worth the pass.",
                   true);
+    registerFlag_("ms1_drop_uncovered",
+                  "Give the MS1 trace matrix no row for a precursor no isolation window covers. "
+                  "Such a precursor is never extracted and never scored, so its dense MS1 row "
+                  "(one float per MS1 spectrum) is never read; the scorer keeps indexing by "
+                  "library precursor through an explicit library->row map, and every read of a "
+                  "removed row is counted (and asserted in debug builds) -- the run reports an "
+                  "error if any happened. Coverage is the extractor's own predicate. Identical "
+                  "output, a smaller MS1 matrix; the MS1 size check before building it then "
+                  "charges the kept rows only, so a run whose full matrix exceeds "
+                  "-live_memory_gb may now build MS1 where it skipped it.",
+                  true);
   }
 
 
@@ -1890,16 +1901,27 @@ protected:
       // 77.6 GB, which is 13% of the 588 GB peak that OOM-killed a benchmark
       // run. Every memory figure this project published before that was
       // measured on a library ~1000x too small to show it.
+      // -ms1_drop_uncovered: which precursors keep a row. Computed by the
+      // extractor's own coverage predicate, so "uncovered" here is exactly
+      // "counted in precursors_without_window" there, in every pass.
+      std::vector<std::uint8_t> ms1_rows;
+      std::size_t ms1_row_count = library.precursorCount();
+      if (getFlag_("ms1_drop_uncovered"))
+      {
+        ms1_rows = ODIA::ChromatogramExtractor::windowCoverage(library, *source);
+        ms1_row_count = static_cast<std::size_t>(
+          std::count(ms1_rows.begin(), ms1_rows.end(), std::uint8_t(1)));
+      }
       {
         const std::size_t ms1_bins = source->ms1Spectra().size();
-        const double need = double(library.precursorCount()) * double(ms1_bins) * 4.0;
+        const double need = double(ms1_row_count) * double(ms1_bins) * 4.0;
         const double cap = double(options.live_memory_budget_bytes);
         if (cap > 0.0 && need > cap)
         {
           std::ostringstream w;
           w.setf(std::ios::fixed); w.precision(1);
           w << "MS1 traces would need " << need / 1073741824.0 << " GiB ("
-            << library.precursorCount() << " precursors x " << ms1_bins
+            << ms1_row_count << " precursors x " << ms1_bins
             << " MS1 spectra x 4 B), above the " << cap / 1073741824.0
             << " GiB budget -- SKIPPING them. var_ms1_coelution will be absent "
                "rather than the run being killed. Raise -live_memory_gb to keep "
@@ -1912,7 +1934,8 @@ protected:
           ms1_traces_ = ODIA::Ms1Traces::build(library, *source, options.fragment_ppm,
                                                options.precursor_im_window *
                                                  getDoubleOption_("ms1_im_scale"),
-                                               ms1PpmCentre_(), &ms1_resid);
+                                               ms1PpmCentre_(), &ms1_resid, 0.0, nullptr,
+                                               nullptr, ms1_rows.empty() ? nullptr : &ms1_rows);
           {
             // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
             // which is a hypothesis: the instrument need not err identically on
@@ -2016,6 +2039,7 @@ protected:
     }
     const auto ms = std::chrono::duration<double, std::milli>(
                       std::chrono::steady_clock::now() - t).count();
+    if (!ms1DroppedRowsUnread_()) { return INTERNAL_ERROR; }
 
     std::ostringstream msg;
     msg << "extracted " << stats.transitions << " transitions of "
@@ -4777,6 +4801,7 @@ protected:
     }
     const auto ms = std::chrono::duration<double, std::milli>(
                       std::chrono::steady_clock::now() - t).count();
+    if (!ms1DroppedRowsUnread_()) { return INTERNAL_ERROR; }
     reportScoring_(scored, options.classifier, ms, "scored on the fly");
     return EXECUTION_OK;
   }
@@ -5749,6 +5774,24 @@ private:
   /// drift apart -- Ms1Traces::build and the precursor prefilter must search the
   /// same axis or the prefilter admits on one centre and the trace scores on
   /// another.
+  /// -ms1_drop_uncovered's release-mode guard: a removed MS1 row must never
+  /// be read. Checked after extraction (the streaming scorer reads MS1 in
+  /// accept()) and after the sink's finish (which scores what it buffered).
+  /// A nonzero count means a scored precursor was handed 0.0 where the dense
+  /// matrix held its trace, so the output is NOT the output without the flag:
+  /// the run stops rather than publish it. Always true without the flag (no
+  /// map, nothing to count).
+  bool ms1DroppedRowsUnread_()
+  {
+    const std::size_t reads = ms1_traces_.droppedRowReads();
+    if (reads == 0) { return true; }
+    writeLogError_("-ms1_drop_uncovered: " + std::to_string(reads) +
+                   " reads of MS1 rows removed as uncovered by any isolation window; "
+                   "MS1_COELUTION would differ from a run without the flag. Stopping. "
+                   "Drop the flag and report this.");
+    return false;
+  }
+
   double ms1PpmCentre_() const
   {
     const double v = getDoubleOption_("ms1_ppm_offset");
