@@ -634,19 +634,42 @@ namespace ODIA
       /// -- so chunking is a fallback, not a default. Which mechanism actually
       /// bound the memory is reported in `Stats::memory_bound_by`.
       ///
-      /// Chunking changes NOTHING a sink can observe, by construction: each
-      /// chunk reads every spectrum its precursors span (bounds are spectrum
-      /// positions, never retention times), hands its precursors over in the
-      /// single pass's order, and the chunks follow one another in that order
-      /// -- so the stream is the unchunked stream, trace for trace and in
-      /// sequence. That matters beyond the values, because Gate C calibrates
-      /// on arrival order. The cap is exact: liveness is counted on the match-
+      /// WHAT IS GUARANTEED. With every other extraction and scoring option
+      /// unchanged, the stream a sink is handed -- the traces, cell for cell
+      /// in all planes, and their order -- does not depend on the chunk count,
+      /// on `decode_block` or on `threads`. Each chunk reads every spectrum its
+      /// precursors span (bounds are spectrum positions, never retention
+      /// times), hands its precursors over in the single pass's order, and the
+      /// chunks follow one another in that order, so the stream is the
+      /// unchunked stream, trace for trace and in sequence. That matters
+      /// beyond the values, because Gate C calibrates on arrival order.
+      ///
+      /// What is NOT guaranteed: anything across a change to another option.
+      /// The library, the RT map or window, the tolerances, the mobility
+      /// model, the residual planes or `rt_low`/`rt_high` can change the traces
+      /// themselves and, through them and their order, Gate C's calibration
+      /// sample -- independently of chunking. So can anything the CALLER does
+      /// with a budget: the engine drops its MS1 traces when they would not fit
+      /// one, which is not chunking and is not covered here.
+      ///
+      /// Against main a48c223, a single chunk gives byte-identical output
+      /// except for a call with a restricted `rt_low`/`rt_high` whose bound
+      /// falls between a spectrum's double time and its float rounding: the
+      /// cycle range is resolved on the float axis, main searched the spectrum
+      /// range in the double times and so could skip that edge spectrum (or,
+      /// on the lower side, start its batch grid one spectrum earlier); it is
+      /// now widened to every admitted cycle. The engine never sets these.
+      ///
+      /// The cap is exact IN PRECURSORS: liveness is counted on the match-
       /// batch grid the pass moves on, so `Stats::peak_live_precursors` never
-      /// exceeds it.
+      /// exceeds it. It is not exact in bytes -- see `live_memory_budget_bytes`.
       std::size_t max_live_precursors = 0;
 
-      /// Memory budget for the live blocks, BYTES. Non-zero overrides
-      /// `max_live_precursors`, which is derived from it.
+      /// Memory budget for the live blocks, BYTES, inverted into a precursor
+      /// cap. When `max_live_precursors` is also set, the effective cap is the
+      /// TIGHTER of the two; a budget that constrains nothing (every assigned
+      /// precursor has zero valid transitions, so a live one costs 0 bytes)
+      /// leaves the explicit cap in force rather than lifting it.
       ///
       /// `max_live_precursors = 0` means "bounded only by retention-time
       /// overlap", and that bound is a property of the RUN, not of the library:
@@ -665,6 +688,16 @@ namespace ODIA
       ///     valid_transitions x cycles_in_window x 4 B x planes
       /// where planes is 1, +2 with `collect_mass_residuals`, +2 with
       /// `collect_im_residuals` -- so 5 with both, which is the default.
+      ///
+      /// The inversion is APPROXIMATE, and the cap it yields is exact only in
+      /// precursors. It divides by the GLOBAL MEAN block, so a stretch of the
+      /// run where the live precursors have larger-than-average blocks (more
+      /// valid transitions, or wider windows) exceeds the budget; it admits at
+      /// least one precursor even if that one alone is over it; and the block
+      /// pool keeps every block it has allocated in exact-size bins, which
+      /// different sizes cannot share, so the storage it holds can exceed the
+      /// peak live storage. A strict byte limit would need weighted interval
+      /// accounting in the planner AND bounded pool retention.
       std::size_t live_memory_budget_bytes = 0;
 
       /// How many spectra are decoded and held at once.
@@ -821,8 +854,11 @@ namespace ODIA
       /// assumed: the largest number of precursors -- and of points -- resident
       /// at once. The window slides per match batch, so this is the overlap of
       /// the precursors' spans on that grid, which the chunk planner counts
-      /// exactly and keeps at or under the cap. `peak_live_points x 4` bytes is
-      /// the chromatogram term of peak RSS.
+      /// exactly and keeps at or under the cap. `peak_live_points` counts every
+      /// plane, so `x 4` bytes is the peak of LIVE block storage. It is a lower
+      /// bound on the chromatogram term of RSS, not that term: the block pool
+      /// retains freed blocks in exact-size bins for reuse, so what it holds can
+      /// be larger.
       std::size_t peak_live_precursors = 0;
       std::uint64_t peak_live_points = 0;
       /// Precursors that were extracted at all, i.e. had a window and a

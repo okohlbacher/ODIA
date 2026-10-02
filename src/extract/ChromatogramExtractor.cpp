@@ -866,14 +866,19 @@ namespace ODIA
     // stream. The cap holds exactly, because the live count it is tested
     // against is the one the pass will have.
     //
-    // A chunk is still a band of the gradient -- its precursors end within a
-    // run of consecutive batches -- and a band needs only the spectra inside
-    // it, which is why chunking costs a fraction of a decode pass rather than a
-    // whole one per chunk.
+    // A chunk's precursors END within a run of consecutive batches, but they
+    // can START anywhere before that: a long-window precursor pulls the
+    // chunk's first spectrum back towards the start of the run. So a chunk
+    // reads from its earliest start to its latest end, which is usually a
+    // fraction of a pass but is not bounded by one -- the worst case decodes
+    // O(chunks x spectra). Measured on the PXD fixture: 13,348 spectra decoded
+    // for 8 chunks of a 6,020-spectrum run (cap 400,000), 35,953 for 31.
     std::vector<std::vector<std::uint32_t>> chunks;
     // Derive the cap from the memory budget when one is given. Stated in
     // bytes because that is the quantity a caller actually has, and inverted
     // here because only the extractor knows the mean cells per precursor.
+    // Inverted with the MEAN, so the result is exact in precursors and only
+    // approximate in bytes: see Options::live_memory_budget_bytes.
     std::size_t cap = options.max_live_precursors;
     if (options.live_memory_budget_bytes > 0)
     {
@@ -1356,8 +1361,8 @@ namespace ODIA
       // was a search of the run's double times for the float times of those
       // cycles, which lands one spectrum inside the range whenever the float
       // rounds the wrong way -- and that spectrum, the chunk's first or last
-      // frame, was then never read. With a single chunk it is the caller's
-      // range unchanged, so nothing about a run that fits changes.
+      // frame, was then never read. With a single chunk it is the pass's own
+      // range [first_spectrum, last_spectrum), as it always was.
       chunk_first = first_spectrum;
       chunk_last = last_spectrum;
       if (chunks.size() > 1 && !slots.empty())
