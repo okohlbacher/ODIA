@@ -4,6 +4,7 @@
 #pragma once
 
 #include <odia/Library.h>
+#include <odia/ResourceProbe.h>
 #include <odia/SpectrumSource.h>
 
 #include <cstdint>
@@ -70,6 +71,21 @@ namespace ODIA
 
     std::string describe() const;
 
+    /// Where build() spends its time, stage by stage.
+    ///
+    /// It was 16.3% of a full IH1 run's wall (doc/83) and is serial, and
+    /// the obvious fix -- parallelise over frames (doc/83 F05) -- only pays if
+    /// the time is in the MATCH and not in the driver's decode, which the
+    /// single "in X s" line could not say. `alloc` is the zero-fill of the dense
+    /// matrix (tens of GiB on a full run, so its page faults are a term of their own),
+    /// `index` the sorted target table, `decode` the source.ms1Peaks() calls,
+    /// `match` the per-peak lookup and max, `median` the residual's
+    /// nth_element.
+    struct BuildCost
+    {
+      StageCost alloc, index, decode, match, median;
+    };
+
     /// Build from a run: monoisotopic intensity per precursor per MS1 spectrum.
     ///
     /// @p im_window restricts a match to the precursor's mobility slice. On
@@ -94,13 +110,16 @@ namespace ODIA
     ///        GB at 4.99M precursors and is charged before extraction begins).
     ///        With @p keep, `at()` takes ROW indices, not library indices;
     ///        @p kept_indices receives the library index of each row.
+    /// @param cost  optional out-param receiving the stage costs; read-only
+    ///        instrumentation, the traces do not depend on it.
     static Ms1Traces build(const Library& library, SpectrumSource& source,
                            double fragment_ppm, double im_window,
                            double ppm_offset = 0.0,
                            double* observed_ppm_median = nullptr,
                            double isotope_offset_da = 0.0,
                            const std::vector<std::uint8_t>* keep = nullptr,
-                           std::vector<std::uint32_t>* kept_indices = nullptr);
+                           std::vector<std::uint32_t>* kept_indices = nullptr,
+                           BuildCost* cost = nullptr);
 
   private:
     std::vector<float> times_;

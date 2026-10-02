@@ -43,11 +43,23 @@ namespace ODIA
                              double ppm_offset, double* observed_ppm_median,
                              double isotope_offset_da,
                              const std::vector<std::uint8_t>* keep,
-                             std::vector<std::uint32_t>* kept_indices)
+                             std::vector<std::uint32_t>* kept_indices,
+                             BuildCost* cost)
   {
     Ms1Traces out;
     const auto& ms1 = source.ms1Spectra();
     if (ms1.empty()) { return out; }
+
+    // Contiguous brackets: each charge() closes the previous stage and opens
+    // the next, so the five stages partition the build and sum to its total.
+    // Not sampled at all without @p cost -- the -out_ms1_iso builds pay nothing.
+    ResourceSample mark = cost != nullptr ? ResourceSample::now() : ResourceSample{};
+    const auto charge = [&](StageCost BuildCost::*stage) {
+      if (cost == nullptr) { return; }
+      const ResourceSample now = ResourceSample::now();
+      (cost->*stage).add(mark, now);
+      mark = now;
+    };
 
     const auto& p = library.precursors();
     const std::size_t np = library.precursorCount();
@@ -80,6 +92,7 @@ namespace ODIA
       }
     }
     out.values_.assign(rows * out.bins_, 0.0f);
+    charge(&BuildCost::alloc);
 
     // Search the sorted LIBRARY side and iterate the peaks: SpectrumSource
     // documents that a peak array is not ascending in m/z (a mobility frame
@@ -115,6 +128,7 @@ namespace ODIA
     }
     std::sort(idx.begin(), idx.end(),
               [](const Target& a, const Target& b) { return a.mz < b.mz; });
+    charge(&BuildCost::index);
 
     // CAPPED. The first version pushed one double per (peak, target) match over
     // the whole run and reached 591 GB RSS against v3's 116 GB peak, blowing
@@ -130,6 +144,7 @@ namespace ODIA
     {
       const std::size_t e = std::min(b + STEP, ms1.size());
       source.ms1Peaks(b, e, block);
+      charge(&BuildCost::decode);
       for (std::size_t s = 0; s < block.size(); ++s)
       {
         const auto& sp = block[s];
@@ -167,6 +182,7 @@ namespace ODIA
           }
         }
       }
+      charge(&BuildCost::match);
     }
     if (observed_ppm_median != nullptr)
     {
@@ -178,6 +194,7 @@ namespace ODIA
         *observed_ppm_median = resid[h];
       }
     }
+    charge(&BuildCost::median);
     return out;
   }
 } // namespace ODIA
