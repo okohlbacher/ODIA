@@ -13,6 +13,7 @@
 #include <numeric>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -879,9 +880,57 @@ namespace ODIA
     // ---- sample precursors, spread through the library ---------------------
     // No 1/K0 is required: the mass axis is measurable on a run that has no
     // mobility dimension at all.
-    const auto sampled = RunProbe::samplePrecursors(library, opt.max_precursors,
-                                                    opt.min_fragments_matched, false);
+    //
+    // Or an EXPLICIT sample (Options::sample), with optional per-entry apex RT
+    // and observed 1/K0. The stride branch is untouched, and so is everything
+    // it feeds: `want_im` below holds exactly p.im[sampled[s]] when no
+    // observed value was given, and the cycle draw and RT window are the
+    // stride's unless `sample_rt` was given.
+    const bool explicit_sample = !opt.sample.empty();
+    std::vector<std::uint32_t> sampled;
+    std::vector<float> sample_rt, sample_im;
+    if (!explicit_sample)
+    {
+      sampled = RunProbe::samplePrecursors(library, opt.max_precursors,
+                                           opt.min_fragments_matched, false);
+    }
+    else
+    {
+      const bool have_rt = !opt.sample_rt.empty();
+      const bool have_im = !opt.sample_im.empty();
+      if ((have_rt && opt.sample_rt.size() != opt.sample.size()) ||
+          (have_im && opt.sample_im.size() != opt.sample.size()))
+      {
+        throw std::invalid_argument("MassCalibration: sample_rt / sample_im must be empty or "
+                                    "parallel to sample");
+      }
+      sampled.reserve(opt.sample.size());
+      for (std::size_t e = 0; e < opt.sample.size(); ++e)
+      {
+        const std::uint32_t i = opt.sample[e];
+        // The stride's own eligibility, minus its target/decoy filter: the
+        // decoy-group control is probed through this same path.
+        if (i >= library.precursorCount()) { continue; }
+        if (p.mz[i] == MZ_INVALID) { continue; }
+        if (p.transition_count[i] < opt.min_fragments_matched) { continue; }
+        sampled.push_back(i);
+        if (have_rt) { sample_rt.push_back(opt.sample_rt[e]); }
+        if (have_im) { sample_im.push_back(opt.sample_im[e]); }
+      }
+      if (diag != nullptr) { diag->sample_entries = sampled.size(); }
+    }
     if (sampled.empty()) { return out; }
+    const bool explicit_rt = explicit_sample && !sample_rt.empty();
+    const double rt_window = explicit_rt ? opt.sample_rt_window : opt.rt_window_seconds;
+
+    // The 1/K0 each sampled slot is gated against: the library's, unless an
+    // observed value was supplied for that entry.
+    std::vector<float> want_im(sampled.size());
+    for (std::size_t s = 0; s < sampled.size(); ++s)
+    {
+      want_im[s] = (!sample_im.empty() && std::isfinite(sample_im[s])) ? sample_im[s]
+                                                                        : p.im[sampled[s]];
+    }
 
     // ---- assign each to one window, and build that window's query index ----
     std::vector<WindowIndex> index(windows.size());
@@ -935,14 +984,51 @@ namespace ODIA
 
     // STRATIFIED RANDOM over the gradient -- see RunProbe::stratifiedCycles for
     // why neither a prefix nor a fixed stride would do here.
-    const auto chosen = RunProbe::stratifiedCycles(cycles.size(), opt.cycles, opt.sample_seed);
+    //
+    // With per-entry apex RTs the question is no longer "where in the gradient"
+    // but "at the apex we already found", so the probe visits exactly the
+    // cycles that overlap some apex +/- rt_window, in acquisition order.
+    std::vector<std::size_t> chosen;
+    if (!explicit_rt)
+    {
+      chosen = RunProbe::stratifiedCycles(cycles.size(), opt.cycles, opt.sample_seed);
+    }
+    else
+    {
+      std::vector<double> apex;
+      apex.reserve(sample_rt.size());
+      for (const float a : sample_rt) { if (std::isfinite(a)) { apex.push_back(a); } }
+      std::sort(apex.begin(), apex.end());
+      const double w = std::max(0.0, rt_window);
+      for (std::size_t c = 0; c < cycles.size(); ++c)
+      {
+        if (cycles[c].second <= cycles[c].first) { continue; }
+        const double lo = static_cast<double>(info[cycles[c].first].retention_time) - w;
+        const double hi = static_cast<double>(info[cycles[c].second - 1].retention_time) + w;
+        const auto it = std::lower_bound(apex.begin(), apex.end(), lo);
+        if (it != apex.end() && *it <= hi) { chosen.push_back(c); }
+      }
+      if (diag != nullptr) { diag->sample_cycles = chosen.size(); }
+    }
 
     // rt = irt_slope * iRT + irt_intercept, per SAMPLED precursor. NaN where
     // the library has no iRT, which leaves that precursor ungated rather than
     // excluded -- an absent prediction is not evidence against a cell.
-    const bool rt_restricted = opt.rt_window_seconds > 0.0 && opt.irt_slope != 0.0;
+    //
+    // Explicit sample with apex RTs: the apex IS the expected RT.
+    const bool rt_restricted = explicit_rt
+                                 ? rt_window > 0.0
+                                 : (opt.rt_window_seconds > 0.0 && opt.irt_slope != 0.0);
     std::vector<double> predicted_rt;
-    if (rt_restricted)
+    if (rt_restricted && explicit_rt)
+    {
+      predicted_rt.resize(sampled.size(), std::numeric_limits<double>::quiet_NaN());
+      for (std::size_t i = 0; i < sampled.size(); ++i)
+      {
+        if (std::isfinite(sample_rt[i])) { predicted_rt[i] = sample_rt[i]; }
+      }
+    }
+    else if (rt_restricted)
     {
       predicted_rt.resize(sampled.size(), std::numeric_limits<double>::quiet_NaN());
       for (std::size_t i = 0; i < sampled.size(); ++i)
@@ -1018,12 +1104,12 @@ namespace ODIA
                 const double want_rt = predicted_rt[x.query[i].cell / variants];
                 if (std::isfinite(want_rt) &&
                     std::abs(static_cast<double>(info[si].retention_time) - want_rt) >
-                      opt.rt_window_seconds)
+                      rt_window)
                 {
                   continue;
                 }
               }
-              const float want = p.im[sampled[x.query[i].cell / variants]];
+              const float want = want_im[x.query[i].cell / variants];
               if (std::isnan(want)) { continue; }
               const double d = peak_im - double(want);
               if (std::abs(d) <= opt.im_autocentre_window) { deltas.push_back(d); }
@@ -1131,7 +1217,7 @@ namespace ODIA
             if (std::abs(m - q) > q * ppm) { continue; }
             if (opt.im_window > 0.0 && !std::isnan(peak_im))
             {
-              const float want = p.im[sampled[x.query[i].cell / variants]];
+              const float want = want_im[x.query[i].cell / variants];
               // Centred on the measured library error, not on zero.
               if (!std::isnan(want) &&
                   std::abs(peak_im - double(want) - im_offset) > opt.im_window) { continue; }
@@ -1182,13 +1268,14 @@ namespace ODIA
             // slot -> library index a second time and indexes a
             // sampled.size()-element vector with a value up to the library
             // size: a heap over-read, and one that silently returned whatever
-            // followed the vector. The line below it, p.im[sampled[...]], DOES
-            // need the map because p.im is library-indexed -- copying its shape
-            // is what introduced this.
+            // followed the vector. The im gate used to read p.im[sampled[...]],
+            // which DOES need the map because p.im is library-indexed --
+            // copying its shape is what introduced this. (It now reads
+            // want_im[slot], slot-indexed like this vector.)
             const double want = predicted_rt[cid / variants];
             if (std::isfinite(want) &&
                 std::abs(static_cast<double>(info[si].retention_time) - want) >
-                  opt.rt_window_seconds)
+                  rt_window)
             {
               continue;
             }

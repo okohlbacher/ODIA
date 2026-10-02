@@ -232,6 +232,45 @@ namespace ODIA
       /// A scalar-plus-slope needs hundreds of anchors, not thousands.
       std::size_t max_precursors = 3000;
 
+      /// An EXPLICIT sample, in place of the library stride. Empty (the default)
+      /// keeps the stride over the library, and every other field below is then
+      /// ignored -- so a caller that never sets these gets the old probe exactly.
+      ///
+      /// WHY. The stride draws library precursors, and on a FASTA-predicted
+      /// library almost none of them are in the run: 6.8 M targets of which
+      /// ~0.1% (PXD047793 fixture) to ~1.4% (full run) are present. An absent
+      /// precursor still yields cells -- three fragments inside +/-50 ppm in a
+      /// dense diaPASEF frame is easy -- so the sample's present share is the
+      /// library's and the gate reads interference. Measured as a dilution
+      /// series on the fixture: 100% present passes at peakedness 8.5-8.9 and
+      /// -2.4 ppm; 20% present already fails; 0.1% present PASSED on noise at
+      /// -13.46 ppm. The fix is to probe precursors the run is known to contain,
+      /// i.e. the best rows of pass 1's confidently scored peak groups
+      /// (`-mass_probe_source scored`), at the place pass 1 found them.
+      ///
+      /// `sample` holds library indices; targets and decoys are both allowed,
+      /// because the decoy-group control is probed through the same path.
+      /// Entries failing the stride's own eligibility (invalid m/z, fewer
+      /// transitions than `min_fragments_matched`) are dropped with their
+      /// parallel `sample_rt` / `sample_im` entries.
+      std::vector<std::uint32_t> sample;
+
+      /// Per-entry apex retention time, run seconds, parallel to `sample`.
+      /// When given, the probe visits only the cycles that overlap some apex
+      /// +/- `sample_rt_window` (instead of `cycles` stratified draws), and a
+      /// cell counts only within `sample_rt_window` of its own apex. Empty: the
+      /// stratified cycles and the iRT restriction, as for the stride.
+      std::vector<float> sample_rt;
+
+      /// Per-entry OBSERVED 1/K0, parallel to `sample`. The `im_window` test is
+      /// then taken against it rather than against the library's column; NaN
+      /// (or an empty vector) falls back to the library value. The autocentre
+      /// still runs, so a residual systematic between the two is still absorbed.
+      std::vector<float> sample_im;
+
+      /// Half-width around each `sample_rt`, seconds.
+      double sample_rt_window = 0.0;
+
       /// Acquisition cycles probed. STRATIFIED RANDOM across the gradient: the
       /// run is cut into this many equal strata and one cycle is drawn at
       /// random from each.
@@ -642,6 +681,11 @@ namespace ODIA
       std::size_t decoy_cells = 0;
       std::size_t spectra_decoded = 0;
       double collect_seconds = 0.0;
+
+      /// Set only on the explicit-sample path (`Options::sample`): how many
+      /// entries survived eligibility, and how many cycles were visited.
+      std::size_t sample_entries = 0;
+      std::size_t sample_cycles = 0;
 
       /// The systematic (peak 1/K0 - library 1/K0) the probe measured and
       /// centred its mobility gate on, and how many deltas it was measured

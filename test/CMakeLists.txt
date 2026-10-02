@@ -746,6 +746,15 @@ add_test(NAME mobility_band_derivation COMMAND odia_mobility_bands)
 # which is flat in m/z yields the constant model instead of a spurious slope.
 add_test(NAME mass_calibration_recovers_offset COMMAND odia_mass_calibration)
 
+# -mass_probe_source scored: the mass probe's sample drawn from scored peak
+# groups (include/odia/MassProbeSample.h) instead of the library stride. On a
+# scripted run where 2% of the library is present: the selection picks best
+# rows and a matched decoy control, an explicit sample equal to the stride is
+# bit-identical to it, the stride does not recover the planted offset while the
+# scored sample does through the unchanged gate, and absent precursors probed
+# the same way fail it.
+add_test(NAME mass_probe_from_scored_groups COMMAND odia_mass_probe_sample)
+
 # The per-run ion-mobility calibration (src/calibrate/MobilityCalibration.cpp).
 # Runs on a SCRIPTED run written out inside the test -- every spectrum, peak and
 # mobility -- so it needs no data and exercises collect() as well as fit(): the

@@ -14,6 +14,7 @@
 #include <odia/ChromatogramTsv.h>
 #include <odia/FragvecTsv.h>
 #include <odia/MassCalibration.h>
+#include <odia/MassProbeSample.h>
 #include <odia/MassWidth.h>
 #include <odia/Ms1Traces.h>
 #include <odia/MobilityCalibration.h>
@@ -398,6 +399,29 @@ protected:
                           "value and a pinned one cannot both be applied.", false, true);
     registerIntOption_("mz_calib_precursors", "<n>", 3000,
                        "Precursors sampled when measuring the mass error.", false, true);
+    registerStringOption_("mass_probe_source", "<source>", "library",
+                          "Where the fragment mass probe draws its calibration sample. "
+                          "'library' (default): -mz_calib_precursors library targets by stride, "
+                          "measured before pass 1. On a FASTA-predicted library almost none of "
+                          "them are in the run (~0.1-1.4% on PXD047793), so the gate reads "
+                          "interference. 'scored': no probe before pass 1 (pass 1 extracts "
+                          "uncalibrated, wide and uncentred, as on a failed gate); after pass 1 "
+                          "the probe is run on the best rows of pass 1's target groups at "
+                          "q <= -mass_probe_q (at most -mz_calib_precursors, by stride), at their "
+                          "apex RT +/- -mass_probe_rt_window and observed 1/K0, with the same "
+                          "gate statistic and thresholds; pass 2 extracts through that model. "
+                          "The same number of best-scoring decoy groups is probed the same way "
+                          "and REPORTED as a control (never gating). Needs two passes.",
+                          false, true);
+    setValidStrings_("mass_probe_source", {"library", "scored"});
+    registerDoubleOption_("mass_probe_q", "<q>", 0.01,
+                          "-mass_probe_source scored: best-row q-value at or below which a pass-1 "
+                          "target counts as present and enters the mass probe's sample.",
+                          false, true);
+    registerDoubleOption_("mass_probe_rt_window", "<seconds>", 5.0,
+                          "-mass_probe_source scored: half-width around each sampled group's apex "
+                          "RT within which the probe looks for its fragments.",
+                          false, true);
     registerIntOption_("mz_calib_cycles", "<n>", 160,
                        "Acquisition cycles probed, spread over the gradient. This is what the "
                        "measurement costs: one cycle is one decoded spectrum per isolation "
@@ -2451,6 +2475,29 @@ protected:
         pass1, 0.01, extracted_ppm_, getDoubleOption_("mass_width_sigmas"),
         static_cast<std::size_t>(std::max(1, getIntOption_("mass_width_min_groups"))));
       writeLogInfo_(ODIA::MassWidth::report(mass_width_));
+    }
+
+    // -mass_probe_source scored: the fragment mass probe's sample, from the
+    // groups pass 1 just scored. Taken here, before the RT refinement re-scores
+    // anything, so it is pass 1's own verdict. Clearing the latched model makes
+    // the next extraction (pass 2) measure through this sample.
+    if (getStringOption_("mass_probe_source") == "scored")
+    {
+      const double q = getDoubleOption_("mass_probe_q");
+      const std::size_t cap = static_cast<std::size_t>(
+        std::max(1, getIntOption_("mz_calib_precursors")));
+      mass_probe_sample_ = ODIA::MassProbeSample::fromGroups(pass1.groups, q, cap);
+      mass_probe_sample_ready_ = true;
+      mass_model_known_ = false;
+      mass_model_ = ODIA::MassCalibration::Model{};
+      std::ostringstream ms;
+      ms << "mass probe sample (-mass_probe_source scored): "
+         << mass_probe_sample_.targets.size() << " target best rows at q <= " << q
+         << " (of " << mass_probe_sample_.eligible_targets << " eligible, cap " << cap
+         << "), decoy control " << mass_probe_sample_.decoys.size()
+         << " best-scoring decoy rows (of " << mass_probe_sample_.available_decoys
+         << "); measured before pass 2";
+      writeLogInfo_(ms.str());
     }
 
 
@@ -5696,6 +5743,10 @@ private:
   std::vector<float> oracle_rt_;
 
   bool mass_model_known_ = false;
+  /// -mass_probe_source scored: the probe's sample, set after pass 1. Until it
+  /// is ready every extraction runs uncalibrated (no library probe at all).
+  ODIA::MassProbeSample::Selection mass_probe_sample_;
+  bool mass_probe_sample_ready_ = false;
 
   /// The fragment window sized from pass 1's identifications, and the
   /// half-width pass 1 was itself extracted through. See `MassWidth`.
@@ -6198,6 +6249,57 @@ private:
     options.mobility_model = &mobility_model_;
   }
 
+  /// -mass_probe_source scored: probe the matching DECOY best rows exactly as
+  /// the targets were probed, fit, and REPORT. Never gates and never touches
+  /// the model in force. A decoy best row was chosen by the same scorer through
+  /// the same wide window, so if the selection itself manufactured a mass mode
+  /// this is where it shows: the control should fail the gate.
+  void reportMassProbeDecoyControl_(const ODIA::Library& library,
+                                    ODIA::SpectrumSource& source,
+                                    const ODIA::MassCalibration::Options& target_options)
+  {
+    if (mass_probe_sample_.decoys.size() == 0)
+    {
+      writeLogInfo_("fragment mass probe, decoy-group control: no decoy rows to probe");
+      return;
+    }
+    ODIA::MassCalibration::Options dc = target_options;
+    dc.sample = mass_probe_sample_.decoys.precursor;
+    dc.sample_rt = mass_probe_sample_.decoys.rt;
+    dc.sample_im = mass_probe_sample_.decoys.im;
+    ODIA::MassCalibration::Diagnostics dd;
+    ODIA::MassCalibration::Model dm;
+    try
+    {
+      dm = ODIA::MassCalibration::calibrate(library, source, dc, &dd);
+    }
+    catch (const std::exception& e)
+    {
+      writeLogWarn_(std::string("fragment mass probe, decoy-group control failed to run (") +
+                    e.what() + ")");
+      return;
+    }
+    std::ostringstream os;
+    os.setf(std::ios::fixed);
+    os.precision(2);
+    os << "fragment mass probe, decoy-group control (REPORTED ONLY): "
+       << dd.sample_entries << " best-scoring decoy rows probed the same way -> would have "
+       << (dm.fitted ? "PASSED" : "FAILED") << "; peakedness " << dm.peakedness
+       << " (control " << dm.decoy_peakedness << "), residuals " << dm.residuals
+       << " target / " << dm.decoy_residuals << " control";
+    if (dm.fitted) { os << ", centre " << dm.intercept_ppm << " ppm"; }
+    os << " -- " << dm.reason;
+    if (dm.fitted)
+    {
+      writeLogWarn_(os.str() + ". The selection itself may be manufacturing a mass mode; "
+                    "read the target gate with that in mind.");
+    }
+    else
+    {
+      writeLogInfo_(os.str());
+    }
+  }
+
   /// Decide the fragment window's CENTRE and its WIDTH, in that order.
   ///
   /// They are two questions and they are answered from different things. The
@@ -6279,8 +6381,25 @@ private:
     //
     // So: the measurement is fixed and the application is not. Separate the
     // width from the offset before turning this on by default.
+    //
+    // -mass_probe_source scored replaces both measurements: there is no library
+    // probe at all, and the one measurement is taken through pass 1's scored
+    // groups once they exist (see MassProbeSample.h). Until then, extract
+    // exactly as a failed gate does before pass 1 -- wide, uncentred -- because
+    // the library probe it would otherwise run is the noise this mode removes.
+    const bool scored_probe = getStringOption_("mass_probe_source") == "scored";
+    if (scored_probe && !mass_probe_sample_ready_)
+    {
+      options.fragment_ppm_offset = 0.0;
+      options.fragment_ppm = configured > 0.0 ? configured : options.fragment_ppm_uncalibrated;
+      writeLogInfo_("fragment mass calibration: DEFERRED (-mass_probe_source scored) -- it is "
+                    "measured at the peak groups this run scores, and none have been scored "
+                    "yet; extracting uncalibrated at +/-" +
+                    std::to_string(options.fragment_ppm) + " ppm about 0 ppm");
+      return;
+    }
     const bool remeasure_with_map =
-      getFlag_("mass_calibration_remeasure") &&
+      !scored_probe && getFlag_("mass_calibration_remeasure") &&
       rt_map_fitted_ && !mass_model_used_rt_map_ && rt_window_seconds > 0.0;
 
     ODIA::MassCalibration::Diagnostics diagnostics;
@@ -6302,6 +6421,13 @@ private:
         mzc.irt_intercept = 0.0;
         mzc.rt_window_seconds = rt_window_seconds;
       }
+      if (scored_probe)
+      {
+        mzc.sample = mass_probe_sample_.targets.precursor;
+        mzc.sample_rt = mass_probe_sample_.targets.rt;
+        mzc.sample_im = mass_probe_sample_.targets.im;
+        mzc.sample_rt_window = std::max(0.0, getDoubleOption_("mass_probe_rt_window"));
+      }
       try
       {
         mass_model_ = ODIA::MassCalibration::calibrate(library, source, mzc, &diagnostics);
@@ -6314,6 +6440,17 @@ private:
       }
       mass_model_known_ = true;
       mass_model_used_rt_map_ = remeasure_with_map;
+      if (scored_probe)
+      {
+        std::ostringstream ms;
+        ms << "fragment mass calibration: measured at pass 1's scored groups "
+              "(-mass_probe_source scored): "
+           << diagnostics.sample_entries << " target precursors probed at apex RT +/- "
+           << mzc.sample_rt_window << " s over " << diagnostics.sample_cycles << " of "
+           << "the run's cycles; same gate statistic and thresholds as the library probe";
+        writeLogInfo_(ms.str());
+        reportMassProbeDecoyControl_(library, source, mzc);
+      }
       if (remeasure_with_map)
       {
         writeLogInfo_("fragment mass calibration: RE-MEASURED against the fitted "
