@@ -358,22 +358,22 @@ did not reach the axis the refiner sees.
 
 ---
 
-# S08: the second instrument (2026-08-15)
+# IH1: the second instrument (2026-08-15)
 
-## There is NO DIA-NN truth for S08
+## There is NO DIA-NN truth for IH1
 
-`diann_s08_report.parquet` has **0 rows**. `diann_s08_report.log.txt`:
+`diann_ih1_report.parquet` has **0 rows**. `diann_ih1_report.log.txt`:
 
     ERROR: cannot load the file, skipping
     0 MS1 and 0 MS2 scans in 0 (inferred) and 0 (encoded) cycles
-    ERROR: DIA-NN tried but failed to load .../S08_diaPASEF.mzML
+    ERROR: DIA-NN tried but failed to load .../IH1_diaPASEF.mzML
     0 precursors saved
 
-DIA-NN never ran on S08. **Any S08-vs-DIA-NN comparison in the project's
+DIA-NN never ran on IH1. **Any IH1-vs-DIA-NN comparison in the project's
 reference numbers must be audited** -- see `memory: odia-reference-numbers`.
-The cysteine defect CANNOT be validated on S08 against external truth.
+The cysteine defect CANNOT be validated on IH1 against external truth.
 
-## S08 reference run
+## IH1 reference run
 
     identified 8514 precursors at 1% FDR
     q <= 0.010   8131 target + 104 entrapment   FDP 7.422%
@@ -382,7 +382,7 @@ The cysteine defect CANNOT be validated on S08 against external truth.
 
 More than twice Astral's identifications (8,514 vs 3,625) at SEVEN times the
 nominal FDP (7.42% vs Astral's 1.285% measured here). The window was capped on
-BOTH instruments -- doc/27 section 3 holds for S08 too.
+BOTH instruments -- doc/27 section 3 holds for IH1 too.
 
 ## Truth-free cross-instrument test: cysteine share of identifications
 
@@ -391,13 +391,13 @@ The library composition is known, so depletion needs no external truth:
 | | IDs@1% | Cys share | available | depletion |
 |---|---|---|---|---|
 | Astral | 3,659 | 3.01% | 24.59% | **8.2x** |
-| S08 | 8,587 | 8.58% | 20.42% | **2.4x** |
+| IH1 | 8,587 | 8.58% | 20.42% | **2.4x** |
 
 **Present on both instruments** -- the defect is not Astral-specific. But 3.4x
-weaker on S08, which the iRT-domain mechanism PREDICTS: the deficit is a fixed
+weaker on IH1, which the iRT-domain mechanism PREDICTS: the deficit is a fixed
 library property of ~4.6 iRT units, and the damage depends on the run's
 seconds-per-iRT slope. A shallower slope turns the same iRT error into fewer
-seconds and pushes fewer truths outside +/-60 s. S08's ion mobility also
+seconds and pushes fewer truths outside +/-60 s. IH1's ion mobility also
 suppresses the interference that otherwise fills the wrong window.
 
 Prediction: the iRT-unit correction helps both runs, and helps Astral more.
@@ -617,7 +617,7 @@ exceptions), because `LibraryGenerator.h:52` defaults to
   correction).
 - **The DIA-NN benchmark has been apples-to-oranges for ~18-25% of the library
   from the beginning.** `memory: odia-reference-numbers` needs auditing on this
-  point, alongside the S08 finding that DIA-NN never ran there at all.
+  point, alongside the IH1 finding that DIA-NN never ran there at all.
 - The real fix is to generate ODIA's library to match the sample's actual
   alkylation state. That state is not yet independently established -- DIA-NN's
   configuration is strong evidence but is not the wet-lab record.

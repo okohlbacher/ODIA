@@ -78,7 +78,7 @@ so the arithmetic was defensible but the empirical input was not, and Kimi's
 Codex named the decisive test: estimate the artifact directly, per charge, by
 regressing `(measured - library)` on `library` over the paired predicted/measured
 set, with no classical-error assumption. Run on 33,749 precursors paired between
-our library and DIA-NN's S08 empirical library:
+our library and DIA-NN's IH1 empirical library:
 
 | z | n | **a_q (measured artifact)** | mean relative bias | sd(library 1/K0) |
 |---|---:|---:|---:|---:|

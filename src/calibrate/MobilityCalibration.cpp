@@ -493,7 +493,7 @@ namespace ODIA
     // finite `min_control_margin` times 1e9 exceeds every attainable peakedness,
     // so the branch below could only ever refuse.
     //
-    // Measured on S08 2026-08-28: `w7_apply_imfix` extracted through a
+    // Measured on IH1 2026-08-28: `w7_apply_imfix` extracted through a
     // +/-8.86 ppm window, which left 15 control residuals against 367 target
     // (against 40 and 152 in the two +/-50 and +/-10 ppm arms). Zero of the 15
     // landed in the 0.6-0.8 edge band -- unremarkable at n=15 -- and the run
@@ -836,7 +836,7 @@ namespace ODIA
     std::vector<double> corrected;
     corrected.reserve(kept.size());
     // Per fold as well as pooled, so the pooled number can carry an uncertainty
-    // instead of being read as exact. Measured 2026-08-28 on S08: at a cell
+    // instead of being read as exact. Measured 2026-08-28 on IH1: at a cell
     // whose correction is genuinely near zero, the POOLED figure came out -5.5%
     // and +0.9% on two runs differing only by a 0.0004 ppm mass offset -- a
     // 6.4-point spread where cells with a real correction span 2.2. A ratio on a
@@ -901,7 +901,7 @@ namespace ODIA
     //
     // The gate it followed instead is a peakedness heuristic, and the record
     // shows the heuristic admitting corrections that are worthless or harmful.
-    // Measured on S08, 500k precursors, 2026-08-28, all reported GATE PASSED:
+    // Measured on IH1, 500k precursors, 2026-08-28, all reported GATE PASSED:
     //
     //     arm             removed out of fold   robust scatter
     //     m6_base_s2               67.1%        0.0118 -> 0.0113

@@ -1,6 +1,6 @@
 # Staging DIA-NN's confident set through ODIA
 
-2026-08-21. Full S08 diaPASEF, our 9.6M library, DIA-NN 2.0 on the SAME library
+2026-08-21. Full IH1 diaPASEF, our 9.6M library, DIA-NN 2.0 on the SAME library
 (`dn_xic.parquet`, 39,149 precursors at q <= 0.01, with XIC output). ODIA arm is
 `full_v5.tsv`, production configuration.
 
@@ -62,7 +62,7 @@ attribution stays open until it has run.
 
 ## MEASURED: Gate C owns 98.2% of the candidate loss
 
-`-out_terminal_reasons` on the s08_6x60 fixture, full library, against DIA-NN's
+`-out_terminal_reasons` on the ih1_6x60 fixture, full library, against DIA-NN's
 own run on the same fixture (4,948 confident precursors). Every library
 precursor carries exactly one reason, so this is a count, not an argument.
 
@@ -257,13 +257,13 @@ the gate drops are 2.7x fainter, and 81% of oracle-admitted precursors still
 fail. That is one deficit -- DISCRIMINATION at low abundance -- and it is not
 addressable at any single stage of the funnel.
 
-## var_rt_delta removed: a wash on S08, and Astral is 8x behind
+## var_rt_delta removed: a wash on IH1, and Astral is 8x behind
 
 Removal arm (05c1c6d), both fixtures, against the matched-binary baseline:
 
     arm                  IDs   entrap     FDP      +-   wall    mem
     fx baseline        3,282       42   7.49%   1.16%  24:16   40 GB
-    nortdelta_s08      3,302       48   8.52%   1.23%  23:40   40 GB
+    nortdelta_ih1      3,302       48   8.52%   1.23%  23:40   40 GB
                                                   +20 IDs, FDP inside noise
 
 **A wash**, which is the right outcome for a feature that carries no
@@ -288,13 +288,13 @@ refine loop, which is a real simplification.
     fx DIA-NN (full lib)   1,533
     nortdelta_astral         190      2   6.15%  4.35%   21:46   192 GB
 
-**8.1x behind DIA-NN**, against 1.40x on the S08 fixture, and 192 GB against
-40 GB. Astral is a far worse regime for ODIA than S08 and this is the first
+**8.1x behind DIA-NN**, against 1.40x on the IH1 fixture, and 192 GB against
+40 GB. Astral is a far worse regime for ODIA than IH1 and this is the first
 measurement of it on a comparable library.
 
 The prime suspect is retention time, and it is the same thread as everything
-else here: Astral's supplied map has a p95 residual of 134.5 s against S08's
-37.7 s, so `-rt_window_pass1` is 269 s against S08's 75 s. A 3.6x wider window
+else here: Astral's supplied map has a p95 residual of 134.5 s against IH1's
+37.7 s, so `-rt_window_pass1` is 269 s against IH1's 75 s. A 3.6x wider window
 admits proportionally more interference into every trace, which is exactly the
 condition under which the sub-scores were measured to collapse. The 192 GB
 peak is the same fact in another unit.

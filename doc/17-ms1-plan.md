@@ -167,7 +167,7 @@ predates it.
 1. **`corr(mono MS1, summed fragments)`** — the existing one. Fix, don't replace.
 2. **Native-grid alignment (E′).** Interpolate onto the MS2 cycle grid **at score
    time** from raw per-scan values in the window — no persistent upsampling, and
-   not a literal copy of DIA-NN's stored interpolation. On S08 the grid is 1,343
+   not a literal copy of DIA-NN's stored interpolation. On IH1 the grid is 1,343
    MS1 vs 16,105 MS2 (~12:1), so several MS2 cycles snap into one MS1 bin and the
    Pearson leg goes flat.
 3. **Three physical channels only: `M−1`, `M`, `M+1`**, at the library charge.
@@ -256,7 +256,7 @@ IDs, 205 non-IDs, Jaccard ~66%).
    `var_im_spread` lesson: 3 vs 6 entrapment hits "halved FDP", reversed at
    q≤0.05, and cost 60 IDs. The 1% threshold is set by ~70 decoy events, ±23% at
    95% — a feature must move *that tail*, not the bulk.
-6. **Two instruments, always.** `MS1_COELUTION` itself was +17.6% on S08 and
+6. **Two instruments, always.** `MS1_COELUTION` itself was +17.6% on IH1 and
    **+0.4% on Astral**. A feature that wins on one instrument is flagged, not
    shipped.
 

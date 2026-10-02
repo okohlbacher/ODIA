@@ -8,7 +8,7 @@
 # What this is for, and what it is not: the stock model's output saturates at
 # the end of the gradient, and no calibration can undo that. Fine-tuning does.
 # It buys a narrower extraction window, not identifications -- a perfect RT
-# column was measured to be worth -108 precursors on S08. See
+# column was measured to be worth -108 precursors on IH1. See
 # doc/06-rt-refinement-plan.md before deciding it is worth running.
 #
 # The model produced is specific to the run it was tuned on. Reusing it across

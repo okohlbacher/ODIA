@@ -119,7 +119,7 @@ namespace ODIA
       // they were built from sits. Retention time is diagnostic BETWEEN traces,
       // not for the group as a whole.
       //
-      // Measured before removal (d9_auc_by_abundance.py, full S08): AUC 0.215
+      // Measured before removal (d9_auc_by_abundance.py, full IH1): AUC 0.215
       // against the decoy null, flat across every abundance quintile, and it
       // got WORSE under random decoy rows (0.293 -> 0.215), so it was not an
       // artefact of picking decoys by argmax. Target and decoy row
@@ -149,7 +149,7 @@ namespace ODIA
       /// the PRECURSOR rises and falls with its fragments, which no amount of
       /// fragment-side interference can fake.
       ///
-      /// Measured on S08 + v6_50k before being added (doc/13): 13.7x enrichment
+      /// Measured on IH1 + v6_50k before being added (doc/13): 13.7x enrichment
       /// in the top bin, 1.4-1.5x in bulk, and it survives stratification by MS1
       /// intensity so it is shape rather than brightness. NaN when the run
       /// carries no MS1 or the precursor has no MS1 signal -- NaN, not zero,
@@ -270,7 +270,7 @@ namespace ODIA
       /// ppm are an MS1 constant imported into MS2, and they are not what
       /// DIA-NN does with fragments.
       ///
-      /// Measured on real S08 frames rather than assumed: a cell is a MIXTURE,
+      /// Measured on real IH1 frames rather than assumed: a cell is a MIXTURE,
       /// and 95.1% of bright real-peak cells contain more than one peak. The
       /// weighted mean therefore pulls crowded cells toward the window centre,
       /// which cuts targets from a nominal 1.0 to 0.925 at 4.5 ppm AND lifts
@@ -480,7 +480,7 @@ namespace ODIA
       /// What remains here is quantification and the reported RT range, where
       /// the argument runs the other way, because a minimum that truncates a
       /// peak loses area that a narrower scoring window is free to ignore. Back
-      /// to 7 accordingly: 9.7 s at S08's 1.385 s cycle, about 2.8x the
+      /// to 7 accordingly: 9.7 s at IH1's 1.385 s cycle, about 2.8x the
       /// measured 3.5 s FWHM, so roughly +-2 sigma either side of the apex.
       ///
       /// The sub-score list above is therefore no longer the reason for this
@@ -602,7 +602,7 @@ namespace ODIA
       /// sub-score NaN for every candidate, which the constant-column guard
       /// then drops -- so 0 is genuinely off rather than a column of zeros.
       ///
-      /// DIA-NN tightens to 0.45x and 0.20x of the extraction window. On S08
+      /// DIA-NN tightens to 0.45x and 0.20x of the extraction window. On IH1
       /// the window is 10 ppm, so 4.5 and 2.0 are the corresponding values.
       /// Expressed in absolute ppm rather than as a fraction because the
       /// scorer does not know the extraction window, and a fraction of an
@@ -616,7 +616,7 @@ namespace ODIA
       /// offset is folded into the query m/z and the residual is centred by
       /// construction. It is NOT correct when the calibration gate fails: that
       /// path sets the offset to 0 with a 50 ppm window and leaves the
-      /// distribution where the instrument put it -- about -9 ppm on S08 --
+      /// distribution where the instrument put it -- about -9 ppm on IH1 --
       /// where a window about zero scores real fragments near 0 and uniform
       /// noise higher, inverting the feature.
       double mass_survival_centre = 0.0;
@@ -720,7 +720,7 @@ namespace ODIA
       /// sample is the earliest eluters. The construction is what breaks it.
       /// Background floor for var_log_sn, as a fraction of the candidate apex.
       /// It caps the reported ratio at 1/frac, so 0.01 caps at 100:1 -- and
-      /// measured on S08, ALL 21,055 known-present precursors sat at that cap
+      /// measured on IH1, ALL 21,055 known-present precursors sat at that cap
       /// (10 distinct values, p10 = p50 = p90 = log(100) = 4.605). The feature
       /// was therefore a constant for present precursors. 0.001 caps at 1000:1;
       /// `min(10.0, ...)` bounds the runaway case regardless.
@@ -790,7 +790,7 @@ namespace ODIA
       ///
       /// The ordering is the point. A standardised sum is dominated by whatever
       /// is loud, so an amplitude-detected list is ordered by how much signal
-      /// is present rather than by whether it is THIS peptide. Measured on S08
+      /// is present rather than by whether it is THIS peptide. Measured on IH1
       /// against DIA-NN's confident set, the amplitude picker put the true peak
       /// first for 24.4% of precursors, in the top 3 for 47.2%, in the top 25
       /// for 89.8% -- it finds the peak and cannot rank it.
@@ -834,7 +834,7 @@ namespace ODIA
       /// transition's target m/z by the correction in force
       /// (`ChromatogramExtractor.cpp:905-916`) and then records the deviation
       /// against the SHIFTED target. So a harvested residual is what is left
-      /// AFTER the current model, not the run's raw mass error: on S08 the
+      /// AFTER the current model, not the run's raw mass error: on IH1 the
       /// harvested deviations centre on -0.26 ppm while the instrument's actual
       /// offset is about -9.4.
       ///
@@ -870,7 +870,7 @@ namespace ODIA
       bool openswath_gauss = false;
 
       /// Expected peak width in seconds for the OpenSWATH picker, or 0 to leave
-      /// its default. S08's peaks are ~20-30 s.
+      /// its default. IH1's peaks are ~20-30 s.
       double openswath_peak_width = 0.0;
 
       /// Save the trained discriminant here, or load a frozen one from here.
@@ -969,7 +969,7 @@ namespace ODIA
       /// library below this. -1.0 disables it, which is the default.
       ///
       /// This is the one sub-score measured to separate real identifications
-      /// from misplaced ones: on S08, median 0.582 for calls landing within
+      /// from misplaced ones: on IH1, median 0.582 for calls landing within
       /// 30 s of the true apex against -0.036 for those that do not -- and
       /// -0.032 for decoys, i.e. a misplaced target is indistinguishable from a
       /// decoy here. See the comment at the gate in PeakGroupScorer.cpp.
@@ -1272,7 +1272,7 @@ namespace ODIA
       /// probe runs during extraction setup. Deciding at construction time
       /// therefore left pass 1 running with features that pass 2 would reject,
       /// and pass 1 is where the retention-time and mobility anchors come from,
-      /// so it is not a harmless inconsistency: measured on S08 it cost 117
+      /// so it is not a harmless inconsistency: measured on IH1 it cost 117
       /// identifications (1,225 against 1,342).
       void disableSubScores(std::vector<int> indices)
       { session_.disableSubScores(std::move(indices)); }

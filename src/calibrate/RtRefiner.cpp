@@ -222,7 +222,7 @@ namespace ODIA
         // training range gets a prediction with nothing holding it near the
         // gradient, and pass 2 then extracts from a time the peptide cannot be
         // at. The monotone map it replaced was bounded by interpolation.
-        // Measured: S08 went from 1,464 identifications to ZERO.
+        // Measured: IH1 went from 1,464 identifications to ZERO.
         b[r] += z[r] * (observed_rt[i] - calibrated_irt[i]);
         for (std::size_t c = 0; c < N_FEAT; ++c) { A[r * N_FEAT + c] += z[r] * z[c]; }
       }

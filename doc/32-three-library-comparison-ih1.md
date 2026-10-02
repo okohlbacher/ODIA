@@ -1,4 +1,4 @@
-# Three libraries on S08: DIA-NN predicted, ODIA predicted, DIA-NN empirical
+# Three libraries on IH1: DIA-NN predicted, ODIA predicted, DIA-NN empirical
 
 A direct comparison of what two predictors put in a library against what the
 instrument actually produced.
@@ -9,9 +9,9 @@ instrument actually produced.
 |---|---|---|
 | **A** DIA-NN predicted | `--fasta-search --predictor --gen-spec-lib --unimod4` on `bench_reviewed_entrap.fasta` | 4,954,236 precursors |
 | **B** ODIA predicted | `DIALibraryGenerator`, default config (CAM), same FASTA | 4,984,739 precursors |
-| **C** DIA-NN empirical | `--gen-spec-lib` output of the S08 `--unimod4` run: only precursors identified at 1% FDR, with RT, 1/K0 and fragment intensities refined against the data | **37,193 precursors, 346,531 fragments** |
+| **C** DIA-NN empirical | `--gen-spec-lib` output of the IH1 `--unimod4` run: only precursors identified at 1% FDR, with RT, 1/K0 and fragment intensities refined against the data | **37,193 precursors, 346,531 fragments** |
 
-Both samples and all three libraries are carbamidomethylated — S08 is alkylated
+Both samples and all three libraries are carbamidomethylated — IH1 is alkylated
 (doc/30), so CAM is correct throughout and no override is involved.
 
 **C is the closest thing to ground truth available**, but it is not neutral: it
@@ -80,7 +80,7 @@ model work, which corroborates doc/26 A7 and puts a number on it.
 
 ## Ion mobility — FIXED 2026-08-17; was computed and discarded
 
-S08 is diaPASEF, so C carries **measured** 1/K0 for every precursor.
+IH1 is diaPASEF, so C carries **measured** 1/K0 for every precursor.
 
 | | populated | r vs measured | residual sd | as % of mean |
 |---|---:|---:|---:|---:|

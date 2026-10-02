@@ -469,7 +469,7 @@ namespace ODIA
     // Which window carries each precursor, and over which cycles.
     //
     // ONE window, even though several may cover it: the schemes on 12_80 and
-    // S08 overlap adjacent windows by 1.0 Th, which puts 1.1% of precursors in
+    // IH1 overlap adjacent windows by 1.0 Th, which puts 1.1% of precursors in
     // two. Each of those is a separate measurement of the same ion at
     // interleaved times -- and interleaved times is exactly why they cannot be
     // one chromatogram. Concatenating them (which this replaces) made a
@@ -839,7 +839,7 @@ namespace ODIA
     // therefore the GRANULARITY OF THE SLIDING WINDOW: a precursor goes live up
     // to one batch early and is freed up to one batch late.
     //
-    // 128 spectra is ~5 cycles across S08's 24 windows, about 7 s of gradient
+    // 128 spectra is ~5 cycles across IH1's 24 windows, about 7 s of gradient
     // against retention-time windows of hundreds -- so the rounding is under 1%
     // of what is resident. At the 1,024 the decode uses it would be 59 s, which
     // is 5% of a 1,200 s window and 100% of a short one. The cost of the finer

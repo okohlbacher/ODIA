@@ -1,6 +1,6 @@
 # Where ODIA's memory actually goes, and the order to fix it
 
-Measured 2026-08-05 overnight, S08_diaPASEF.mzpeak (12.75 GiB, 32,210 spectra)
+Measured 2026-08-05 overnight, IH1_diaPASEF.mzpeak (12.75 GiB, 32,210 spectra)
 unless stated. Every number here came from a run, not a model.
 
 ## The decomposition
@@ -60,10 +60,10 @@ whole file.
 |---|---|---:|---:|---:|---:|
 | 12_80 | SCIEX SWATH | 0.13 GiB | 11,926 | 0.27 GiB | 2.08 |
 | astral | Astral | 3.10 GiB | 303,701 | 0.91 GiB | 0.29 |
-| S08 | **diaPASEF** | 12.75 GiB | 32,210 | 10.27 GiB | 0.81 |
+| IH1 | **diaPASEF** | 12.75 GiB | 32,210 | 10.27 GiB | 0.81 |
 
 The floor is **not** fixed — it varies 11x with the input, so "a ~10.3 GiB
-constant" was invariant only *within* S08. It does not track file size, spectrum
+constant" was invariant only *within* IH1. It does not track file size, spectrum
 count, or bytes-per-spectrum cleanly. Subtracting the ~0.25 GiB process baseline
 (which 12_80 is essentially all of), the two **non-mobility** files sit at 0.15
 and 0.21 of file size and the one **ion-mobility** file sits at 0.78 — ~4x worse.
@@ -74,8 +74,8 @@ two-windows-per-frame handling, the scan-order-vs-1/K0 swap. The 154.2 GiB on th
 4.26M library is therefore a diaPASEF tax, not a generic scale limit — Astral and
 SWATH runs would not pay it.
 
-Also uncovered: **astral took 31 minutes** for 303,701 spectra against S08's 6 for
-32,210. S08-only benchmarking has been hiding a Phase 2 throughput problem.
+Also uncovered: **astral took 31 minutes** for 303,701 spectra against IH1's 6 for
+32,210. IH1-only benchmarking has been hiding a Phase 2 throughput problem.
 
 Blocked on tooling: no `pyarrow`, `duckdb`, or `parquet-tools` on this node, so the
 row-group count and size are not yet known. Get them via mzPeak's own metadata API
@@ -89,7 +89,7 @@ mzPeak's row-group cache (bounded — `cache_.erase(cache_.begin())` at
 `kCachedGroups`, ~21 MB/group). Reading code produced six wrong answers; the
 profile produced the right one in one run.
 
-`HEAPPROFILE` + `libtcmalloc.so.4`, tiny library, S08. Peak **live** heap 9.45 GiB
+`HEAPPROFILE` + `libtcmalloc.so.4`, tiny library, IH1. Peak **live** heap 9.45 GiB
 (dump 162 of 197; the final dump is 4.7 MB — profile the peak, not the end).
 Cumulative: **248 GiB allocated over 23.5M allocations**.
 
@@ -113,7 +113,7 @@ Two independent fixes, both targeting that 5.57 GiB:
 
 1. **Stop duplicating co-packed frames.** `info_` holds one entry per
    (spectrum, isolation window); a diaPASEF frame co-packs several windows into
-   one physical spectrum, so S08's 32,210 entries cover 17,448 physical spectra —
+   one physical spectrum, so IH1's 32,210 entries cover 17,448 physical spectra —
    **1.85x**. Both entries of a co-packed frame get *byte-identical* peak arrays
    (the comment at line 253 says so outright) and are separated only by their
    mobility bands. Sharing one buffer: 5.57 -> **3.01 GiB**. Lossless. This is why

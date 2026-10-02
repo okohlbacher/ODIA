@@ -11,7 +11,7 @@ plain SQLite inside the .d, so there is no reason for either engine's guess to
 be the reference.
 
 `DiaFrameMsMsWindows` is authoritative: one row per (window group, mobility
-scan range), with the isolation m/z and width. On S08 that is 12 groups x 2
+scan range), with the isolation m/z and width. On IH1 that is 12 groups x 2
 windows = 24 windows, isolation widths spanning 23.0 to 266.6 Th -- so a
 comparison that assumes uniform windows is checking something the instrument
 never did.

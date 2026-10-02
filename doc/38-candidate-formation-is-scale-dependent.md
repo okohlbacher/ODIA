@@ -29,7 +29,7 @@ extracting as the library grows.
 
 ## The experiment
 
-Take the 11,145 precursors DIA-NN identifies on S08 that our full run never
+Take the 11,145 precursors DIA-NN identifies on IH1 that our full run never
 formed a single candidate for. Run them through the SAME binary, the SAME raw
 file, the SAME supplied map (`-irt_slope 1095.00 -irt_intercept 453.49`), the
 SAME window (`-rt_window 92.4`), the SAME thresholds, `-passes 1`. Vary only how

@@ -115,4 +115,4 @@ confounds (doc/56 A2); `ent_hard` at 17 leaves the tail unmeasured entirely.
 2. `ent_hard` populated properly -- ~2,900 DIA-NN-called entrapment precursors
    exist and 17 were sampled. That is the tail, and it is currently unmeasured.
 3. A three-way split so epoch selection stops touching test.
-4. S30 remains locked and untouched.
+4. IH2 remains locked and untouched.

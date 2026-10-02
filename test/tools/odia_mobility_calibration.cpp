@@ -221,12 +221,12 @@ namespace
     /// coherent cluster -- most of its fragments, at one stable but WRONG 1/K0,
     /// in every cycle of the run. This is what a cell holding no precursor
     /// actually looks like on this axis, and it is the whole reason the blind
-    /// probe was refused on S08: the cluster is there, it is reproducible, and
+    /// probe was refused on IH1: the cluster is there, it is reproducible, and
     /// it is not the precursor.
     double absent_interference = 0.0;
     /// Per-peak Gaussian scatter about `mass_ppm`, in ppm. A perfectly constant
     /// error has ZERO scale and the mass gate rejects it as "degenerate scale",
-    /// so a fixture that plants one cannot exercise the gate at all. S08's own
+    /// so a fixture that plants one cannot exercise the gate at all. IH1's own
     /// per-hit scatter is 5.46 ppm.
     double mass_ppm_sigma = 0.0;
 
@@ -236,7 +236,7 @@ namespace
     /// is also why the mass calibration finds nothing on this fixture: there is
     /// nothing to find. Needed by the metamorphic mass-gate check, which has to
     /// plant a real mass error before it can ask whether a MOBILITY shift
-    /// changes whether that error is recovered. S08's own value is about -10.
+    /// changes whether that error is recovered. IH1's own value is about -10.
     double mass_ppm = 0.0;
     std::size_t background = 2000;     ///< unrelated peaks per spectrum
     /// The truth: what to add to the library 1/K0 for this precursor.
@@ -628,7 +628,7 @@ namespace
     // on the library's MOBILITY, and a library whose 1/K0 column is
     // systematically off loses those precursors from the mass sample entirely.
     //
-    // Measured on S08 2026-08-28: an affine edit of the library's IM column,
+    // Measured on IH1 2026-08-28: an affine edit of the library's IM column,
     // displacing 1/K0 by +0.0224 at 1/K0 1.0, put 79.06% of 500,000 targets
     // outside this window. The fragment mass gate then moved from PASSED (ratio
     // 0.186) to FAILED (0.252) and the run fell back to +/-50 ppm UNCENTRED --
@@ -641,7 +641,7 @@ namespace
     // arms -- same peaks, same m/z, same mass error -- and only the library's
     // 1/K0 column moves. A fragment mass question must not be decided by it.
     {
-      const double SHIFT = 0.0224;      // the S08 affine displacement at 1/K0 1.0
+      const double SHIFT = 0.0224;      // the IH1 affine displacement at 1/K0 1.0
       auto massArm = [&](double library_im_shift) {
         Plan plan;
         plan.present = 1.0;
@@ -687,7 +687,7 @@ namespace
     // ---- 6. the ANCHORED probe --------------------------------------------
     // A run in which 60% of the library is ABSENT, everything present elutes in
     // a narrow band, and every absent cell is nevertheless full of a coherent
-    // cluster at a wrong 1/K0. That is the S08 case in miniature, and it is the
+    // cluster at a wrong 1/K0. That is the IH1 case in miniature, and it is the
     // case the blind probe gets wrong: asked to find a precursor somewhere in a
     // window it keeps the brightest cluster it can see, and an absent precursor
     // still returns one.

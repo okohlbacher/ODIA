@@ -12,7 +12,7 @@
 /// The failure this suite must prevent is the one that has already happened
 /// twice on real data: a statistic computed over a large search space that looks
 /// like a measurement and is a property of the search. An unanchored m/z
-/// residual read -8.44 ppm on S08 while the same probe 300 s away from the
+/// residual read -8.44 ppm on IH1 while the same probe 300 s away from the
 /// peptide read -4.98 -- so most of it was the +/-50 ppm window, not the
 /// instrument. Pinning the contaminated figure cost 90 identifications.
 

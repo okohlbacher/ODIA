@@ -9,7 +9,7 @@
 // and each of them is a way the estimator could be broken while still looking
 // like it works:
 //
-//   1. A constant offset on a uniform background is recovered. This is the S08
+//   1. A constant offset on a uniform background is recovered. This is the IH1
 //      case: a narrow true peak at about -10 ppm sitting on interference that is
 //      flat across the +/-50 ppm search window.
 //   2. A purely uniform sample is REJECTED. A uniform sample still has a

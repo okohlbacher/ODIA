@@ -8,7 +8,7 @@ redesign after review does not require re-extracting anything:
   pos_diann   targets DIA-NN identifies at q <= 0.01           (positives)
   ent         ENTRAPMENT targets -- Arabidopsis accessions in  (negatives)
               the searched library: real sequences, real
-              fragment masses, absent from human liver
+              fragment masses, absent from the human sample
   unid        ordinary human targets DIA-NN does NOT identify  (negatives?)
               -- absent is UNVERIFIABLE for these, which is
               why they are kept separate rather than pooled

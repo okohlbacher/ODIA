@@ -94,7 +94,7 @@ namespace ODIA
       if (keep != nullptr && row[i] == UINT32_MAX) { continue; }
       // CALIBRATED, like the fragment axis. This matched on the library's
       // THEORETICAL m/z with a symmetric window and no offset, while the
-      // fragment extractor was centred on the fitted deviation -- on S08 that
+      // fragment extractor was centred on the fitted deviation -- on IH1 that
       // is -10.0108 ppm against a +/-10 ppm half-width, so a precursor whose
       // MS1 error resembles its MS2 error sat at the window EDGE and a weak one
       // fell out entirely. That matters because ms1_coelution is the main

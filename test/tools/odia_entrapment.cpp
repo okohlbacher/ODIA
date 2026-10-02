@@ -33,7 +33,7 @@
 /// true/false split, runs it through the same scorer the pipeline uses, and
 /// checks the q-values against the truth it planted. That makes it a test of
 /// the FDR machinery rather than of any particular dataset -- a real
-/// entrapment search on S08 and Astral is separate and belongs in the backlog.
+/// entrapment search on IH1 and Astral is separate and belongs in the backlog.
 
 #include <odia/scoring/lda.h>
 
@@ -276,7 +276,7 @@ int main()
   //
   // Everything above plants 3,000 true against 3,000 entrapment: HALF of all
   // targets are genuinely present. A proteome-scale library is ~1.5% -- DIA-NN
-  // finds 738 of 50,000 on S08 and 37,596 of 2,127,559 on the full library. So
+  // finds 738 of 50,000 on IH1 and 37,596 of 2,127,559 on the full library. So
   // the cases above certify q-values at a prior roughly thirty times too
   // favourable, and the one positive result the mobility work is documented by
   // ("+0.90 points at a matched 1.00% entrapment false rate") was measured

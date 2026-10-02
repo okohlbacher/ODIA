@@ -115,7 +115,7 @@ DISTRIBUTED across fragments rather than concentrated.
 4. Positives are DIA-NN-confident AND RT-well-predicted; the 14% excluded are
    0.83x abundance, so the low-abundance tail is depleted in exactly the regime
    the hypothesis is about. The win may be understated, or may not survive there.
-5. S30 remains locked and untouched.
+5. IH2 remains locked and untouched.
 6. No integration test. A sub-score that beats the scalars on a paired
    localisation contrast has not been shown to add identifications at matched
    FDP, and doc/56 A4 warns the entrapment instrument breaks if this model is

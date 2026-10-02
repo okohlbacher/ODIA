@@ -126,9 +126,9 @@ another.
 |---|---:|---:|---:|---:|---|
 | `12_80` | 21,172,704 | 21 | 1,048,576 | **~873** | Orbitrap DIA, point layout |
 | `astral` | 512,278,842 | 489 | 1,048,576 | **~1,143** | same layout, 24x larger |
-| `S08_diaPASEF` | 3,688,828,005 | 3,518 | 1,048,576 | **~27** | Bruker TDF *ims-compact* |
+| `IH1_diaPASEF` | 3,688,828,005 | 3,518 | 1,048,576 | **~27** | Bruker TDF *ims-compact* |
 
-`S08` is the case that breaks a naive "one group holds many spectra" loop. Its
+`IH1` is the case that breaks a naive "one group holds many spectra" loop. Its
 row group 0 spans `spectrum_index` 0..26. A diaPASEF frame is one spectrum
 carrying millions of points across the mobility dimension, so **a single
 spectrum can span several consecutive row groups** — the mirror image of the
@@ -139,7 +139,7 @@ contiguous run of rows that may begin and end anywhere, including across group
 boundaries.* Both regimes fall out of one cursor that carries a partial spectrum
 forward.
 
-`S08` also uses the ims-compact schema, which has no `mz` column at all:
+`IH1` also uses the ims-compact schema, which has no `mz` column at all:
 
 ```
 point: struct<spectrum_index: uint64, intensity: int32,
@@ -268,7 +268,7 @@ Everything above is measured on this machine, on 2026-08-03, against `f93f938`:
 - `0.07 s` / `873 spectra` / `0.082 ms/spectrum`: `pq.ParquetFile.read_row_group(0)`
   on `spectra_peaks.parquet` extracted from `12_80.mzpeak`.
 - Row-group tables, monotonicity and straddle counts: all 21 groups of `12_80`
-  enumerated; `astral` and `S08_diaPASEF` from their Parquet footers.
+  enumerated; `astral` and `IH1_diaPASEF` from their Parquet footers.
 - `0.27 ms/spectrum` for mzML: OpenMS full parse of `12_80.mzML`, 3.55 s for
   13,009 spectra, measured 2026-08-02.
 

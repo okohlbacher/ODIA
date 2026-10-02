@@ -1,6 +1,6 @@
 # RT-sliced fixtures: 7.5x faster, and not a substitute for the full run
 
-2026-08-21. Question: can a 10-20% retention-time slice of S08 and Astral give a
+2026-08-21. Question: can a 10-20% retention-time slice of IH1 and Astral give a
 test cycle at least 5x faster while still producing meaningful numbers?
 
 Short answer: **7.5x is achievable and both fixtures work in ODIA and DIA-NN,
@@ -10,25 +10,25 @@ including three separate attenuations that only appeared on measurement.
 ## The fixtures
 
     fixture        slices   window   RT span        MS2 spectra   of full
-    s08_6x60       6 x 60s  487-1512s              6,120         19.0%
+    ih1_6x60       6 x 60s  487-1512s              6,120         19.0%
     astral_7x60    7 x 60s  224-2126s             54,533         17.9%
 
 Built with OpenMS `FileFilter -rt A:B -rt_block_mode shrink_to_preserve_full_cycle`,
 one pass per slice in parallel, then `FileMerger`, then `mzpeak-convert` for
 ODIA. DIA-NN reads the merged mzML directly.
 
-Verified on both: **all isolation windows survive** (24 for S08, 150 for
+Verified on both: **all isolation windows survive** (24 for IH1, 150 for
 Astral), ion mobility survives for diaPASEF, and absolute retention time is
 preserved so the full run's RT map still applies.
 
 ### Three things that had to be got right
 
-**Slice where peptides actually elute.** S08's accepted identifications live
+**Slice where peptides actually elute.** IH1's accepted identifications live
 between ~400 and ~1600 s of an 1859 s span; the first layout put 2 of 6 slices
 on empty gradient. Placed correctly, 19.0% of the FILE is 31% of the PRODUCTIVE
 gradient, which roughly doubles the identifications per second retained.
 
-**Slice width against real peak width.** Median FWHM on S08 is 5.5 s and p90 is
+**Slice width against real peak width.** Median FWHM on IH1 is 5.5 s and p90 is
 9.7 s -- not the 90 s the peak-group boundaries suggest, which is the extraction
 window saturating. 60 s slices are ~6x p90, so edge truncation costs the outer
 ~10 s of each slice.
@@ -37,7 +37,7 @@ window saturating. 60 s slices are ~6x p90, so edge truncation costs the outer
 8.25-9.25 min and 20-21 min both come back reporting 1.0-60.8 s. Fine for one
 slice, useless for a merge. FileFilter preserves absolute time.
 
-**S08's mzML had to be repaired first.** It carries `<dataProcessingList
+**IH1's mzML had to be repaired first.** It carries `<dataProcessingList
 count="0">` and no `defaultDataProcessingRef` on EITHER `spectrumList` or
 `chromatogramList`, so OpenMS refuses it. Patched by a single streaming pass
 that fills the list, adds both refs, and drops the `indexedmzML` wrapper (the
@@ -45,7 +45,7 @@ trailing byte index cannot survive a header insertion).
 
 ## Speed: the target is met, and better than linear
 
-    ODIA on S08          full (v5)      fixture      ratio
+    ODIA on IH1          full (v5)      fixture      ratio
     wall                 3h00:00        24:08        7.5x
     peak memory          124 GB         40 GB        3.1x
     MS1 traces build     3,805 s        141 s        27x
@@ -55,7 +55,7 @@ Memory and bins scale with the spectra fraction exactly, but the MS1 build is
 27x faster rather than 5x -- the full run's build is memory-bandwidth-bound at
 46 GB and 9 GB is not. That superlinearity is where 5.3x becomes 7.5x.
 
-DIA-NN on the same fixtures: S08 9:58, Astral 0:07.
+DIA-NN on the same fixtures: IH1 9:58, Astral 0:07.
 
 ## But the numbers are not meaningful. Three attenuations
 
@@ -127,7 +127,7 @@ DO NOT USE IT FOR:
     two runs.
   * ODIA has not yet been run on `astral_7x60`; Astral's truth set is stale
     (doc/BACKLOG) and must be re-derived before its numbers mean anything.
-  * The S08 fixture is 21 GB of mzML for 19% of the data because FileFilter
+  * The IH1 fixture is 21 GB of mzML for 19% of the data because FileFilter
     writes uncompressed binary arrays. `mzpeak-convert` gets it to 4.4 GB. If
     the mzML is only ever fed to DIA-NN, converting with compression would make
     the fixture far more portable.

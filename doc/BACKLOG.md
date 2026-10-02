@@ -13,12 +13,12 @@ One command, ~25 minutes, for iterating on performance and trying ideas:
     scripts/bench.sh no-floor  -min_library_fragments 0
     scripts/bench.sh wide-im   -precursor_im_window 0.05
 
-Runs the RT-sliced S08 fixture (`s08_6x60`: 6 slices x 60 s over 487-1512 s,
+Runs the RT-sliced IH1 fixture (`ih1_6x60`: 6 slices x 60 s over 487-1512 s,
 6,120 MS2 spectra = 19.0% of the file, all 24 isolation windows, ion mobility
 intact), prints the arm against stored references, and appends to
 `shared/libv2/bench_results.tsv`. Construction and evidence in doc/47.
 
-    ODIA on S08        full (v5)   fixture    ratio
+    ODIA on IH1        full (v5)   fixture    ratio
     wall               3h00        24:08      7.5x
     peak memory        124 GB      40 GB      3.1x
 
@@ -44,7 +44,7 @@ so a number cannot be quoted without them:
 
 For any of those: `shared/libv2/run_full_v5.sh`, 3 h.
 
-DIA-NN reads the same fixture as `s08_6x60.mzML` (9:58); the Astral fixture
+DIA-NN reads the same fixture as `ih1_6x60.mzML` (9:58); the Astral fixture
 `astral_7x60` (54,533 MS2, 17.9%, 150 windows) runs DIA-NN in 7 s. Rebuild
 either with `shared/libv2/build_fixture.sh`.
 
@@ -57,7 +57,7 @@ runs.
 
 ## Interference correction: the target population is real, three designs are dead, one survives (2026-08-21)
 
-Written to be picked up cold. Everything below is measured on S08 with the 9.6M
+Written to be picked up cold. Everything below is measured on IH1 with the 9.6M
 `human_v2` library, DIA-NN run on the SAME library (39,149 precursors at
 q <= 0.01). Full working in doc/45 and doc/46.
 
@@ -282,7 +282,7 @@ every stratum.
 The 1/K0 calibration now measures at anchors instead of guessing at them, and
 the gate passes on its own margin. `collectAt()` visits only the cycle blocks
 that hold a scored peak group's apex; the null is the library's own decoys at
-the apexes THEIR groups claimed. On S08, with 1,534 confident targets and a
+the apexes THEIR groups claimed. On IH1, with 1,534 confident targets and a
 rank-matched null: peakedness **12.41 against 3.75, a 3.31x margin** where 1.25x
 is required and where the blind probe managed 1.09x. 23.7% of the mean squared
 1/K0 error removed out of fold. The fitted curve matches DIA-NN's observed 1/K0,
@@ -320,7 +320,7 @@ What is still open:
   for those 66.
 
 - ~~**The width lever is still untaken.**~~ **TAKEN AND CLOSED (2026-08-07):
-  widening is worse, keep +/-0.025.** Measured on S08/lib_targets with the
+  widening is worse, keep +/-0.025.** Measured on IH1/lib_targets with the
   mobility slope fitted, identifications at 1% FDR: **0.025 -> 1232, 0.035 ->
   1215, 0.050 -> 1167.** Monotonic, and 0.050 gives back nearly the whole gain
   from the slope (1165 with no mobility-linear term at all).
@@ -333,9 +333,9 @@ What is still open:
   model the trend, not to widen the gate until the trend fits through it.
   Recorded at `ChromatogramExtractor.h`'s `precursor_im_window`.
 
-- ~~**The production path has not been measured end to end on S08.**~~ **RUN
+- ~~**The production path has not been measured end to end on IH1.**~~ **RUN
   (2026-08-07).** `-ion_mobility_calibration anchors` over the two-pass
-  workflow, anchors from ODIA's own pass-1 scorer, S08/lib_targets: pass 1
+  workflow, anchors from ODIA's own pass-1 scorer, IH1/lib_targets: pass 1
   offers 729 anchors at q<=0.01 against a null of 729 decoys, the gate passes,
   and pass 2 reports **1232 at 1% FDR**. The stage works on its own anchors
   without an external scorer.
@@ -346,7 +346,7 @@ What is still open:
   arms of the slope comparison shared that, so the differential is clean, but
   the absolute number is not a tuned-iRT number.
 
-- **Charge 3 is never corrected on S08/lib_targets: 93 anchors against a
+- **Charge 3 is never corrected on IH1/lib_targets: 93 anchors against a
   minimum of 120.** The mobility slope is fitted per charge on purpose --
   another charge's offset is not this charge's answer -- but that means the
   whole correction, slope included, silently does nothing for charge 3. Charge
@@ -571,7 +571,7 @@ Explore <https://proteobench.cubimed.rub.de/>, download the DIA benchmark, and
 design a workflow that compares ODIA to the other DIA tools on it.
 
 Why this is worth doing properly rather than quickly: every comparison made so
-far has been against DIA-NN on S08, with DIA-NN's own library as the reference
+far has been against DIA-NN on IH1, with DIA-NN's own library as the reference
 and DIA-NN as the search engine. That measures agreement with one tool on one
 file, and it cannot distinguish "ODIA is good" from "ODIA resembles DIA-NN".
 ProteoBench supplies a defined ground truth and a published leaderboard, which
@@ -729,7 +729,7 @@ ones re-tested after repair are now caught.*
 
 ---
 
-## Phase 1 measured against DIA-NN on S08 (2026-08-03)
+## Phase 1 measured against DIA-NN on IH1 (2026-08-03)
 
 Both libraries predicted from the same FASTA with the same digest settings;
 DIA-NN searched the same diaPASEF run with each, everything identical but the
@@ -804,7 +804,7 @@ in the underlying mass error.
   **Done, 2026-08-05** (`include/odia/MassCalibration.h`). The run's own
   fragment mass error is now measured before extraction and the window is
   centred on it, gated so that a run with no measurable error is a no-op. The
-  finding that mattered was not the width but the CENTRE: on S08 the axis is
+  finding that mattered was not the width but the CENTRE: on IH1 the axis is
   about -10 ppm out, and a window narrowed about zero throws away more than it
   saves. `-fragment_ppm` therefore no longer has a fixed default at all -- it is
   10 ppm when the calibration centres the window and 15 when it cannot.
@@ -854,7 +854,7 @@ Consequences to keep in view:
 
 ## RT fine-tuning: the controlled result (2026-08-03)
 
-Five searches of S08, everything identical but the library's RT column.
+Five searches of IH1, everything identical but the library's RT column.
 
 | library | RT source | RTPredAcc | DIA-NN's window | precursors | proteins |
 |---|---|---:|---:|---:|---:|
@@ -910,7 +910,7 @@ Two things the integration fixed over the prototype:
 Still open, and both are in `doc/06-rt-refinement-plan.md`:
 
 - **Method choices settled by measurement**, not preference:
-  - *Direct target beats residual learning ON S08, which is one file.* Both
+  - *Direct target beats residual learning ON IH1, which is one file.* Both
     mechanisms are implemented and selectable (`--method direct|residual`)
     precisely because a single benchmark should not decide it. Measured here:
     direct 0.429 against residual 0.635 at n=500 / 500 epochs, and 0.415 against
@@ -1370,7 +1370,7 @@ so ~22 points sit in discrimination we are not computing.
 
 ### Part 1: the score inventory
 
-Test every candidate below on **both** benchmark files (S08 diaPASEF, Astral),
+Test every candidate below on **both** benchmark files (IH1 diaPASEF, Astral),
 against each file's DIA-NN confident set, measuring **best-ranked-right** -- not
 on-RT, which counts TSV rows and is inflated by ~1.5 candidates per precursor
 sharing a broadcast q-value.
@@ -1472,9 +1472,9 @@ refine rounds -> output writing.
 **Scaling curves, not single points:**
 - threads: 1, 4, 16, 32, 64, 96, 224 (both nodes have 224 cores);
 - library size: the existing lib_tiny / n5k / n100k / lib50k / 4.26M ladder;
-- file: S08 (32,210 spectra, 12.75 GiB, diaPASEF) vs Astral (303,701 spectra,
+- file: IH1 (32,210 spectra, 12.75 GiB, diaPASEF) vs Astral (303,701 spectra,
   3.10 GiB, no IM, no co-packed frames). Astral is 9.4x the spectra and took
-  27:55 against S08's ~10 -- 2.8x, which is either good news about per-spectrum
+  27:55 against IH1's ~10 -- 2.8x, which is either good news about per-spectrum
   cost or bad news about something else, and nobody has looked.
 
 **Specific open questions this would answer:**
@@ -1533,10 +1533,10 @@ file's DIA-NN confident set -- with SHAP used to generate the candidate ordering
 not to make the decision.
 
 **2. Importance is dataset-specific, and our two files differ structurally.**
-S08 is diaPASEF (ion mobility, co-packed two-windows-per-frame); Astral has
+IH1 is diaPASEF (ion mobility, co-packed two-windows-per-frame); Astral has
 neither. `IM_DELTA` is definitionally worthless on Astral. Anything derived from
-frame packing is S08-only. So the procedure is:
-  - fit and rank on S08 and on Astral **independently**;
+frame packing is IH1-only. So the procedure is:
+  - fit and rank on IH1 and on Astral **independently**;
   - report both rankings side by side, plus the rank correlation between them;
   - keep the union of what is decisive on either, not the intersection -- a
     feature that only works on one instrument class is still worth having, gated;
@@ -1609,8 +1609,8 @@ the run it is predicting for.
 
 ### The cross-run trap this closes
 
-`odia_v5.tsv` carries iRT from a model tuned on S08's DIA-NN results. Every
-recovery number measured on S08 with that library has partly seen the answers.
+`odia_v5.tsv` carries iRT from a model tuned on IH1's DIA-NN results. Every
+recovery number measured on IH1 with that library has partly seen the answers.
 It is not the reason the library underperforms -- it underperforms because the
 tuning was bad, not because it leaked -- but both are reasons the tuned model
 must not be a persisted artefact.
@@ -1656,7 +1656,7 @@ have been right the first time.
 
 ## The scorer has never been run against a realistic library (2026-08-07)
 
-**Measured, S08, `v6_50k.tsv` (a stride sample of our own v6, no run-tuned iRT,
+**Measured, IH1, `v6_50k.tsv` (a stride sample of our own v6, no run-tuned iRT,
 neither tool privileged):**
 
     DIA-NN   738 of 50,000 at 1% FDR   1:43
@@ -1764,7 +1764,7 @@ ever run the first.
 
 ## MS1 is present and unused -- the largest untapped feature family (2026-08-07)
 
-`ODIAInfo` on S08: **1,343 MS1 spectra against 16,105 MS2** (17,448 total).
+`ODIAInfo` on IH1: **1,343 MS1 spectra against 16,105 MS2** (17,448 total).
 Over the gradient that is a ~1.8 s duty cycle, so a 30 s peak is sampled ~15
 times -- ample for a chromatographic trace, not merely a survey.
 
@@ -1825,7 +1825,7 @@ round 2 prints nothing, because pass 2 hands `report()` a fresh empty
 at `:772`. The run's own log says it: "the library is being spread evenly over
 the run, which will extract from approximately the wrong retention times." The
 mass probe therefore looks in the wrong place and mostly matches noise -- which
-is precisely what the S08 gate then reports as "residuals are FLAT ... that is
+is precisely what the IH1 gate then reports as "residuals are FLAT ... that is
 what a mostly-noise sample looks like".
 
 `MassCalibration.h:95-97` documents the assumption: "`rt_trafo`. The reference
@@ -1849,7 +1849,7 @@ number whose error bar is larger than itself. That is a coin flip, not a test.
 5,769 control cells yielded 98 residuals because a 7 Th-shifted query rarely
 matches anything -- the null is undersampled 41x by construction.
 
-S08 is NOT this failure: 7,452 target and 2,645 control, both well sampled, and
+IH1 is NOT this failure: 7,452 target and 2,645 control, both well sampled, and
 2.22 against 3.00 is a real flatness. On a 1.5% true-positive library that is
 the correct verdict -- but it is confounded with (2), so we do not yet know how
 much of the flatness is the library and how much is the wrong-RT probe.
@@ -1865,7 +1865,7 @@ much of the flatness is the library and how much is the wrong-RT probe.
 ## Both benchmarks, current HEAD (2026-08-07)
 
     file    library           TP rate  type      at 1% FDR  wall    peak RSS
-    S08     v6_50k (ours)      1.5%    SEARCH        0      42:31   9,331 MB
+    IH1     v6_50k (ours)      1.5%    SEARCH        0      42:31   9,331 MB
     Astral  astral_lib_own    ~100%    RANKING   4,275      35:17   3,148 MB
 
 **These are not comparable and must never be quoted side by side.**
@@ -1881,7 +1881,7 @@ measures RANKING. `v6_50k` is 738 of 50,000, i.e. 1.5%, and measures SEARCH.
     ODIA's 4,275 are in DIA-NN's set** -- zero false agreement. The scorer is
     not the problem here; the extractor is.
 
-**S08: the bottleneck is discrimination.**
+**IH1: the bottleneck is discrimination.**
   * Extraction reached 576 of 738 (78.0%) -- fine.
   * Their best q: median 0.783, **0 at <=0.01 but 74 at <=0.05**. Not a total
     collapse; the discriminant does rank some correctly and cannot certify them,
@@ -1912,7 +1912,7 @@ centres the window AND narrows `fragment_ppm` off the uncalibrated 15. On Astral
 the narrowing is the more expensive error EVEN WHEN CORRECTLY CENTRED -- the
 opposite of what `ChromatogramExtractor.h` assumes when it says "an uncentred
 narrow window is the worse of the two errors". That assumption was measured on
-S08 and does not transfer.
+IH1 and does not transfer.
 
 **The thin-control guard was wrong, and instructively so.** `peakednessRatio` on
 98 residuals genuinely is 12.00 +/- ~9, so the statistic is uninformative --
@@ -2019,7 +2019,7 @@ measurement that separates the stages was printed by the same run:
     -> 9,890 precursors yielded no candidate peak group
 
 The chromatograms were extracted; the PICKER returned nothing for them. Same
-shape as S08's 19,150. Other candidates not yet excluded: precursors dropped by
+shape as IH1's 19,150. Other candidates not yet excluded: precursors dropped by
 `min_fragments_at_apex` AFTER a candidate was emitted (a scorer filter, not a
 picker one), pass-2 extraction on an RT map fitted from only 1,248 anchors, and
 `Precursor.Id` string mismatch -- `writeScores_` concatenates modified sequence
@@ -2034,7 +2034,7 @@ figure untouched.
 D1 called determinism "a precondition, not a deliverable" and it had never been
 demonstrated. It is now, and the answer is good.
 
-Three runs, S08 + `lib_targets`, `-ion_mobility_calibration anchors`, same node,
+Three runs, IH1 + `lib_targets`, `-ion_mobility_calibration anchors`, same node,
 differing only in thread count:
 
     det_a   64 threads   1046 at 1% FDR   md5 e0175e928f30a37f7bd9230011efc4a5
@@ -2094,7 +2094,7 @@ pass-2 extraction running on an RT map fitted from only 1,248 anchors. Both need
 a counter rather than a grep.
 
 **So "Astral's bottleneck is extraction" is corrected to "the picker's
-thresholds".** Same conclusion as S08's 19,150, and the same three criteria
+thresholds".** Same conclusion as IH1's 19,150, and the same three criteria
 dominate: `not a local maximum`, `min_corr_score`, `apex_evidence`.
 
 ## Mass calibration, settled with correct code, and CLOSED (2026-08-08)
@@ -2118,11 +2118,11 @@ Two things this does NOT say:
   are already applied by then. So "-380" is the JOINT cost of the constant
   offset and the m/z shape, not the offset alone. Separating them needs a third
   mode that zeroes both slopes.
-* It says nothing about S08 or about a search benchmark. Astral +
+* It says nothing about IH1 or about a search benchmark. Astral +
   `astral_lib_own` is ~100% true positives, so this is a ranking measurement.
 
 **What to do with it:** `ChromatogramExtractor.h` says "an uncentred narrow
-window is the worse of the two errors", measured on S08. On Astral the ordering
+window is the worse of the two errors", measured on IH1. On Astral the ordering
 is reversed and by a wide margin. The rule is instrument-specific and must stop
 being applied as if it were general. The honest fix is to size the width from
 the fit's own `sigma_after` with a floor, rather than from a constant -- but
@@ -2137,11 +2137,11 @@ map from, which is the precondition the whole subsystem was found to lack.
 ## MS1 measured before building it, and the night's synthesis (2026-08-08)
 
 `MzPeakSource` now keeps a SEPARATE MS1 index (`ms1Spectra()`, `ms1Peaks()`),
-which is item 1 of the MS1 plan and the precondition for everything else. S08:
+which is item 1 of the MS1 plan and the precondition for everything else. IH1:
 1,343 MS1 spectra reachable. 61/61 tests still pass.
 
 `test/tools/odia_ms1_probe.cpp` then measured the premise before the subsystem,
-S08 + `v6_50k` (SEARCH, 1.5% true positives, base 13.4/1000), mobility-gated at
+IH1 + `v6_50k` (SEARCH, 1.5% true positives, base 13.4/1000), mobility-gated at
 +/-0.05:
 
     MS1 isotope depth (M, M+1, M+2 together)
@@ -2207,7 +2207,7 @@ gradient would be dominated by jointly-empty bins, which agree perfectly and
 mean nothing, and would reproduce the very saturation this probe exists to
 escape.
 
-S08 + `v6_50k` (SEARCH, 670 of 50,000 true, base 13.4/1000):
+IH1 + `v6_50k` (SEARCH, 670 of 50,000 true, base 13.4/1000):
 
     corr >=     kept    true   true/1000   enrichment   recall
        0.8        76      14       184.2        13.7x     2.1%
@@ -2303,7 +2303,7 @@ benchmark rewards that spuriously), not `ms1_iso` (saturated at 99.8%).
 
 `test/tools/odia_mz_residuals.cpp` probes at +/-50 ppm and records the
 intensity-weighted signed m/z deviation per precursor, optionally restricted to
-a KNOWN apex. Run on S08 + `v6_50k`, anchored to DIA-NN's own retention times
+a KNOWN apex. Run on IH1 + `v6_50k`, anchored to DIA-NN's own retention times
 for its 670 reachable confident precursors (+/-30 s):
 
     group                  n     median ppm    sd      |ppm| > 15
@@ -2322,7 +2322,7 @@ the wrong place in m/z. **The loss is genuinely in the picker.**
 
 **2. Extraction IS mis-centred, by about -8 ppm, and it costs BOTH groups.** The
 window is +/-15 ppm centred on ZERO because the mass calibration gate fails on
-S08; the signal sits at -8.4. So the window effectively covers -6.6 to +23.4 ppm
+IH1; the signal sits at -8.4. So the window effectively covers -6.6 to +23.4 ppm
 around the truth, and **21.9% of true precursors fall outside it even at their
 own apex**. That is a real, uniform loss, and it is exactly what the failing
 gate was supposed to prevent. It does not explain the split, but it is a
@@ -2354,7 +2354,7 @@ positions outright and the presence gate another 28%.
 
 ### MS1_COELUTION, wired and measured end to end
 
-S08 + `lib_targets`, everything else identical, same binary:
+IH1 + `lib_targets`, everything else identical, same binary:
 
     -no_ms1        1046 at 1% FDR
     default        1306 at 1% FDR      +260, +24.9%
@@ -2394,13 +2394,13 @@ a property of the search. The fix each time is the same -- run the control that
 cannot contain the signal. **Any m/z offset quoted from now on must come with
 its RT-shifted control.**
 
-Consequence: the mass calibration gate refusing to fire on S08 is closer to
+Consequence: the mass calibration gate refusing to fire on IH1 is closer to
 correct than it looked. There IS an offset, it is ~-3.5 ppm against a +/-15 ppm
 window, and it is worth roughly nothing compared to what a wrong one costs.
 
 ## OpenSWATH's picker BEATS ours, and every pinned offset loses (2026-08-08)
 
-S08 + `lib_targets`, one binary, one config, only the picker changed:
+IH1 + `lib_targets`, one binary, one config, only the picker changed:
 
     -picker openswath (defaults)        1368     <- best
     -picker coelution (default, ours)   1306
@@ -2443,16 +2443,16 @@ existing MassCalibration fits.
 ### ...but on Astral the result INVERTS, and that is the real finding
 
     file / library            coelution (ours)   openswath (reference)
-    S08 + lib_targets              1306               1368    (+62,  +4.7%)
+    IH1 + lib_targets              1306               1368    (+62,  +4.7%)
     Astral + astral_lib_own        4290               2626   (-1664, -38.8%)
 
 **The picker comparison is instrument-conditional, and a single-file conclusion
-would have been exactly wrong.** Had only S08 been run, the honest reading would
+would have been exactly wrong.** Had only IH1 been run, the honest reading would
 have been "the reference picker is better, replace ours" -- and that would have
 cost 39% on the other instrument.
 
 The mechanism is consistent with what each picker is: OpenSWATH's sets
-boundaries by signal-to-noise on the summed trace, which suits S08's
+boundaries by signal-to-noise on the summed trace, which suits IH1's
 mobility-merged frames where the summed trace is comparatively clean; Astral's
 higher-resolution, sparser spectra give co-elution far more to work with, and an
 amplitude picker there fires on whatever is brightest in the window.
@@ -2466,19 +2466,19 @@ amplitude detection.
 
 This is the third instrument-conditionality trap in two days: the doc/08
 prefilter's 1,800x came from non-mobility data and did not transfer; the
-"uncentred narrow window is the worse error" rule was measured on S08 and did
+"uncentred narrow window is the worse error" rule was measured on IH1 and did
 not transfer to Astral. **Two files, always, before any picker or calibration
 conclusion is recorded.**
 
 ### MS1 co-elution is worth far less on Astral
 
-    S08 + lib_targets      1046 -> 1306   (+260, +24.9%)
+    IH1 + lib_targets      1046 -> 1306   (+260, +24.9%)
     Astral + own library   4275 -> 4290   (+15,   +0.4%)
 
 Not yet explained, and worth one measurement rather than a story. The obvious
 candidates: Astral's bottleneck is availability (only 52.4% of covered
 precursors yield any candidate at all), so a scoring feature cannot reach the
-missing 47.6%; and the two runs differ in MS1 duty cycle. The S08 gain is the
+missing 47.6%; and the two runs differ in MS1 duty cycle. The IH1 gain is the
 one that has been reproduced.
 
 ## The m/z residual is not measurable with a standalone probe (2026-08-08)
@@ -2487,7 +2487,7 @@ Attempting "iterate recalibration strategies until the residuals are centred and
 flat" stopped at step zero: **the residual cannot currently be measured well
 enough to tell whether any strategy centres it.**
 
-Per-fragment residuals, S08 + `v6_50k`, restricted to DIA-NN's TRUE precursors,
+Per-fragment residuals, IH1 + `v6_50k`, restricted to DIA-NN's TRUE precursors,
 at their own apex, requiring >=4 co-occurring fragments, +/-20 ppm probe --
 against the same thing 300 s away, where the peptide cannot be:
 
@@ -2552,7 +2552,7 @@ interchange. mokapot is a Python reimplementation of the same semi-supervised
 SVM; independent research confirms it is pure Python with a PIN-TSV file
 interface and no C/C++ binding, so shelling out would be the only option there.
 
-S08 + `lib_targets`, one binary, only `-classifier` changed:
+IH1 + `lib_targets`, one binary, only `-classifier` changed:
 
     gbt (default, our hand-rolled histogram GBT)   1306
     percolator (OpenMS, cross-validated SVM)       1278    -28, -2.1%
@@ -2618,7 +2618,7 @@ literature actually endorses for this regime, and it is now a few lines.
 
 `-collect_mass_residuals` keeps the m/z deviation the extractor computes to test
 each match and has always discarded, records it per peak group as `Mass.Ppm`,
-and is read only for groups the FDR has already accepted. S08 + `lib_targets`:
+and is read only for groups the FDR has already accepted. IH1 + `lib_targets`:
 
     group                       n        median ppm   IQR
     confident targets q<=0.01   4,743      -0.356     1.07
@@ -2627,13 +2627,13 @@ and is read only for groups the FDR has already accepted. S08 + `lib_targets`:
     flat in RT (octiles):   -0.19 -0.29 -0.32 -0.34 -0.43 -0.33 -0.54 -0.31
     flat in fragment count: -0.21 -0.43 -0.36 -0.45 -0.31 -0.47 -0.36 -0.27
 
-**S08's fragment mass calibration is essentially perfect. There is nothing to
+**IH1's fragment mass calibration is essentially perfect. There is nothing to
 recalibrate**, and the loop's target -- "centred on zero and flat in RT and
 m/z" -- is already met by the instrument. Total spread across RT octiles is
 0.35 ppm, against an extraction window of 15,000 ppm-thousandths.
 
 **This retroactively explains four earlier results.** The mass calibration gate
-refusing to fire on S08 was correct: there is no offset to fit. Pinning -8.4 ppm
+refusing to fire on IH1 was correct: there is no offset to fit. Pinning -8.4 ppm
 cost 87-90 identifications and pinning -3.5 cost 142 because the true offset is
 -0.36, so both were 10x and 24x over-corrections. And the unanchored probe's
 -8.44 ppm was never the instrument -- its RT-shifted control said so, and this
@@ -2663,7 +2663,7 @@ consistency check, not a contamination.
 ### Consequence for MassRecalibration
 
 `MassRecalibration` (RT-blocked, linear in log m/z, anchor-fitted, 10 unit
-tests) is correct and **not needed on S08**. Keep it: it is the right model for
+tests) is correct and **not needed on IH1**. Keep it: it is the right model for
 an instrument that DOES drift, it is unit-tested against a planted drift, and
 the cost of having it is zero while the cost of rediscovering the need would be
 another night. Wire it only if a run's `Mass.Ppm` shows structure this one does
@@ -2678,7 +2678,7 @@ open problems are the picker (47% of scan positions rejected at
 
 Sweeping the fragment window at each instrument's own measured offset:
 
-    window     S08 + lib_targets      Astral + own library
+    window     IH1 + lib_targets      Astral + own library
      4-5 ppm            0                     2,598
      6-8 ppm          853                     3,690
       10 ppm        1,054                       ---
@@ -2688,7 +2688,7 @@ Sweeping the fragment window at each instrument's own measured offset:
 not explain it. Per-fragment sigma is about 1.6 ppm (see the correction below),
 so 10 ppm is ~6 sigma and should cost nothing. It costs 252.
 
-The picker census says what actually happens, 15 ppm against 6 ppm on S08:
+The picker census says what actually happens, 15 ppm against 6 ppm on IH1:
 
     scan positions evaluated      7,361,409  ->  6,246,070   (-15%)
     precursors yielding NO candidate     155  ->        410   (2.6x)
@@ -2732,7 +2732,7 @@ to code that already exists: keep the distribution, not its median.
 
 "The picker rejects 47% of scan positions at min_corr_score" has been the top
 open item for days. Both of its dominant thresholds are now swept, and neither
-recovers anything. S08 + `lib_targets`, baseline 1306.
+recovers anything. IH1 + `lib_targets`, baseline 1306.
 
     -min_corr_score   0.0   0.3   0.4   0.5*  0.6    8.0
     identified       1306  1306  1306  1306  1306      0
@@ -2783,7 +2783,7 @@ The previous window conclusion was drawn entirely from ~100%-present libraries,
 where "fewer candidates" trivially means "lost true positives". The objection is
 correct and important: **empty traces are EXPECTED on a realistic library**, and
 narrowing is supposed to buy CLEAN traces rather than more of them. So the test
-was re-run where it belongs, on S08 + `v6_50k` (1.5% present, DIA-NN finds 738),
+was re-run where it belongs, on IH1 + `v6_50k` (1.5% present, DIA-NN finds 738),
 scored by precision rather than by count:
 
     window   candidates   DIA-NN reachable   top-738 true   precision
@@ -2843,7 +2843,7 @@ Four obstacles, all of which will recur and none of which is about ODIA:
    read-only array copies in `find_top_ranked`, `pandas<3`, and
    `rankdata(...).astype(int)`.
 
-## Why S08 finds nothing: a self-reinforcing initialisation failure
+## Why IH1 finds nothing: a self-reinforcing initialisation failure
 
 Not the scorer, not the picker, not the window, not the mass model -- all of
 which were tested at length and cleared. The ranking is FINE:
@@ -2991,7 +2991,7 @@ genuinely opposed here, and 50 ppm is where they balance on this instrument.
 ## Ledger after the width fix: the bottleneck MOVED to scoring (2026-08-09)
 
 Verified at the new default (50 ppm when the mass gate fails):
-Astral 4,290 -> **4,969**, S08 unchanged at 1,306. Exactly as predicted.
+Astral 4,290 -> **4,969**, IH1 unchanged at 1,306. Exactly as predicted.
 
     phase                    now      before      OSW
     library targets       10,891      10,891   10,891
@@ -3017,7 +3017,7 @@ nowhere -- the scoring engines were interchangeable and the picker thresholds
 inert *while availability was the binding constraint*. They are worth revisiting
 now that it is not.
 
-Next: MS1_COELUTION was worth +17.6% on S08 but only +0.4% on Astral -- measured
+Next: MS1_COELUTION was worth +17.6% on IH1 but only +0.4% on Astral -- measured
 when Astral availability was 52%. With 87% it has far more to work with, so that
 A/B is worth re-taking before anything else.
 
@@ -3028,9 +3028,9 @@ not marginal:
 
     file     gate     50 ppm            10-15 ppm
     Astral   FAILS    4,969  (best)     4,290
-    S08      PASSES   0 (collapses)     1,306  (best, calibrated ~10)
+    IH1      PASSES   0 (collapses)     1,306  (best, calibrated ~10)
 
-A single global default cannot serve both. Shipping 50 would destroy S08;
+A single global default cannot serve both. Shipping 50 would destroy IH1;
 shipping 15 costs Astral 679 identifications. **The width is a property of the
 run -- instrument, spectral density, whether frames are mobility-merged -- and
 has to be measured per file.**
@@ -3039,7 +3039,7 @@ has to be measured per file.**
 
 `MassCalibration` IS this mechanism: probe the run, measure the fragment mass
 error, narrow the window to fit. When it works it is better than any constant --
-S08 calibrated (~10 ppm) gives 1,306 against 922 for a hand-set 15 ppm.
+IH1 calibrated (~10 ppm) gives 1,306 against 922 for a hand-set 15 ppm.
 
 It fails on Astral, and the fallback was the whole problem: a failed gate meant
 "use 15 ppm", i.e. a moderately narrow window chosen for no reason. Fixed today
@@ -3082,10 +3082,10 @@ behaviour rather than a failure mode.
 ### Also per-file, and not yet detected
 
 * `precursor_im_window` -- meaningless on Astral (no mobility), load-bearing on
-  S08.
-* `min_fragments_at_apex` and `apex_evidence` -- swept as inert on S08 while
+  IH1.
+* `min_fragments_at_apex` and `apex_evidence` -- swept as inert on IH1 while
   availability was the constraint; unmeasured on Astral at 87% availability.
-* The mass gate's own thresholds. It passes on S08 and fails on Astral, and
+* The mass gate's own thresholds. It passes on IH1 and fails on Astral, and
   which of those is "correct" was never established -- Astral's residual may be
   genuinely unmeasurable, or the gate may be mis-tuned for high-resolution data.
 
@@ -3096,14 +3096,14 @@ already been recorded in this document.
 ## 2026-08-09: candidate generation is not the deficit, measured from every side
 
 The loop's question was why OpenSWATH finds more candidates. It does not, and
-no change to candidate generation recovers the gap. Astral unless noted; S08 is
+no change to candidate generation recovers the gap. Astral unless noted; IH1 is
 `lib_targets`, baseline 1,306.
 
     baseline                                   4,969   1,306
     min_fragments_at_apex 1                    5,025   pending
     apex_evidence 0.50                         4,971
     max_candidates 50                          4,964
-    max_candidates 12 / 6 / 3 / 1 (S08)                1,307 / 1,245 / 1,274 / 1,141
+    max_candidates 12 / 6 / 3 / 1 (IH1)                1,307 / 1,245 / 1,274 / 1,141
     OpenMS PeakPickerChromatogram              3,983   1,368
       ... at its DIA default sn 0.1            3,936
     amplitude picker                           3,848   1,281
@@ -3116,7 +3116,7 @@ Read together: DEPTH is inert between 12 and 50 -- NOT below. Depth 1 costs
 what is inert is piling on more of them. DENSITY is harmful. A different
 PICKER is neutral to harmful, and running OpenSWATH's at its own DIA S/N default
 changes nothing. Tightening the margin to DIA-NN's published values costs 121 on
-S08. The only gain all day came from REMOVING a gate that deleted rows over
+IH1. The only gain all day came from REMOVING a gate that deleted rows over
 `FRAGMENT_COVERAGE`, a feature the classifier already had.
 
 Two hypotheses died here and should not be retried without new evidence:
@@ -3152,16 +3152,16 @@ Two sub-scores, both already computed for the width measurement:
 calibration-free) and `var_mass_accuracy` (|deviation - the run's median|).
 
     Astral   5,025 -> 5,729   (+704, largest single gain measured on this file)
-    S08      1,342 -> 1,168   (-174)
+    IH1      1,342 -> 1,168   (-174)
 
-Leave-one-out on S08, one binary, via the new `-ablate`:
+Leave-one-out on IH1, one binary, via the new `-ablate`:
 
     both ablated      1,342     (reproduces the pre-feature number exactly)
     spread only       1,315
     accuracy only     1,285
     both active       1,168
 
-**A FEATURE IS WORTH WHAT THE EXTRACTION HAS NOT ALREADY SPENT.** S08's gate
+**A FEATURE IS WORTH WHAT THE EXTRACTION HAS NOT ALREADY SPENT.** IH1's gate
 passes, so its window is +/-10 ppm centred on -9.35 with a per-fragment sigma of
 1.10 -- the mass information has already been used as a filter and what remains
 is noise the classifier overfits. Astral's gate fails, so its window is 50 ppm
@@ -3181,7 +3181,7 @@ Codex asked for one table: rank the targets by dscore, join the truth labels,
 and print empirical FDR beside reported q. It separates three explanations that
 had been indistinguishable. Scripts in `scripts/analysis/`.
 
-### SEARCH (S08 + v6_50k, 738 true of 50,000) -- the 0 is HONEST
+### SEARCH (IH1 + v6_50k, 738 true of 50,000) -- the 0 is HONEST
 
     rank   cum_true   emp_FDR   reported_q
       50         40     0.200       0.180
@@ -3254,7 +3254,7 @@ PHYSICAL AXIS, not another statistic over the same twelve fragment traces. The
 project's measured design rule is that orthogonality is the lever and count is
 not -- 4 to 110 correlated features gave 0 identifications alike, while
 `MS1_COELUTION`, the one feature reading a different channel, was worth +17.6%
-on S08, and the fragment mass sub-scores were worth +704 on Astral for the same
+on IH1, and the fragment mass sub-scores were worth +704 on Astral for the same
 reason. Mobility is the third such channel and it is already measured.
 
 **The design, which is now known exactly because the mass work built it.**
@@ -3266,7 +3266,7 @@ Sum(intensity x 1/K0) and Sum(intensity), reduced at `emit()` to an
 intensity-weighted observed 1/K0 PER CANDIDATE. Then `IM_DELTA` is
 |observed - library| for every peak group, not just the identified ones.
 
-Note what it cannot do: Astral has no ion mobility, so this is S08/diaPASEF
+Note what it cannot do: Astral has no ion mobility, so this is IH1/diaPASEF
 value only, and the larger gap is on Astral. Worth doing, not worth doing first.
 
 Until it is filled, `var_im_delta` should be understood as absent rather than
@@ -3277,10 +3277,10 @@ uninformative -- the two look identical in the log and are not the same claim.
 Through the new `-stop_after calib`. Post-calibration residual over pass 1's
 anchors; DIA-NN's comparable figure is `RT - Predicted.RT` at q <= 0.01.
 
-    S08  anchor_q 0.05      n 1012  median -0.45  SD 71.23  robust 30.60  p95 103.53  max 1052.69
-    S08  LOESS span 0.15    n 1012  median -1.57  SD 71.47  robust 30.94  p95 104.39  max 1062.38
-    S08  LOESS span 0.30    n 1012  median -1.84  SD 74.34  robust 31.50  p95 119.71  max 1061.13
-    S08  anchor_q 0.01      n  417  median -3.78  SD 41.36  robust 28.59  p95  91.63  max  243.72
+    IH1  anchor_q 0.05      n 1012  median -0.45  SD 71.23  robust 30.60  p95 103.53  max 1052.69
+    IH1  LOESS span 0.15    n 1012  median -1.57  SD 71.47  robust 30.94  p95 104.39  max 1062.38
+    IH1  LOESS span 0.30    n 1012  median -1.84  SD 74.34  robust 31.50  p95 119.71  max 1061.13
+    IH1  anchor_q 0.01      n  417  median -3.78  SD 41.36  robust 28.59  p95  91.63  max  243.72
     Ast  anchor_q 0.05      n 2469  median  0.35  SD 95.62  robust 34.22  p95  85.64  max 1586.51
     Ast  LOESS span 0.30    n 2469  median  0.67  SD 95.67  robust 34.45  p95  85.03  max 1585.69
 
@@ -3293,7 +3293,7 @@ documentation defect and NOT a performance defect, and the header's claim that
 it is part of the fit was wrong in a way that cost nothing. `-rt_loess_span`
 stays, defaulting to 0, because the negative is worth being able to re-take.
 
-**Anchor quality is the live lever.** 0.05 -> 0.01 on S08 takes SD from 71.23 to
+**Anchor quality is the live lever.** 0.05 -> 0.01 on IH1 takes SD from 71.23 to
 41.36 and max|e| from 1052 s to 244 s while robust sigma moves only 30.60 ->
 28.59. That shape is diagnostic: the BULK of the map is fine and the tail is
 misidentified anchors, not a bad fit.
@@ -3363,7 +3363,7 @@ asymmetry (false targets p99 3.468 against decoys 2.063) stands and
 
 **vibe F1, the double co-elution gate — ALREADY FIXED.** Its own confirming
 experiment ("lower min_fragments_at_apex to 1") is what was done this morning:
-Astral 4,969 -> 5,025, S08 1,306 -> 1,342. It also quotes 5,187 precursors
+Astral 4,969 -> 5,025, IH1 1,306 -> 1,342. It also quotes 5,187 precursors
 without a candidate, which is the pre-50-ppm figure.
 
 **vibe F2, decoy capping by canonical order — MECHANISM WRONG.** It argues the
@@ -3429,7 +3429,7 @@ on Astral rather than 6,836:
     -repredict_irt                     FLAG      +454
 
 `-match_decoy_n` is now ON by default, disabled with `-no_match_decoy_n`. The
-evidence supports it: +653 on Astral, +122 on S08, and the entrapment fixture
+evidence supports it: +653 on Astral, +122 on IH1, and the entrapment fixture
 measures it CONSERVATIVE (FDP 0.0020 against a claimed 0.01), so leaving it
 opt-in meant every default run paid for an asymmetry we know how to remove.
 
@@ -3549,7 +3549,7 @@ noise in a minimum number of transitions) rather than the sign of a centred sum.
 
 ## The funnel changes the priority order (2026-08-21, doc/51)
 
-Measured, full S08, DIA-NN on the same library:
+Measured, full IH1, DIA-NN on the same library:
 
     A in library 39,149 -> B candidate 23,058 -> C true peak 20,315
       -> D ranked first 19,430 -> E accepted 12,292
@@ -3582,13 +3582,13 @@ Then codex's two oracles, which need no guessing:
 ## The Astral arm was never on the same footing (2026-08-21)
 
 The Astral reference searched `shared/lib/astral_lib_own.tsv`, 10,891
-precursors; the S08 reference searched 4,986,616. Every Astral fixture number
+precursors; the IH1 reference searched 4,986,616. Every Astral fixture number
 carries that. Re-run on the full library: DIA-NN finds **1,533**, MORE than the
 1,066 the small library gave, so the small library was also missing real
 peptides. `BENCH_FIXTURES=both` now runs both on the same library.
 
 Still open for Astral: no ODIA baseline row yet, and its supplied RT map has a
-p95 residual of 134.5 s against S08's 37.7 s -- doc/45 flagged Astral's RT as
+p95 residual of 134.5 s against IH1's 37.7 s -- doc/45 flagged Astral's RT as
 worse and unexplained, and that is still unexplained.
 
 ## var_rt_delta removed, and what retention time is actually for (2026-08-21)

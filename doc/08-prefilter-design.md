@@ -9,7 +9,7 @@ Our ten sub-scores extract at best a 67% target share in the top 100 against a
 separates 729.7 against 0.39 true identifications per thousand — a **1,800x
 range from one quantity**, before any peak-group scoring exists.
 
-We do not have that signal. Measured on our own S08 run against DIA-NN's 37,247
+We do not have that signal. Measured on our own IH1 run against DIA-NN's 37,247
 confident identifications, our `fragment_coverage` gives:
 
 | depth | true per 1000 |
@@ -103,7 +103,7 @@ the enrichment table above, recomputed on our data:
   assert it, do not hope for it.
 
 One number worth remembering while reading any of this: of 3,980 target
-precursors with a peak group in the current S08 slice, only **84 (2.11%)** are
+precursors with a peak group in the current IH1 slice, only **84 (2.11%)** are
 in DIA-NN's confident set. That is the ceiling. An improvement from 0 to 40 is
 half of everything available, not a small number.
 
@@ -114,7 +114,7 @@ half of everything available, not a small number.
 `test/tools/odia_prefilter_depth.cpp` computes exactly the `depth` above -- the
 maximum, over the spectra of a precursor's isolation window, of how many of its
 top-6 library fragments fall within 15 ppm in ONE spectrum. Run over all 32,210
-MS2 spectra of S08 against `v6_50k` (50,000 precursors, 738 of them in DIA-NN's
+MS2 spectra of IH1 against `v6_50k` (50,000 precursors, 738 of them in DIA-NN's
 confident set, a 14.8-per-1000 base rate):
 
     depth   targets    true   true/1000   enrichment
@@ -124,7 +124,7 @@ confident set, a 14.8-per-1000 base rate):
 no information at all -- 0.9x enrichment is slightly WORSE than picking at
 random.
 
-**Why: on diaPASEF a "spectrum" is not a moment.** S08's frames are
+**Why: on diaPASEF a "spectrum" is not a moment.** IH1's frames are
 mobility-merged -- `SpectrumSource.h` records frame 1 as 32,570 peaks with 739
 m/z descents, i.e. ~600-810 TIMS scans concatenated into one array. Finding six
 specific m/z values within 15 ppm somewhere in 32,570 peaks spanning the full
@@ -154,7 +154,7 @@ Two consequences for the rest of the design:
 * On a non-mobility instrument (Astral) the original formulation should work as
   designed. **The filter is therefore instrument-conditional**, and it must be
   re-measured on Astral before either result is generalised -- the same mistake
-  the mass calibration made when S08's "narrow window is worse" rule was carried
+  the mass calibration made when IH1's "narrow window is worse" rule was carried
   to Astral and turned out reversed.
 
 ### Also learned
@@ -169,7 +169,7 @@ generation instead.
 The mobility slice did not rescue it, and neither did abandoning the maximum.
 
 **Mobility-sliced depth** (peaks restricted to +/-0.025 of the precursor's
-library 1/K0, the same window the extractor uses), S08 + `v6_50k`:
+library 1/K0, the same window the extractor uses), IH1 + `v6_50k`:
 
     depth   targets   true/1000   enrichment
       6      49,835        13.4        1.0x
@@ -202,7 +202,7 @@ library.
 ### What would be needed to rescue it, and why none is cheap
 
 * **Tighter tolerance.** 15 ppm was chosen to match the uncalibrated extraction
-  window. The reference engine calibrates first. But on S08 the mass gate FAILS,
+  window. The reference engine calibrates first. But on IH1 the mass gate FAILS,
   so there is no calibrated window to use -- and the prefilter was supposed to
   run before calibration.
 * **Restrict to a retention-time neighbourhood.** This is what would actually

@@ -71,7 +71,7 @@ are the two OpenDIAlyzer attempts and are private.
 - **DIA-NN**: RT map refitted inside the iteration schedule; RT window from residuals; peak width → scan window; **mass calibration in bins with MS1 handled identically but `MassAccuracyMs1 × 5`**, MS1 delta kept only where `pMs1TimeCorr ≥ 0.90`; Q1 calibration; `--ref` reference-run mode. Its own README warns auto-tolerance is *"inherently noisy"*.
 - **OpenSWATH**: `SwathMapMassCorrection` fits on **fragment anchors only** but derives a **separate precursor window** (`estimateWindow`, p99 × 1.3 padding).
 - **V1**: `recalibrate_` fits library-RT → observed-RT from confident pass-1 anchors; `calibrateMassFromPass_` narrows ppm — **may only narrow**. **CiRT calibration was a routine 20.2 s phase.**
-- **V2**: CiRT-seeded RANSAC line (this project, 2026-08-15) — Astral `915.0 + 11.399·iRT`, S08 `741.5 + 7.617·iRT`; mass from `MassCalibration::collect`'s own probe with a peakedness gate; MS1 mass calibration **not implemented** (extraction ran before calibration until yesterday).
+- **V2**: CiRT-seeded RANSAC line (this project, 2026-08-15) — Astral `915.0 + 11.399·iRT`, IH1 `741.5 + 7.617·iRT`; mass from `MassCalibration::collect`'s own probe with a peakedness gate; MS1 mass calibration **not implemented** (extraction ran before calibration until yesterday).
 
 ### 2.7 Classifier and FDR
 

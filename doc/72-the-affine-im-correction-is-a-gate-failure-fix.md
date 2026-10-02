@@ -69,7 +69,7 @@ does not survive at production scale.
 
 ## Measured
 
-500,000 random targets on the full `S08_diaPASEF.mzpeak`, chosen because it is
+500,000 random targets on the full `IH1_diaPASEF.mzpeak`, chosen because it is
 the smallest scale at which ODIA's own ion-mobility gate clears its 1.25x
 peakedness margin -- it cannot at 10k. Same pinned binary
 (`8a48387cca4537eb`), same library draw, same RT map, `-rt_window_pass1 400

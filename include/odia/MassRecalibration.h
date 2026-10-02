@@ -32,7 +32,7 @@ namespace ODIA
   /// FITTED FROM ANCHORS, which is the whole point. `MassCalibration`'s probe
   /// chooses its own cells by brightest-co-occurrence over the WHOLE run, and on
   /// a mostly-absent library that maximum is a chance event whose residuals are
-  /// flat -- which is why its gate fails on S08 and reports "a mostly-noise
+  /// flat -- which is why its gate fails on IH1 and reports "a mostly-noise
   /// sample". It is describing a sample its own search ruined. Anchors are
   /// precursors this run has already SCORED confidently, taken at their own
   /// apex, so the residuals are those of real fragments at the right moment.

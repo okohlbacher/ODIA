@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The default ODIA benchmark: one command, ~25 minutes, on the RT-sliced S08
+# The default ODIA benchmark: one command, ~25 minutes, on the RT-sliced IH1
 # fixture. Use it to iterate on performance and to try ideas.
 #
 #   scripts/bench.sh <arm-name> [extra OpenDIAlyzer args...]
@@ -45,13 +45,13 @@ source $R/ODIA/scripts/env.sh
 #
 # Both instruments now search the SAME 4,986,616-precursor library. The Astral
 # arm used to search shared/lib/astral_lib_own.tsv -- 10,891 precursors,
-# pre-selected -- so it was never on the same footing as S08, and removing the
+# pre-selected -- so it was never on the same footing as IH1, and removing the
 # FDR problem flattered both tools. DIA-NN on the full library actually finds
 # MORE (1,533 against 1,066): the small library was missing real peptides.
 #
 # Each fixture supplies its own retention-time map because neither can fit one
 # (doc/47). The Astral map comes from shared/libv2/astral_map.py, fitted on
-# DIA-NN's full-library run; its p95 residual is 134.5 s against S08's 37.7 s,
+# DIA-NN's full-library run; its p95 residual is 134.5 s against IH1's 37.7 s,
 # so the wider Astral window is measured, not careless.
 fixtures=${BENCH_FIXTURES:-s08}
 [[ $fixtures == both ]] && fixtures="s08 astral"

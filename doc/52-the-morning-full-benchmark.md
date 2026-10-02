@@ -1,6 +1,6 @@
 # The morning full benchmark, 2026-08-22
 
-Two full-scale arms launched 08:15, S08 diaPASEF, our 9.6M library.
+Two full-scale arms launched 08:15, IH1 diaPASEF, our 9.6M library.
 
 ## v9: var_rt_delta removed. A wash, confirmed at full scale.
 
@@ -90,7 +90,7 @@ RESOLVED, from the per-precursor file rather than from the coincidence.
 
 Of the 559,745 TARGET precursors marked `few_points`, **100.0% lie outside every
 isolation window's m/z range** and 0.0% lie inside it. Median m/z 1468.3 against
-525.8 for scored precursors. The reason: **S08's 24 windows stop at 1400.62 Th**
+525.8 for scored precursors. The reason: **IH1's 24 windows stop at 1400.62 Th**
 while the library is generated out to `-precursor_mz_max 1800`.
 
 So `few_points` was the uncovered population wearing the wrong label, and

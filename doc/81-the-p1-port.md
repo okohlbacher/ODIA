@@ -54,7 +54,7 @@ result must quote both facts.
 
 ## Next
 
-Replication before any default flip: S08 with ODIA's own library, and Astral
+Replication before any default flip: IH1 with ODIA's own library, and Astral
 neat (reference 7,462), both at matched entrapment FDP. Then the remaining
 oracle headroom (the P0 rt_dn arm reached 93.9/87.4 cohort-projected against
 the deployable 87.4/73.9) -- that gap lives in candidate SELECTION, i.e.
@@ -94,7 +94,7 @@ magnitude smaller. The honest scope statement is therefore: **the port helps
 at library scale, where interference and candidate competition dominate, and
 costs nothing where they do not.**
 
-The S08 + human_v2 arm (a second full-scale library) is the outstanding
+The IH1 + human_v2 arm (a second full-scale library) is the outstanding
 replication; its first launch died on the CiRT seed refusing (the decoy
 control fit as well as the targets -- the guard working correctly) and it was
 relaunched with that library's own recorded map (1095.00 x libRT + 453.49,

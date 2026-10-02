@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // The retention-time axis of a precursor that falls in MORE THAN ONE isolation
-// window -- 1.1% of them on 12_80 and on S08, whose schemes overlap adjacent
+// window -- 1.1% of them on 12_80 and on IH1, whose schemes overlap adjacent
 // windows by 1.0 Th.
 //
 // The representation (2be7d84) stores one (axis_of, axis_begin) pair per

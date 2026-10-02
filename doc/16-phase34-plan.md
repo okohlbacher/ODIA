@@ -314,7 +314,7 @@ proposes exactly the cold-library regime. Weigh that against §2.3.
       (winner's curse, 5.2)   does the decoy tail contract?         contracts]
   1. MASS FIRST (5.3)         loose -> fit log(m/z) -> tighten
       -> centre only. Do NOT infer WIDTH from accepted IDs (4,969 -> 2,422)
-      -> no f2(RT) term on S08: t = 0.26
+      -> no f2(RT) term on IH1: t = 0.26
   2. B: predicted iRT         exogenous a,b; window SWEPT not      [gate: IDs > 0]
                               maximised (5.1)
   3. E: co-elution seed       rank iteration-0 by MS1/MS2 corr     [gate: ignition]
@@ -333,7 +333,7 @@ amendments: its inner loop is demoted (§2.1) and its held-out split is
 strengthened (§4).
 
 **What is deliberately NOT in this plan:** joint RT×mass iteration to
-convergence. The coupling is measured absent on S08 (−0.11 ppm over 1,600 s,
+convergence. The coupling is measured absent on IH1 (−0.11 ppm over 1,600 s,
 t = 0.26, confirmed over 124 M hits), a 101-agent survey found no engine that
 does it, and DIA-NN calls its own auto-tuning "inherently noisy" and recommends
 fixing the parameters. `doc/15` §6 already said this; the review confirms it.
@@ -352,4 +352,4 @@ fixing the parameters. `doc/15` §6 already said this; the review confirms it.
   the margin is thin. Decide now whether "1% FDR on the full library" is the test
   or whether a sample-matched library is the realistic bar — before measuring,
   not after.
-- **B is Astral-only.** The frozen RT table has no S08 arm.
+- **B is Astral-only.** The frozen RT table has no IH1 arm.

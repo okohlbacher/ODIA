@@ -243,7 +243,7 @@ int main()
     // peak -- a precursor with no predicted mobility scores zero on a run it
     // may well be present in, and does so silently.
     //
-    // This shipped. On S08 the seed sweep returned 0 target and 0 decoy anchors
+    // This shipped. On IH1 the seed sweep returned 0 target and 0 decoy anchors
     // at every contiguity threshold, against 13,360 / 8,264 on Astral, because
     // our generated library predicts CCS and leaves 1/K0 unset. Astral has no
     // ion mobility so the gate never ran, which made a missing NaN case look

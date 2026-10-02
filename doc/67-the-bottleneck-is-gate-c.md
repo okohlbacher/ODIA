@@ -111,8 +111,8 @@ under test, and concluded the arms were not attributable. That was the right
 thing to worry about and the wrong conclusion, and the repeat run settles it:
 
     arm                IDs   entrap    FDP   sigma   DIA-NN    wall    peak
-    profilefit_s08   3,540       58   9.62    1.26    3,147   22:41   40419
-    replicate_s08    3,540       58   9.62    1.26    3,147   22:47   40385
+    profilefit_ih1   3,540       58   9.62    1.26    3,147   22:41   40419
+    replicate_ih1    3,540       58   9.62    1.26    3,147   22:47   40385
 
 Identical configuration, identical binary, **identical on every result column**.
 Only wall time and peak RSS move, which are scheduling and allocator noise

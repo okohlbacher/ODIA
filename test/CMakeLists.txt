@@ -660,7 +660,7 @@ endif()
 #                             a narrow arm cannot tell them apart: forcing the
 #                             extractor to Sum passes the default arm and fails
 #                             this one on 270 points)
-#   .._brute_force_mobility   S08, whose frames co-pack two windows and whose
+#   .._brute_force_mobility   IH1, whose frames co-pack two windows and whose
 #                             library carries 1/K0, so both mobility tests are
 #                             exercised -- also at 100 ppm, so the mobility
 #                             tests rather than the mass box are what decides.
@@ -754,7 +754,7 @@ add_test(NAME prefilter_selection COMMAND odia_prefilter)
 add_test(NAME empty_trace_gate COMMAND odia_empty_trace)
 
 # The per-run retention-time refiner. Every case is a failure it has actually
-# had on real data: an unbounded correction that took S08 to zero, contaminated
+# had on real data: an unbounded correction that took IH1 to zero, contaminated
 # anchors a squared loss chased, and a model file whose weight count did not
 # match being read as valid.
 add_test(NAME rt_refiner COMMAND odia_rt_refiner)

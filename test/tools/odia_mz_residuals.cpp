@@ -3,7 +3,7 @@
 
 /// Is the loss in PICKING, or is extraction already mis-centred in m/z?
 ///
-/// The mass calibration gate FAILS on S08, so extraction runs on an
+/// The mass calibration gate FAILS on IH1, so extraction runs on an
 /// UNCALIBRATED window: +/-15 ppm centred on zero. If the run's true fragment
 /// error has an offset, that window is off-centre, the extracted traces lose
 /// intensity, and the failure would present as a picking failure while actually

@@ -35,8 +35,8 @@ an artefact of never having restricted anything.
 
 **A run-specific iRT line is required and is cheap.** CiRT-seeded RANSAC, ~35 min
 blind search of 149 precursors, recovers the line to 3.9% slope / 13 s intercept
-on Astral and 0.6% / 7.3 s on S08 (`doc/19`). The line is per-run: Astral
-915.0 + 11.399·iRT, S08 741.5 + 7.617·iRT.
+on Astral and 0.6% / 7.3 s on IH1 (`doc/19`). The line is per-run: Astral
+915.0 + 11.399·iRT, IH1 741.5 + 7.617·iRT.
 
 ## The q-value floor, which explains every previous zero
 

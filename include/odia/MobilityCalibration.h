@@ -16,7 +16,7 @@
 // that chain adapts it to the instrument that acquired the run, and the
 // extractor then cuts a +/-0.025 window around it.
 //
-// Measured on S08_diaPASEF, iteration 3: of the precursors DIA-NN identifies
+// Measured on IH1_diaPASEF, iteration 3: of the precursors DIA-NN identifies
 // and ODIA misses, 388 are missed because the signal lies OUTSIDE the
 // extraction cell, and that bucket is a 1/K0 PREDICTION problem rather than a
 // width problem. Two measurements say which:
@@ -123,7 +123,7 @@
 //
 //   * It does not resize the extraction window. `window_im` is fitted and
 //     reported so the run says what width its corrected residual would support,
-//     and it is NOT applied. The reason is measured, not stylistic: on S08 the
+//     and it is NOT applied. The reason is measured, not stylistic: on IH1 the
 //     width lever is worth +0.56 points and the centring lever +2.21, and the
 //     two are separate decisions. Applying an untested width change alongside a
 //     tested centring change would make the measurement unattributable.
@@ -134,7 +134,7 @@
 // WHAT IT COSTS, AND WHAT IT HAS SO FAR BOUGHT
 // ---------------------------------------------------------------------------
 //
-// The BLIND probe on S08_diaPASEF, whole library, 200 cycles as 40 blocks of 5:
+// The BLIND probe on IH1_diaPASEF, whole library, 200 cycles as 40 blocks of 5:
 // 4,800 of 32,210 spectra decoded, 128 s against a 12.7 min extraction.
 //
 // The ANCHORED probe on the same run, 3,068 anchors (1,534 confident targets
@@ -167,7 +167,7 @@
 // 82.3 s with 500 anchors read against 83.3 s with the stage switched off, i.e.
 // it costs nothing to establish that there is nothing here.
 //
-// On S08 the BLIND probe bought a refusal. The gate read a peakedness of 3.99
+// On IH1 the BLIND probe bought a refusal. The gate read a peakedness of 3.99
 // against a control at 3.65, a margin of 1.09x where 1.25x is required, and no
 // offset was applied. That is the correct answer for that probe on that run:
 // the lever is real (an oracle 1/K0 is worth +7.99 recovery points) but
@@ -185,7 +185,7 @@
 // precursor is harmless, because its residual is uniform in ppm and the mode
 // steps over it. On the mobility axis it is not: a wrong cell's 1/K0 sits
 // wherever the frame's peaks are DENSE, and peak density is a systematic.
-// Three measurements on S08 say the blind probe was finding density and not
+// Three measurements on IH1 say the blind probe was finding density and not
 // precursors -- 7,995 Arabidopsis entrapment precursors, which cannot be in a
 // human sample, gave the same residual distribution as the 2,665 real targets;
 // the library's own decoys gave peakedness 3.65 against the targets' 3.99; and
@@ -225,7 +225,7 @@
 // blocks they select cover most of it; the alternative considered and rejected
 // was to accumulate an intensity-weighted 1/K0 alongside every chromatogram
 // point, which needs no extra decode but roughly doubles the chromatogram
-// store (1.65 -> 3.3 GiB on the S08 combined library) and pays that cost for
+// store (1.65 -> 3.3 GiB on the IH1 combined library) and pays that cost for
 // every point when only the apex is ever read.
 //
 #pragma once
@@ -356,7 +356,7 @@ namespace ODIA
       /// MOBILITY residual is not uniform: it sits wherever the frame's peaks
       /// are dense, which is a systematic, and the mode walks straight into it.
       ///
-      /// Measured on S08 with scattered cycles and no reproducibility rule, and
+      /// Measured on IH1 with scattered cycles and no reproducibility rule, and
       /// measured against the entrapment library rather than against an
       /// m/z-shifted control -- Arabidopsis precursors that are absent from a
       /// human sample by construction:
@@ -419,7 +419,7 @@ namespace ODIA
       /// MassCalibration uses is kept only as a fallback for a library that has
       /// none, because on this axis it was MEASURED to be invalid.
       ///
-      /// The measurement: with an m/z-shifted control the S08 probe reported
+      /// The measurement: with an m/z-shifted control the IH1 probe reported
       /// 99.7% purity, and the entrapment library -- 7,995 Arabidopsis
       /// precursors that cannot be in a human sample -- reported the same
       /// residual distribution as the real human targets, including the same
@@ -470,9 +470,9 @@ namespace ODIA
 
       /// And reject it unless the data is this many times more peaked than the
       /// NULL. MassCalibration only asks that the control be less peaked at all;
-      /// that is too weak here, and S08 is why.
+      /// that is too weak here, and IH1 is why.
       ///
-      /// With the library's own decoys as the control, the S08 probe measures a
+      /// With the library's own decoys as the control, the IH1 probe measures a
       /// peakedness of 3.02 against a control at 3.00. Both clear the absolute
       /// threshold, and the bare "control must be lower" rule passes the run by
       /// 0.02 -- on a sample where an independent null (7,995 Arabidopsis
@@ -489,7 +489,7 @@ namespace ODIA
       /// `squared_error_removed` was computed out of fold over `folds` and then
       /// only PRINTED, several hundred lines after the gate had decided -- so
       /// the engine measured the one quantity that answers "is this correction
-      /// worth applying" and did not consult it. Measured on S08, 500k
+      /// worth applying" and did not consult it. Measured on IH1, 500k
       /// precursors, every one of these reporting GATE PASSED on the peakedness
       /// heuristic alone:
       ///
@@ -524,7 +524,7 @@ namespace ODIA
       /// Anchors below which a charge gets a CONSTANT plus the POOLED slope,
       /// rather than nothing at all.
       ///
-      /// Measured on S08/lib_targets: charge 3 brings 93 anchors against the
+      /// Measured on IH1/lib_targets: charge 3 brings 93 anchors against the
       /// 120 above, so it is left entirely uncorrected -- and charge 3's
       /// residual is the WORSE of the two (constant +0.0335, slope -0.113,
       /// against +0.0019 and -0.096 for charge 2). The charge that most needs
@@ -551,7 +551,7 @@ namespace ODIA
       /// that cannot reach 120 anchors cannot fill 8 of them.
       ///
       /// DEFAULTED OFF, because the reasoning above is sound and the
-      /// measurement still says no. S08/lib_targets, at 1% FDR:
+      /// measurement still says no. IH1/lib_targets, at 1% FDR:
       ///
       ///     off (0)    1232      MSE removed out of fold 14.1%, 1 of 2 charges
       ///     on  (40)   1212      MSE removed out of fold 18.8%, 2 of 2 charges
@@ -617,7 +617,7 @@ namespace ODIA
       /// Bound on the mobility-linear term, in 1/K0 per 1/K0.
       ///
       /// A relative scale error in the CCS->1/K0 conversion: a slope of s is an
-      /// s*100% error in the coefficient. Measured at ~0.10 on S08. This is
+      /// s*100% error in the coefficient. Measured at ~0.10 on IH1. This is
       /// deliberately NOT max_correction_im -- that bounds an offset, and reusing
       /// it here clamped the real trend on both charge states.
       double max_im_slope = 0.25;
@@ -654,7 +654,7 @@ namespace ODIA
       /// Linear term in 1/K0 itself: correction = constant + im_slope * (im - im_pivot).
       ///
       /// The constant and the m/z shape between them cannot express what the
-      /// residuals actually do. Measured on S08 against DIA-NN's confident set,
+      /// residuals actually do. Measured on IH1 against DIA-NN's confident set,
       /// library 1/K0 against observed, 670 precursors:
       ///
       ///   library 1/K0   n    median residual   beyond +/-0.025
@@ -746,7 +746,7 @@ namespace ODIA
       /// Why this exists. The curve is fitted per charge from anchors harvested
       /// through the same +-0.025 window it corrects, so it recovers under 40%
       /// of the scale error and nothing of the per-precursor spread. Measured on
-      /// S08 (analysis77/pick, 2026-09-04): 41% of DIA-NN's ids that ODIA never
+      /// IH1 (analysis77/pick, 2026-09-04): 41% of DIA-NN's ids that ODIA never
       /// picks sit >0.025 from the library 1/K0 after that curve; centring the
       /// pass-2 slice on the truth at unchanged width gives 71% of them a
       /// peptide-quality candidate (library correlation 0.66 vs controls' 0.77)

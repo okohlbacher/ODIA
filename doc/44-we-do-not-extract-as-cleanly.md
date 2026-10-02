@@ -46,7 +46,7 @@ and the observation that `Max` aggregation loses to `Sum` at every width.
 
 # Original document (headline retracted, kept for the record)
 
-2026-08-20. 1,000 target precursors, S08 diaPASEF. DIA-NN ran with OUR library
+2026-08-20. 1,000 target precursors, IH1 diaPASEF. DIA-NN ran with OUR library
 and `--xic 60`; ODIA re-extracted around DIA-NN's own apex (`apex_dump_36`), so
 the retention-time map is out of the comparison by construction.
 

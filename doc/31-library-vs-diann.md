@@ -51,7 +51,7 @@ The library predicts CCS and never converts it to 1/K0. `human_gpu.parquet` has
 CCS non-null for every row and IM null for every row, so this is in the library
 generator, not the TSV exporter.
 
-Consequence, measured on the diaPASEF run: in the S08 search with our library,
+Consequence, measured on the diaPASEF run: in the IH1 search with our library,
 DIA-NN's `iIM` — the library mobility — is zero for **100%** of identifications,
 against a median of 0.9964 with its own library. We hand a diaPASEF search engine
 no mobility dimension at all. It still reached 94.3% of the reference, so DIA-NN

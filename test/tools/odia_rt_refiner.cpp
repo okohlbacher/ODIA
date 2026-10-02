@@ -8,7 +8,7 @@
 ///
 ///  * an UNBOUNDED correction. The first version fitted absolute retention time
 ///    and extrapolated without limit outside its training range, which put pass
-///    2's windows off the gradient and took S08 from 1,464 identifications to
+///    2's windows off the gradient and took IH1 from 1,464 identifications to
 ///    ZERO. The clamp must hold even when the model is confident and wrong.
 ///  * CONTAMINATED anchors. Pass 1's anchors reach 1,600 s of residual --
 ///    misidentifications, not chromatography -- and a squared loss chases them.

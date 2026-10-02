@@ -37,16 +37,16 @@ That is a different statistic from the one above and a deliberately easier one
 bad map. It is also close to DIA-NN's own Astral SD of 29.29 s, so "at least as
 good as DIA-NN" survives the change. Current state against it:
 
-    S08 anchor_q 0.05   SD 71.23     S08 anchor_q 0.01   SD 41.36
+    IH1 anchor_q 0.05   SD 71.23     IH1 anchor_q 0.01   SD 41.36
     Astral anchor_q 0.05 SD 95.62    DIA-NN Astral       SD 29.29
 
 Both files fail it today, and by a wide margin on Astral.
 
-**S08 is secondary and the comparison is NOT exact.** The available DIA-NN
+**IH1 is secondary and the comparison is NOT exact.** The available DIA-NN
 reference is its v6_50k run: 738 identifications, SD 17.36 s, robust sigma
 13.62 s, p95|e| 34.58 s. But only 39 of `lib_targets`' 2,665 precursors appear
 in that confident set, so the two populations are different libraries over the
-same raw file and the numbers are indicative, not a like-for-like target. S08
+same raw file and the numbers are indicative, not a like-for-like target. IH1
 must IMPROVE and must be reported; it does not gate on a threshold.
 
 ## Two traps this document exists to prevent
@@ -62,7 +62,7 @@ probe beside it is what can see overfitting, and both must be quoted.
 
 ## When it is frozen
 
-When Astral meets the bar above and S08 has improved, on a build that passes
+When Astral meets the bar above and IH1 has improved, on a build that passes
 ctest, with the three reviewers finding no further defect in the wiring. After
 that the calibration is not to be touched without a measured reason.
 
@@ -106,7 +106,7 @@ Caveat to check before quoting the ceiling as final: `astral_lib_own.tsv` was
 derived from a DIA-NN run on this same file, so its iRT column may already carry
 run information, which would make 38.6 s optimistic rather than pessimistic.
 
-S08 cannot be measured this way yet: the v6 report yields 738 usable rows
+IH1 cannot be measured this way yet: the v6 report yields 738 usable rows
 against the script's 1,000-row floor.
 
 ## 2026-08-09 16:45: sequence information DOES beat the ceiling (measured locally)
@@ -128,7 +128,7 @@ the residual left after the best monotone map is not noise -- it carries
 sequence-dependent structure, which is precisely the claim doc/06 makes for
 retraining and the reason a calibration cannot get there.
 
-Scaling from doc/06's own comparison on S08 (AA-composition ridge 0.616 min
+Scaling from doc/06's own comparison on IH1 (AA-composition ridge 0.616 min
 against fine-tuned 0.449, a factor of 0.73), the same factor applied to the
 0.553 min ridge here would put a peptdeep fine-tune near 0.40 min = 24 s --
 under the 30 s bar. That is an extrapolation across datasets and must be
@@ -254,12 +254,12 @@ Astral, `-match_decoy_n`, same binary, the only difference being
     tuned   6,836 identifications   pass-2 window 134.1 s
 
 **+454 (+7.1%) and the window falls by 37%.** doc/06 recorded that a perfect RT
-column measured -108 precursors on S08 and concluded a better RT "buys a
+column measured -108 precursors on IH1 and concluded a better RT "buys a
 narrower window, not identifications". On Astral it bought both, and the two are
 the same mechanism: a narrower window admits less interference, and less
 interference is what lets a real peak win its own competition.
 
-That prior is not wrong, it is from another file and another regime -- S08 is
+That prior is not wrong, it is from another file and another regime -- IH1 is
 diaPASEF with a merged mobility stack where the window matters differently. It
 should be re-taken there rather than assumed to transfer, which is exactly the
 mistake it warns about.
@@ -434,7 +434,7 @@ only an external reference can see it. `test/rt_coverage.py` is that reference.
 ## Tests
 
 `test/tools/odia_rt_refiner.cpp`, one case per failure this code has actually
-had: the unbounded correction that took S08 from 1,464 identifications to zero,
+had: the unbounded correction that took IH1 from 1,464 identifications to zero,
 the 400 s contaminated anchors a squared loss chases, a model file whose weight
 count did not match being read as valid, provenance silently dropped on load,
 the clamp not travelling with the weights, and stale state surviving a refused

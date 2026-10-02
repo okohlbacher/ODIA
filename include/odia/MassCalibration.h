@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 //
 // (A) WHERE the window sits. The observed m/z axis can be systematically wrong.
-//     On S08_diaPASEF fragments sit about -10 ppm below theoretical: measured as
+//     On IH1_diaPASEF fragments sit about -10 ppm below theoretical: measured as
 //     the centroid of the retention-time-specific excess over a local decoy-cell
 //     null, -11.2 ppm on precursors ODIA recovers and -12.6 ppm on those it
 //     misses, present at off-peak times too -- so an instrument term, not a
@@ -24,7 +24,7 @@
 //     `inferMassAccuracyPpm_` sizes: window = max(k * robust sigma, floor).
 //
 // Conflating them is expensive in both directions. Narrowing a window that is
-// centred on the wrong place throws away signal -- on S08, +/-10 ppm about zero
+// centred on the wrong place throws away signal -- on IH1, +/-10 ppm about zero
 // keeps 0.51 of true fragments and the half it keeps is the tail, where +/-10
 // about -10 keeps 0.81. And widening on a bad fit is worse still: in the
 // reference, an ungated MS1 estimate of 72.6 ppm on an instrument measured at
@@ -48,7 +48,7 @@
 // puts that at ~3% real anchors. A mode fitted to 97% noise is meaningless.
 //
 // Purity therefore has to be bought some other way. Four things are tried here,
-// and the honest accounting of what each one is worth on S08 is:
+// and the honest accounting of what each one is worth on IH1 is:
 //
 //   * ION MOBILITY. A diaPASEF frame's band is ~0.40 wide and a precursor
 //     occupies ~0.05 of it, so testing each peak against the PRECURSOR's own
@@ -101,7 +101,7 @@
 //     does this -- here the bias is corrected by `Model` itself.
 //
 // ---------------------------------------------------------------------------
-// WHAT THIS PRODUCES ON S08, 2026-08-05
+// WHAT THIS PRODUCES ON IH1, 2026-08-05
 // ---------------------------------------------------------------------------
 //
 // 3,000 sampled precursors, 160 stratified-random cycles = 3,840 of 32,210
@@ -204,7 +204,7 @@ namespace ODIA
       /// band in proportion to the width searched -- for a narrow peak on a
       /// uniform background the statistic works out at 1 + 5N/M with M growing
       /// linearly in the width -- so a wide window dilutes the very contrast the
-      /// gate exists to measure. Measured on S08's own residuals, same sample:
+      /// gate exists to measure. Measured on IH1's own residuals, same sample:
       /// peakedness 3.18 evaluated over +/-50 against 5.09 over +/-30.
       ///
       /// 30 rather than tighter because the gate's edge band must still be
@@ -218,12 +218,12 @@ namespace ODIA
       /// This is the reference's own argument about which peak to pick, applied
       /// to which matches to KEEP: the interferent population is numerous but
       /// individually weak, so brightness is evidence. It is the difference
-      /// between a gate that fails and one that passes on S08 -- peakedness 1.96
+      /// between a gate that fails and one that passes on IH1 -- peakedness 1.96
       /// on all matches against 5.09 on the top quartile.
       ///
       /// The check that this SELECTS purity rather than MANUFACTURES an answer
       /// is that the answer does not move. Sweeping the quantile from 0 to 0.9
-      /// on S08 walks the fitted offset from -10.51 to -9.50 ppm -- a 1 ppm
+      /// on IH1 walks the fitted offset from -10.51 to -9.50 ppm -- a 1 ppm
       /// range against a 10 ppm effect -- while peakedness goes 1.96 -> 5.88. A
       /// cut that was inventing the peak would move the estimate with it.
       double min_intensity_quantile = 0.75;
@@ -249,7 +249,7 @@ namespace ODIA
       /// construction. Drawing at random inside each stratum keeps the guaranteed
       /// coverage and destroys the aliasing.
       ///
-      /// On S08: 160 of 1,342 cycles = 3,840 of 32,210 spectra, 11.9% of the
+      /// On IH1: 160 of 1,342 cycles = 3,840 of 32,210 spectra, 11.9% of the
       /// run, 84 s against a ~10 min full extraction pass.
       std::size_t cycles = 160;
 
@@ -289,16 +289,16 @@ namespace ODIA
       /// 21.11 -> 8.83 ppm (ratio 0.42) and would have had a 29.83 ppm constant
       /// applied. The bar was simply too loose, not the statistic wrong.
       ///
-      /// An ABSOLUTE bar at 1.0 ppm then rejected S08, whose model is known
+      /// An ABSOLUTE bar at 1.0 ppm then rejected IH1, whose model is known
       /// good. It was calibrated on residuals left over ID-ANCHOR populations
       /// (0.18-0.21 ppm) and over synthetic fixtures (0.03-0.26), but it is
       /// applied to the PROBE's residuals, which are noisier by construction --
-      /// S08's probe leaves 2.03 ppm there while the same model leaves 0.55 ppm
+      /// IH1's probe leaves 2.03 ppm there while the same model leaves 0.55 ppm
       /// on held-out identifications. A threshold in ppm cannot be transplanted
       /// between populations; a fraction can.
       ///
       ///     Astral probe    1.394 -> 0.198   ratio 0.142
-      ///     S08 probe      12.040 -> 2.027   ratio 0.168
+      ///     IH1 probe      12.040 -> 2.027   ratio 0.168
       ///     fixtures                         ratio 0.003 - 0.025
       ///     pure noise     21.105 -> 8.833   ratio 0.419
       ///
@@ -373,10 +373,10 @@ namespace ODIA
       /// model's own width and the sweep measures nothing):
       ///
       ///     k      1    2    3    4    5    6    7    8    9   10
-      ///     S08  226  665  721  832  817  809  787  842  743  775
+      ///     IH1  226  665  721  832  817  809  787  842  743  775
       ///     Ast    0  318  617  866 1069 1125 1172 1148 1194 1222
       ///
-      /// S08 plateaus from k=4; Astral never turns over. k=8 maximises the
+      /// IH1 plateaus from k=4; Astral never turns over. k=8 maximises the
       /// worst case across the two (93.9% of each file's own maximum).
       ///
       /// TWO THINGS MAKE THIS PROVISIONAL, BOTH MEASURED:
@@ -389,9 +389,9 @@ namespace ODIA
       ///
       /// (b) The sigma this multiplies is NOT the sigma the sweep was scaled on.
       ///     The sweep used the robust sigma of FDR-accepted fragments: 2.087
-      ///     ppm on S08, 2.012 on Astral -- near-identical. `sigma_after` here is
+      ///     ppm on IH1, 2.012 on Astral -- near-identical. `sigma_after` here is
       ///     the probe's, measured through a 50 ppm search on a brightness-cut,
-      ///     mobility-gated population: 4.19 ppm on S08 and 0.96 on Astral, a
+      ///     mobility-gated population: 4.19 ppm on IH1 and 0.96 on Astral, a
       ///     factor of FOUR apart on runs whose true precision agrees to 4%.
       ///     So one multiple times this sigma cannot mean the same thing on two
       ///     instruments, and k here is not the k of the sweep.
@@ -422,7 +422,7 @@ namespace ODIA
       /// on the cleanest subset is unbiased -- what it costs is residuals, and
       /// there are thousands.
       ///
-      /// Measured on S08, 3,000 precursors over the default 160 cycles:
+      /// Measured on IH1, 3,000 precursors over the default 160 cycles:
       ///
       ///     0.010   GATE PASSED, peakedness 5.03 against a control at 2.94,
       ///             -9.02 ppm at 668.9 Th + 2.68 ppm per e-fold
@@ -447,7 +447,7 @@ namespace ODIA
       /// WHY. `im_window` is a tolerance on `|peak_im - LIBRARY_im|`, so a
       /// library whose 1/K0 column is systematically off loses those precursors
       /// from the FRAGMENT MASS sample entirely -- a mass question decided by a
-      /// mobility value. Measured on S08 2026-08-28: an affine edit displacing
+      /// mobility value. Measured on IH1 2026-08-28: an affine edit displacing
       /// 1/K0 by +0.0224 put 79.06% of 500,000 targets outside the window, moved
       /// the mass gate statistic 0.186 -> 0.252 and failed it, dropping the run
       /// to +/-50 ppm UNCENTRED. Reproduced synthetically in
@@ -473,7 +473,7 @@ namespace ODIA
       /// mobility, co-occurrence and apex tests as a target cell and differs
       /// only in that it cannot contain the real ions.
       ///
-      /// The values are the ones the S08 measurement used, and they are chosen
+      /// The values are the ones the IH1 measurement used, and they are chosen
       /// to be neither a common neutral loss nor an isotope spacing.
       std::vector<double> decoy_shifts{7.33, -7.19};
 
@@ -483,17 +483,17 @@ namespace ODIA
       ///
       /// It is deliberately NOT judged on the total per-hit residual, and that
       /// correction is worth recording because the first version of this class
-      /// got it wrong. Total scatter on S08 is ~5.1 ppm and is dominated by
+      /// got it wrong. Total scatter on IH1 is ~5.1 ppm and is dominated by
       /// irreducible per-fragment noise that no calibration can touch. Judging a
       /// systematic correction against that denominator understates it
       /// structurally: the trend can be almost perfectly removed and still move
       /// the total by ~11%, because the total was mostly never going to move.
-      /// That criterion refused a correction on S08 that removes 64% of the
+      /// That criterion refused a correction on IH1 that removes 64% of the
       /// systematic term.
       ///
       /// So the comparison is between the per-m/z-bin MODES and the model: the
       /// weighted RMS of the bin modes about the fitted shape, against their
-      /// weighted RMS about the best constant. On S08 that is 1.71 ppm about a
+      /// weighted RMS about the best constant. On IH1 that is 1.71 ppm about a
       /// constant and 0.54 ppm about the log fit -- 68% of the systematic error
       /// removed, where the total-scatter view saw 4.66 -> 4.19 and called it a
       /// wash.
@@ -543,7 +543,7 @@ namespace ODIA
       /// meaning depends on a neighbouring enum is exactly the silent unit error
       /// this codebase separates `im` from `ccs` to avoid.
       ///
-      /// Which basis is used is decided by measurement, not assumed. On S08 the
+      /// Which basis is used is decided by measurement, not assumed. On IH1 the
       /// log fit leaves 0.54 ppm of bin-mode residual against the linear fit's
       /// 0.77, so log wins -- but it wins on the number, and a run that prefers
       /// the linear basis gets it (the synthetic suite checks both directions).
@@ -558,7 +558,7 @@ namespace ODIA
       double sigma_after = 0.0;         ///< ... after the chosen correction
       /// Total per-hit scatter under each candidate. REPORTED ONLY -- these no
       /// longer decide anything. They are kept because the difference between
-      /// them and `systematic_*` below is the whole point: on S08 they say 5.11
+      /// them and `systematic_*` below is the whole point: on IH1 they say 5.11
       /// against 4.56 and look like a wash, while the systematic numbers say
       /// 1.40 against 0.51 and say the opposite.
       double sigma_constant = 0.0;
@@ -664,7 +664,7 @@ namespace ODIA
     /// Fit a model to residuals from anywhere -- a run, or a synthetic sample.
     /// Weighted RMS of the per-m/z-bin modes left behind by @p correction, ppm.
     ///
-    /// This is the statistic the basis choice turns on -- on S08, 1.71 ppm
+    /// This is the statistic the basis choice turns on -- on IH1, 1.71 ppm
     /// about a constant against 0.54 about the log fit, while total per-hit
     /// scatter moved only 4.66 -> 4.19 and looked like a wash.
     ///
@@ -711,7 +711,7 @@ namespace ODIA
     /// on a FLAT background -- and drifts on the case ODIA actually has, a broad
     /// peak on a background that slopes. It keeps the shortest half-interval,
     /// and when the peak is wide relative to the window the shortest half can
-    /// sit off-centre on the steeper flank. Measured on S08: -7.64 ppm where the
+    /// sit off-centre on the steeper flank. Measured on IH1: -7.64 ppm where the
     /// peak is at -10.3, and that 2.6 ppm error was enough on its own to fail
     /// the gate, because the gate's centre band then straddles the background
     /// near zero instead of the peak.

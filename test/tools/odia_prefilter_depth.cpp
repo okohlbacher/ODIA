@@ -170,7 +170,7 @@ int main(int argc, char** argv)
           // The peak must also lie in this precursor's mobility slice.
           //
           // Without this the "one spectrum" the depth question asks about is a
-          // whole merged frame -- ~600-810 TIMS scans and 32,570 peaks on S08 --
+          // whole merged frame -- ~600-810 TIMS scans and 32,570 peaks on IH1 --
           // and six m/z values within tolerance are near-certain to appear
           // somewhere in it by chance. Measured: every one of 50,000 precursors
           // reached the maximum depth, 0.9x enrichment. The slice restores

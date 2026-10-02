@@ -26,7 +26,7 @@ ion-mobility term was "almost certainly the largest single miss", on the strengt
 of *52% of modelled mass-error variance on timsTOF* (Prianichnikov et al., MCP
 2020, 19(6) 1058-1069). **That claim is withdrawn** — §12.1. It is a share of
 MaxQuant's *modelled* part, measured on **DDA precursors**, and 1/K0 is not a
-fragment property at all. Propagated through ODIA's own S08 numbers it predicts
+fragment property at all. Propagated through ODIA's own IH1 numbers it predicts
 **~0.02 ppm** on total scatter. An IM term may still be worth having; it is now a
 measurement with a permutation null, not a headline.
 
@@ -62,7 +62,7 @@ Two real deficits, and one that turned out not to be a deficit at all.
 
 ## 1. The measurement that constrains this design
 
-`MassCalibration.h:104-136` records, for S08:
+`MassCalibration.h:104-136` records, for IH1:
 
 ```
   correction   LOG m/z: -9.35 ppm at 599 Th, +3.32 ppm per e-fold (t=7.4)
@@ -119,7 +119,7 @@ Term by term, against what ODIA has already measured:
 | term | status in ODIA | evidence |
 |---|---|---|
 | `f1(m/z)` | **fitted today**, log basis | real: t = 7.4, removes 68% of systematic error, log beats linear 0.54 vs 0.77 ppm residual |
-| `f2(RT)` | not fitted | **measured absent on S08**: t = 0.26 over 1,600 s, confirmed over 124 M hits |
+| `f2(RT)` | not fitted | **measured absent on IH1**: t = 0.26 over 1,600 s, confirmed over 124 M hits |
 | `f3(log I)` | **never fitted** | space-charge/saturation; MaxQuant fits it as a low-degree polynomial in log I |
 | `f4(1/K0)` | **never fitted** | **52% of modelled variance on timsTOF** |
 
@@ -137,7 +137,7 @@ convention. **But MaxQuant's `f1` is piecewise linear, which strictly subsumes
 both**, so the honest test is log vs piecewise-linear, and that test has not been
 run. Added to §8.
 
-**`f2(RT)` is fitted but expected to be dropped by its own t-test** on S08
+**`f2(RT)` is fitted but expected to be dropped by its own t-test** on IH1
 (|t| > 3 to survive). Astral is a different machine and is untested. Note this
 is exactly the mzRefinery design — it selects *one* of an RT-dependent or an
 m/z-dependent shift per run, never both — except that an additive model does not
@@ -211,7 +211,7 @@ Misspecifying `f_null` makes both `π` and the scale of `f_true` non-identifiabl
 
 **Use the m/z-shifted control of the target transitions** — which
 `MassCalibration` already builds (`MassCalibration.h:78-84`) and already
-validates against (the S08 gate is 4.34 target vs 2.98 control). It preserves the
+validates against (the IH1 gate is 4.34 target vs 2.98 control). It preserves the
 target m/z distribution and the local peak environment, which is the whole point
 of a null.
 
@@ -279,7 +279,7 @@ as an upper bound.
 - **Rails kept:** may only narrow; ≤ 2× narrowing per round; 5 ppm floor.
 - **Robust statistics throughout**: median for location, MAD for scale. SD
   appears nowhere as the primary residual statistic in any surveyed engine, and
-  ODIA's own S08 numbers show why — the shape correction removed 68% of
+  ODIA's own IH1 numbers show why — the shape correction removed 68% of
   systematic error while total scatter moved only 4.66 → 4.19 ppm.
 
 The existing "3 sigma would be 12.6 ppm, WIDER than the 10 ppm in force, so it is
@@ -337,7 +337,7 @@ v1 said "re-extract each round", capped at 8 rounds. All three reviewers called
 this the critical practical flaw, and they are right, though their cost figures
 were guesses (Codex cited `MassCalibration.h:86-87` for "~10 minutes per pass";
 those lines are a *what-is-not-ported* comment and carry no such number). The
-defensible figure from the repo: the probe touched **11.9% of S08's spectra in
+defensible figure from the repo: the probe touched **11.9% of IH1's spectra in
 84.6 s with only 3,000 sampled precursors**. A full pass over the whole library
 is materially more than 84.6/0.119 ≈ 12 min. Eight of those is around
 1.5 h per file, on top of a ~10.3 GiB decode floor paid each time.
@@ -426,7 +426,7 @@ with a 1% relative floor as the alternative trigger, mirroring
 **"Best round" is pre-registered, lexicographically**, so oscillation recovery is
 reproducible: (1) held-out m/z coverage within 1% of the best observed;
 (2) then held-out RT coverage likewise; (3) then smallest MS2 window;
-(4) then smallest MS1 window. σ is a *diagnostic*, not a tie-breaker — the S08
+(4) then smallest MS1 window. σ is a *diagnostic*, not a tie-breaker — the IH1
 measurement above is precisely a case where σ barely moved while the correction
 did real work.
 
@@ -491,7 +491,7 @@ Reordered in v3 so that the terms with the strongest evidence come first.
    global log model from identification-derived anchors instead of the probe.
    *Measure: does it beat the probe's model on held-out fragments?*
 2. **`f4(1/K0)` — the ion-mobility term.** Highest expected value of anything in
-   this document: 52% of modelled variance on timsTOF, and S08 is timsTOF.
+   this document: 52% of modelled variance on timsTOF, and IH1 is timsTOF.
    Fitted first and subtracted, per MaxQuant's backfitting order. *Measure: how
    much of the 4.19 ppm residual scatter does it remove?*
 3. **`f3(log I)` — the intensity term.** Low-degree polynomial in log intensity.
@@ -502,7 +502,7 @@ Reordered in v3 so that the terms with the strongest evidence come first.
    against the piecewise-linear form that every surveyed engine uses and that
    subsumes both. *Measure: held-out residual to per-bin modes.*
 5. **`f2(RT)` and its t-test** — fit the term, report |t|, drop it below 3. On
-   S08 this should drop (t = 0.26). *Measure: does it survive on Astral?*
+   IH1 this should drop (t = 0.26). *Measure: does it survive on Astral?*
 6. **Widen the bootstrap to 100 ppm** (§5) and re-measure everything above.
    *Measure: do the fitted coefficients move? If they do, the 50 ppm bootstrap
    was censoring and every earlier number in this project is suspect.*
@@ -526,11 +526,11 @@ Step 11 is where the risk is, has no prior art, and is last.
 
 | v1 proposal | why it is gone |
 |---|---|
-| RT-blocked mass model as the default | RT drift measured at t = 0.26 on S08 and confirmed absent over 124 M hits. Fitting noise. Now opt-in behind a t-test. |
+| RT-blocked mass model as the default | RT drift measured at t = 0.26 on IH1 and confirmed absent over 124 M hits. Fitting noise. Now opt-in behind a t-test. |
 | Akima across 8 block centres | Overfits 8 noisy points; and would treat *inherited* blocks as measured control points, manufacturing end curvature from fallback policy. |
 | Decoy fragments as `f_null` | Wrong m/z sampling and wrong contamination structure; makes `π` and `f_true` non-identifiable. Use the m/z-shifted control. |
 | 99% coverage as the window objective | Coverage is monotone in width and has no noise term; its optimum is "as wide as possible". Now a constraint, paired with control-density. |
-| Re-extract every round, cap 8 | ~12+ min per pass on S08 and a 10.3 GiB decode floor each time. Now one wide extraction + one confirmatory pass. |
+| Re-extract every round, cap 8 | ~12+ min per pass on IH1 and a 10.3 GiB decode floor each time. Now one wide extraction + one confirmatory pass. |
 | Lenient 5% FDR in round 1 | Adds interference, not missing truths; 5% contamination moves the fit by more than the convergence tolerance. Now 1%. |
 | σ on a frozen set with lost members counted as infinite | Coherent for coverage, incoherent for a robust scale. Dissolved by fitting from one fixed wide extraction. |
 | Convergence measured in-sample | A flexible model improves in-sample σ while worsening held-out. Now held-out by stripped sequence. |
@@ -664,7 +664,7 @@ not follow from the cited number and is **withdrawn**.
   the precursor's mobility (`ChromatogramExtractor.cpp:1111` tests a fragment
   peak against `x.precursor_im`). So `f4` is a *per-precursor* covariate wearing
   a per-fragment label.
-- Propagating it through ODIA's own S08 numbers gives an expected improvement in
+- Propagating it through ODIA's own IH1 numbers gives an expected improvement in
   total scatter of **~0.02 ppm** (random variance ≈ 4.19² − 0.54² ≈ 17.3 ppm²;
   systematic residual after a 52% cut ≈ 0.37 ppm; new total ≈ 4.17 ppm). That is
   five times *below* v3's own 0.1 ppm convergence tolerance.
@@ -788,7 +788,7 @@ It fails in **both** directions:
 evaluated on a fixed m/z grid**, with uncertainty from a **precursor-cluster
 bootstrap**, and stop when successive corrections agree within that bootstrap
 uncertainty. This also matches §1's warning that total scatter is the wrong
-statistic — the S08 correction removed 68% of systematic error while moving
+statistic — the IH1 correction removed 68% of systematic error while moving
 scatter 4.66 → 4.19.
 
 ### 12.8 Smaller corrections
@@ -881,7 +881,7 @@ unsolved by prior art.
 ### 13.5 One finding the source strengthens rather than refutes
 
 `MassCalBinsMax` defaults to **1** (`:162`) — **RT binning is off by default**. That is convergent
-with ODIA's own S08 measurement (`rt drift −0.11 ppm at t = 0.26, i.e. none`) and with §2's
+with ODIA's own IH1 measurement (`rt drift −0.11 ppm at t = 0.26, i.e. none`) and with §2's
 decision to make `f2(RT)` earn inclusion per instrument. Two independent programs concluding the
 same thing about the same axis is the strongest evidence in this document.
 
@@ -932,7 +932,7 @@ to three — 12.00 ± 7 to ±12 against a target statistic of 6.90 ± 0.74. The 
 failed the run on that. Meanwhile the same probe measured a match RATE of 1.344
 per target cell against 0.0170 per control cell: a **79× enrichment, 558 sigma**
 under the null. Astral's evidence that its matches are real is nine times
-stronger than S08's, and Astral is the run that failed.
+stronger than IH1's, and Astral is the run that failed.
 
 **Astral now calibrates**: offset −1.2705 ppm, confirmed independently by the
 ID-anchor median (−1.202) and by the historical `min_control_residuals = 400`
@@ -946,7 +946,7 @@ Calibrated Astral, narrowed to the model's own 2.89 ppm: pass 1 fell from
 The mechanism is that 2.89 ppm is `3 x 0.96`, and 0.96 ppm is the PROBE's sigma
 — measured through a 50 ppm search on a brightness-cut, mobility-gated
 population. The run's real per-fragment sigma, from FDR-accepted fragments, is
-**2.012 ppm**. On S08 the same two estimators give **4.19** and **2.087**.
+**2.012 ppm**. On IH1 the same two estimators give **4.19** and **2.087**.
 
 So the probe's sigma differs by a factor of FOUR between two runs whose true
 precision agrees to 4%. **One multiple times that sigma cannot mean the same
@@ -960,17 +960,17 @@ it every arm clamps to the model's width and the sweep measures nothing):
 
 ```
     k        1    2    3    4    5    6    7    8    9   10
-    S08    226  665  721  832  817  809  787  842  743  775
+    IH1    226  665  721  832  817  809  787  842  743  775
     Astral   0  318  617  866 1069 1125 1172 1148 1194 1222
 ```
 
-S08 plateaus from k=4 (743-842, ±6% noise). **Astral never turns over.** k=8
+IH1 plateaus from k=4 (743-842, ±6% noise). **Astral never turns over.** k=8
 maximises the worst case across the two at 93.9%, and is now the default
 (`-mass_sigma_multiple`).
 
 Purity moves the other way throughout, measured three ways:
-- per-fragment sigma inflates 0.96 → 1.95 ppm (S08) as the window widens 10x;
-- decoy groups outnumber target groups from k=3 on S08;
+- per-fragment sigma inflates 0.96 → 1.95 ppm (IH1) as the window widens 10x;
+- decoy groups outnumber target groups from k=3 on IH1;
 - fragment-level purity 99.3% at ±2 ppm falls to 89.1% at ±50 (Astral).
 
 But narrowing buys little of it: ±10 → ±2 on Astral gains 1.9 points of purity

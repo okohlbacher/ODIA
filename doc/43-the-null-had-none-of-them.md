@@ -1,6 +1,6 @@
 # The prominence gate failed, and it exposed a defect Gate C was hiding
 
-2026-08-19. Full S08, our 9.6M library, both arms identical but for the gate.
+2026-08-19. Full IH1, our 9.6M library, both arms identical but for the gate.
 
 ## What the run said
 

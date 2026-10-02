@@ -20,7 +20,7 @@
 /// common time grid, correlate them, and ask whether that separates DIA-NN's
 /// confident set from the rest. If it does not, MS1 is not the lever either.
 ///
-/// The grid is the MS1 acquisition times (S08: 1,343 points, ~1.8 s apart). MS2
+/// The grid is the MS1 acquisition times (IH1: 1,343 points, ~1.8 s apart). MS2
 /// spectra are accumulated into their nearest MS1 bin, which is the honest
 /// alignment: an MS2 frame acquired between two survey scans belongs to the
 /// nearer one, and a peptide's peak is ~20-30 s wide, i.e. ~15 bins.

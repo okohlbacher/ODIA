@@ -36,7 +36,7 @@ entries. Restored below.**
 |---|---|
 | "no monotone function of iRT can fix the 32 s" | **RESTORED, reworded.** `doc/14:85-90` measures 38.55 s as the *ceiling* for any monotone post-hoc map, from an independent implementation. Fine-tuning is not a counterexample: it changes peptide *ordering*, so it is not a monotone remapping of the original iRT. Correct form: **"a monotone remapping of the fixed stock predictor cannot remove its rank errors."** |
 | "availability is window-limited" | **RESTORED.** If centre error puts truth outside support, availability *is* operationally window-limited; calibration and widening are alternative remedies. The split per axis remains unverified. |
-| "the 3-candidate cap is not binding" | **MOVED — but to ESTABLISHED, not unverified.** A K sweep already exists: `BACKLOG.md:2834`, S08 K = 12/6/3/1 → **1,307 / 1,245 / 1,274 / 1,141**. K=3 ≈ K=12. My planned K replay was redundant. The 54% statistic still cannot carry the conclusion; the sweep can. |
+| "the 3-candidate cap is not binding" | **MOVED — but to ESTABLISHED, not unverified.** A K sweep already exists: `BACKLOG.md:2834`, IH1 K = 12/6/3/1 → **1,307 / 1,245 / 1,274 / 1,141**. K=3 ≈ K=12. My planned K replay was redundant. The 54% statistic still cannot carry the conclusion; the sweep can. |
 | "envelope-only MS1 features are identical for target and decoy" | **RESTORED.** The refutation inverted codex's position — it said envelope-*alone* features are nondiscriminative; co-elution features are not envelope-only. Premise is code-verified (`DIANNLibraryFile.cpp:757-763`). |
 | three untraceable numbers | stay dead, **wrong reason**: unsupported, not disproven. Reclassify as *withdrawn/untraceable* and flag `doc/24` §2.1/§2.4. |
 
@@ -65,7 +65,7 @@ has never been run.
 - Reachability on the **curve** and **fine-tuned** axes. The curve I have is the raw-axis curve and **cannot size a window**.
 - Whether the 12.7% "reachable but not picked" is cap-censoring or picker failure.
 - **Why the CiRT seed degrades the axis** (A6). A seed that makes things worse poisons everything hung off it.
-- Everything on **S08**. All of the above is Astral.
+- Everything on **IH1**. All of the above is Astral.
 
 ---
 

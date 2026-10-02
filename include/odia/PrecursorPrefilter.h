@@ -8,7 +8,7 @@
 ///
 /// `doc/08` designed this filter and `doc/13` listed it under "what is dead".
 /// That verdict was correct and is not being overturned by argument -- it was
-/// measured on S08 and the gradient was flat: 99.7% of precursors reached the
+/// measured on IH1 and the gradient was flat: 99.7% of precursors reached the
 /// maximum depth, and the two non-maximum statistics ranked WORSE than random
 /// (0.5x top-decile enrichment).
 ///

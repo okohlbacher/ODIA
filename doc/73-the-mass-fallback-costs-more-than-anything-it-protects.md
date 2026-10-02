@@ -38,7 +38,7 @@
 > measurement existed. It did, in three places, and it says the opposite.
 >
 > **The measurement in this document stands; the inference from it does not.**
-> +59.1% on S08 is real and reproducible. It is a fact about one instrument,
+> +59.1% on IH1 is real and reproducible. It is a fact about one instrument,
 > and the project already knew the other instrument goes the other way.
 >
 > **Why both are true, and what the actual fix is.** The wide-uncentred fallback
@@ -79,7 +79,7 @@ taken and logged by default, and the default configuration throws it away.
 
 ## Measured
 
-500,000 random targets on the full `S08_diaPASEF.mzpeak`, pinned binary
+500,000 random targets on the full `IH1_diaPASEF.mzpeak`, pinned binary
 `8a48387cca4537eb`, affine-corrected library, `-rt_window_pass1 400
 -rt_window 300`. The two arms differ in one flag.
 

@@ -7,8 +7,8 @@
 Astral was 8.5x behind DIA-NN with no explanation. The funnel localised it: on
 Astral the admission gate rejects **80.2%** of DIA-NN's confident precursors
 while rejecting 92.1% of everything that reaches it -- almost no discrimination
--- against 21.6% vs 95.2% on S08. Gate C's statistic is co-elution evidence,
-and Astral's supplied window was 269 s against S08's 75 s, so every trace
+-- against 21.6% vs 95.2% on IH1. Gate C's statistic is co-elution evidence,
+and Astral's supplied window was 269 s against IH1's 75 s, so every trace
 carried 3.6x more retention time to dilute it.
 
 Three arms, one binary, one feature set, so the window is isolated:
@@ -34,7 +34,7 @@ entrapment population is large enough to measure.
 
 The obvious next question is why the window was 269 s: it is 2 x p95 of the
 residual of the map fitted from DIA-NN's own confident set (134.5 s), against
-S08's 37.7 s. So Astral's iRT prediction is genuinely 3.6x worse, and 90 s is
+IH1's 37.7 s. So Astral's iRT prediction is genuinely 3.6x worse, and 90 s is
 BELOW the p95 -- meaning it now discards true peaks whose prediction is off,
 and still wins. That says the interference cost of a wide window exceeds the
 recall cost of a narrow one by a wide margin, which is a design rule, not a

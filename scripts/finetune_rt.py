@@ -4,7 +4,7 @@
 Why this exists: the stock model's output saturates. Its top two deciles are
 compressed 5x and 12x, 12.8% of a human library lands in one output bin, and no
 calibration can undo that -- a monotone map can straighten a bent axis, not a
-collapsed one. Measured on S08, held-out residual falls 0.701 -> 0.449 min from
+collapsed one. Measured on IH1, held-out residual falls 0.701 -> 0.449 min from
 500 training peptides in 31 seconds, and afterwards a flexible calibration buys
 nothing over a straight line, which is the evidence that the defect was in the
 model rather than the mapping. See doc/06-rt-refinement-plan.md.
@@ -23,7 +23,7 @@ normalised retention time. `--method residual` fits a calibration first --
 linear, then isotonic on top of it -- and retrains only on what the calibration
 could not explain, adding the two back at prediction time.
 
-On S08 direct won by a wide margin: held-out sd 0.429 against 0.635 at 500
+On IH1 direct won by a wide margin: held-out sd 0.429 against 0.635 at 500
 peptides and 500 epochs, with residual barely beating the calibration it sits
 on. **That is one file, and one file is not a result.** The likely reason is
 that retargeting pretrained weights at a small centred residual fights the
@@ -218,7 +218,7 @@ def main():
     ap.add_argument("--q-value", type=float, default=0.01)
     ap.add_argument("--method", choices=("direct", "residual"), default="direct",
                     help="direct retrains on normalised RT; residual calibrates "
-                         "first and retrains on the remainder. direct won on S08 "
+                         "first and retrains on the remainder. direct won on IH1 "
                          "by 0.429 against 0.635, on one file. Use --evaluate.")
     ap.add_argument("--evaluate", action="store_true",
                     help="hold out a fifth of the peptides, and report held-out "

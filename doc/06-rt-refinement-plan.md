@@ -23,7 +23,7 @@ the library's output histogram, and synthetic ladders through the model
 (`G14` 0.016 -> `G9L5` 0.876 -> `L14` 0.936, so five leucines spend 0.89 of the
 range and the next nine spend 0.06).
 
-Held-out residuals against observed RT on S08, minutes, protein-level split:
+Held-out residuals against observed RT on IH1, minutes, protein-level split:
 
 | n_train | isotonic baseline | AA-composition ridge | **fine-tuned** | wall clock |
 |---:|---:|---:|---:|---:|
@@ -300,14 +300,14 @@ worth doing anyway, but it must not be defended as a sensitivity improvement.
   by a single measurement -- methionine excision, the RT gap, the multi-chunk
   Arrow claim, and this plan's own "there is no circularity".
 
-- **S08 is close to the least RT-sensitive configuration available**, and the
+- **IH1 is close to the least RT-sensitive configuration available**, and the
   plan's central "RT does not matter" rests on it. Ion mobility is present and
   is doing discrimination RT would otherwise do; the gradient is short; the
   windows are narrow; the sample is high-load human tryptic. **The counter-test
   is already on disk**: `data/astral.mzpeak` is an Orbitrap Astral run with no
   ion mobility and +/-2 Th windows -- 3D, not 4D -- which is precisely the
-  regime where RT should matter more. `/scratch/kohlbach/rawd/` also holds S23
-  and S30 from the same batch and method, which test run-to-run transfer of a
+  regime where RT should matter more. `/scratch/kohlbach/rawd/` also holds IH3
+  and IH2 from the same batch and method, which test run-to-run transfer of a
   fine-tuned model. These caveats are not limitations, they are unexecuted
   experiments.
 

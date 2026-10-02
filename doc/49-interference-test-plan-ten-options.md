@@ -69,7 +69,7 @@ close it.
 
 **O1. Dictionary census and identifiability audit. LIBRARY HALF DONE.**
 
-Measured on human_v2 (9,617,705 precursors, 93,010,926 fragments), S08's 24
+Measured on human_v2 (9,617,705 precursors, 93,010,926 fragments), IH1's 24
 windows over 300-1800 Th, RT gating via the fitted map at t = 1000 s:
 
     window      m/z        columns    +-60s RT    +-10s RT

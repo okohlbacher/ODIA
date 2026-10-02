@@ -8,7 +8,7 @@ measurements are in `doc/BACKLOG.md` under the 2026-08-07/08 headings.
 
 **Presence statistics saturate on this data; shape statistics discriminate.**
 
-Seven quantities were measured on the SEARCH benchmark (S08 + `v6_50k`, 670 true
+Seven quantities were measured on the SEARCH benchmark (IH1 + `v6_50k`, 670 true
 of 50,000, base 13.4 per 1000):
 
     fragment depth, whole frame                1.0x   saturated (49,999/50,000)
@@ -39,7 +39,7 @@ over presence, and distrust any feature that is a max or a count over the run.**
 * **doc/08's prefilter.** Its 1,800x separation was measured on the reference
   engine's non-mobility data and does not transfer. Every rescue is blocked or
   circular: a tighter tolerance needs the mass calibration that FAILS its gate
-  on S08; an RT neighbourhood is circular because supplying the RT seed was the
+  on IH1; an RT neighbourhood is circular because supplying the RT seed was the
   filter's second purpose; a per-TIMS-scan unit is a reader change blocked on
   the same decode work as `ODIAInfo -peaks`.
 * **Feature COUNT as a lever.** The 15-to-30 "cliff" was an artefact of drawing
@@ -83,12 +83,12 @@ predicts exactly that. This is a hazard in every measurement in this document.
 `test/tools/odia_entrapment.cpp` now plants the production 1.5% prior
 (2026-08-08) and reproduces the collapse in seconds. It is the only check that
 does not share the comparator's biases. Use it as the development loop, and get
-a real entrapment search onto S08 before any recovery number is published.
+a real entrapment search onto IH1 before any recovery number is published.
 
 ### C. The picker, which is where the losses actually are
 
 Astral: 9,890 precursors yielded no candidate peak group over 12.9M
-scan-position rejections; the chromatograms were extracted. S08: 19,150. Three
+scan-position rejections; the chromatograms were extracted. IH1: 19,150. Three
 criteria dominate on both — `not a local maximum`, `min_corr_score`,
 `apex_evidence`. `max_corr_diff` is inert (26k of 189M) and is not worth tuning.
 

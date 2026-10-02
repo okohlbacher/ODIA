@@ -41,12 +41,12 @@ Two further confounds, stated up front:
 * For the first Phase-2 run only (the 500-precursor row), **two other
   `OpenDIAlyzer` processes belonging to the same account** were running from
   another session, reading the same file. Later runs were clean of those.
-* The run file `S08_diaPASEF.mzpeak` was staged from Ceph to node-local NVMe
+* The run file `IH1_diaPASEF.mzpeak` was staged from Ceph to node-local NVMe
   (`/scratch`) before the main series, per `scripts/stage_data.sh`. This turned
   out **not to matter**: decode took 602.2 s from Ceph and 593.8–599.8 s from
   NVMe. Decode is CPU-bound, not I/O-bound. That is itself a finding.
 
-Inputs: `human-bench.fasta` (20,416 proteins); `S08_diaPASEF.mzpeak`
+Inputs: `human-bench.fasta` (20,416 proteins); `IH1_diaPASEF.mzpeak`
 (12.75 GiB, 17,448 physical spectra, 32,210 MS2 window-entries, 24 isolation
 windows); libraries as noted per run.
 
@@ -166,7 +166,7 @@ Digest, enumeration, iRT fit and decoy generation together are 31.6 s (3.8%) —
 
 ## 2. Phase 2 — extraction
 
-`OpenDIAlyzer -tr <lib> -in S08_diaPASEF.mzpeak -stop_after extract -out_chrom
+`OpenDIAlyzer -tr <lib> -in IH1_diaPASEF.mzpeak -stop_after extract -out_chrom
 <tsv> -threads 8`, run file on local NVMe, `-mass_calibration off` except where
 noted. No iRT calibration was supplied, so RT windows span essentially the whole
 gradient (1,342 of 1,342 cycles) — this is the worst case for point count and it
@@ -232,7 +232,7 @@ Four independent probes locate the constant part:
    | run file | file size | spectra | peak RSS |
    |---|---:|---:|---:|
    | `12_80.mzpeak` | 0.12 GiB | 11,926 | 0.28 GiB |
-   | `S08_diaPASEF.mzpeak` | 12.75 GiB | 17,448 | ~14.5 GiB |
+   | `IH1_diaPASEF.mzpeak` | 12.75 GiB | 17,448 | ~14.5 GiB |
 
 2. **A standalone probe reproduces it with no ODIA code at all.** `mzsplit`
    calls `MzPeak::Spectra::get_spectra_batch` in ODIA's exact 1024-spectrum
@@ -307,7 +307,7 @@ floor — still large, but not the ~780x the 0.758 s figure would imply.
 ### The half of decode that *is* ODIA's fault
 
 The file contains **17,448 physical spectra**; ODIA reports **32,210 MS2
-spectrum entries**. The arithmetic: S08 packs two isolation windows per frame,
+spectrum entries**. The arithmetic: IH1 packs two isolation windows per frame,
 so 16,105 MS2 frames × 2 windows = 32,210 entries, plus 1,343 MS1 frames =
 17,448. `MzPeakSource::peaks` builds its request list as `info_[i].index` for
 each entry, so **every MS2 frame is requested twice**.

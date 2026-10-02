@@ -376,7 +376,7 @@ namespace ODIA::Calibration
 
     // RANSAC, not Theil-Sen, and the difference is not academic here.
     // Theil-Sen's breakdown point is 29.3%; doc/20 records 24 inliers on Astral
-    // and 47 on S08 from a ~149-precursor blind search, i.e. 68-84% of the
+    // and 47 on IH1 from a ~149-precursor blind search, i.e. 68-84% of the
     // anchors are wrong. That is past breakdown, and a Theil-Sen fit on the
     // synthetic 50% case lands 3.7% off in slope with a 221 s p95 -- it
     // degrades quietly rather than failing, which is the worst behaviour for a

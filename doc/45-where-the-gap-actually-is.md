@@ -1,6 +1,6 @@
 # Where the gap to DIA-NN actually is, after the extraction question closed
 
-2026-08-20, S08 diaPASEF, our 9.6M library, DIA-NN run on the SAME library.
+2026-08-20, IH1 diaPASEF, our 9.6M library, DIA-NN run on the SAME library.
 
 ## Three questions, and only one of them is still open
 

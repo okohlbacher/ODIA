@@ -1,6 +1,6 @@
 # Where the RT calibration went, and putting it back
 
-Status: FIXED and measured on S08, 2026-08-18. Companion to doc/34, which
+Status: FIXED and measured on IH1, 2026-08-18. Companion to doc/34, which
 measured what the loss cost.
 
 ## 1. The seed did not "fail". It was never the method doc/19 measured.
@@ -26,7 +26,7 @@ So two independent regressions from the measured design, in one code path.
 
 ## 2. Why the contiguity statistic cannot work: it saturates
 
-From the S08 log:
+From the IH1 log:
 
 ```
 rt seed contiguity histogram (target / decoy), 0..9,10+:
@@ -75,7 +75,7 @@ costs one pass over the raw data and essentially nothing else.
 doc/19 §3 writes "RANSAC / Theil-Sen" as if interchangeable. They are not here.
 
 doc/20 records how many anchors survive a blind search: **24 inliers on Astral,
-47 on S08**, from ~149 precursors. That is 68-84% wrong -- far past Theil-Sen's
+47 on IH1**, from ~149 precursors. That is 68-84% wrong -- far past Theil-Sen's
 29.3% breakdown point. On a synthetic 50%-contaminated set Theil-Sen returned a
 slope 3.7% off with a 221 s p95: it degrades QUIETLY, which is the worst
 possible behaviour for a number the seed then gates on. Exhaustive-pairs RANSAC
@@ -94,7 +94,7 @@ Two properties of the implementation are load-bearing:
   **The residual alone is not a guard, and the first version of the test assumed
   it was.**
 
-## 5. Measured on S08
+## 5. Measured on IH1
 
 ```
 CiRT seed: blind search over 708 standards (358 target / 350 decoy control)
@@ -113,7 +113,7 @@ pass 1 window 70.8 s (3 x the seed's p95)
 | pass 1 window | whole gradient | **70.8 s** |
 
 **25x better, and 49 inliers reproduces doc/20's independently measured 47 for
-S08.** The decoy control now separates completely: 291 anchors, no trend.
+IH1.** The decoy control now separates completely: 291 anchors, no trend.
 
 ## 6. The control gate had the bug the old design's comment warned about
 
@@ -145,12 +145,12 @@ failing in 6 hours.**
 ## 8. Linear now, monotone later -- unchanged from doc/20
 
 The seed applies a LINE and nothing else. doc/20 measured that a monotone PCHIP
-fitted from this many anchors GENERALISES WORSE (Astral 65.5% -> 58.9%, S08
+fitted from this many anchors GENERALISES WORSE (Astral 65.5% -> 58.9%, IH1
 81.2% -> 76.7% at +/-60 s): ~30-50 anchors cannot constrain a curve, so the fit
 chases anchor noise.
 
-The nonlinearity is real -- 135 s of curvature on Astral, 175 s on S08, mostly
-gradient end-effects -- and worth +5.1 pp (Astral) to +12.6 pp (S08), but only
+The nonlinearity is real -- 135 s of curvature on Astral, 175 s on IH1, mostly
+gradient end-effects -- and worth +5.1 pp (Astral) to +12.6 pp (IH1), but only
 from thousands of identifications. That is `refineToConvergence_`'s job, and it
 is already wired: it runs `Calibration::fit` (binned medians -> PAVA isotonic ->
 akima), which is exactly the monotone map doc/20 asks for. It converged in 2
@@ -176,4 +176,4 @@ of 3 anchors, and of a degenerate abscissa. 74/74 tests pass.
   it is the method's normal regime rather than a fault, but a seed resting on 49
   anchors deserves the second instrument before anything is concluded from it.
 - **Astral is unmeasured.** doc/13's rule is two files before a conclusion is
-  recorded. Everything here is S08 only.
+  recorded. Everything here is IH1 only.

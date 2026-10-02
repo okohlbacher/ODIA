@@ -69,7 +69,7 @@ the problem. Run it next.
 
 ## Caveats
 
-- Astral only. S08 unmeasured.
+- Astral only. IH1 unmeasured.
 - The oracle library is DIA-NN's confident set, so it inherits DIA-NN's biases;
   it measures "can the engine find what DIA-NN found", not absolute capability.
   That is the right question for this diagnostic and the wrong one for a
@@ -106,7 +106,7 @@ consistent with a prior effect. That is the problem.
 
 **2. My "1.5% present" was wrong by 7×.** Measured: the parity library has
 **4,991,901 targets, 0.201% of them DIA-NN-confident.** The 1.5% figure came from
-the vault's S08 `v6_50k` measurement — a different library — and I carried it
+the vault's IH1 `v6_50k` measurement — a different library — and I carried it
 across without checking. The lowest rung (5%) is therefore **25× above** the
 production regime; the ladder never reaches the condition it claims to explain.
 (Codex flagged an inconsistency here from a different direction, reading library

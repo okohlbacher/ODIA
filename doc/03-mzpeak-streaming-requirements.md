@@ -173,7 +173,7 @@ being spilled to auxiliary_arrays (metadata facet); signal arrays must live in
 spectra_data/spectra_peaks
 ```
 
-This also explains a size anomaly worth flagging on its own: `S08_diaPASEF` is
+This also explains a size anomaly worth flagging on its own: `IH1_diaPASEF` is
 **13 GB of mzPeak against 1.3 GB of mzML**. At 20 bytes per point with no
 chunk-level encoding, the point layout is what costs that.
 
@@ -233,7 +233,7 @@ negative-scaling form the path of least resistance.
 **R7 — bounded memory.** Block-wise access must let a caller hold one RT block
 at a time and release it, so peak memory is a function of block size rather than
 run size. This matters at `astral` scale (3.3 GB of peaks) and much more at
-`S08_diaPASEF` (9.4 GB).
+`IH1_diaPASEF` (9.4 GB).
 
 ---
 
@@ -247,7 +247,7 @@ run size. This matters at `astral` scale (3.3 GB of peaks) and much more at
 | R6a | Non-throwing capability query | no, but cheap and avoids a nasty cost |
 | R6b | Borrowed-pointer accessors | no, but shapes the API before callers depend on it |
 | R3/R4 | Chunked layout + ranged m/z query | no — unlocks two-tier extraction, not basic function |
-| R7 | Bounded memory over blocks | no at `12_80`; yes at `astral`/`S08` |
+| R7 | Bounded memory over blocks | no at `12_80`; yes at `astral`/`IH1` |
 
 R1, R2 and R5 are the set that turns the reader from a metadata reader into
 something an extractor can be built on.

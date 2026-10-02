@@ -78,7 +78,7 @@ Both reviewers: nothing else matters while measurements do not reach pass 2.
 ```
 
 **Why m/z first, and it is synergistic not merely independent:** mass `f2(RT)` is
-measured absent on S08 (drift −0.11 ppm at t = 0.26 over 124 M hits); DIA-NN 1.7.x
+measured absent on IH1 (drift −0.11 ppm at t = 0.26 over 124 M hits); DIA-NN 1.7.x
 defaults to a **single RT bin** (`MassCalBinsMax = 1`), agreeing that mass needs no
 RT term; and **tighter ppm raises anchor uniqueness** (365 unique pairs at 5 ppm vs
 196 at 20), so mass calibration *expands and purifies the RT anchor set*.

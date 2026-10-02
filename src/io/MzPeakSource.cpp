@@ -88,7 +88,7 @@ namespace ODIA
 
         // diaPASEF window attribution.
         //
-        // S08 packs TWO isolation windows into one frame, separated only in ion
+        // IH1 packs TWO isolation windows into one frame, separated only in ion
         // mobility, and the reader hands both the same merged peak list. The
         // per-window mobility band would separate them -- but measured over all
         // 32,210 entries of that file, `ion_mobility_lower_limit` and
@@ -166,7 +166,7 @@ namespace ODIA
         // The instrument STATED the bands, and the conversion kept them --
         // in the embedded method, not in the spectra. Prefer them over any
         // derivation: the midpoint rule below is exact only for equally wide
-        // co-packed windows, and on S08 ten groups of twelve are not, which
+        // co-packed windows, and on IH1 ten groups of twelve are not, which
         // puts the derived boundary as much as 0.0845 out in 1/K0 against a
         // 0.059 mobility window (doc/69). Matching is by window centre, which
         // is the same number in both places.
@@ -375,12 +375,12 @@ namespace ODIA
       // diaPASEF frame co-packs several windows into one physical spectrum and
       // each of them is a separate thing to extract. Those entries share a
       // `index`. mzPeak does no deduplication and no inter-request caching, so
-      // asking for the same index twice costs twice: measured on S08,
+      // asking for the same index twice costs twice: measured on IH1,
       // 8.500 ms/request for 4,096 distinct indices against 8.248 ms/request
       // for 2,048 indices asked for twice each -- flat per request, regardless
       // of whether the frame was just decoded.
       //
-      // S08 has 17,448 physical spectra and 32,210 entries, so the un-deduped
+      // IH1 has 17,448 physical spectra and 32,210 entries, so the un-deduped
       // request list asked for every MS2 frame twice and spent ~297 s of its
       // ~594 s decode re-decoding what it already had.
       std::vector<std::size_t> want;

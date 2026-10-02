@@ -14,7 +14,7 @@ of agreement localises a defect that no pairwise comparison can:
     ODIA agrees with OSW, both differ from DIA-NN       ->  DIA-NN-specific
     all three differ                                     ->  escalate to synthetic
 
-SCORING IS NOT REQUIRED. The S08 .osw has no SCORE_MS2 table and was set aside
+SCORING IS NOT REQUIRED. The IH1 .osw has no SCORE_MS2 table and was set aside
 as "unscored, therefore deferred". That was wrong: FEATURE and
 FEATURE_TRANSITION are fully populated -- 11,453,918 features over 2,291,374
 precursors, up to 5 candidates each -- and every question here is

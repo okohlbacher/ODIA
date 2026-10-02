@@ -15,7 +15,7 @@ predicted retention time, the strongest noise excursion, ODIA's best candidate
 against off-centre or diffuse. kimi's addition is the part that makes this
 lethal: **every audit in doc/55 would have passed**, because the audit data
 shares the construction. Great AUC, starkest at Q1, decoys ranked low, transfers
-to S30 -- and useless in production, where every candidate is centred on its own
+to IH2 -- and useless in production, where every candidate is centred on its own
 picked apex and the asymmetry does not exist.
 
 **Fix, already applied to the corpus:** the dump centres the window on the
@@ -143,9 +143,9 @@ and report within fixed abundance bins so a gain cannot come from abundance.
 * Split by PROTEIN / sequence-homology cluster before matching, not by
   precursor: paralogues and shared peptides leak across a precursor-level split.
 * Fit matching and normalisation on the training split only.
-* S30 is locked until ONE final evaluation. Repeated inspection makes it a
+* IH2 is locked until ONE final evaluation. Repeated inspection makes it a
   second training set. It is converted and ready (10 GB mzpeak, same 24
-  isolation windows as S08) and will not be touched until then.
+  isolation windows as IH1) and will not be touched until then.
 
 ## A9. What the comparative experiment can actually claim (codex)
 
@@ -193,7 +193,7 @@ them teaches "no peak implies present", the exact inverse of the target concept,
 in the class that has no other source of noise.
 
 A second thing falls out that is bigger than the corpus. The 37.7 s p95 this
-project quotes for the S08 map is a FIXTURE number; on the full library the same
+project quotes for the IH1 map is a FIXTURE number; on the full library the same
 constants give **p90 128 s and p99 291 s**. The map is far worse than the figure
 in circulation, and doc/54 has just shown on Astral that window width costs more
 than it buys. That deserves its own experiment independent of any classifier.

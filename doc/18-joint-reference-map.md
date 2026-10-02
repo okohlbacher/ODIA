@@ -342,9 +342,9 @@ production decoys, since ODIA's decoys carry the target's precursor m/z.
 4. **Precision is unmeasured.** "Unique" is not "correct". The pending test is
    whether those 1,794 pairs' library iRT correlates with observed RT. What
    correlation would be sufficient, decided **before** seeing it?
-5. **Two instruments.** Astral has no ion mobility; S08 is 4D and
+5. **Two instruments.** Astral has no ion mobility; IH1 is 4D and
    `FeatureFinderCentroided` has no IM concept, so on diaPASEF it sees
-   mobility-merged frames. Does the map need `Biosaur2Algorithm` for S08, and does
+   mobility-merged frames. Does the map need `Biosaur2Algorithm` for IH1, and does
    a schema serving both compromise either?
 6. **What breaks if the MS1 negative-control gate fails?** Which parts of this
    plan survive an MS1 sub-score that carries no information?
@@ -417,6 +417,6 @@ uncalibrated pass supplies one that is ~98% misplaced.
 The union is the right structure. It was being asked to bootstrap from nothing;
 given a CiRT seed it consolidates a mostly-correct population instead.
 
-**Open:** CiRT coverage on S08 (this is Astral-only), whether a targeted CiRT
+**Open:** CiRT coverage on IH1 (this is Astral-only), whether a targeted CiRT
 search finds them without calibration (it should — they are abundant and few),
 and how many of the ~120-peptide CiRT set are present rather than the 20 probed.

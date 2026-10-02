@@ -60,7 +60,7 @@ namespace ODIA
     /// an accident of the reader: a merged ion-mobility frame is the
     /// concatenation of its TIMS mobility scans, so the array is ordered by
     /// (descending ion mobility, ascending m/z) and m/z restarts at every
-    /// mobility step. Measured on data/S08_diaPASEF.mzpeak: frame 1 holds
+    /// mobility step. Measured on data/IH1_diaPASEF.mzpeak: frame 1 holds
     /// 32,570 peaks with 739 m/z descents, ~600-810 scans per frame.
     ///
     /// A consumer that binary-searches this array does not fail loudly -- it
@@ -137,7 +137,7 @@ namespace ODIA
     /// merging them would make every such consumer wrong at once.
     ///
     /// Empty by default so a source that has no MS1, or has not implemented it,
-    /// answers honestly rather than failing to link. S08 carries 1,343 MS1
+    /// answers honestly rather than failing to link. IH1 carries 1,343 MS1
     /// against 16,105 MS2 -- a ~1.8 s duty cycle, so these are usable
     /// chromatographic traces and not merely a survey.
     virtual const std::vector<SpectrumInfo>& ms1Spectra() const

@@ -383,7 +383,7 @@ namespace ODIA
     // cells -- 1.344 vs 0.0170 per cell, a 79x enrichment. Under the null that
     // target matches are as random as control matches, 3,000 cells should have
     // yielded 51 residuals, not 4,033: a 558-sigma excess. Astral's evidence
-    // that its matches are real is NINE TIMES STRONGER than S08's 9.1x, and
+    // that its matches are real is NINE TIMES STRONGER than IH1's 9.1x, and
     // Astral is the run that failed.
     //
     // So the counts are kept as diagnostics and the decision is made on what the
@@ -550,7 +550,7 @@ namespace ODIA
       // refineLocation, not the bare mode. The mode's flank bias is not a
       // starting-value problem that goes away once a shape is subtracted -- it
       // is a property of this distribution -- so the final centre needs the same
-      // treatment the initial one got. Skipping it here left the S08 fit 2.3 ppm
+      // treatment the initial one got. Skipping it here left the IH1 fit 2.3 ppm
       // high (-7.64 instead of -9.9) with a mass axis still visibly off centre
       // in every retention-time bin, which is the whole defect this class exists
       // to remove.
@@ -574,13 +574,13 @@ namespace ODIA
     // MODEL CHOICE, on how much of the SYSTEMATIC term the shape removes.
     //
     // NOT on total per-hit scatter. That was the first version of this and it
-    // was wrong: total scatter on S08 is ~5.1 ppm and is mostly irreducible
+    // was wrong: total scatter on IH1 is ~5.1 ppm and is mostly irreducible
     // per-fragment noise, so a correction that removes nearly all of the
     // systematic term still moves the total by only ~11% and looked like a wash.
     // Measured on the bin modes instead, the same correction takes 1.40 ppm to
     // 0.51 -- 64% of the systematic gone -- which is what it is actually worth.
     //
-    // The stakes are set by the window, not by the scatter. On S08 the per-bin
+    // The stakes are set by the window, not by the scatter. On IH1 the per-bin
     // modes run from about -13 ppm at the light end to about -8 at the heavy end
     // here, and to -3.5 ppm at 1327 Th in a measurement reaching further up the
     // range. A single constant therefore mis-centres by several ppm at both
@@ -657,7 +657,7 @@ namespace ODIA
 
     // ---- retention time, as a diagnostic ----------------------------------
     // Reported and never applied. Two reasons, and the first is the decisive
-    // one: on S08 there is nothing to apply -- the corrected residual sits
+    // one: on IH1 there is nothing to apply -- the corrected residual sits
     // between -8.4 and -9.0 ppm across the whole 1,859 s gradient. The second is
     // that a time-dependent correction cannot be applied where the m/z-dependent
     // one is, on the transition at index-build time; it would have to move every
@@ -957,7 +957,7 @@ namespace ODIA
     // `im_window` is a tolerance on |peak_im - LIBRARY_im|. Centred on zero it
     // assumes the library's mobility column is right, and silently deletes the
     // precursors for which it is not -- from the FRAGMENT MASS sample. See the
-    // header for the S08 measurement and the synthetic reproduction.
+    // header for the IH1 measurement and the synthetic reproduction.
     //
     // A mode, not a mean: over a wide window most matches are unrelated
     // centroids, ~uniform, and a mean tracks them while a mode does not.
@@ -989,9 +989,9 @@ namespace ODIA
           // through a different filter than it is applied through is how a
           // calibration ends up centred on the wrong population."
           //
-          // Measured consequence on S08, probe mode against the run's own
+          // Measured consequence on IH1, probe mode against the run's own
           // anchor-based centre: +0.0295 on the 500k raw library, +0.0162 on the
-          // affine one, +0.0045 on mix10k, +0.0021 on S30 -- the gap scaling
+          // affine one, +0.0045 on mix10k, +0.0021 on IH2 -- the gap scaling
           // with how much of the library is ABSENT from the run, which is what
           // an unfiltered, interference-dominated sample predicts.
           const bool use_band_ac = opt.use_ion_mobility;
@@ -1041,7 +1041,7 @@ namespace ODIA
         // peak-query pairs are interference, and on that shape it latches onto a
         // shoulder rather than the signal peak.
         //
-        // Measured on S08 after the collection loop was corrected to filter as
+        // Measured on IH1 after the collection loop was corrected to filter as
         // the gate does: the single mode still read 0.0430 (b_base) and 0.0119
         // (b_imfix) against the runs' own anchor-based centres of 0.0212 and
         // 0.0011 -- gaps of +0.0218 and +0.0108, both failing the +/-0.005 rule

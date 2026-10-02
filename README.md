@@ -65,7 +65,7 @@ mzML and mzPeak:
 |---|---|---|
 | `12_80` | Orbitrap DIA (small; used by the tests) | 13 009 |
 | `astral` | Thermo Orbitrap Astral | 307 590 |
-| `S08_diaPASEF` | Bruker timsTOF diaPASEF (has ion mobility) | — |
+| `IH1_diaPASEF` | Bruker timsTOF diaPASEF (has ion mobility) | — |
 
 Benchmarks must not read from `data/`: it is on ceph, a shared network
 filesystem, so timings there measure the network. Stage to node-local NVMe

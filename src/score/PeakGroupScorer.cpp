@@ -676,7 +676,7 @@ namespace
     /// Library correlation, refusing to report one it cannot estimate.
     ///
     /// `pearson` guards only n < 2, so at n = 2 it returns +-1 ALWAYS -- two
-    /// points are collinear by construction. The S08 library carries 366,084
+    /// points are collinear by construction. The IH1 library carries 366,084
     /// targets with 0-2 fragments, and MEASURED on the full run the score was
     /// monotonically INVERTED in the evidence behind it:
     ///
@@ -725,7 +725,7 @@ namespace
     /// species that happen to share the window, out-sum a real but weak
     /// peptide. So an amplitude-detected candidate list is ordered by "how much
     /// signal is here" and the correct peak lands at rank 2, 3, 7. Measured on
-    /// S08 against DIA-NN's confident set, our amplitude picker put the true
+    /// IH1 against DIA-NN's confident set, our amplitude picker put the true
     /// peak first for 24.4% of precursors, inside the top 3 for 47.2%, and
     /// inside the top 25 for 89.8% -- a slow decay, which is the signature of a
     /// detector that finds the peak but cannot tell it from its neighbours.
@@ -1125,7 +1125,7 @@ namespace
       // computed ungated and can exceed that of a co-elution candidate the
       // detector accepted, so once the co-elution set reached the cap the union
       // both ADDED weak candidates and DROPPED accepted ones -- strictly the
-      // worst of the two designs. On S08 that took 1,306 identifications to 818.
+      // worst of the two designs. On IH1 that took 1,306 identifications to 818.
       //
       // The fixture missed it because it produces two candidates against a cap
       // of five, so the truncation never ran.
@@ -1704,7 +1704,7 @@ namespace
       // Per CANDIDATE, not per mass block. The mass block below is guarded by
       // `hi > lo`, so a single-cycle candidate skips it -- and used to inherit
       // whatever the previous candidate staged, committing it under this
-      // candidate's group index and decoy flag. Measured on S08 before the fix:
+      // candidate's group index and decoy flag. Measured on IH1 before the fix:
       // 26,868 anchors passed a target-group filter against 13,778 that were
       // actually flagged target, and the mismatched pairs put 876 control
       // residuals into a set that contained none, which made the fit refuse.
@@ -1969,7 +1969,7 @@ namespace
       // With the constant, a decoy in an empty window got
       // log(apex / 1e-6) ~ 16-25 and outranked a real target on a real
       // baseline -- the floor did not guard the ratio, it inverted it.
-      // The 0.01 fraction caps the ratio at 100:1, and MEASURED on S08 every
+      // The 0.01 fraction caps the ratio at 100:1, and MEASURED on IH1 every
       // real peak is above that: of 21,055 known-present precursors, log_sn
       // took 10 distinct values and its p10, p50 and p90 were all exactly
       // log(100) = 4.605. The floor that stopped decoys scoring high also
@@ -2220,7 +2220,7 @@ namespace
             // calibration offset is normally folded into the query m/z, which
             // centres the residual -- but when the mass-calibration gate FAILS
             // the offset is set to 0 with a 50 ppm window and the distribution
-            // is left where the instrument put it. On S08 that is about -9 ppm,
+            // is left where the instrument put it. On IH1 that is about -9 ppm,
             // and an absolute window about zero would then score a perfectly
             // real fragment near 0 while a decoy matching noise uniformly
             // across the window scores higher: the column INVERTS. MASS_ACCURACY
@@ -2409,7 +2409,7 @@ namespace
       //
       // Over the candidate's own cycles, pair each cycle's summed fragment
       // intensity with the MS1 monoisotopic intensity at the nearest MS1 bin,
-      // and correlate. The MS1 grid is ~1.8 s on S08 against a ~0.4 s MS2
+      // and correlate. The MS1 grid is ~1.8 s on IH1 against a ~0.4 s MS2
       // cycle, so several cycles map to one bin -- that is a real resolution
       // limit of the survey scan, not an approximation to be apologised for,
       // and a 20-30 s peak still spans ~15 bins.
@@ -2602,7 +2602,7 @@ namespace
       // A candidate whose spectrum does not resemble the library is not this
       // peptide, wherever it eluted.
       //
-      // Measured on S08 against DIA-NN's confident set, splitting our own
+      // Measured on IH1 against DIA-NN's confident set, splitting our own
       // q<=0.01 calls by whether they land within 30 s of the true apex:
       //
       //   group             n     median library_corr   frac > 0.5
@@ -2927,7 +2927,7 @@ namespace
     // semi-supervised loop on an identically-zero column. That is not a
     // hypothetical: every recorded number for that arm was produced this way,
     // which means the measured verdict on OpenSWATH-style picking (+4.7% on
-    // S08, -38.8% on Astral) is confounded with this defect and cannot be read
+    // IH1, -38.8% on Astral) is confounded with this defect and cannot be read
     // as a property of the picker until it is re-measured.
     //
     // `union_openswath` is deliberately NOT excluded: it mixes co-elution

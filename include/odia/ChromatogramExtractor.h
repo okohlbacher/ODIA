@@ -27,7 +27,7 @@ namespace ODIA
   /// This is no longer what extraction produces. It is what a caller asks for
   /// when it needs every chromatogram simultaneously -- `-out_chrom` and the
   /// diagnostics built on it -- and it is bounded by the LIBRARY, which is the
-  /// thing `ChromatogramSink` exists to escape. A full human library at S08's
+  /// thing `ChromatogramSink` exists to escape. A full human library at IH1's
   /// geometry is 274 GiB here. Everything else takes a
   /// `PrecursorChromatogram` as the pass finishes it.
   ///
@@ -110,14 +110,14 @@ namespace ODIA
     /// Every point of every transition, one flat array.
     ///
     /// `precursor_begin` is 64-bit deliberately. A 32-bit offset ran out at
-    /// 2^32 points, which is 266,664 precursors at S08's 12 transitions x 1,342
+    /// 2^32 points, which is 266,664 precursors at IH1's 12 transitions x 1,342
     /// cycles -- and phase 1's own human library is 4,255,113 precursors, so
     /// ODIA could not extract against the library it had just generated.
     /// Measured by bisection at 260,000 passing and 270,000 throwing in 5.1 s.
     ///
     /// The widening removed the index limit and nothing else. The limit that
     /// remains is memory: this array is sized transitions x cycles before a
-    /// peak is seen, so a full human library at S08's geometry wants
+    /// peak is seen, so a full human library at IH1's geometry wants
     /// 4.26 M x 12 x 1,342 x 4 B = 274 GiB -- and 51.3% of those points are
     /// non-zero, so sparse storage is not a way out either.
     ///
@@ -162,7 +162,7 @@ namespace ODIA
     std::size_t precursors_without_window = 0;
 
     /// Precursors that MORE than one window covered -- 1.1% of them on 12_80
-    /// and on S08, whose schemes overlap adjacent windows by 1.0 Th.
+    /// and on IH1, whose schemes overlap adjacent windows by 1.0 Th.
     ///
     /// Each such window is a separate measurement of the same ion at
     /// interleaved times, and only one of them is extracted: the window whose
@@ -399,7 +399,7 @@ namespace ODIA
       /// itself, and the tool, which asks for 15 when that gate fails.
       ///
       /// This instrument has a systematic fragment mass offset of about
-      /// -10 ppm, measured on S08 as the centroid of the retention-time-
+      /// -10 ppm, measured on IH1 as the centroid of the retention-time-
       /// specific excess over a local decoy-cell null: -11.2 ppm on precursors
       /// we recover, -12.6 ppm on those we miss, and present at off-peak times
       /// too, so it is a genuine instrument term and not an artefact of peak
@@ -448,7 +448,7 @@ namespace ODIA
       /// keep finding real signal; identifications turn over at 50 because past
       /// that the interference admitted costs more than the signal recovered.
       ///
-      /// THIS IS NOT A GLOBAL WIDENING. On S08, where the gate PASSES, the
+      /// THIS IS NOT A GLOBAL WIDENING. On IH1, where the gate PASSES, the
       /// calibrated width (~10 ppm) is used and is far better: 1,306 identifications
       /// against 922 with calibration off at 15 ppm, and 50 ppm with calibration
       /// off collapses the run to zero. A diaPASEF frame is a merged stack of TIMS
@@ -464,7 +464,7 @@ namespace ODIA
       /// Should be fitted from the run rather than set by hand -- that is what
       /// per-run mass calibration is for, and it is the single measured
       /// difference most likely to account for the recovery gap. -10 is the
-      /// measured value for S08 and is NOT a default, because it is a property
+      /// measured value for IH1 and is NOT a default, because it is a property
       /// of that instrument and that acquisition. `MassCalibration` fits it;
       /// this is where its answer is applied.
       ///
@@ -484,7 +484,7 @@ namespace ODIA
       /// combination to guard against.
       ///
       /// A TOF's calibration error is characteristically a function of m/z, and
-      /// on S08 it measurably is: the per-m/z-bin modes run from -12.91 ppm at
+      /// on IH1 it measurably is: the per-m/z-bin modes run from -12.91 ppm at
       /// 238 Th to -7.43 at 1,102 (and to -3.5 at 1,327 Th in a measurement
       /// reaching further up the range). A single constant therefore mis-centres
       /// by ~3 ppm at BOTH ends in opposite directions, against a +/-10 ppm
@@ -506,7 +506,7 @@ namespace ODIA
       ///
       /// Distinct from the isolation window's band, which is what
       /// `use_ion_mobility` gates and which only separates co-packed windows.
-      /// A frame's band is ~0.40 wide on S08; a precursor occupies ~0.05 of it.
+      /// A frame's band is ~0.40 wide on IH1; a precursor occupies ~0.05 of it.
       /// Filtering only by the band therefore admits the entire same-window
       /// mobility axis -- measured as ~8.5x more mobility than the reference
       /// accepts, and the reason a band-only fix bought 1.12x while the
@@ -524,10 +524,10 @@ namespace ODIA
       /// together, and the scatter is the only part a symmetric window can
       /// cover. With the trend removed by Curve::im_slope, the residual SD on
       /// held-out anchors is 0.025 -- so this window is ~1 sigma, not 2.6, and
-      /// rejects 28.3% of target anchors on S08 even when the calibration is
+      /// rejects 28.3% of target anchors on IH1 even when the calibration is
       /// correct. At +/-0.05 that falls to 5.6%.
       ///
-      /// MEASURED, and the answer is to leave it at 0.025. S08, lib_targets,
+      /// MEASURED, and the answer is to leave it at 0.025. IH1, lib_targets,
       /// with the mobility slope fitted, identifications at 1% FDR:
       ///
       ///     0.025   1232      <- default
@@ -551,7 +551,7 @@ namespace ODIA
       /// through which the offset it fits is then applied. That difference is
       /// deliberate and measured: this window is sized to KEEP a peptide's real
       /// fragments, that one to isolate a residual mode a shifted control does
-      /// not have, and at 0.025 the calibration's gate fails outright on S08
+      /// not have, and at 0.025 the calibration's gate fails outright on IH1
       /// (peakedness 4.41 against a control at 4.60). See that field.
       double precursor_im_window = 0.025;
 
@@ -630,7 +630,7 @@ namespace ODIA
       /// against a library size; `Stats::peak_live_points` reports what it
       /// cost.
       ///
-      /// A pass is expensive -- decode is ~600 s on S08 and is 65% of Phase 2
+      /// A pass is expensive -- decode is ~600 s on IH1 and is 65% of Phase 2
       /// -- so chunking is a fallback, not a default. Which mechanism actually
       /// bound the memory is reported in `Stats::memory_bound_by`.
       std::size_t max_live_precursors = 0;
@@ -661,7 +661,7 @@ namespace ODIA
       ///
       /// This is the largest single term in the run's memory, and it was found
       /// by profile rather than by reading: a tcmalloc heap profile of a
-      /// 1,200-precursor S08 run put **5.57 GiB of a 9.45 GiB live peak** in the
+      /// 1,200-precursor IH1 run put **5.57 GiB of a 9.45 GiB live peak** in the
       /// three `assign` calls of `MzPeakSource::peaks` -- 2.79 / 1.39 / 1.39 GiB
       /// across `mz` (double), `intensity` and `ion_mobility` (float), exactly
       /// the 8:4:4 ratio of their element sizes.
@@ -672,7 +672,7 @@ namespace ODIA
       /// chromatograms, and mzPeak's own row-group cache, which is bounded).
       /// See doc/11-memory-and-compaction-plan.md.
       ///
-      /// Measured on S08 with a 1,200-precursor library at 4 threads, where the
+      /// Measured on IH1 with a 1,200-precursor library at 4 threads, where the
       /// only variable was this number:
       ///
       /// | block | peak RSS | wall |
@@ -843,7 +843,7 @@ namespace ODIA
     ///
     /// Kept because `-out_chrom` and every diagnostic built on it need the
     /// whole thing at once. It is the streaming form with a collecting sink,
-    /// so it is bounded by the library and says so: at S08's geometry a full
+    /// so it is bounded by the library and says so: at IH1's geometry a full
     /// human library is 274 GiB here and a few GiB through the sink.
     static Chromatograms extract(const Library& library, SpectrumSource& source,
                                  const Options& options, Stats* stats = nullptr);

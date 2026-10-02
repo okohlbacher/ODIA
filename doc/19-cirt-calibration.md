@@ -97,9 +97,9 @@ dead as the previous four. Say so rather than loosening the bar.
 - **CiRT coverage is organism- and sample-dependent.** 64% here. A sample with
   poor coverage has no seed, and the fallback is DIA-NN's shape: wide windows →
   simple fixed-criterion seeds → refit → tighten.
-- **Astral-only.** Everything in `doc/18` §9 was measured on one instrument. S08
+- **Astral-only.** Everything in `doc/18` §9 was measured on one instrument. IH1
   coverage is unmeasured, and the whole project has been caught by
-  instrument-conditional results before (`MS1_COELUTION`: +17.6% on S08, +0.4% on
+  instrument-conditional results before (`MS1_COELUTION`: +17.6% on IH1, +0.4% on
   Astral).
 - **Linearity is assumed.** r = 0.9913 over 17 points supports a line on this
   gradient; a curved gradient would need the monotone/akima path that already
@@ -150,16 +150,16 @@ coincidence.
 That is post-hoc, and pre-registration existed precisely to prevent it. The
 mechanism is demonstrated; the *test* of it is not valid.
 
-**Therefore, pre-registered NOW, for S08 — untouched data, a genuine independent
+**Therefore, pre-registered NOW, for IH1 — untouched data, a genuine independent
 test:**
 
 - blind CiRT search, same settings;
 - **Theil-Sen on the top 20 by dscore**, fixed in advance, no sweep;
-- **PASS** = slope within 20% of S08's own DIA-NN CiRT line, ≥ 12 inliers within
+- **PASS** = slope within 20% of IH1's own DIA-NN CiRT line, ≥ 12 inliers within
   60 s, inlier median ≤ 60 s.
 
-If S08 needs a different N, the Astral result was tuned and must be discarded.
-Do not sweep N on S08 and then report the best one.
+If IH1 needs a different N, the Astral result was tuned and must be discarded.
+Do not sweep N on IH1 and then report the best one.
 
 ### Also worth recording
 
@@ -174,11 +174,11 @@ Do not sweep N on S08 and then report the best one.
 
 ---
 
-## 7. AMENDED GATE — frozen 2026-08-14 BEFORE the S08 output was opened
+## 7. AMENDED GATE — frozen 2026-08-14 BEFORE the IH1 output was opened
 
 Review round 8 (codex effort max, kimi; vibe 0 bytes for the fifth time) reached
 the same verdict independently: **sound seed, sound architecture, unsound gate.**
-The S08 run had completed when these reviews landed and **its output was not read
+The IH1 run had completed when these reviews landed and **its output was not read
 until this section was written and committed.**
 
 ### What was wrong with §4
@@ -215,7 +215,7 @@ iterations, seed 0, inliers refitted by least squares. No alternative estimator.
   belonged.
 - **P2 intercept** — |intercept − that instrument's DIA-NN CiRT intercept| ≤ **90 s**.
 - **P3 slope** — within **20%** of that instrument's own DIA-NN CiRT slope.
-  *Astral's 10.873 is an Astral number and is not a bound for S08.*
+  *Astral's 10.873 is an Astral number and is not a bound for IH1.*
 - **P4 permutation null** — the identical fitter run on **999 iRT-label
   permutations** must not reach the observed inlier count. Passing means beating
   the empirical maximum-consensus null, not resembling a slope.

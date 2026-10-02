@@ -51,7 +51,7 @@ learn sequence artefacts instead of trace quality.
 **Chosen: positives = DIA-NN-confident (q <= 0.01); negatives = ENTRAPMENT
 targets.** Entrapment precursors are Arabidopsis sequences in the searched
 library (`arab_acc.txt`): real peptides, real fragment masses, and absent from a
-human liver sample by construction. That is the honest "fake" -- nothing about
+human sample by construction. That is the honest "fake" -- nothing about
 the trace of an absent real sequence is synthetic.
 
 Decoys are held out entirely, as a calibration check: a model that learned
@@ -101,14 +101,14 @@ scoring is where the gap lives. Either answer is worth the corpus on its own.
 
 ## Corpus
 
-* **Train: S08 diaPASEF** (`S08_diaPASEF.mzpeak`), the run everything else on
+* **Train: IH1 diaPASEF** (`IH1_diaPASEF.mzpeak`), the run everything else on
   this project is measured on.
-* **Validate: S30** -- `FKL4341-S30-A-10_..._1326.d`, 9.2 GB, a DIFFERENT liver
+* **Validate: IH2** -- an in-house run (IH2), 9.2 GB, a DIFFERENT
   sample from the same acquisition batch. `mzpeak-convert` reads Bruker `.d`
   directly and DIA-NN reads `.d` natively, so this avoids the mzML conversion
   that presents no MS2 spectra to DIA-NN. Genuinely held out: different sample,
   different run, its own true-positive set.
-* Sizes: all DIA-NN-confident precursors present in our library (~35k on S08),
+* Sizes: all DIA-NN-confident precursors present in our library (~35k on IH1),
   a composition-matched entrapment sample of the same size, and an equal decoy
   sample for the held-out check. ~105k precursors x ~12 fragments x a 64-cycle
   window is ~80M points -- about 1 GB in float32.
@@ -143,7 +143,7 @@ split.** A neural result that does not beat that is not a result.
 1. **AUC by abundance quintile**, as in `d9_auc_by_abundance.py`. The deficit is
    at Q1; a model strong at Q5 and weak at Q1 adds nothing, because every
    existing shape feature is already strong at Q5.
-2. **Held-out S30**, never touched during training or model selection.
+2. **Held-out IH2**, never touched during training or model selection.
 3. **Entrapment-calibrated FDP, never nominal q** -- but note the negatives ARE
    the entrapment set, so the evaluation entrapment population must be a
    DISJOINT held-out split of it, or the FDP is circular. This is a trap the

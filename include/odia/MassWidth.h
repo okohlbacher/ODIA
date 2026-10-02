@@ -15,7 +15,7 @@ namespace ODIA
   /// Size the fragment m/z window from the run's own identifications.
   ///
   /// WHY THIS EXISTS. `MassCalibration` already detects the right width per
-  /// file, and when its gate passes it beats any constant -- on S08 the
+  /// file, and when its gate passes it beats any constant -- on IH1 the
   /// calibrated ~10 ppm gives 1,306 identifications against 922 for a hand-set
   /// 15. The defect was never the calibration, it was the FALLBACK: a failed
   /// gate meant "use 15 ppm", a middling width chosen for no reason. Raising

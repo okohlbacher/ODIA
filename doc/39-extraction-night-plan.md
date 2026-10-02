@@ -115,7 +115,7 @@ real co-isolated signal that no box tightening can reject.
 
 | # | item | status |
 |---|---|---|
-| 1 | **`-mass_width_from_ids apply`** | **measured on S08: prominence 0.659 -> 0.736, baseline 3x lower.** The option exists and is opt-in pending a second instrument (doc/13's rule). Astral is the blocker, not the code |
+| 1 | **`-mass_width_from_ids apply`** | **measured on IH1: prominence 0.659 -> 0.736, baseline 3x lower.** The option exists and is opt-in pending a second instrument (doc/13's rule). Astral is the blocker, not the code |
 | 2 | mobility window | **CLOSED -- the default is correct**; widening hurts, recentring already implemented |
 | 3 | baseline mechanism | **mostly explained**: box volume plus a persistent isobaric interferent. Residual gap to DIA-NN is 1.16x |
 | 4 | per-fragment apex spread | OPEN, measurable from dumps on disk |

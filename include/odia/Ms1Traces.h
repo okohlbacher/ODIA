@@ -22,7 +22,7 @@ namespace ODIA
   /// The MS1 arm is small enough to stand alone: one value per precursor per MS1
   /// spectrum, against ~12 fragments per precursor per MS2 cycle.
   ///
-  /// WHY THIS EXISTS AT ALL, measured 2026-08-08 on S08 + `v6_50k` (the search
+  /// WHY THIS EXISTS AT ALL, measured 2026-08-08 on IH1 + `v6_50k` (the search
   /// benchmark, 670 true of 50,000, base 13.4 per 1000):
   ///
   ///     MS1/MS2 co-elution correlation    13.7x enrichment in the top bin,

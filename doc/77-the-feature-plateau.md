@@ -7,9 +7,9 @@ cached arrays in `dax:/scratch/kohlbach/odia2x2/sl3_cache/`.
 
 ## The experiment chain
 
-**samelib3** (run overnight, binary d7ab850d): ODIA on S08 with DIA-NN's OWN
+**samelib3** (run overnight, binary d7ab850d): ODIA on IH1 with DIA-NN's OWN
 library (`dn_pred_cam.parquet`, 4,961,341 precursors — the library of the
-33,330 reference run), RT window pinned at 110 s to equal e2e_s08 by
+33,330 reference run), RT window pinned at 110 s to equal e2e_ih1 by
 construction. Correctly pre-prior: the `-im_prior` is peptdeep-fitted and must
 not touch DIA-NN's IM column. Result: **13,735 at q<=0.01** (pass 1: 14,709).
 samelib2's earlier collapse to ~4k is confirmed as the window, nothing else.
@@ -90,7 +90,7 @@ as a near-constant in `PeakGroupScorer.cpp:1847`.
 
 ## Committed conclusion (review-corrected wording)
 
-On S08/samelib3, the shipped semi-supervised scorer is 2.9 points below a
+On IH1/samelib3, the shipped semi-supervised scorer is 2.9 points below a
 supervised-oracle plateau of 65.2% that is invariant to label definition,
 label tolerance, capacity, training depth, negative composition, and bag
 aggregation. Multiple strong probes support a practical feature limitation:

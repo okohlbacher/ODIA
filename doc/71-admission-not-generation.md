@@ -5,7 +5,7 @@ precursor its apex matches DIA-NN to a median 0.00 s -- and that the gap is
 whatever it declines. This locates that gap one step further.
 
 Measured 2026-08-28 on the 10,000-precursor stratified library, full
-`S08_diaPASEF.mzpeak`, fixed linear RT map, `-precursor_im_window 0.025`,
+`IH1_diaPASEF.mzpeak`, fixed linear RT map, `-precursor_im_window 0.025`,
 `-rt_window 300`, `-passes 1 -gate_alpha 0`, one pinned binary
 (`8a48387cca4537eb`), scored against DIA-NN's **reported** RT.
 

@@ -189,7 +189,7 @@ namespace ODIA
             // is false, so the negation below rejects every peak and the
             // precursor scores zero on a run it may well be present in.
             //
-            // Measured: on S08 the seed sweep returned 0 target and 0 decoy
+            // Measured: on IH1 the seed sweep returned 0 target and 0 decoy
             // anchors at every contiguity threshold, against 13,360 / 8,264 on
             // Astral, purely because our generated library predicts CCS and
             // leaves 1/K0 unset. Astral has no ion mobility so the gate never

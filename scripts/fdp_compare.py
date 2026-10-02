@@ -44,7 +44,7 @@ for i, (p, g, d) in enumerate(zip(t.column('Precursor.Id').to_pylist(),
 # DIA-NN writes C(UniMod:4); our library writes C(Carbamidomethyl). It is the
 # only modification on either side, so matching Precursor.Id verbatim drops
 # EVERY cysteine peptide -- 3,902 of DIA-NN's 39,149 confident precursors on
-# S08, 10.0% -- and understates concordance by that much. Alias, do not strip:
+# IH1, 10.0% -- and understates concordance by that much. Alias, do not strip:
 # stripping the parentheses would also merge modified and unmodified forms.
 DN_ALIAS = {'UniMod:4': 'Carbamidomethyl'}
 

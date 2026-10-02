@@ -51,16 +51,16 @@ namespace ODIA::Calibration
   ///
   /// LINEAR, and deliberately so. doc/20 measured both options from a blind
   /// CiRT search and a monotone PCHIP LOST 5-7 percentage points at +/-60 s on
-  /// both instruments (Astral 65.5% -> 58.9%, S08 81.2% -> 76.7%): ~30 anchors
+  /// both instruments (Astral 65.5% -> 58.9%, IH1 81.2% -> 76.7%): ~30 anchors
   /// cannot constrain a curve, so the fit chases anchor noise. The
-  /// nonlinearity is real and worth +5.1 pp (Astral) to +12.6 pp (S08) -- but
+  /// nonlinearity is real and worth +5.1 pp (Astral) to +12.6 pp (IH1) -- but
   /// only from THOUSANDS of identifications, which is fine-tuning's job, not
   /// the seed's. Fitting the curve here is the measured mistake.
   ///
   /// RANSAC rather than Theil-Sen, decided by measurement rather than by the
   /// slash in doc/19 §3's "RANSAC / Theil-Sen". A blind search over an
   /// uncalibrated run places apexes on interference, and doc/20 records how
-  /// many survive: 24 inliers on Astral, 47 on S08, from ~149 precursors. That
+  /// many survive: 24 inliers on Astral, 47 on IH1, from ~149 precursors. That
   /// is 68-84% wrong, well past Theil-Sen's 29.3% breakdown -- and past it
   /// Theil-Sen degrades QUIETLY (3.7% slope error, 221 s p95 on the synthetic
   /// 50% case) rather than failing, which is the worst behaviour for a number

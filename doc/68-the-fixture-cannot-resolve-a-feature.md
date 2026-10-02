@@ -1,6 +1,6 @@
 # The fixture cannot resolve a feature-sized change
 
-2026-08-26. Six changes were measured on the s08_6x60 fixture at matched
+2026-08-26. Six changes were measured on the ih1_6x60 fixture at matched
 entrapment FDP and every one came back slightly negative at the operating point
 and strongly positive at 15%. A column of PURE NOISE does the same thing.
 

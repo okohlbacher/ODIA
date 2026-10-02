@@ -4,7 +4,7 @@ Status: plan. Measured basis below.
 
 ## What is wrong, measured
 
-Validation against DIA-NN's confident set on S08 (2,665 precursors, stratified
+Validation against DIA-NN's confident set on IH1 (2,665 precursors, stratified
 over RT x m/z x charge, not top-by-confidence):
 
 * **20.7% recovered** (552/2665) against a **5.5% decoy null**.
@@ -23,7 +23,7 @@ Root cause, probed directly rather than inferred:
   which is a different file's problem.
 * Extraction with and without `-no_ion_mobility` is **byte-identical**
   (md5 `7c9c6562ded89b25378eb3a4c53b4838`), so the filter is provably inert.
-* S08 packs **two isolation windows per frame, separated only in mobility**.
+* IH1 packs **two isolation windows per frame, separated only in mobility**.
   `peaks()` hands both window entries the same merged peak list, so with no
   band each window's transitions are matched against the other window's ions
   across the whole 0.60-1.40 1/K0 range. **The mobility dimension is collapsed.**

@@ -57,9 +57,9 @@ true = tt - e / r
 # library with its own entrapment ratio, and dividing them all by one constant
 # made the same arm print two different numbers.
 #
-# Keyed by fixture, because an Astral arm compared against the S08 baseline is
+# Keyed by fixture, because an Astral arm compared against the IH1 baseline is
 # a comparison between two different files. The arm tag carries the fixture as
-# a suffix (bench.sh writes <arm>_<fixture>); anything unsuffixed is S08, which
+# a suffix (bench.sh writes <arm>_<fixture>); anything unsuffixed is IH1, which
 # is what every stored row was measured on.
 REFS = {
   's08': [('full v5  (3h00, 124GB)', 13268, 130, 5.72, 0.50, 12387),

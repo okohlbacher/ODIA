@@ -29,12 +29,12 @@ Same FASTA, same DIA-NN settings, same CAM-free search:
 | run | identified precursors | containing C | rate |
 |---|---:|---:|---:|
 | Astral | 12,308 | 2,268 | **18.43%** |
-| S08 (diaPASEF) | 33,330 | 646 | **1.94%** |
+| IH1 (diaPASEF) | 33,330 | 646 | **1.94%** |
 
 DIA-NN's own Astral output library is 18.49% cysteine-containing, so ~18% is
-what an unalkylated sample looks like. S08 is depleted ~9-fold.
+what an unalkylated sample looks like. IH1 is depleted ~9-fold.
 
-**S08 is alkylated and the frozen S08 reference searched it CAM-free**, losing
+**IH1 is alkylated and the frozen IH1 reference searched it CAM-free**, losing
 almost all of its cysteine peptides. Astral is not alkylated. The reference
 number 33,330 is therefore a handicapped number, not a ceiling.
 
@@ -47,17 +47,17 @@ Theoretical bare-cysteine m/z minus reported m/z, over the confident sets:
 |---|---:|---:|---:|
 | Astral, assuming bare C | −0.000008 | −0.000006 | −0.000004 Th |
 | Astral, assuming CAM | −0.000008 | **+28.5107** | **+57.0214 Th** |
-| S08, assuming bare C | −0.000012 | −0.000010 | +0.000001 Th |
-| S08, assuming CAM | −0.000012 | **+28.5107** | **+38.0143 Th** |
+| IH1, assuming bare C | −0.000012 | −0.000010 | +0.000001 Th |
+| IH1, assuming CAM | −0.000012 | **+28.5107** | **+38.0143 Th** |
 
 Both reference searches used bare-cysteine masses, to within 10 µTh. So the
-cysteine peptides identified in *both* samples carry free thiols, and the S08
+cysteine peptides identified in *both* samples carry free thiols, and the IH1
 depletion is a property of the sample, not of the mass convention.
 
-What that still does not settle is *what* is on the S08 cysteines. Alkylation is
+What that still does not settle is *what* is on the IH1 cysteines. Alkylation is
 the obvious candidate; kimi's alternative — an unreduced sample, where disulfides
 remove the same peptides with no alkylation at all — predicts the same 9-fold
-depletion. The separating run is DIA-NN on S08 with `--unimod4`: cysteine returns
+depletion. The separating run is DIA-NN on IH1 with `--unimod4`: cysteine returns
 to ~15%+ only if carbamidomethyl is what is on the thiol. A rise to 3–4% would
 mean something else is.
 
@@ -129,7 +129,7 @@ non-cysteine residual sd is 1.10 and 1.14 min. So cysteine peptides elute
 **~0.9 min later per cysteine than either model predicts**, and the two agree to
 within 0.01 min at one cysteine.
 
-**Replicated on the other instrument and gradient.** S08's 646 cysteine
+**Replicated on the other instrument and gradient.** IH1's 646 cysteine
 identifications are peptides that escaped alkylation, i.e. genuinely free thiols,
 on a timsTOF with a 7–30 min gradient:
 
@@ -183,7 +183,7 @@ count) fits that story too.
 It is refuted three ways:
 
 ```
-                                       Astral 1C   Astral 2C   S08 1C
+                                       Astral 1C   Astral 2C   IH1 1C
 linear calibration on non-Cys            +0.896      +1.558     +0.739 min
 local-linear (nonparametric) on non-Cys  +0.927      +1.581     +0.860 min
 RT-matched to non-Cys at equal pred. RT  +0.956      +1.588     +0.905 min
@@ -191,12 +191,12 @@ RT-matched to non-Cys at equal pred. RT  +0.956      +1.588     +0.905 min
 
 The bias does not shrink; it grows slightly. And the premise fails outright on
 Astral, where cysteine peptides elute *earlier* than average, not later
-(predicted-RT median 0.381 for 1 Cys against 0.439 for non-Cys) — while on S08
+(predicted-RT median 0.381 for 1 Cys against 0.439 for non-Cys) — while on IH1
 they elute later (0.659 against 0.586). Opposite positions in the gradient, same
 bias, so it cannot be a gradient-position artefact.
 
 There is genuine curvature: nonparametric calibration cuts the non-cysteine
-residual sd from 1.101 to 0.877 min on Astral and from 1.029 to 0.685 min on S08.
+residual sd from 1.101 to 0.877 min on Astral and from 1.029 to 0.685 min on IH1.
 That is a separate, real improvement worth taking, and it is not the cysteine
 effect.
 
@@ -228,14 +228,14 @@ the fact. Adapted from codex's criteria, in the predictor's own units:
 
 | outcome | conclusion |
 |---|---|
-| cysteine rescued to ~15%+ at +57.021/z, and CAM-cysteine residual within ±0.008 rt_norm of zero | S08 is alkylated; free-vs-CAM confirmed as the dominant mechanism |
-| cysteine rescued, but a positive residual near the Astral magnitude remains | S08 is alkylated; the free-vs-CAM explanation is **falsified** — something else about cysteine is mis-modelled |
+| cysteine rescued to ~15%+ at +57.021/z, and CAM-cysteine residual within ±0.008 rt_norm of zero | IH1 is alkylated; free-vs-CAM confirmed as the dominant mechanism |
+| cysteine rescued, but a positive residual near the Astral magnitude remains | IH1 is alkylated; the free-vs-CAM explanation is **falsified** — something else about cysteine is mis-modelled |
 | cysteine rises only to 3–4% | not carbamidomethyl; kimi's unreduced-disulfide or another reagent |
 | CAM residual comes out comparably **negative** | the model is not simply "already predicting CAM"; Finding B fails as stated |
 
 Both reviewers also note what would settle it outright and what we do not have:
 the same peptide backbone measured free and carbamidomethylated under one
-chromatography. Astral and S08 differ in tissue, instrument and gradient, so
+chromatography. Astral and IH1 differ in tissue, instrument and gradient, so
 even the favourable outcome is supportive rather than decisive.
 
 ### Outcome: a reciprocal control, and it is unambiguous
@@ -244,24 +244,24 @@ Each sample was searched both ways. The two results are mirror images:
 
 | | precursors | cysteine-containing | protein groups |
 |---|---:|---:|---:|
-| **S08** CAM-free (the frozen reference) | 33,330 | 646 (1.94%) | 5,500 |
-| **S08** `--unimod4` | **37,334** | **3,454 (9.25%)** | 5,660 |
+| **IH1** CAM-free (the frozen reference) | 33,330 | 646 (1.94%) | 5,500 |
+| **IH1** `--unimod4` | **37,334** | **3,454 (9.25%)** | 5,660 |
 | **Astral** CAM-free (the frozen reference) | 12,308 | 2,268 (18.43%) | 1,328 |
 | **Astral** `--unimod4` | **9,837** | **190 (1.93%)** | 1,219 |
 
 Forcing the wrong alkylation state on either sample collapses its cysteine
-identifications to ~1.9%, and the right one restores them. S08 is alkylated;
+identifications to ~1.9%, and the right one restores them. IH1 is alkylated;
 Astral is not. Kimi's unreduced-disulfide alternative is excluded — disulfides
 would not be rescued by declaring carbamidomethyl.
 
-S08's rescue reaches 9.25%, not Astral's 18%. That is a 5.3-fold recovery and it
+IH1's rescue reaches 9.25%, not Astral's 18%. That is a 5.3-fold recovery and it
 brings 4,004 extra precursors and 160 extra protein groups, so alkylation is
 plainly the dominant effect; the shortfall against 18% is unexplained and could
 be incomplete alkylation, a different tissue's cysteine content, or a second
 cysteine species. Codex's stricter bar ("15–20% compelling, 3–4% not enough")
 is met in the middle, so the conclusion is stated at that strength.
 
-**The frozen S08 reference should be re-cut.** 33,330 was measured with the
+**The frozen IH1 reference should be re-cut.** 33,330 was measured with the
 wrong alkylation assumption; 37,334 is the honest number for this sample.
 
 ### The Astral file's provenance, and a conflict with its paper
@@ -299,10 +299,10 @@ chemistry may not be the arm this run came from. What is not in doubt is how the
 file must be searched: **cysteine free, which is what the benchmark does.**
 
 **Consequence for the project.** The Astral benchmark is atypical — nearly all
-real DIA data are alkylated, as S08 is. Tuning against it risks fitting an
+real DIA data are alkylated, as IH1 is. Tuning against it risks fitting an
 unusual case, and the free-cysteine correction above matters far less in ordinary
 use than its effect size here suggests: on an alkylated library it is a no-op by
-construction. S08 is the more representative of the two benchmarks.
+construction. IH1 is the more representative of the two benchmarks.
 
 ## Finding C: fixing it would not recover the DIA-NN gap
 
@@ -347,10 +347,10 @@ because the effect saturates and a linear n × 0.034 would overcorrect:
 Cross-validated by fitting on one dataset and applying to the other:
 
 ```
-Astral  cysteine-peptide |residual| p95   3.193 -> 2.416 min   (offset fitted on S08)
-S08     cysteine-peptide |residual| p95   3.327 -> 2.678 min   (offset fitted on Astral)
+Astral  cysteine-peptide |residual| p95   3.193 -> 2.416 min   (offset fitted on IH1)
+IH1     cysteine-peptide |residual| p95   3.327 -> 2.678 min   (offset fitted on Astral)
 Astral  all-peptide p95                   2.540 -> 2.261 min
-S08     all-peptide p95                   2.237 -> 2.209 min
+IH1     all-peptide p95                   2.237 -> 2.209 min
 ```
 
 Two gradients, two instruments, held out from each other. That is the transfer

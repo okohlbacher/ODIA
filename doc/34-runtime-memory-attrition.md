@@ -1,6 +1,6 @@
 # Where the 6 hours and the 1.5 TiB went
 
-S08 diaPASEF, our 4,991,901-target library (9,617,705 with decoys),
+IH1 diaPASEF, our 4,991,901-target library (9,617,705 with decoys),
 `-threads 96 -live_memory_gb 900 -rt_seed cirt -rt_window 60`, dax, exit 0.
 
 **Read the whole document against one fact: the RT seed refused.** The tool

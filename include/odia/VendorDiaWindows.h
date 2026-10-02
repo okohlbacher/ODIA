@@ -12,7 +12,7 @@ namespace ODIA
   /// cannot: the converted file carries each window's mobility POSITION and no
   /// bounds at all -- `ion_mobility_lower_limit` and `_upper_limit` are absent
   /// from the schema, not merely null. Deriving the split as the midpoint
-  /// between two positions is exact only for equally wide windows, and on S08
+  /// between two positions is exact only for equally wide windows, and on IH1
   /// ten of twelve groups are not (doc/69: the derived boundary is off by
   /// +0.0498 at group 1 and -0.0845 at group 12, against a 0.059 mobility
   /// window).

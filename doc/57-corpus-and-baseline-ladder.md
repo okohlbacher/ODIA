@@ -95,4 +95,4 @@ and why `ent_hard` being 17 matters.
 2. Rungs 3 and 4 need torch, so a GPU node (spock or data), not dax.
 3. The entrapment contrast run alongside the shifted one, since they answer
    different questions and only their disagreement is informative.
-4. S30 stays locked. It has been converted and not touched.
+4. IH2 stays locked. It has been converted and not touched.

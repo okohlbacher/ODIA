@@ -1,6 +1,6 @@
 # The mobility boundary is a midpoint, and the windows are not symmetric
 
-S08 co-packs two isolation windows into every MS2 frame, separated only in ion
+IH1 co-packs two isolation windows into every MS2 frame, separated only in ion
 mobility. The mzpeak conversion carries each window's mobility POSITION
 (`ion_mobility_value`) but not its bounds -- `ion_mobility_lower_limit` and
 `_upper_limit` do not exist in the schema at all, over all 32,210 entries. So
@@ -8,7 +8,7 @@ mobility. The mzpeak conversion carries each window's mobility POSITION
 (`MobilityBands.cpp`), which is what its comment says it does.
 
 That rule is exact only when the two co-packed windows are equally wide in
-mobility. On S08 they are not, and the error is measurable.
+mobility. On IH1 they are not, and the error is measurable.
 
 ## The measurement
 
@@ -61,7 +61,7 @@ derivation -- except the derivation did not refuse, it succeeded and was wrong.
 carry them, and neither engine emitted the scheme, so no comparison was
 possible in either direction. `-out_windows` exists now for that reason.
 
-**The fixture cannot show it.** Measured first on `s08_6x60.mzpeak`, every one
+**The fixture cannot show it.** Measured first on `ih1_6x60.mzpeak`, every one
 of the 24 windows came back with `im_low = -inf, im_high = +inf`, which reads
 as "ODIA collapsed the 2-D geometry" -- a much more dramatic and completely
 wrong conclusion. The fixture has exactly **one** selected ion and one
@@ -83,7 +83,7 @@ The claim above -- that the midpoint is "the best available guess from what the
 mzpeak carries" -- is **wrong, and was corrected the same day**. The conversion
 does not lose the bands. It keeps them, in the embedded vendor method:
 
-    vendor/1305.m/diaSettings.diasqlite  ->  DiaWindowsSpecification
+    vendor/<method>.m/diaSettings.diasqlite  ->  DiaWindowsSpecification
     (Id, Type, CycleId, OneOverK0Start, OneOverK0End, IsolationMz,
      IsolationWidth, CollisionEnergy)          25 rows
 

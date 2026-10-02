@@ -5,7 +5,7 @@ here once, so that no script has to remember it:
 
   * The modification alias. DIA-NN writes `C(UniMod:4)`; ODIA's library writes
     `C(Carbamidomethyl)`. A verbatim join drops 3,902 of DIA-NN's 39,149
-    confident S08 precursors -- 10.0% -- and reports nothing. The same alias was
+    confident IH1 precursors -- 10.0% -- and reports nothing. The same alias was
     copy-pasted into 25 scripts under 4 different variable names. Measured
     2026-08-27 on the XIC: 89.74% overlap verbatim, 100.000% aliased.
 

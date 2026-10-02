@@ -72,7 +72,7 @@ int main()
 
   // --- the evaluator measures what it claims to measure -------------------
   {
-    // A pure -9 ppm offset with a +3 ppm/e-fold slope, the S08 shape.
+    // A pure -9 ppm offset with a +3 ppm/e-fold slope, the IH1 shape.
     const auto rs = synth(rng, 6000, -9.0, 3.0, 4.0);
 
     const double none = ODIA::MassCalibration::systematicResidualPpm(

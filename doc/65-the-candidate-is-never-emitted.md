@@ -223,7 +223,7 @@ standard deviation of **23.6 cycles (32.7 s)**.
 Keeping 95% costs +-48 cycles, which removes only a quarter of the search space.
 The prior is real but weak, and the trade is poor while 41.7 points are already
 being lost. This is also the approved plan's `-rt_window_p95_factor` item: the
-measurement says it is worth little on S08.
+measurement says it is worth little on IH1.
 
 ## Still open
 

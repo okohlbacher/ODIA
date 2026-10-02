@@ -1,6 +1,6 @@
 # The 33% we never extract, and whether the mass calibration is right
 
-S08, our library, the 2026-08-18 run (14,167 IDs, 2h02, 76.5 GiB). Truth is
+IH1, our library, the 2026-08-18 run (14,167 IDs, 2h02, 76.5 GiB). Truth is
 DIA-NN's 37,557 confident precursors; 33,749 of them exist in our library.
 
 ```

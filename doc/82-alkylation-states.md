@@ -1,6 +1,6 @@
 # 82 — Alkylation states: the audit, the defect, and the corrected baseline
 
-2026-09-01. Trigger: the trace-forensics round found the S08 DIA-NN reference
+2026-09-01. Trigger: the trace-forensics round found the IH1 DIA-NN reference
 had searched cysteine UNMODIFIED. This document is the project-wide audit
 (verdicts BY MASS, never by id strings: 400 sampled cysteine precursors per
 library tested against unmodified vs +57.02146/Cys), the root cause, and the
@@ -12,21 +12,21 @@ required parameters going forward.
 |---|---|---|
 | dn_pred_cam.parquet | samelib arms + corrected DIA-NN ref | **CAM** (400/400, 0 free) |
 | mix10k_acq_lib.parquet | mix10k fixture arms | **CAM** (400/400) |
-| human_v2.parquet | ODIA own-lib e2e (S08) | **CAM** (400/400) |
+| human_v2.parquet | ODIA own-lib e2e (IH1) | **CAM** (400/400) |
 | astral_mix_lib.parquet | Astral arms (ODIA) | **CAM** (400/400) |
 | corpus_lib.parquet | trace-model corpus era | **CAM** (400/400) |
-| s08_targets_osw.tsv | OpenSWATH S08 | **CAM** (2,580 Carbamidomethyl annotations) |
+| ih1_targets_osw.tsv | OpenSWATH IH1 | **CAM** (2,580 Carbamidomethyl annotations) |
 | astral_osw.tsv | OpenSWATH Astral | **CAM-FREE — STALE**: 0 annotations in 130,692 rows; Mag-Net-era artifact (that sample had free thiols, doc/30); NOT comparable to the current neat sample |
-| frozen DIA-NN S08 reference (33,330) | the benchmark denominator | **CAM-FREE — THE DEFECT** (400/400 cysteine matches at unmodified mass) |
+| frozen DIA-NN IH1 reference (33,330) | the benchmark denominator | **CAM-FREE — THE DEFECT** (400/400 cysteine matches at unmodified mass) |
 
-Every ODIA-side arm ever measured on S08/mix/Astral searched the correct
-chemistry. The defect is confined to the frozen S08 DIA-NN reference (and the
+Every ODIA-side arm ever measured on IH1/mix/Astral searched the correct
+chemistry. The defect is confined to the frozen IH1 DIA-NN reference (and the
 stale Mag-Net-era OSW Astral library, already superseded by policy).
 
 ## Where it happened, and why
 
 Phase: the REFERENCE'S LIBRARY GENERATION, before this project's second
-attempt began. `shared/ref/diann/how_s08_was_run.sh` searched
+attempt began. `shared/ref/diann/how_ih1_was_run.sh` searched
 `full_lib.predicted.speclib`, a library predicted WITHOUT `--unimod4`.
 DIA-NN's COMMAND LINE does not apply carbamidomethylation by default (the GUI
 pre-checks it; the CLI does not), so the omission was silent. It was even
@@ -55,16 +55,16 @@ and the "36% missed" framing carry the caveat). 60.1% of the P1 port's
   DIA-NN 2.0 accepts the library as parquet.
 - **ODIA / DIALibraryGenerator**: CAM is the shipped default — every audited
   ODIA library carries it. No action.
-- **OpenSWATH**: S08 conversion (s08_targets_osw.tsv) is CAM-correct;
+- **OpenSWATH**: IH1 conversion (ih1_targets_osw.tsv) is CAM-correct;
   astral_osw.tsv must be regenerated from a CAM source before any new Astral
   OSW number is quoted.
-- **Samples**: S08/S30 (AGXT liver diaPASEF) and Astral NEAT are
+- **Samples**: IH1/IH2 (in-house diaPASEF) and Astral NEAT are
   carbamidomethylated preparations. The retired Mag-Net Astral file was the
   free-thiol exception and is gone from the benchmark (2026-08-17 policy).
 
 ## The corrected baseline
 
-The corrected S08 DIA-NN reference is being computed with the identical
+The corrected IH1 DIA-NN reference is being computed with the identical
 recorded command and the CAM library (dn_pred_cam.parquet — the same library
 ODIA's samelib arms search, making the corrected comparison same-library AND
 same-chemistry). The corrected four-tool table lands in this document's
@@ -74,13 +74,13 @@ reproducing historical comparisons.**
 
 ## The corrected baseline (measured 2026-09-01, all arms CAM-correct)
 
-**The corrected reference:** DIA-NN on S08 with the CAM library = **37,334**
+**The corrected reference:** DIA-NN on IH1 with the CAM library = **37,334**
 precursors at 1% FDR (vs the retired CAM-free 33,330; +12.0% = the cysteine
 hole filled: 9.3% of accepted IDs are now cysteine-containing, vs 1.9%
 before). Its entrapment FDP at the operating point is **1.13%** — DIA-NN is
 essentially FDR-calibrated on this data. 5,539 genes / 4,943 protein groups.
 
-**The table** (S08 unless noted; matched entrapment FDP cells as t/e;
+**The table** (IH1 unless noted; matched entrapment FDP cells as t/e;
 r = 0.1464 shared library, 0.1465 human_v2):
 
 | arm | nominal q<=0.01 (true FDP at op) | FDP<=2% | FDP<=3% | FDP<=5% | recall vs 37,334 |

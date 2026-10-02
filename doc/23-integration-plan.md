@@ -90,7 +90,7 @@ and the cleanest thing this project has.
                                  entrapment FDP, never on counts.
   S2  MEMORY + TIMING            tcmalloc (P1) and the phase breakdown (P2).
                                  Cheap, measurable, and independent of S1.
-  S3  TWO INSTRUMENTS            S08 at the known-good configuration. Running now.
+  S3  TWO INSTRUMENTS            IH1 at the known-good configuration. Running now.
                                  Everything to date is Astral-only.
   S4  PASS-1 YIELD               pass 1 contributes 554 of 3,625; the refit does
                                  the rest. Find out why before adding features.

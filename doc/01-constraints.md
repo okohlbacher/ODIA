@@ -180,7 +180,7 @@ spectra_data/spectra_peaks
 ```
 
 So the chunked path appears to fail and fall back to point. Cause unknown;
-needs the converter's authors. This also explains the `S08_diaPASEF` size
+needs the converter's authors. This also explains the `IH1_diaPASEF` size
 anomaly — 13 GB of mzPeak against 1.3 GB of mzML is what the point layout costs
 at 20 bytes per peak with no chunk-level encoding.
 
@@ -303,7 +303,7 @@ so benchmarks run directly on the node for now.
 |---|---|---|---|---|
 | `12_80` | Orbitrap DIA | 244 MB | 130 MB | 13 009 |
 | `astral` | Thermo Orbitrap Astral | 6.0 GB | 3.2 GB | 307 590 |
-| `S08_diaPASEF` | Bruker timsTOF diaPASEF | 1.3 GB | **13 GB** | — |
+| `IH1_diaPASEF` | Bruker timsTOF diaPASEF | 1.3 GB | **13 GB** | — |
 
 The diaPASEF pair inverts the usual ratio: the mzPeak archive is ten times the
 mzML. Worth explaining before any storage or speed claim is made — the mzML is

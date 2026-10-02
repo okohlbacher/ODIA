@@ -356,7 +356,7 @@ protected:
     // supplies it. Naming a number up front is a guess about the instrument, and
     // a wrong guess is expensive in both directions -- too wide admits
     // interference, too narrow discards real fragments before anything can score
-    // them. Measured on S08: target-minus-decoy fragment presence falls
+    // them. Measured on IH1: target-minus-decoy fragment presence falls
     // monotonically with tolerance (0.083 at 10 ppm, 0.051 at 20, 0.034 at 30,
     // 0.019 at 50), and +/-10 CENTRED on the fitted -9.8 measured x1.13 overall
     // and x1.24 in the weakest abundance decile -- while +/-10 about zero keeps
@@ -422,7 +422,7 @@ protected:
                           "direction nothing documents: the MASS fit is sampled through a gate "
                           "keyed on the library's MOBILITY, so a library whose 1/K0 column is "
                           "systematically off loses those precursors from the mass sample "
-                          "entirely. Measured on S08: an affine edit displacing 1/K0 by +0.0224 "
+                          "entirely. Measured on IH1: an affine edit displacing 1/K0 by +0.0224 "
                           "-- 2.24x this window -- put 79.06%% of 500,000 targets outside the "
                           "probe and flipped the mass gate from PASSED (ratio 0.186) to FAILED "
                           "(0.252), which cost the run its calibrated window. 0 disables the "
@@ -437,7 +437,7 @@ protected:
     registerStringOption_("im_prior", "<profile>", "timstof",
                           "Per-charge affine prior applied to the LIBRARY's predicted 1/K0 "
                           "before pass 1, im' = a_z*im + b_z. The peptdeep prediction sits "
-                          "systematically LOW on the vendor axis (S08 consensus, n=1614: "
+                          "systematically LOW on the vendor axis (IH1 consensus, n=1614: "
                           "median +0.021, i.e. +2.1%, sloping +3.1% at 1/K0 0.7 to +0.9% at "
                           "1.4), and the runtime calibration cannot absorb that alone: pass 1 "
                           "extracts and harvests its anchors AT the biased coordinates, and a "
@@ -445,9 +445,9 @@ protected:
                           "scale error. DIA-NN's raw predictor carries the same sign of error "
                           "(+0.008) and resolves it the same way, by calibrating predictions "
                           "per run.\n\n"
-                          "'timstof' (= timstof-s08-v1): z2 affine 0.94060,0.08319; z3 "
+                          "'timstof' (= timstof-ih1-v1): z2 affine 0.94060,0.08319; z3 "
                           "CONSTANT +0.02445; z4 CONSTANT +0.02868; z1 and z>=5 identity. "
-                          "Fitted on 39,115 q<=0.01 anchors (shared_rt_coords_s08), y = the "
+                          "Fitted on 39,115 q<=0.01 anchors (shared_rt_coords_ih1), y = the "
                           "vendor axis at the reported apex (library-invariant to 0.0009 "
                           "median), NOT any Predicted.IM. z3/z4 ship constants because their "
                           "slopes are not identifiable across anchor sets; z2's slope carries "
@@ -502,7 +502,7 @@ protected:
                           "Bound on the mobility-linear term of the 1/K0 recalibration. The "
                           "CCS->1/K0 conversion is a pure proportionality, so a scale error in "
                           "its coefficient shows up as a slope: measured -0.096 (charge 2) and "
-                          "-0.113 (charge 3) on S08, i.e. a ~10% coefficient error, which moved "
+                          "-0.113 (charge 3) on IH1, i.e. a ~10% coefficient error, which moved "
                           "the residual from +0.017 at 1/K0 0.7 to -0.030 at 1.3. Set 0 to "
                           "disable the term and fit a constant offset only.",
                           false, true);
@@ -512,7 +512,7 @@ protected:
                        "than no correction at all. The slope is a scale error in the CCS->1/K0 "
                        "coefficient and so is shared by every charge; a constant offset is not, "
                        "and is still fitted per charge. Measured need: charge 3 brings 93 anchors "
-                       "against a 120 minimum on S08 and is the charge with the WORSE residual. "
+                       "against a 120 minimum on IH1 and is the charge with the WORSE residual. "
                        "DEFAULTED OFF: it corrects charge 3 and improves the out-of-fold 1/K0 "
                        "error 14.1%% -> 18.8%%, and still COSTS 20 identifications (1232 -> 1212) "
                        "-- the pooled slope is dominated by charge 2's 378 anchors against charge "
@@ -523,7 +523,7 @@ protected:
                           "error it removes OUT OF FOLD is at or below this. The engine has "
                           "always computed that number over 4 folds and only PRINTED it, after "
                           "the gate had already decided on a peakedness heuristic -- which on "
-                          "S08 reported GATE PASSED for corrections removing 67.1%%, 4.7%% and "
+                          "IH1 reported GATE PASSED for corrections removing 67.1%%, 4.7%% and "
                           "-5.5%% alike. 0 refuses only corrections that make the axis WORSE on "
                           "held-out residuals. It is a threshold and is named as one: it treats "
                           "-0.1%% and -50%% identically, and the principled version is a "
@@ -534,7 +534,7 @@ protected:
                        "A charge gets its own 1/K0 curve only with at least this many anchors; "
                        "below it the charge is left UNCORRECTED. Exposed because the floor sits "
                        "INSIDE comparisons that are read as single-factor: widening pass 1's "
-                       "mobility window on S08 took charge 3 from 106 anchors (NOT APPLIED) to "
+                       "mobility window on IH1 took charge 3 from 106 anchors (NOT APPLIED) to "
                        "157 (APPLIED), so the window change and a discrete gate flip moved "
                        "together and the identification delta cannot be attributed to either. "
                        "Set it below the narrower arm's count to hold the flip fixed and measure "
@@ -550,7 +550,7 @@ protected:
                           "any positive gate admits targets and decoys at different rates "
                           "(4.13:1 at 0.5, 1.65:1 at 0.01) and an asymmetric treatment makes "
                           "the run's own decoy q-values inadmissible. A per-charge curve "
-                          "cannot express per-precursor 1/K0 error: on S08, 41% of DIA-NN's ids "
+                          "cannot express per-precursor 1/K0 error: on IH1, 41% of DIA-NN's ids "
                           "that ODIA never picks sit >0.025 from the library value after the "
                           "curve, and centring the slice on the truth at unchanged width gives "
                           "71% of them a peptide-quality candidate (sham-controlled; "
@@ -582,7 +582,7 @@ protected:
                           "traces are built once at precursor_im_window * ms1_im_scale while that scale "
                           "is in force and reused in pass 2, the MS1 mobility band of the whole run as "
                           "well. Default 1.0, restored 2026-09-05: 57d72a1 had set 2.0 without a full-run "
-                          "A/B, and the single-flag A/B on one binary (4d4d73b8; S08 + dn_pred_cam, "
+                          "A/B, and the single-flag A/B on one binary (4d4d73b8; IH1 + dn_pred_cam, "
                           "-im_prior off, -im_min_anchors_per_charge 120) reads w1_ctl70 (1.0) 16,965 / "
                           "19,844 / 23,160 precursors at q<=0.01 / 0.02 / 0.05 against f1_ctl (2.0) 9,150 "
                           "/ 15,081 / 19,888, +13.07% median at matched entrapment budget over FDP 2-10% "
@@ -663,7 +663,7 @@ protected:
                        "Cheap because the candidate picker is RT-agnostic and "
                        "RT_DELTA is the only map-dependent sub-score, so a round "
                        "recomputes one column rather than re-extracting the run. "
-                       "DEFAULT 0 -- MEASURED AND IT DOES NOT HELP: on S08 it took "
+                       "DEFAULT 0 -- MEASURED AND IT DOES NOT HELP: on IH1 it took "
                        "the map's p95 from 104.6 to 87.4 s and left best-ranked-right "
                        "unchanged to the decimal (75.0%, 77.4%) while costing 1.8-3.0 "
                        "points of precision. The map's real consumer is the pass-2 "
@@ -699,7 +699,7 @@ protected:
     registerDoubleOption_("log_sn_floor_frac", "<frac>", 0.01,
                           "Background floor for var_log_sn, as a fraction of the candidate "
                           "apex. It CAPS the reported signal-to-noise at 1/frac, so the "
-                          "historical 0.01 caps at 100:1.\n\nMeasured on S08: all 21,055 "
+                          "historical 0.01 caps at 100:1.\n\nMeasured on IH1: all 21,055 "
                           "known-present precursors sat at that cap -- var_log_sn took 10 "
                           "distinct values and its p10, p50 and p90 were all exactly "
                           "log(100) = 4.605. The floor introduced to stop a decoy in an empty "
@@ -771,7 +771,7 @@ protected:
                        "Drop library precursors carrying fewer than <n> fragments, applied to "
                        "targets AND decoys. The decoy builder already refuses to go below the "
                        "target bar, but the target side never re-checks after the MS2 model's "
-                       "intensity floor prunes fragments, so the S08 library holds 366,084 "
+                       "intensity floor prunes fragments, so the IH1 library holds 366,084 "
                        "targets (7.3%) at 0-2 fragments against ZERO decoys there -- a null "
                        "drawn from precursors with strictly more evidence than the targets it "
                        "prices. It is also where the library correlation is degenerate: two "
@@ -832,7 +832,7 @@ protected:
                           "peaks inside +/-precursor_im_window of the LIBRARY value. If the "
                           "library is systematically off, the observable mass is asymmetric and "
                           "the centroid is pulled toward the window centre, so the measured "
-                          "offset is biased toward zero. Measured on S08: the seed reported "
+                          "offset is biased toward zero. Measured on IH1: the seed reported "
                           "+0.0044 through a +/-0.025 window while the same run's pass-2 "
                           "calibration, fitted from thousands of anchors, found +0.0199 -- a "
                           "4.5x attenuation. 1 disables the widening.\n\nThe seed is a few "
@@ -857,7 +857,7 @@ protected:
                           "fraction of the run's retention-time span. A seed whose residual is "
                           "a tenth of the gradient does not restrict anything: pass 1 then "
                           "extracts essentially the whole run for every precursor, which is a "
-                          "15.6x point count, ~931 GiB and four hours on S08 (doc/34) for a "
+                          "15.6x point count, ~931 GiB and four hours on IH1 (doc/34) for a "
                           "result the tool itself labels a smoke test. Failing in 3 minutes is "
                           "strictly better than failing in 6 hours. Set 0 to disable the check.",
                           false, true);
@@ -894,7 +894,7 @@ protected:
                           "the pass whose memory is proportional to how many survive. Runs "
                           "BETWEEN the passes, so it inherits pass 1's retention-time map and "
                           "calibrated fragment window -- doc/08's design ran before pass 1, had "
-                          "neither, and was refuted on S08 (99.7% of precursors at maximum "
+                          "neither, and was refuted on IH1 (99.7% of precursors at maximum "
                           "depth, and the two non-maximum statistics ranked WORSE than random). "
                           "doc/08 named the cause: depth is a MAXIMUM over ~32,210 spectra and "
                           "an extreme-value statistic saturates whatever the per-draw "
@@ -977,7 +977,7 @@ protected:
                   "Detect candidate peaks as local maxima of the summed trace, the "
                   "way this tool used to. The default detects them by pairwise "
                   "correlation among the precursor's own fragments (DIA-NN's "
-                  "Searcher::peaks), which on S08 raised availability of the true "
+                  "Searcher::peaks), which on IH1 raised availability of the true "
                   "peak from 69.1% to 97.4%, rank-1 accuracy from 40.7% to 75.7% "
                   "and precision from 21.4% to 89.1%. This flag restores the old "
                   "behaviour for comparison.", true);
@@ -993,7 +993,7 @@ protected:
     registerDoubleOption_("min_library_corr", "<x>", -1.0,
                           "Reject peak groups whose observed spectrum correlates "
                           "with the library below this. -1 disables it. Measured on "
-                          "S08 against DIA-NN: median 0.582 for calls within 30 s of "
+                          "IH1 against DIA-NN: median 0.582 for calls within 30 s of "
                           "the true apex, -0.036 for those that miss, -0.032 for "
                           "decoys -- so a misplaced target is indistinguishable from "
                           "a decoy here, which is why target-decoy FDR does not catch "
@@ -1106,7 +1106,7 @@ protected:
                           "intensity there is at least this fraction of its maximum nearby. "
                           "DIA-NN's PeakApexEvidence, and the second-largest picker filter "
                           "after -min_corr_score: 36.9M rejections against 50.7M on a 107.6M "
-                          "scan-position S08 run. At 0.99 it demands the position be within 1% "
+                          "scan-position IH1 run. At 0.99 it demands the position be within 1% "
                           "of the local maximum, which on a noisy trace is nearly exact "
                           "equality.",
                           false, true);
@@ -1114,7 +1114,7 @@ protected:
                        "A candidate peak group is dropped unless at least this many of its "
                        "fragments have signal at the apex. "
                        "\n\nDEFAULT LOWERED 3 -> 1 on 2026-08-09, measured on both files: "
-                       "Astral 4,969 -> 5,025 and S08 1,306 -> 1,342 (at 2 it is 1,340, so the "
+                       "Astral 4,969 -> 5,025 and IH1 1,306 -> 1,342 (at 2 it is 1,340, so the "
                        "curve is flat and 3 was simply too strict). The reason it costs nothing "
                        "to relax is that `var_fragment_coverage` IS at_apex/tc -- the classifier "
                        "already has the quantity this gate thresholds on, so the gate was "
@@ -1124,7 +1124,7 @@ protected:
                        "\n\nCoupled to -fragment_ppm in a way "
                        "that is easy to miss: narrowing the mass window leaves fewer "
                        "transitions carrying any signal, so precursors fall below this gate "
-                       "and yield no candidate at all. Measured on S08, 15 ppm against 6 ppm "
+                       "and yield no candidate at all. Measured on IH1, 15 ppm against 6 ppm "
                        "took precursors-with-no-candidate from 155 to 410 while scan positions "
                        "evaluated fell 15%. Tune the two together or not at all.",
                        false, true);
@@ -1160,7 +1160,7 @@ protected:
                           "on far more background than in targeted MRM.", false, true);
     registerDoubleOption_("openswath_peak_width", "<seconds>", 0.0,
                           "Expected peak width for -picker openswath, or 0 for its default. "
-                          "S08's peaks are ~20-30 s.", false, true);
+                          "IH1's peaks are ~20-30 s.", false, true);
     registerFlag_("openswath_gauss",
                   "Gaussian rather than Savitzky-Golay smoothing in -picker openswath.", true);
     registerStringOption_("rt_spread_weight", "<how>", "area",
@@ -1193,7 +1193,7 @@ protected:
                        "-score_half_cycles is 0. Otherwise the sub-scores no longer read this "
                        "interval at all: it governs quantification and the reported RT range, "
                        "where a minimum that truncates a peak loses area. 7 cycles is 9.7 s on "
-                       "S08, about 2.8x the measured 3.5 s FWHM.", false, true);
+                       "IH1, about 2.8x the measured 3.5 s FWHM.", false, true);
     registerIntOption_("gbt_n_trees", "<n>", 0,
                        "Boosting rounds for -classifier gbt; 0 keeps the model default of "
                        "120. Pairs with -gbt_max_depth 2: shallow trees added additively "
@@ -1286,7 +1286,7 @@ protected:
                           "intensity, so it asks targets and decoys the same question, unlike "
                           "the two intensity-weighted changes reverted before it. 0 leaves "
                           "the column NaN and the constant-column guard drops it. DIA-NN "
-                          "tightens to 0.45x and 0.20x of the window; on S08's 10 ppm that is "
+                          "tightens to 0.45x and 0.20x of the window; on IH1's 10 ppm that is "
                           "4.5 and 2.0.", false, true);
     registerDoubleOption_("select_library_weight", "<w>", 0.0,
                           "Weight of library-intensity agreement when the candidate cap "
@@ -1508,7 +1508,7 @@ protected:
                           "in process. auto: KEEP them wherever the extractor collected "
                           "per-fragment deviations. It used to ablate them when the mass "
                           "calibration succeeded; that cost 430 identifications on Astral and "
-                          "117 on S08, because a CENTRED residual is what makes the feature "
+                          "117 on IH1, because a CENTRED residual is what makes the feature "
                           "discriminating rather than what makes it redundant. old auto: "
                           "sequences; off: do not. "
                           "\n\nThe map is a monotone function of the library's iRT and cannot beat "
@@ -1525,7 +1525,7 @@ protected:
                           "because a refinement nobody enables is a refinement nobody gets. "
                           "\n\nmap_only: iterate the ANCHORS without the sequence model -- "
                           "re-derive anchors from the current scoring, refit the map, re-score, "
-                          "repeat. That half is separable and on S08 it is the half that works: "
+                          "repeat. That half is separable and on IH1 it is the half that works: "
                           "the window for 99% coverage fell 913.7 -> 281.0 s between rounds purely "
                           "from better anchors, while the ridge improved the median and WIDENED "
                           "the p99 that sets the window.",
@@ -1596,7 +1596,7 @@ protected:
                           "auto: only when the fragment mass calibration gate FAILED. "
                           "\n\nMeasured 2026-08-09, and the two files disagree completely. "
                           "Astral, where the gate fails and the window is 50 ppm and uncentred: "
-                          "5,025 -> 5,729, the largest single gain measured on that file. S08, "
+                          "5,025 -> 5,729, the largest single gain measured on that file. IH1, "
                           "where the gate passes and the window is 10 ppm centred on -9.35 with "
                           "a per-fragment sigma of 1.10: 1,342 -> 1,168, and leave-one-out says "
                           "both are harmful there (spread alone 1,315, accuracy alone 1,285). "
@@ -1634,13 +1634,13 @@ protected:
                   "quantile-matched to the target distribution and applied in canonical order, "
                   "never by score. "
                   "\n\nON BY DEFAULT since 2026-08-10; this flag turns it OFF. It was worth +653 "
-                  "on Astral and +122 on S08, and the entrapment fixture measures it CONSERVATIVE "
+                  "on Astral and +122 on IH1, and the entrapment fixture measures it CONSERVATIVE "
                   "-- FDP 0.0020 against a claimed 0.01 -- so leaving it opt-in meant every "
                   "default run paid for an asymmetry we know how to remove.", true);
     registerDoubleOption_("mass_sigma_multiple", "<n>", 8.0,
                           "Fragment window as this many robust sigmas of the corrected "
                           "residual, when the mass calibration fits one. Swept 1-10 on both "
-                          "benchmark files: S08 plateaus from 4, Astral never turns over, 8 "
+                          "benchmark files: IH1 plateaus from 4, Astral never turns over, 8 "
                           "maximises the worst case. PROVISIONAL -- on Astral the "
                           "uncalibrated 50 ppm fallback still beats every swept width "
                           "(2,078 identifications against 1,222 at k=10), and the sigma this "
@@ -1664,14 +1664,14 @@ protected:
                           "MS1 mobility half-width, as a multiple of -precursor_im_window. "
                           "MS1 ions are not mobility-selected by an isolation window, so the "
                           "precursor's MS1 mobility spread is wider than its fragments'. "
-                          "Measured on S08/lib_targets: 2.0 gives 1306, 1.0 gives 1230. Set 0 "
+                          "Measured on IH1/lib_targets: 2.0 gives 1306, 1.0 gives 1230. Set 0 "
                           "to disable the MS1 mobility gate entirely.",
                           false, true);
     registerFlag_("no_ms1",
                   "Do not read MS1 or compute var_ms1_coelution. MS1/MS2 co-elution is the "
                   "only sub-score that does not read MS2 fragment traces, and so the only one "
                   "a co-eluting interferent cannot corrupt along with the rest; measured at "
-                  "13.7x enrichment in its top bin and 1.4-1.5x in bulk on S08 + v6_50k. Use "
+                  "13.7x enrichment in its top bin and 1.4-1.5x in bulk on IH1 + v6_50k. Use "
                   "this to A/B it or on a run whose MS1 is not worth the pass.",
                   true);
   }
@@ -1846,7 +1846,7 @@ protected:
       // It shipped at 2x on an unmeasured assumption. I then set it to 1x on a
       // consistency argument -- the two traces being correlated should sample
       // one ion population -- and that cost 76 identifications on
-      // S08/lib_targets (1306 -> 1230). The consistency argument is sound about
+      // IH1/lib_targets (1306 -> 1230). The consistency argument is sound about
       // what the correlation MEANS and wrong about what it is worth; MS1 ions
       // are not mobility-selected by an isolation window, so the precursor's
       // MS1 mobility spread is genuinely wider than its fragments'.
@@ -2149,7 +2149,7 @@ protected:
       std::map<int, std::pair<double, double>> prior;
       if (spec == "timstof")
       {
-        // timstof-s08-v1: fitted on shared_rt_coords_s08.parquet -- 39,115
+        // timstof-ih1-v1: fitted on shared_rt_coords_ih1.parquet -- 39,115
         // q<=0.01 precursors, 24x the consensus set the first draft used.
         // y = DIA-NN's REPORTED apex IM (the vendor axis; verified
         // library-invariant to median |delta| 0.0009 over 28,463 cross-search
@@ -2299,14 +2299,14 @@ protected:
 
     // The gate the whole seed exists for. Reaching pass 1 with no map means
     // every precursor is searched over the entire gradient -- doc/34 measured
-    // what that costs on S08 (111.5 G points, 931 GiB live, 4 h) and what it
+    // what that costs on IH1 (111.5 G points, 931 GiB live, 4 h) and what it
     // buys (nothing: var_rt_delta is dropped as uninformative, and the run is a
     // smoke test). Refusing here is not conservatism, it is the cheaper failure.
     if (!external_irt_ && !getFlag_("allow_uncalibrated"))
     {
       writeLogError_(
         "No retention-time map was established, so pass 1 would search the WHOLE "
-        "gradient for every precursor. On S08 that is 15.6x the extracted points, "
+        "gradient for every precursor. On IH1 that is 15.6x the extracted points, "
         "~931 GiB live and about four hours, for a result with no RT feature -- the "
         "tool would label its own output a smoke test. Refusing now instead.\n"
         "  Supply -irt_slope/-irt_intercept, or -rt_map_in from an earlier run on "
@@ -2396,7 +2396,7 @@ protected:
       // external_irt_, NOT false. When -irt_slope/-irt_intercept were supplied
       // the library's irt was already converted to run seconds above, and
       // extractInto_ reads this flag to decide whether to apply that map --
-      // so passing false applied it a SECOND time. On S08 with the stored v6
+      // so passing false applied it a SECOND time. On IH1 with the stored v6
       // map that is 7.77 * (run seconds) + 733, i.e. ~24,000 s for a 5,400 s
       // gradient: pass 1 extracted from beyond the end of the run and every
       // anchor it could have found was unreachable.
@@ -2820,7 +2820,7 @@ protected:
       ODIA::RtRefiner kept;
       // A FIXED evaluation set, frozen at round 1.
       //
-      // The anchor set grows every round -- 1,183 -> 1,408 on S08 -- so a p99
+      // The anchor set grows every round -- 1,183 -> 1,408 on IH1 -- so a p99
       // measured on the current anchors is measured on a different population
       // each time and cannot be compared across rounds. Round 2's "before" p50
       // came out WORSE than round 1's "after" for exactly this reason, which
@@ -3167,7 +3167,7 @@ protected:
     // The prefilter, HERE and nowhere else.
     //
     // doc/08 put it before pass 1, where it had no retention-time map and no
-    // calibrated fragment window, and it was refuted on S08: 99.7% of
+    // calibrated fragment window, and it was refuted on IH1: 99.7% of
     // precursors reached the maximum depth. doc/08 also named the cause --
     // depth is a MAXIMUM over ~32,210 spectra, and an extreme-value statistic
     // saturates whatever the per-draw probability is. Cutting the number of
@@ -3272,7 +3272,7 @@ protected:
   /// fragment-count bar its target cleared, but the target side never
   /// re-checks after the MS2 model's intensity floor prunes fragments
   /// (LibraryGenerator.cpp:617-626 commits `ranked.size()` unconditionally).
-  /// The two rules disagree, and the S08 library records the disagreement:
+  /// The two rules disagree, and the IH1 library records the disagreement:
   ///
   ///     fragments        0        1        2        3
   ///     targets      5,285  202,178  158,621  148,227
@@ -3366,7 +3366,7 @@ protected:
   /// doc/19's step 1-2, which was designed, measured, and then never wired in.
   ///
   /// What shipped instead reused `PrecursorPrefilter::measure`'s CONTIGUITY
-  /// statistic as the anchor source. That statistic saturates: on S08 it passed
+  /// statistic as the anchor source. That statistic saturates: on IH1 it passed
   /// 286 targets and 286 decoys at >= 3 cycles -- 81% of each class -- so both
   /// fits described noise (p95 602.5 s vs 601.3 s) and the decoy control
   /// correctly refused every threshold. Decoys are peptides that are not in the
@@ -3671,7 +3671,7 @@ protected:
     // calibration reported the seed's 213 target / 205 control anchors and
     // refused every charge for want of 120. The same run before this seed
     // existed probed 1,952 precursors and removed 75% of the mean squared 1/K0
-    // error out of fold. S08 is diaPASEF, so that correction is a separation
+    // error out of fold. IH1 is diaPASEF, so that correction is a separation
     // dimension, not a refinement.
     //
     // The seed's own extraction still needs its models, which is why these are
@@ -3687,7 +3687,7 @@ protected:
     // `Ms1Traces` is DENSE and indexed by precursor, and it is built once
     // (`if (ms1_traces_.empty())`), so the seed's 708-precursor structure
     // survived into the full-library passes and every precursor past index 708
-    // reported "no MS1 available". Measured on S08: MS1_COELUTION went from
+    // reported "no MS1 available". Measured on IH1: MS1_COELUTION went from
     // 896,437 finite values before the blind search existed to 2,187 after --
     // a sub-score doc/17 records at 13.7x enrichment in its top bin, silently
     // dead for every run since.
@@ -4026,7 +4026,7 @@ protected:
     // information. Measured on both files, that reasoning is backwards:
     //
     //   Astral, calibrated, +/-50.3 ppm   ablated 1,553   kept 1,983   (+430)
-    //   S08                                                            (+117)
+    //   IH1                                                            (+117)
     //
     // 430 identifications is 28% of the calibrated total, and it was being
     // spent to remove a feature for being well behaved. A centred residual is
@@ -4039,7 +4039,7 @@ protected:
     const bool mass_on = mode == "on" || mode == "auto";
 
     // var_im_spread is opt-in. See -im_features: it costs 60 identifications on
-    // S08 for a purity gain the entrapment counts cannot establish, so it is
+    // IH1 for a purity gain the entrapment counts cannot establish, so it is
     // built, correct, and NOT shipped on. var_im_delta is unaffected -- that one
     // is a documented feature that was simply never fed.
     if (getStringOption_("im_features") != "spread")
@@ -4052,7 +4052,7 @@ protected:
       // var_mass_survival belongs on this list, not beside it. It is a THIRD
       // draw on the same per-cell deviation planes, so `-mass_features off`
       // must withhold it too -- otherwise the switch that exists because the
-      // mass channel COSTS 174 identifications on S08 is bypassed by a column
+      // mass channel COSTS 174 identifications on IH1 is bypassed by a column
       // added later, and an arm that looks like "does survival help" is really
       // "does re-admitting the mass channel help on the file where it hurts".
       // The first two arms were run before this line existed and measured
@@ -4765,7 +4765,7 @@ protected:
     {
       // "at q <= 0.01", NOT "at 1% FDR". The two are not the same number here and
       // saying so was an overclaim in every run this tool has produced. Measured
-      // by entrapment on S08 with the 9.6M library (doc/46), nominal q maps to
+      // by entrapment on IH1 with the 9.6M library (doc/46), nominal q maps to
       // empirical false-discovery proportion as:
       //
       //     nominal 0.1%  ->  4.36%   (43.6x)
@@ -5804,7 +5804,7 @@ private:
   /// charge curve at pass-2 index build. No q-value gate on purpose: q belongs
   /// after the final extraction, and the library-correlation gate is what the
   /// diagnostic measured the precision of (72% true on pick losses, 96% on
-  /// recovered ids at 0.5, S08, analysis77/pick).
+  /// recovered ids at 0.5, IH1, analysis77/pick).
   void centreFromPass1_(const ODIA::PeakGroupScorer::Result& pass1,
                         const ODIA::Library& library)
   {
@@ -6101,7 +6101,7 @@ private:
     loadTransitionMask_(library);
     // auto resolves to the anchored probe exactly when a scored pass will
     // supply anchors. It is not the default because it is better in principle
-    // -- it is the default because the blind probe was measured on S08 and
+    // -- it is the default because the blind probe was measured on IH1 and
     // found peak density rather than precursors; see MobilityCalibration.h.
     const bool anchored = mode == "anchors" ||
                           (mode == "auto" && (mobility_anchors_expected_ ||
@@ -6142,7 +6142,7 @@ private:
       imc.fragment_ppm_slope_per_1000 = options.fragment_ppm_slope_per_1000;
       imc.fragment_ppm_ref_mz = options.fragment_ppm_ref_mz;
       // The run's own iRT map, so the probe looks only where a precursor should
-      // be. Measured on S08: it takes the data-against-control peakedness margin
+      // be. Measured on IH1: it takes the data-against-control peakedness margin
       // from 1.01x to 1.08x and the charge-2 centre from +0.0060 to +0.0016,
       // where an independent check against DIA-NN's observed 1/K0 says +0.0017.
       // Still short of the 1.25x the gate wants, which is the run's answer, not
@@ -6348,14 +6348,14 @@ private:
       // WIDTH" -- the width estimate is circular (sized from the survivors of
       // the wrong window) and applying it halved an Astral run, but a CENTRE is
       // a mode, robust to that censoring, and re-centring at 0 mis-centres by
-      // the reader's own systematic (~-10.5 ppm on converted S08 data) every
+      // the reader's own systematic (~-10.5 ppm on converted IH1 data) every
       // single time the gate fails. Measured on the matched-regime grid: at
       // 50 ppm, centred vs uncentred was +217 identifications on the raw
       // library (886 vs 669) and +46 on the corrected one (826 vs 780).
       //
       // Guarded exactly as the width path: a valid, uncensored estimate from
       // enough groups. Validated against regressions on the full suite; a
-      // natural gate failure no longer occurs on S08 since the IM prior landed,
+      // natural gate failure no longer occurs on IH1 since the IM prior landed,
       // so the first real-data exercise of this branch will be another
       // instrument -- the log line below is deliberately loud for that day.
       const bool centre_ok = getStringOption_("mass_width_from_ids") != "off" &&

@@ -3,7 +3,7 @@
 ## The defect
 
 ODIA's generated libraries carry a predicted 1/K0 that sits systematically LOW
-on the vendor-calibrated axis. Measured on the 1,614-precursor S08 consensus
+on the vendor-calibrated axis. Measured on the 1,614-precursor IH1 consensus
 (DIA-NN AND OpenSWATH agree a peak exists; membership is peak-evidence-based,
 not mobility-based):
 
@@ -64,7 +64,7 @@ BEFORE anything extracts on it:
     z1, z>=5: identity                  (n=40; predictor slope 0.48 -- ship
                                          nothing where nothing was measured)
 
-* Fitted on `shared_rt_coords_s08.parquet` -- 39,115 q<=0.01 anchors, 24x the
+* Fitted on `shared_rt_coords_ih1.parquet` -- 39,115 q<=0.01 anchors, 24x the
   consensus set. y is the vendor axis at the reported apex, verified
   library-invariant (median |delta| 0.0009 over 28,463 cross-search
   precursors); x verified identical to ODIA's library IM to 0.000000. An
@@ -86,7 +86,7 @@ BEFORE anything extracts on it:
 * On a run with no mobility axis every consumer of library 1/K0 is inert
   (Astral's own log drops var_im_delta as no-information), so the prior is a
   no-op there; the validation includes a byte-identity proof.
-* One instrument (S08 fit, S30 direction check -- S30's own runtime estimate is
+* One instrument (IH1 fit, IH2 direction check -- IH2's own runtime estimate is
   harvest-censored and UNDERSTATES its bias). The profile is named `timstof`
   and is provisional until a second instrument is measured.
 * The runtime stage keeps its job: after the prior it fits the RUN residue.
@@ -102,13 +102,13 @@ BEFORE anything extracts on it:
 
 ## Validation (v2 profile, binary 3b6c4374, pre-registered rules)
 
-**S08 / mix10k (DIA-NN-confident-enriched, the design population): PASS on both
+**IH1 / mix10k (DIA-NN-confident-enriched, the design population): PASS on both
 clauses.** Mechanism: mass-probe centre 0.0000 (on) vs 0.0242 (off); runtime
 MSE-removed 2.3% vs 70.0%; z3 residual +0.0053 = the predicted run part.
 Counts at matched entrapment FDP, e>=10 cells: +180 / +212 / +193 at
 FDP<=5/7.5/10% against a 99-ID band.
 
-**S08 / 500k random (stress case): EQUAL within band.** +93 / +99 / -49 at the
+**IH1 / 500k random (stress case): EQUAL within band.** +93 / +99 / -49 at the
 same cells; probe centre improves 0.0430 -> 0.0142 but misses the <=0.012 rule.
 Known weakness, recorded as open: this library is z4-heavy (213,864 rows under
 a constant fitted on 1,194 anchors of a different population) and 27.5% of its

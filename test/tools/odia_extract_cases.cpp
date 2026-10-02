@@ -39,7 +39,7 @@ namespace
   ///
   /// Spectra are added in acquisition order, which is the contract
   /// SpectrumSource states; a spectrum names the window it was acquired in, so
-  /// several windows can share one cycle (and, as on S08, one peak list).
+  /// several windows can share one cycle (and, as on IH1, one peak list).
   class ScriptedRun : public ODIA::SpectrumSource
   {
   public:
@@ -387,7 +387,7 @@ namespace
 
   /// A peak exactly on the boundary between two co-packed windows.
   ///
-  /// S08 packs two isolation windows into one frame and the reader hands both
+  /// IH1 packs two isolation windows into one frame and the reader hands both
   /// the SAME merged peak list, separated only by a mobility band -- and that
   /// band is derived, not stated: the split is the midpoint between the two
   /// windows' mobility positions, so the bands are adjacent and share their
@@ -406,7 +406,7 @@ namespace
     const auto w1 = run.addWindow(510.001, 520.0, 1.00, 1.20);
     for (int c = 0; c < 3; ++c)
     {
-      // One frame, two windows, one peak list -- as the reader serves S08.
+      // One frame, two windows, one peak list -- as the reader serves IH1.
       for (const auto w : {w0, w1})
       {
         const auto s = run.addSpectrum(w, 100.0 + 10.0 * c);
@@ -436,7 +436,7 @@ namespace
   /// More than 2^32 chromatogram points.
   ///
   /// The CSR offsets used to be uint32 over a flat point array, so extraction
-  /// threw above 2^32 points -- 266,664 precursors at S08's 12 transitions x
+  /// threw above 2^32 points -- 266,664 precursors at IH1's 12 transitions x
   /// 1,342 cycles, against the 4,255,113 precursors Phase 1's own human
   /// library holds. ODIA could not extract against the library it generated,
   /// and the failure was a hard throw rather than a wrong number.
