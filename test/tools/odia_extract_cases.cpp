@@ -22,17 +22,30 @@
 //                 stream: the same cells (a float chunk bound skipped edge
 //                 frames), the same order (Gate C calibrates on arrival
 //                 order), and no more live than the cap
+//   cap_zero_rows an explicit cap survives a byte budget that binds nothing
+//   chunk_matrix  every decode block x chunk count x thread count against an
+//                 INDEPENDENT brute-force oracle, all five planes bitwise, the
+//                 stream order, restricted RT bounds on both sides of float
+//                 rounding, chunks cut between co-packed windows, empty
+//                 spectra, missing acquisitions, no-window / outside-run /
+//                 zero-transition / zero-valid precursors, both caps at once
+//   no_assignments  nothing assigned: every precursor still handed over, empty
 //
 // Usage: odia_extract_cases <case>
 
 #include <odia/ChromatogramExtractor.h>
 #include <odia/SpectrumSource.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <limits>
+#include <set>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace
@@ -88,6 +101,10 @@ namespace
     {
       out.assign(peaks_.begin() + begin, peaks_.begin() + end);
     }
+
+    /// What a spectrum holds, read directly -- for an oracle that must not go
+    /// through the extractor's own decode path.
+    const ODIA::SpectrumPeaks& peakList(std::size_t spectrum) const { return peaks_[spectrum]; }
 
   private:
     std::vector<ODIA::SpectrumInfo> info_;
@@ -507,8 +524,11 @@ namespace
     {
       std::uint32_t precursor = 0, transition_begin = 0;
       std::uint32_t axis = 0, axis_begin = 0, cycles = 0;
+      std::uint32_t transition_count = 0;
       std::vector<float> rt;
       std::vector<std::vector<float>> points;   ///< one per transition
+      /// The residual planes, one per transition, empty when not collected.
+      std::vector<std::vector<float>> ppm_num, ppm_den, im_num, im_den;
     };
 
     void accept(const ODIA::PrecursorChromatogram& c) override
@@ -519,11 +539,22 @@ namespace
       t.axis = c.axis;
       t.axis_begin = c.axis_begin;
       t.cycles = c.cycles;
-      t.rt.assign(c.rt, c.rt + c.cycles);
+      t.transition_count = c.transition_count;
+      if (c.cycles) { t.rt.assign(c.rt, c.rt + c.cycles); }
+      const auto plane = [&](const float* base, std::uint32_t k,
+                             std::vector<std::vector<float>>& into) {
+        const std::uint32_t n = c.pointCount(k);
+        if (base == nullptr || n == 0) { into.emplace_back(); return; }
+        into.emplace_back(base + c.offset[k], base + c.offset[k] + n);
+      };
       for (std::uint32_t k = 0; k < c.transition_count; ++k)
       {
         const std::uint32_t n = c.pointCount(k);
         t.points.emplace_back(n ? c.trace(k) : nullptr, n ? c.trace(k) + n : nullptr);
+        plane(c.ppm_num, k, t.ppm_num);
+        plane(c.ppm_den, k, t.ppm_den);
+        plane(c.im_num, k, t.im_num);
+        plane(c.im_den, k, t.im_den);
       }
       traces.push_back(std::move(t));
     }
@@ -903,6 +934,649 @@ namespace
     check(free_st.chunks == 1 && free_st.peak_live_precursors == 2,
           "a budget alone that binds nothing leaves one chunk");
   }
+
+  // ------------------------------------------------- the boundary matrix
+
+  /// A scripted run that logs every decode call, so a test can see which
+  /// spectrum ranges the chunks actually read.
+  class LoggingRun final : public ScriptedRun
+  {
+  public:
+    void peaks(std::size_t begin, std::size_t end,
+               std::vector<ODIA::SpectrumPeaks>& out) override
+    {
+      calls.emplace_back(begin, end);
+      ScriptedRun::peaks(begin, end, out);
+    }
+    std::vector<std::pair<std::size_t, std::size_t>> calls;
+  };
+
+  bool sameFloats(const std::vector<float>& a, const std::vector<float>& b)
+  {
+    return a.size() == b.size() &&
+           (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0);
+  }
+  bool samePlanes(const std::vector<std::vector<float>>& a,
+                  const std::vector<std::vector<float>>& b)
+  {
+    if (a.size() != b.size()) { return false; }
+    for (std::size_t k = 0; k < a.size(); ++k) { if (!sameFloats(a[k], b[k])) { return false; } }
+    return true;
+  }
+  /// Every field and every BIT of every plane.
+  bool sameBits(const RecordingSink::Trace& a, const RecordingSink::Trace& b)
+  {
+    return a.precursor == b.precursor && a.transition_begin == b.transition_begin &&
+           a.transition_count == b.transition_count && a.axis == b.axis &&
+           a.axis_begin == b.axis_begin && a.cycles == b.cycles && sameFloats(a.rt, b.rt) &&
+           samePlanes(a.points, b.points) && samePlanes(a.ppm_num, b.ppm_num) &&
+           samePlanes(a.ppm_den, b.ppm_den) && samePlanes(a.im_num, b.im_num) &&
+           samePlanes(a.im_den, b.im_den);
+  }
+  bool sameStream(const std::vector<RecordingSink::Trace>& a,
+                  const std::vector<RecordingSink::Trace>& b)
+  {
+    if (a.size() != b.size()) { return false; }
+    for (std::size_t i = 0; i < a.size(); ++i) { if (!sameBits(a[i], b[i])) { return false; } }
+    return true;
+  }
+
+  /// What extraction must produce, worked out by brute force from the
+  /// documented contract and NOT from the extractor's code paths: no m/z
+  /// index, no sliding window, no chunks, no batches, no decode blocks. Each
+  /// assigned precursor's cells are read straight off its own (window, cycle)
+  /// spectra.
+  ///
+  /// The contract, as the header states it:
+  ///   * a window's spectra, in acquisition order, are its cycles; their
+  ///     FLOAT times are its axis;
+  ///   * a precursor goes to the covering window with a non-empty axis whose
+  ///     centre is nearest (strict, so a tie keeps the lower index);
+  ///   * its cycle range is [first cycle at or after centre - half, first at or
+  ///     after centre + half) on that float axis, clipped to the same lookup
+  ///     of rt_low / rt_high when those are set;
+  ///   * a peak counts toward a transition when |m - mz| <= mz * ppm, it lies
+  ///     in the spectrum's mobility band [im_low, im_high), and it is within
+  ///     precursor_im_window of the library 1/K0 when both are known; Sum
+  ///     accumulates in peak order, the residual planes accumulate
+  ///     intensity * deviation and intensity for positive intensities;
+  ///   * the stream hands over the assigned precursors ordered by (the batch
+  ///     of 128 spectra from the pass's first spectrum that holds their last
+  ///     cycle, window, last cycle), then every unassigned precursor that has
+  ///     transitions, empty, in library order.
+  struct Oracle
+  {
+    std::vector<RecordingSink::Trace> assigned;   ///< by library index
+    std::vector<std::uint32_t> tail;              ///< handed over empty, in order
+    std::vector<std::tuple<std::size_t, std::uint32_t, std::uint32_t>> key;   ///< per assigned
+    std::vector<std::uint32_t> valid;             ///< valid transitions per assigned
+    std::size_t first_spectrum = 0;
+    /// Nonzero cells on an edge cycle that the float axis admitted although
+    /// its spectrum's double time lies outside [rt_low, rt_high) -- the cells
+    /// a spectrum range searched in the double times never reads.
+    std::size_t live_edge_cells = 0;
+  };
+
+  Oracle bruteForce(const ScriptedRun& run, const ODIA::Library& lib,
+                    const ODIA::ChromatogramExtractor::Options& opt)
+  {
+    const auto& info = run.spectra();
+    const auto& windows = run.windows();
+    const auto& p = lib.precursors();
+    const auto& t = lib.transitions();
+    const std::size_t W = windows.size();
+
+    std::vector<std::vector<std::size_t>> pos(W);
+    std::vector<std::vector<float>> axis(W);
+    for (std::size_t si = 0; si < info.size(); ++si)
+    {
+      for (std::size_t w = 0; w < W; ++w)
+      {
+        if (std::abs(info[si].window.mz_low - windows[w].mz_low) < 1e-6 &&
+            std::abs(info[si].window.mz_high - windows[w].mz_high) < 1e-6)
+        {
+          pos[w].push_back(si);
+          axis[w].push_back(static_cast<float>(info[si].retention_time));
+          break;
+        }
+      }
+    }
+    const auto firstAtOrAfter = [&](std::size_t w, double when) {
+      std::size_t i = 0;
+      while (i < axis[w].size() && double(axis[w][i]) < when) { ++i; }
+      return i;
+    };
+    const bool restricted = opt.rt_high > opt.rt_low;
+    std::vector<std::size_t> glo(W, 0), ghi(W, 0);
+    for (std::size_t w = 0; w < W; ++w)
+    {
+      ghi[w] = axis[w].size();
+      if (restricted) { glo[w] = firstAtOrAfter(w, opt.rt_low); ghi[w] = firstAtOrAfter(w, opt.rt_high); }
+    }
+
+    Oracle o;
+    // The pass starts at the first spectrum at or after rt_low in the run's
+    // own times, or earlier if a window's float axis admitted an earlier one.
+    if (restricted)
+    {
+      o.first_spectrum = info.size();
+      for (std::size_t si = 0; si < info.size(); ++si)
+      { if (info[si].retention_time >= opt.rt_low) { o.first_spectrum = si; break; } }
+      for (std::size_t w = 0; w < W; ++w)
+      { if (glo[w] < ghi[w]) { o.first_spectrum = std::min(o.first_spectrum, pos[w][glo[w]]); } }
+    }
+
+    const double ppm = opt.fragment_ppm * 1e-6;
+    for (std::size_t i = 0; i < lib.precursorCount(); ++i)
+    {
+      const double mz = ODIA::fromFixed(p.mz[i]);
+      std::size_t best = W;
+      double best_offset = std::numeric_limits<double>::infinity();
+      for (std::size_t w = 0; w < W; ++w)
+      {
+        if (!windows[w].contains(mz) || axis[w].empty()) { continue; }
+        const double off = std::abs(mz - windows[w].centre());
+        if (off < best_offset) { best_offset = off; best = w; }
+      }
+      std::size_t lo = 0, hi = 0;
+      if (best < W)
+      {
+        lo = glo[best]; hi = ghi[best];
+        if (opt.irt_slope != 0.0)
+        {
+          const double centre = opt.irt_slope * double(p.irt[i]) + opt.irt_intercept;
+          if (std::isnan(centre)) { hi = lo; }
+          else
+          {
+            lo = std::max(lo, firstAtOrAfter(best, centre - opt.rt_window_seconds));
+            hi = std::min(hi, firstAtOrAfter(best, centre + opt.rt_window_seconds));
+          }
+        }
+      }
+      if (best == W || lo >= hi)
+      {
+        if (p.transition_count[i] != 0) { o.tail.push_back(static_cast<std::uint32_t>(i)); }
+        continue;
+      }
+
+      RecordingSink::Trace tr;
+      tr.precursor = static_cast<std::uint32_t>(i);
+      tr.transition_begin = p.transition_begin[i];
+      tr.transition_count = p.transition_count[i];
+      tr.axis = static_cast<std::uint32_t>(best);
+      tr.axis_begin = static_cast<std::uint32_t>(lo);
+      tr.cycles = static_cast<std::uint32_t>(hi - lo);
+      tr.rt.assign(axis[best].begin() + std::ptrdiff_t(lo), axis[best].begin() + std::ptrdiff_t(hi));
+      std::uint32_t valid = 0;
+      for (std::uint32_t k = 0; k < p.transition_count[i]; ++k)
+      {
+        const std::size_t j = p.transition_begin[i] + k;
+        const bool ok = t.product_mz[j] != ODIA::MZ_INVALID;
+        const std::size_t n = ok ? hi - lo : 0;
+        const bool mass = opt.collect_mass_residuals && ok, im = opt.collect_im_residuals && ok;
+        tr.points.emplace_back(n, 0.0f);
+        tr.ppm_num.emplace_back(mass ? n : 0, 0.0f);
+        tr.ppm_den.emplace_back(mass ? n : 0, 0.0f);
+        tr.im_num.emplace_back(im ? n : 0, 0.0f);
+        tr.im_den.emplace_back(im ? n : 0, 0.0f);
+        if (!ok) { continue; }
+        ++valid;
+        const double target = ODIA::fromFixed(t.product_mz[j]);
+        for (std::size_t c = lo; c < hi; ++c)
+        {
+          const std::size_t si = pos[best][c];
+          const auto& pk = run.peakList(si);
+          const bool has_im = pk.hasIonMobility();
+          for (std::size_t q = 0; q < pk.mz.size(); ++q)
+          {
+            const double m = pk.mz[q];
+            const double peak_im = has_im ? double(pk.ion_mobility[q])
+                                          : std::numeric_limits<double>::quiet_NaN();
+            if (opt.use_ion_mobility && has_im &&
+                (peak_im < info[si].window.im_low || peak_im >= info[si].window.im_high))
+            { continue; }
+            if (std::abs(m - target) > target * ppm) { continue; }
+            if (opt.precursor_im_window > 0.0 && !std::isnan(peak_im))
+            {
+              const float want = p.im[i];
+              if (!std::isnan(want) && std::abs(peak_im - want) > opt.precursor_im_window) { continue; }
+            }
+            const float intensity = pk.intensity[q];
+            const std::size_t at = c - lo;
+            tr.points.back()[at] += intensity;
+            if (mass && intensity > 0.0f)
+            {
+              tr.ppm_num.back()[at] += intensity * static_cast<float>((m - target) / target * 1e6);
+              tr.ppm_den.back()[at] += intensity;
+            }
+            if (im && intensity > 0.0f && !std::isnan(peak_im))
+            {
+              tr.im_num.back()[at] += intensity * static_cast<float>(peak_im);
+              tr.im_den.back()[at] += intensity;
+            }
+          }
+        }
+        // The cells a range searched in the run's DOUBLE times would lose: an
+        // edge cycle the float axis admitted whose spectrum's own time lies
+        // outside [rt_low, rt_high).
+        if (restricted &&
+            ((lo == glo[best] && info[pos[best][lo]].retention_time < opt.rt_low &&
+              tr.points.back().front() != 0.0f) ||
+             (hi == ghi[best] && info[pos[best][hi - 1]].retention_time >= opt.rt_high &&
+              tr.points.back().back() != 0.0f)))
+        { ++o.live_edge_cells; }
+      }
+      o.key.emplace_back((pos[best][hi - 1] - o.first_spectrum) / 128, std::uint32_t(best),
+                         std::uint32_t(hi));
+      o.valid.push_back(valid);
+      o.assigned.push_back(std::move(tr));
+    }
+    return o;
+  }
+
+  /// How a stream departs from the oracle, or empty when it does not.
+  std::string againstOracle(const Oracle& o, const std::vector<RecordingSink::Trace>& got)
+  {
+    std::size_t wrong = 0, unknown = 0, duplicate = 0, out_of_order = 0;
+    std::vector<int> seen(o.assigned.size(), 0);
+    std::size_t at = 0;
+    std::tuple<std::size_t, std::uint32_t, std::uint32_t> previous{0, 0, 0};
+    // The assigned precursors come first ...
+    for (; at < got.size() && got[at].cycles != 0; ++at)
+    {
+      const auto& g = got[at];
+      std::size_t idx = o.assigned.size();
+      for (std::size_t e = 0; e < o.assigned.size(); ++e)
+      { if (o.assigned[e].precursor == g.precursor) { idx = e; break; } }
+      if (idx == o.assigned.size()) { ++unknown; continue; }
+      if (seen[idx]++) { ++duplicate; }
+      if (!sameBits(g, o.assigned[idx])) { ++wrong; }
+      if (o.key[idx] < previous) { ++out_of_order; }
+      previous = o.key[idx];
+    }
+    const std::size_t missing =
+      std::size_t(std::count(seen.begin(), seen.end(), 0));
+    // ... then the empty ones, in library order.
+    std::vector<std::uint32_t> tail;
+    bool tail_empty = true;
+    for (; at < got.size(); ++at)
+    {
+      tail.push_back(got[at].precursor);
+      tail_empty = tail_empty && got[at].cycles == 0;
+    }
+    if (!wrong && !unknown && !duplicate && !out_of_order && !missing &&
+        tail == o.tail && tail_empty)
+    { return {}; }
+    return std::to_string(wrong) + " traces differ from the brute force, " +
+           std::to_string(missing) + " missing, " + std::to_string(unknown) + " unexpected, " +
+           std::to_string(duplicate) + " duplicated, " + std::to_string(out_of_order) +
+           " out of order" + (tail == o.tail && tail_empty ? "" : ", wrong empty tail");
+  }
+
+  /// The run every matrix arm reads, built so each boundary the extractor has
+  /// is crossed somewhere:
+  ///
+  ///   * times 1000.37 + 0.1 c, which round both ways in float;
+  ///   * two co-packed windows sharing every frame time and one peak list,
+  ///     split by mobility band, so a chunk can start or end BETWEEN the two
+  ///     spectra of one frame; and a third window acquired between frames;
+  ///   * a 30 s gap inside the run (a batch straddling it holds both sides
+  ///     live), empty spectra, and missing acquisitions on the third window
+  ///     (its cycle index then runs ahead of the frame index);
+  ///   * per transition, an on-target peak and a jittered one that is
+  ///     sometimes outside the 10 ppm tolerance, the mobility band or the
+  ///     precursor's 1/K0 window, plus occasional zero-intensity peaks, so
+  ///     all five planes carry sums whose float order matters;
+  ///   * precursors spread over the run with windows clipped at its ends and
+  ///     at the gap, interleaved with the awkward kinds: no covering window,
+  ///     predicted outside the run, NaN iRT, no transitions at all (inside and
+  ///     outside a window), and transitions none of which has a product m/z.
+  struct MatrixRun
+  {
+    LoggingRun run;
+    ScriptedLibrary lib;
+    static constexpr double T0 = 1000.37, STEP = 0.1, GAP = 30.0, HALF = 6.0;
+    static constexpr std::uint32_t CYCLES = 700, GAP_AT = 350;
+
+    MatrixRun()
+    {
+      const auto w0 = run.addWindow(500.0, 510.0, 0.80, 1.00);
+      const auto w1 = run.addWindow(510.001, 520.0, 1.00, 1.20);
+      const auto w2 = run.addWindow(520.001, 530.0, 0.70, 1.30);
+      const double window_mz[3] = {505.0, 515.0, 525.0};
+      const float window_im[3] = {0.90f, 1.10f, 1.00f};
+
+      struct Product { double mz; float im; std::uint32_t window; std::uint32_t id; };
+      std::vector<Product> products;
+      const double end = T0 + STEP * CYCLES + GAP;
+      constexpr std::uint32_t REGULAR = 60;
+      std::uint32_t regular = 0;
+      for (std::uint32_t slot = 0; regular < REGULAR; ++slot)
+      {
+        // The awkward kinds, interleaved so the empty tail's ORDER is tested.
+        switch (slot)
+        {
+          case 7:  lib.addPrecursor(600.0); lib.addTransition(300.0); lib.addTransition(400.0);
+                   continue;                                  // no window covers it
+          case 15: { const auto i = lib.addPrecursor(505.0); lib.library().precursors().irt[i] =
+                     float(T0 - 5000.0); lib.addTransition(310.0); continue; }   // before the run
+          case 22: { const auto i = lib.addPrecursor(515.0); lib.library().precursors().irt[i] =
+                     std::numeric_limits<float>::quiet_NaN(); lib.addTransition(320.0); continue; }
+          case 30: { const auto i = lib.addPrecursor(505.0); lib.library().precursors().irt[i] =
+                     float(T0 + 40.0); continue; }              // in a window, no transitions
+          case 37: lib.addPrecursor(700.0); continue;           // no window, no transitions
+          case 44: { const auto i = lib.addPrecursor(515.0); lib.library().precursors().irt[i] =
+                     float(T0 + 60.0); lib.addTransition(0.0); lib.addTransition(0.0);
+                     continue; }                                // no valid transition
+          default: break;
+        }
+        const std::uint32_t w = regular % 3;
+        const float im = (regular % 10 == 3) ? NA : window_im[w];
+        const auto i = lib.addPrecursor(window_mz[w], im);
+        lib.library().precursors().irt[i] =
+          static_cast<float>(T0 - 8.0 + (end - T0 + 16.0) * double(regular) / double(REGULAR - 1));
+        for (std::uint32_t k = 0; k < 3; ++k)
+        {
+          const double mz = 200.0 + 0.37 * regular + 310.0 * k;
+          lib.addTransition(mz);
+          products.push_back({mz, window_im[w], w, regular * 3 + k});
+        }
+        ++regular;
+      }
+
+      std::uint64_t state = 0x9E3779B97F4A7C15ull;
+      const auto uniform = [&]() {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return double(state >> 11) / double(1ull << 53);
+      };
+      struct Peak { double mz; float intensity, im; };
+      const auto frame = [&](std::uint32_t c, std::uint32_t window_a, std::uint32_t window_b) {
+        std::vector<Peak> list;
+        for (const auto& pr : products)
+        {
+          if (pr.window != window_a && pr.window != window_b) { continue; }
+          const float base = 1.0f + float((c * 7 + pr.id * 3) % 50) + 0.25f;
+          // On target, inside its band and its precursor's 1/K0 window.
+          list.push_back({pr.mz * (1.0 + (uniform() * 16.0 - 8.0) * 1e-6), base,
+                          pr.im + float(uniform() * 0.03 - 0.015)});
+          // Jittered: sometimes outside the tolerance, the band, or the window.
+          list.push_back({pr.mz * (1.0 + (uniform() * 24.0 - 12.0) * 1e-6),
+                          0.5f + float(uniform()) * 3.0f, float(0.75 + uniform() * 0.5)});
+          if ((c + pr.id) % 17 == 0) { list.push_back({pr.mz, 0.0f, pr.im}); }
+        }
+        return list;
+      };
+      const auto fill = [&](std::size_t s, const std::vector<Peak>& list) {
+        for (const auto& pk : list) { run.addPeak(s, pk.mz, pk.intensity, pk.im); }
+      };
+      for (std::uint32_t c = 0; c < CYCLES; ++c)
+      {
+        const double rt = T0 + STEP * c + (c >= GAP_AT ? GAP : 0.0);
+        // One frame, two windows, ONE peak list -- as the reader serves
+        // diaPASEF -- empty on every eleventh frame.
+        const auto shared = c % 11 == 4 ? std::vector<Peak>{} : frame(c, 0, 1);
+        fill(run.addSpectrum(w0, rt), shared);
+        fill(run.addSpectrum(w1, rt), shared);
+        if (c % 37 == 5) { continue; }                          // a missing acquisition
+        const auto s2 = run.addSpectrum(w2, rt + STEP / 2.0);
+        if (c % 13 != 7) { fill(s2, frame(c, 2, 2)); }
+      }
+    }
+  };
+
+  ODIA::ChromatogramExtractor::Options matrixOptions()
+  {
+    auto opt = plainOptions();
+    opt.irt_slope = 1.0;
+    opt.irt_intercept = 0.0;
+    opt.rt_window_seconds = MatrixRun::HALF;
+    opt.collect_mass_residuals = true;      // the engine's default planes
+    opt.collect_im_residuals = true;
+    return opt;
+  }
+
+  /// Every decode block x chunk count x thread count, each against the
+  /// independent oracle AND against the default arm, bitwise in all five
+  /// planes and in order; then restricted RT bounds on both sides of float
+  /// rounding, and the explicit and byte caps together.
+  void caseChunkMatrix()
+  {
+    MatrixRun m;
+    auto& run = m.run;
+    const auto& lib = m.lib.library();
+    const auto base = matrixOptions();
+    const Oracle oracle = bruteForce(run, lib, base);
+    std::printf("       %zu spectra, %zu precursors: %zu assigned, %zu handed over empty\n",
+                run.spectra().size(), lib.precursorCount(), oracle.assigned.size(),
+                oracle.tail.size());
+
+    struct Arm
+    {
+      std::vector<RecordingSink::Trace> traces;
+      ODIA::ChromatogramExtractor::Stats st;
+      std::vector<std::pair<std::size_t, std::size_t>> calls;
+      std::string error;
+    };
+    const auto extract = [&](const ODIA::ChromatogramExtractor::Options& o) {
+      Arm a;
+      RecordingSink sink;
+      run.calls.clear();
+      try { ODIA::ChromatogramExtractor::extract(lib, run, o, sink, &a.st); }
+      catch (const std::exception& e) { a.error = e.what(); }
+      a.traces = std::move(sink.traces);
+      a.calls = run.calls;
+      return a;
+    };
+
+    const Arm reference = extract(base);
+    check(reference.error.empty() && reference.st.chunks == 1, "the default arm is one chunk");
+    const std::string ref_vs_oracle = againstOracle(oracle, reference.traces);
+    check(ref_vs_oracle.empty(), "the default arm equals the brute force" +
+                                 (ref_vs_oracle.empty() ? "" : ": " + ref_vs_oracle));
+
+    // A chunk boundary falls between the two spectra of one frame when the
+    // spectrum before it has the same time.
+    const auto& info = run.spectra();
+    const auto between_frame = [&](std::size_t b) {
+      return b > 0 && b < info.size() && info[b - 1].retention_time == info[b].retention_time;
+    };
+
+    std::size_t arms = 0, failed = 0, split_frames = 0, printed = 0;
+    std::set<std::size_t> plans;
+    for (const std::size_t block : {1, 64, 127, 128, 129, 200, 256})
+    {
+      for (const std::size_t cap : {0, 2, 4, 7})
+      {
+        for (const unsigned threads : {1u, 4u})
+        {
+          auto o = base;
+          o.decode_block = block;
+          o.max_live_precursors = cap;
+          o.threads = threads;
+          const Arm a = extract(o);
+          ++arms;
+          if (a.st.chunks > 1) { plans.insert(a.st.chunks); }
+          std::string why = a.error;
+          if (why.empty())
+          {
+            why = againstOracle(oracle, a.traces);
+            if (why.empty() && !sameStream(a.traces, reference.traces))
+            { why = "not the default arm's stream"; }
+            if (why.empty() && cap != 0 && a.st.peak_live_precursors > cap)
+            { why = "peak live " + std::to_string(a.st.peak_live_precursors) + " over the cap"; }
+          }
+          if (!why.empty())
+          {
+            ++failed;
+            if (printed++ < 12)
+            {
+              std::printf("       decode_block %zu, cap %zu, %u threads (%zu chunks): %s\n",
+                          block, cap, threads, a.st.chunks, why.c_str());
+            }
+          }
+          // Where the chunks began and ended: a call that does not continue
+          // the previous one starts a chunk.
+          for (std::size_t c = 0; c < a.calls.size(); ++c)
+          {
+            const bool starts = c == 0 || a.calls[c].first != a.calls[c - 1].second;
+            const bool ends = c + 1 == a.calls.size() || a.calls[c + 1].first != a.calls[c].second;
+            if (a.st.chunks > 1 && ((starts && between_frame(a.calls[c].first)) ||
+                                    (ends && between_frame(a.calls[c].second))))
+            { ++split_frames; }
+          }
+        }
+      }
+    }
+    std::printf("       %zu arms, %zu failed; chunk plans of", arms, failed);
+    for (const auto n : plans) { std::printf(" %zu", n); }
+    std::printf(" chunks; %zu chunk edges between the two windows of one frame\n", split_frames);
+    check(failed == 0, "every decode block x cap x thread count equals the brute force and "
+                       "the default arm, bit for bit and in order");
+    check(plans.size() >= 3, "the caps give at least three different chunk plans");
+    check(split_frames > 0, "some chunk begins or ends between the two windows of one frame");
+
+    // Restricted RT bounds that fall between a spectrum's double time and its
+    // float rounding, on both sides. In the first pair each bound admits, on
+    // the float axis, a spectrum the double times exclude -- a range searched
+    // in the double times never reads it and its cells stay zero. In the
+    // second each bound excludes one the double times admit.
+    std::size_t up_lo = 0, down_lo = 0, up_hi = 0, down_hi = 0;
+    for (std::size_t si = 0; si < info.size(); ++si)
+    {
+      const double rt = info[si].retention_time, f = double(static_cast<float>(rt));
+      const bool has_peaks = !run.peakList(si).mz.empty();
+      const bool early = has_peaks && rt > MatrixRun::T0 + 10.0 && rt < MatrixRun::T0 + 20.0;
+      const bool late = has_peaks && rt > MatrixRun::T0 + 80.0 && rt < MatrixRun::T0 + 90.0;
+      if (early && f > rt && !up_lo) { up_lo = si; }
+      if (early && f < rt && !down_lo) { down_lo = si; }
+      if (late && f > rt && !up_hi) { up_hi = si; }
+      if (late && f < rt && !down_hi) { down_hi = si; }
+    }
+    const auto between = [&](std::size_t si) {
+      const double rt = info[si].retention_time;
+      return 0.5 * (rt + double(static_cast<float>(rt)));
+    };
+    std::size_t restricted_failed = 0, edge_cells = 0;
+    for (int pair = 0; pair < 2; ++pair)
+    {
+      auto o = base;
+      o.rt_low = between(pair == 0 ? up_lo : down_lo);
+      o.rt_high = between(pair == 0 ? down_hi : up_hi);
+      const Oracle ro = bruteForce(run, lib, o);
+      edge_cells += pair == 0 ? ro.live_edge_cells : 0;
+      const Arm rref = extract(o);
+      for (const std::size_t block : {256, 129})
+      {
+        for (const std::size_t cap : {0, 3})
+        {
+          auto oc = o;
+          oc.decode_block = block;
+          oc.max_live_precursors = cap;
+          const Arm a = extract(oc);
+          std::string why = a.error;
+          if (why.empty()) { why = againstOracle(ro, a.traces); }
+          if (why.empty() && !sameStream(a.traces, rref.traces)) { why = "not the 1-chunk stream"; }
+          if (why.empty() && cap != 0 && a.st.peak_live_precursors > cap) { why = "over the cap"; }
+          if (!why.empty())
+          {
+            ++restricted_failed;
+            std::printf("       rt [%.9f, %.9f) %s, block %zu, cap %zu (%zu chunks): %s\n",
+                        o.rt_low, o.rt_high, pair == 0 ? "float admits more" : "float admits less",
+                        block, cap, a.st.chunks, why.c_str());
+          }
+        }
+      }
+    }
+    std::printf("       restricted bounds: %zu precursors hold a nonzero cell on a float-"
+                "admitted edge cycle\n", edge_cells);
+    check(edge_cells > 0, "the float-admitted edge spectra carry signal, so losing one shows");
+    check(restricted_failed == 0,
+          "restricted RT bounds on both sides of float rounding equal the brute force, "
+          "chunked or not");
+
+    // Both caps at once. The byte budget is inverted with the mean block over
+    // the assigned precursors, all five planes; the tighter cap must bind.
+    double mean_cells = 0.0;
+    for (std::size_t e = 0; e < oracle.assigned.size(); ++e)
+    { mean_cells += double(oracle.valid[e]) * double(oracle.assigned[e].cycles); }
+    mean_cells /= double(oracle.assigned.size());
+    const double per = mean_cells * 4.0 * 5.0;
+    const std::size_t budget = std::size_t(per * 3.5);
+    const std::size_t derived = std::size_t(double(budget) / per);
+    std::size_t both_failed = 0;
+    for (const std::size_t explicit_cap : {std::size_t(2), std::size_t(5), std::size_t(0)})
+    {
+      auto o = base;
+      o.max_live_precursors = explicit_cap;
+      o.live_memory_budget_bytes = budget;
+      o.decode_block = 200;
+      const std::size_t want = explicit_cap == 0 ? derived : std::min(explicit_cap, derived);
+      const Arm a = extract(o);
+      const std::string note_tail = "cap " + std::to_string(want);
+      const bool ok = a.error.empty() && againstOracle(oracle, a.traces).empty() &&
+                      sameStream(a.traces, reference.traces) &&
+                      a.st.peak_live_precursors <= want && a.st.chunks > 1 &&
+                      a.st.live_budget_note.size() >= note_tail.size() &&
+                      a.st.live_budget_note.compare(a.st.live_budget_note.size() - note_tail.size(),
+                                                    note_tail.size(), note_tail) == 0;
+      if (!ok)
+      {
+        ++both_failed;
+        std::printf("       explicit %zu + budget (derived %zu): %zu chunks, peak live %zu, "
+                    "note \"%s\"%s\n", explicit_cap, derived, a.st.chunks,
+                    a.st.peak_live_precursors, a.st.live_budget_note.c_str(),
+                    a.error.empty() ? "" : (" -- " + a.error).c_str());
+      }
+    }
+    check(derived == 3, "the byte budget inverts to a cap of 3");
+    check(both_failed == 0, "with both caps the tighter binds, and the stream is unchanged");
+  }
+
+  /// Nothing assigned: no precursor has a covering window. Every precursor
+  /// with transitions is still handed over, empty, in library order -- chunked
+  /// or not, budgeted or not -- and nothing throws.
+  void caseNoAssignments()
+  {
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0);
+    for (int c = 0; c < 300; ++c)
+    {
+      const auto s = run.addSpectrum(w, 100.37 + 0.1 * c);
+      if (c % 3) { run.addPeak(s, 400.0, 5.0f); }
+    }
+    ScriptedLibrary lib;
+    lib.addPrecursor(600.0); lib.addTransition(400.0);
+    lib.addPrecursor(700.0);                                   // no transitions: omitted
+    lib.addPrecursor(450.0); lib.addTransition(400.0); lib.addTransition(0.0);
+
+    std::size_t failed = 0;
+    for (const std::size_t cap : {0, 1})
+    {
+      for (const std::size_t budget : {std::size_t(0), std::size_t(1) << 20})
+      {
+        auto opt = plainOptions();
+        opt.max_live_precursors = cap;
+        opt.live_memory_budget_bytes = budget;
+        RecordingSink sink;
+        ODIA::ChromatogramExtractor::Stats st;
+        std::string error;
+        try { ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, sink, &st); }
+        catch (const std::exception& e) { error = e.what(); }
+        const bool ok = error.empty() && st.precursors_extracted == 0 &&
+                        st.precursors_without_window == 3 && sink.traces.size() == 2 &&
+                        sink.traces[0].precursor == 0 && sink.traces[1].precursor == 2 &&
+                        sink.traces[0].cycles == 0 && sink.traces[1].cycles == 0;
+        if (!ok)
+        {
+          ++failed;
+          std::printf("       cap %zu budget %zu: %zu traces, %zu extracted %s\n", cap, budget,
+                      sink.traces.size(), st.precursors_extracted, error.c_str());
+        }
+      }
+    }
+    check(failed == 0, "with nothing assigned every precursor with transitions is handed "
+                       "over empty, in library order, under any cap");
+  }
 }
 
 int main(int argc, char** argv)
@@ -919,12 +1593,14 @@ int main(int argc, char** argv)
   else if (which == "sliding") { caseSlidingWindow(); }
   else if (which == "chunk_invariant") { caseChunkInvariant(); }
   else if (which == "cap_zero_rows") { caseCapZeroRows(); }
+  else if (which == "chunk_matrix") { caseChunkMatrix(); }
+  else if (which == "no_assignments") { caseNoAssignments(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
-                 "chunk_invariant|cap_zero_rows>\n");
+                 "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments>\n");
     return 2;
   }
 

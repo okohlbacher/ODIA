@@ -636,6 +636,19 @@ add_test(NAME extract_chunk_invariant COMMAND odia_extract_cases chunk_invariant
 # (peak live 2). Fails on b7c602f.
 add_test(NAME extract_cap_zero_rows COMMAND odia_extract_cases cap_zero_rows)
 
+# The chunking guarantee against an INDEPENDENT brute force, not only against
+# the unchunked path: decode_block 1/64/127/128/129/200/256 x caps 0/2/4/7 x
+# threads 1/4, every trace compared bit for bit in all five planes (intensity
+# and both residual pairs) and in hand-over order; restricted rt_low/rt_high
+# between a spectrum's double time and its float rounding, on both sides; chunks
+# that begin or end between the two windows of one diaPASEF frame; empty
+# spectra, missing acquisitions, no-window / outside-run / NaN-iRT /
+# no-transition / no-valid-transition precursors; explicit and byte caps
+# together. Fails on a48c223 (cells, order, cap, restricted bounds) and on
+# b7c602f (decode blocks off the multiples of 128).
+add_test(NAME extract_chunk_matrix COMMAND odia_extract_cases chunk_matrix)
+add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing
