@@ -652,13 +652,19 @@ namespace ODIA
       /// with a budget: the engine drops its MS1 traces when they would not fit
       /// one, which is not chunking and is not covered here.
       ///
-      /// Against main a48c223, a single chunk gives byte-identical output
-      /// except for a call with a restricted `rt_low`/`rt_high` whose bound
-      /// falls between a spectrum's double time and its float rounding: the
-      /// cycle range is resolved on the float axis, main searched the spectrum
-      /// range in the double times and so could skip that edge spectrum (or,
-      /// on the lower side, start its batch grid one spectrum earlier); it is
-      /// now widened to every admitted cycle. The engine never sets these.
+      /// Against main a48c223, for a `decode_block` that is a positive multiple
+      /// of 128 (or 0, which selects 256), a single chunk gives byte-identical
+      /// output except for a call with a restricted `rt_low`/`rt_high` whose
+      /// bound falls between a spectrum's double time and its float rounding:
+      /// the cycle range is resolved on the float axis, main searched the
+      /// spectrum range in the double times and so could skip that edge
+      /// spectrum (or, on the lower side, start its batch grid one spectrum
+      /// earlier); it is now widened to every admitted cycle. The engine never
+      /// sets these. Any OTHER block size may differ from main: main's hand-
+      /// over boundaries followed the decode block, so its emission order (and
+      /// with it Gate C's calibration sample) moved with the block size; they
+      /// now follow the fixed 128-spectrum grid. Measured on main: decode_block
+      /// 1 and 64 at one chunk put 9 and 8 traces out of order.
       ///
       /// The cap is exact IN PRECURSORS: liveness is counted on the match-
       /// batch grid the pass moves on, so `Stats::peak_live_precursors` never
