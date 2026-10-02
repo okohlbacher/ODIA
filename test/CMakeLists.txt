@@ -805,5 +805,11 @@ add_test(NAME tsv_writers_are_byte_identical
 # precision are load-bearing in a way no other writer's are.
 add_test(NAME fragvec_tsv_joins_to_out
          COMMAND odia_tsv_writers fragvec "${CMAKE_CURRENT_BINARY_DIR}")
+# -fragvec_scores: the appended schema is the 78-column contract, the constant
+# guard is its only filter (indicators included), the cell the fit and -out read
+# is the exported float32, and the permuted control moves whole rows by a fixed,
+# label-blind permutation.
+add_test(NAME fragvec_scores_block
+         COMMAND odia_tsv_writers fragvec_scores "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME tsv_number_formatting_matches_ostream
          COMMAND odia_tsv_writers formatting)

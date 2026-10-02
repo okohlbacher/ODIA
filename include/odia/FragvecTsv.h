@@ -17,7 +17,10 @@ namespace ODIA
   /// A SEPARATE FILE, never extra columns on `-out`. The point of this export
   /// is that it is provably score-neutral -- the arm's gate is that `-out`'s
   /// sha256 with the flag ON equals the flag-off run's -- and columns appended
-  /// to `-out` would make that gate unstateable.
+  /// to `-out` would make that gate unstateable. (`-fragvec_scores` does put
+  /// all 78 of them on `-out`, as var_fv_* or var_fvperm_*, because there they
+  /// ARE scored; this export stays the raw contract either way, in the same
+  /// row order, so the two can be compared cell for cell.)
   ///
   /// Keyed (Precursor.Id, Decoy, Ordinal) so the join back to `-out` is
   /// checkable rather than assumed. `Ordinal` is the 0-based position of the
