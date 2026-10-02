@@ -1887,14 +1887,23 @@ namespace
         check(identical(own, aliased), tag + "every plane of every precursor is bit-identical");
         check(a_st.peak_live_points * 5 == own_st.peak_live_points * arm.planes,
               tag + "and the peak live footprint is planes/5 of the default's");
+        // Chunking is invisible to the sink with aliasing too: uncapped, the
+        // aliased pass hands over the same traces in the same order.
+        Opt u_opt = a_opt;
+        u_opt.max_live_precursors = 0;
+        PlaneSink uncapped;
+        const Stats u_st = extractInto(run, lib, u_opt, uncapped);
+        check(u_st.chunks == 1 && identical(own, uncapped) && uncapped.order == own.order,
+              tag + "uncapped (1 chunk) it is the capped stream, trace for trace and in order");
       }
 
       // The budget-derived cap counts the UNALIASED planes, so a BINDING
       // budget chunks the aliased pass exactly as the unaliased one: same
       // cap, same chunks, same arrival order at the sink. Counting allocated
-      // planes instead (3 of 5) would derive a cap 5/3 higher here, a
-      // different chunking and a different order -- which moves Gate C's
-      // arrival-order null on a real run, invisibly to a chromatogram test.
+      // planes instead (3 of 5) would derive a cap 5/3 higher here and a
+      // different chunk plan -- which no longer moves the arrival order (the
+      // planner cuts the run-wide hand-over order), but would let a mid-pass
+      // fallback overshoot the budget by up to 5/3.
       // The budget is set from the per-precursor cost the extractor reports,
       // to 2.5 precursors' worth: cap 2 at 5 planes, 4 at 3.
       Opt b_opt = opt;
@@ -1974,22 +1983,37 @@ namespace
     Geometry nil;    nil.odd = 0.0f;           // 0 is not positive either
     Geometry lose; lose.im_late = false;
     Geometry gain; gain.im_early = false;
+    //
+    // Also across decode blocks: a match batch is a fixed 128 spectra, but it
+    // is matched in PARTS where a decode block ends inside it (1, 64 and 129
+    // here; LATE = 600 sits in the second part of batch [512, 640) at 129), and
+    // the guard holds back and replays within a part. Every arm is compared
+    // with the unaliased pass at the DEFAULT block, so the alias and the block
+    // size together still move nothing.
     for (const Break& b : {Break{neg, "not positive and finite", "negative intensity"},
                            Break{nil, "not positive and finite", "zero intensity"},
                            Break{lose, "no 1/K0 under the mobility alias", "1/K0 lost"},
                            Break{gain, "WITH a 1/K0", "1/K0 gained"}})
     {
       auto [run, lib] = build(b.g);
+      PlaneSink ref;
+      extractInto(run, lib, opt, ref);
       for (const unsigned threads : {1u, 4u})
+      for (const std::size_t block : {std::size_t(0), std::size_t(1), std::size_t(64),
+                                      std::size_t(129)})
       {
         Opt t_opt = opt;
         t_opt.threads = threads;
+        if (block != 0) { t_opt.decode_block = block; }
         PlaneSink own, aliased;
         const Stats own_st = extractInto(run, lib, t_opt, own);
         t_opt.alias_ppm_den = t_opt.alias_im_den = true;
         const Stats a_st = extractInto(run, lib, t_opt, aliased);
         const std::string tag =
-          std::string("[") + b.name + ", " + std::to_string(threads) + " threads] ";
+          std::string("[") + b.name + ", " + std::to_string(threads) + " threads, block " +
+          (block == 0 ? std::string("default") : std::to_string(block)) + "] ";
+        check(identical(ref, aliased) && aliased.order == ref.order,
+              tag + "bit-identical to the unaliased default-block pass, in its order");
         check(a_st.plane_fallback.find(b.why) != std::string::npos,
               tag + "the guard fell back: " + a_st.plane_fallback);
         // The first offending spectrum is the first of cycle LATE: one window,
