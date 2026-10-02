@@ -20,23 +20,58 @@
 
 namespace ODIA
 {
+  // The MS1_COELUTION diagnosis counters that lived here as process-wide
+  // atomics are now `Result::ms1_census`, owned by the Session -- see
+  // PeakGroupScorer::Ms1Census for why.
+
+  static_assert(sizeof(PeakGroupScorer::PickerRejects) == 33 * sizeof(std::size_t),
+                "PickerRejects changed: update PickerRejects::merge and the census report");
+  static_assert(sizeof(PeakGroupScorer::Ms1Census) == 11 * sizeof(std::size_t),
+                "Ms1Census changed: update Ms1Census::merge and the census report");
+
+  void PeakGroupScorer::PickerRejects::merge(const PickerRejects& o)
+  {
+    for (int c = 0; c < 2; ++c)
+    {
+      too_few_present[c] += o.too_few_present[c];
+      no_points[c] += o.no_points[c];
+      empty_trace[c] += o.empty_trace[c];
+      gate_c[c] += o.gate_c[c];
+      few_excursions[c] += o.few_excursions[c];
+      zero_trace[c] += o.zero_trace[c];
+      too_few_transitions[c] += o.too_few_transitions[c];
+      below_corr[c] += o.below_corr[c];
+      reference_zero[c] += o.reference_zero[c];
+      not_local_max[c] += o.not_local_max[c];
+      below_apex_evidence[c] += o.below_apex_evidence[c];
+      outside_margin[c] += o.outside_margin[c];
+      reached[c] += o.reached[c];
+      scans[c] += o.scans[c];
+    }
+    too_few_cycles += o.too_few_cycles;
+    masked_candidates += o.masked_candidates;
+    masked_fragments += o.masked_fragments;
+    no_hit_anywhere += o.no_hit_anywhere;
+    too_few_at_apex += o.too_few_at_apex;
+  }
+
+  void PeakGroupScorer::Ms1Census::merge(const Ms1Census& o)
+  {
+    unavailable += o.unavailable;
+    no_signal += o.no_signal;
+    too_short += o.too_short;
+    flat += o.flat;
+    ok += o.ok;
+    bins_spanned += o.bins_spanned;
+    spans += o.spans;
+    null_ptr += o.null_ptr;
+    empty += o.empty;
+    index_oob += o.index_oob;
+    degenerate_span += o.degenerate_span;
+  }
+
 namespace
 {
-  // MS1_COELUTION diagnosis -- see the block in scoreCandidate. Removed once the
-  // question is answered; until then these are the only evidence about WHY the
-  // one feature measured to discriminate arrives constant.
-  std::atomic<std::size_t> ms1_unavailable{0};   ///< options.ms1 null/empty, or index out of range
-  std::atomic<std::size_t> ms1_no_signal{0};     ///< every MS1 point in the candidate window is 0
-  std::atomic<std::size_t> ms1_too_short{0};     ///< fewer than 5 cycles
-  std::atomic<std::size_t> ms1_flat{0};          ///< MS1 leg has zero variance -> Pearson undefined
-  std::atomic<std::size_t> ms1_ok{0};            ///< a finite correlation was produced
-  std::atomic<std::size_t> ms1_bins_spanned{0};  ///< sum of distinct MS1 bins per candidate
-  std::atomic<std::size_t> ms1_spans{0};         ///< candidates contributing to the above
-  std::atomic<std::size_t> ms1_null{0};          ///< options.ms1 was a null pointer
-  std::atomic<std::size_t> ms1_empty{0};         ///< traces object present but empty
-  std::atomic<std::size_t> ms1_index_oob{0};     ///< precursor index past the matrix
-  std::atomic<std::size_t> ms1_degenerate_span{0};  ///< hi <= lo, candidate spans nothing
-
   /// Distinct MS1 bins a candidate's cycles map onto. If this is ~1 the MS1 grid
   /// is too coarse for the candidate and no correlation is definable.
   std::size_t distinctBins_(const PrecursorChromatogram& c, std::size_t lo, std::size_t hi,
@@ -541,63 +576,9 @@ namespace
       return out;
     }
 
-    /// Why the co-elution detector rejected a scan position.
-    ///
-    /// Six criteria reject silently, so "19,150 precursors yielded no candidate"
-    /// said nothing about WHICH test was responsible. On a realistic library
-    /// 14% of DIA-NN's confident precursors get no candidate at all, and those
-    /// lost are heavier (median m/z 894 vs 661), higher-mobility and ~34% less
-    /// abundant -- a pattern that points at a threshold rather than at absence
-    /// of signal, but only counting can say which threshold.
-    struct PickerRejects
-    {
-      std::size_t too_few_present[2] = {0, 0};   ///< [0] target, [1] decoy   ///< <2 fragments in {k-1,k,k+1}
-      /// Precursors that never entered the correlation loop at all.
-      ///
-      /// `n < 2*S+4 || tc < 2` returns before anything is counted, so these were
-      /// invisible: they landed in `precursors_without_candidate` with no way to
-      /// tell them from a precursor the correlation test rejected. On Astral
-      /// 5,187 precursors yield no candidate while OpenSWATH features 100% of
-      /// the library, and the census could not say which stage lost them.
-      std::size_t too_few_cycles = 0;
-      /// Never got a usable chromatogram OUT OF THE EXTRACTOR at all. These are
-      /// extraction losses, not picking losses, and they were pooled with
-      /// picker rejects under `precursors_without_candidate`.
-      std::size_t no_points[2] = {0, 0};   ///< [0] target, [1] decoy        ///< pointCount(0) < 3
-      /// THREE different gates shared this counter and only the last is what
-      /// the name says. Every log before 2026-08-18 therefore reported Gate C
-      /// rejections as "empty trace" -- doc/34's "84.5% of targets had an
-      /// all-zero trace" was in fact 84.5% rejected by Gate C, a completely
-      /// different statement, and Gate C is ON by default (gate_alpha 0.05).
-      /// Kept as the sum so older numbers stay comparable; read the three below.
-      std::size_t empty_trace[2] = {0, 0};   ///< [0] target, [1] decoy
-      /// Co-elution evidence below the (1-alpha) quantile of the decoy null.
-      std::size_t gate_c[2] = {0, 0};
-      /// Too few transitions showing a noise excursion (the -gate_alpha 0 path).
-      std::size_t few_excursions[2] = {0, 0};
-      /// The summed trace really is zero -- nothing extracted at all.
-      std::size_t zero_trace[2] = {0, 0};
-      std::size_t too_few_transitions[2] = {0, 0};   ///< [0] target, [1] decoy
-      std::size_t masked_candidates = 0;   ///< v1.15: candidates scored with a transition mask
-      std::size_t masked_fragments = 0;    ///< v1.15: transitions removed over those candidates
-      /// Entered the loop, computed correlations, and found no qualifying
-      /// position anywhere in the window.
-      std::size_t no_hit_anywhere = 0;
-      std::size_t below_corr[2] = {0, 0};   ///< [0] target, [1] decoy        ///< reference corr sum < min_corr_score
-      std::size_t reference_zero[2] = {0, 0};   ///< [0] target, [1] decoy    ///< smoothed reference not positive
-      std::size_t not_local_max[2] = {0, 0};   ///< [0] target, [1] decoy     ///< k is not the local maximum
-      std::size_t below_apex_evidence[2] = {0, 0};   ///< [0] target, [1] decoy
-      std::size_t outside_margin[2] = {0, 0};   ///< [0] target, [1] decoy
-      /// Precursors that reached Session::add, per class. The code says these
-      /// MUST be equal -- assignment is unconditional, the only precursor-level
-      /// drop is covering==0 which depends solely on m/z, and every decoy shares
-      /// its target's m/z (verified: 4,991,888 of 4,991,888). The scan counters
-      /// say otherwise (1.52x). One of those is wrong and this is the counter
-      /// that decides which.
-      std::size_t reached[2] = {0, 0};    ///< beyond MaxCorrDiff of the best
-      std::size_t too_few_at_apex = 0;   ///< candidate emitted, then dropped by the scorer
-      std::size_t scans[2] = {0, 0};   ///< [0] target, [1] decoy             ///< positions examined
-    };
+    /// Defined in the header now (PeakGroupScorer::PickerRejects), because the
+    /// counts belong to the Session's Result rather than to a thread.
+    using PickerRejects = PeakGroupScorer::PickerRejects;
 
     struct Candidate
     {
@@ -1203,20 +1184,6 @@ namespace
 
   namespace
   {
-    // thread_local for speed -- these increment once per scan position, so a
-    // shared atomic would serialise the hottest loop in the scorer. But a
-    // thread_local counter that is REPORTED from one thread reports one
-    // thread's slice of the work, and nothing distributes chromatograms to
-    // threads in a class-balanced way.
-    //
-    // That is not hypothetical: reading the unaggregated counters produced a
-    // "1.52x more scan positions for decoys" that was taken as evidence the
-    // decoy excess arises upstream of the picker. It arose from thread
-    // scheduling. The peak-group excess itself is real -- it comes from the
-    // scored result, not from here -- but its LOCATION was wrong.
-    //
-    // So each thread's instance registers itself once and the reporter sums
-    // them. The hot path stays a plain increment.
     /// Gate C's threshold, calibrated from the run's OWN decoy null.
     ///
     /// It cannot be known up front -- the null does not exist until decoys have
@@ -1307,49 +1274,6 @@ namespace
       }
     };
 
-    std::mutex rejects_registry_mutex_;
-    std::vector<PickerRejects*> rejects_registry_;
-
-    struct RegisteredRejects : PickerRejects
-    {
-      RegisteredRejects()
-      {
-        std::lock_guard<std::mutex> g(rejects_registry_mutex_);
-        rejects_registry_.push_back(this);
-      }
-    };
-    thread_local RegisteredRejects rejects_;
-
-    /// Every thread's counters, summed. The only correct way to read them.
-    PickerRejects totalRejects()
-    {
-      PickerRejects t;
-      std::lock_guard<std::mutex> g(rejects_registry_mutex_);
-      for (const PickerRejects* r : rejects_registry_)
-      {
-        for (int c = 0; c < 2; ++c)
-        {
-          t.scans[c] += r->scans[c];
-          t.too_few_present[c] += r->too_few_present[c];
-          t.too_few_transitions[c] += r->too_few_transitions[c];
-          t.below_corr[c] += r->below_corr[c];
-          t.reference_zero[c] += r->reference_zero[c];
-          t.not_local_max[c] += r->not_local_max[c];
-          t.below_apex_evidence[c] += r->below_apex_evidence[c];
-          t.outside_margin[c] += r->outside_margin[c];
-          t.reached[c] += r->reached[c];
-        }
-        for (int c = 0; c < 2; ++c) { t.no_points[c] += r->no_points[c]; }
-        for (int c = 0; c < 2; ++c) { t.empty_trace[c] += r->empty_trace[c]; }
-        for (int c = 0; c < 2; ++c) { t.gate_c[c] += r->gate_c[c]; }
-        for (int c = 0; c < 2; ++c) { t.few_excursions[c] += r->few_excursions[c]; }
-        for (int c = 0; c < 2; ++c) { t.zero_trace[c] += r->zero_trace[c]; }
-        t.too_few_at_apex += r->too_few_at_apex;
-        t.masked_candidates += r->masked_candidates;
-        t.masked_fragments += r->masked_fragments;
-      }
-      return t;
-    }
   }
 
   struct PeakGroupScorer::Session::GateNull : NullCalibrationBody {};
@@ -1364,6 +1288,9 @@ namespace
     Result& result = result_;
     const Options& options = options_;
     const Library& library = *library_;
+    // This pass's counters, not a thread's: see PeakGroupScorer::PickerRejects.
+    PickerRejects& rejects_ = result.picker_rejects;
+    Ms1Census& ms1c = result.ms1_census;
     const auto& p = library.precursors();
     const auto& t = library.transitions();
     const PrecursorChromatogram& chromatogram = chromatogram_in;   // rebound per candidate under a mask (v1.15)
@@ -2447,11 +2374,12 @@ namespace
           // WHICH guard kills it? On Astral this sub-score came out constant
           // across all 96,259 rows and was dropped as carrying no information --
           // and it is the one feature measured to discriminate (13.7x top bin),
-          // so "it is NaN" is not a good enough answer. Atomics, not
-          // thread_local: a thread_local counter read from one thread already
-          // produced a retracted conclusion in this file once.
-          ms1_no_signal.fetch_add(any ? 0 : 1, std::memory_order_relaxed);
-          ms1_too_short.fetch_add(f.size() >= 5 ? 0 : 1, std::memory_order_relaxed);
+          // so "it is NaN" is not a good enough answer. Counted into this
+          // pass's own Result::ms1_census -- never a thread_local (one read
+          // from one thread already produced a retracted conclusion in this
+          // file) and never a process-wide total (pass 2 would report pass 1's).
+          ms1c.no_signal += any ? 0 : 1;
+          ms1c.too_short += f.size() >= 5 ? 0 : 1;
           if (any && f.size() >= 5)
           {
             // Zero variance in the MS1 leg makes Pearson undefined however much
@@ -2460,11 +2388,10 @@ namespace
             bool flat = true;
             for (std::size_t k = 1; k < m.size(); ++k)
             { if (m[k] != m[0]) { flat = false; break; } }
-            ms1_flat.fetch_add(flat ? 1 : 0, std::memory_order_relaxed);
-            ms1_ok.fetch_add(std::isfinite(pearson(f, m)) ? 1 : 0, std::memory_order_relaxed);
-            ms1_bins_spanned.fetch_add(distinctBins_(chromatogram, lo, hi, *options.ms1),
-                                       std::memory_order_relaxed);
-            ms1_spans.fetch_add(1, std::memory_order_relaxed);
+            ms1c.flat += flat ? 1 : 0;
+            ms1c.ok += std::isfinite(pearson(f, m)) ? 1 : 0;
+            ms1c.bins_spanned += distinctBins_(chromatogram, lo, hi, *options.ms1);
+            ms1c.spans += 1;
           }
         }
         else
@@ -2473,14 +2400,14 @@ namespace
           // everything else" while the run had just built a 148 GiB MS1 matrix
           // over 9,983,789 precursors -- so the composite condition is useless
           // and each term has to be counted on its own.
-          ms1_unavailable.fetch_add(1, std::memory_order_relaxed);
-          if (options.ms1 == nullptr) { ms1_null.fetch_add(1, std::memory_order_relaxed); }
+          ms1c.unavailable += 1;
+          if (options.ms1 == nullptr) { ms1c.null_ptr += 1; }
           else
           {
-            if (options.ms1->empty()) { ms1_empty.fetch_add(1, std::memory_order_relaxed); }
+            if (options.ms1->empty()) { ms1c.empty += 1; }
             if (i >= options.ms1->precursors())
-            { ms1_index_oob.fetch_add(1, std::memory_order_relaxed); }
-            if (!(hi > lo)) { ms1_degenerate_span.fetch_add(1, std::memory_order_relaxed); }
+            { ms1c.index_oob += 1; }
+            if (!(hi > lo)) { ms1c.degenerate_span += 1; }
           }
         }
         g.sub_scores[MS1_COELUTION] = r;
@@ -3209,7 +3136,7 @@ namespace
     // aggregate "N precursors yielded no candidate peak group" was true and
     // useless, and on a realistic library it is 19,150 of 100,000.
     {
-      const PickerRejects r = totalRejects();
+      const PickerRejects& r = result.picker_rejects;
       std::ostringstream w;
       auto pc = [](std::size_t t, std::size_t d) {
         std::ostringstream o; o.setf(std::ios::fixed); o.precision(2);
@@ -3261,21 +3188,22 @@ namespace
       // statistic), so it being dropped as uninformative needs a reason on the
       // record rather than a plausible story.
       {
-        const std::size_t spans = ms1_spans.load(std::memory_order_relaxed);
-        w << "\n  MS1_COELUTION: " << ms1_ok.load(std::memory_order_relaxed) << " finite, "
-          << ms1_unavailable.load(std::memory_order_relaxed) << " no MS1 available, "
-          << ms1_no_signal.load(std::memory_order_relaxed) << " all-zero in the window, "
-          << ms1_too_short.load(std::memory_order_relaxed) << " under 5 cycles, "
-          << ms1_flat.load(std::memory_order_relaxed) << " flat (zero variance)"
+        const Ms1Census& c = result.ms1_census;
+        const std::size_t spans = c.spans;
+        w << "\n  MS1_COELUTION: " << c.ok << " finite, "
+          << c.unavailable << " no MS1 available, "
+          << c.no_signal << " all-zero in the window, "
+          << c.too_short << " under 5 cycles, "
+          << c.flat << " flat (zero variance)"
           << "\n    unavailable breakdown: "
-          << ms1_null.load(std::memory_order_relaxed) << " null ptr, "
-          << ms1_empty.load(std::memory_order_relaxed) << " empty, "
-          << ms1_index_oob.load(std::memory_order_relaxed) << " index past matrix, "
-          << ms1_degenerate_span.load(std::memory_order_relaxed) << " hi<=lo";
+          << c.null_ptr << " null ptr, "
+          << c.empty << " empty, "
+          << c.index_oob << " index past matrix, "
+          << c.degenerate_span << " hi<=lo";
         if (spans > 0)
         {
           w << "; mean distinct MS1 bins per candidate "
-            << (double(ms1_bins_spanned.load(std::memory_order_relaxed)) / double(spans));
+            << (double(c.bins_spanned) / double(spans));
         }
       }
       std::fprintf(stderr, "%s\n", w.str().c_str());
