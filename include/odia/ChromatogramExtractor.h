@@ -633,6 +633,16 @@ namespace ODIA
       /// A pass is expensive -- decode is ~600 s on IH1 and is 65% of Phase 2
       /// -- so chunking is a fallback, not a default. Which mechanism actually
       /// bound the memory is reported in `Stats::memory_bound_by`.
+      ///
+      /// Chunking changes NOTHING a sink can observe, by construction: each
+      /// chunk reads every spectrum its precursors span (bounds are spectrum
+      /// positions, never retention times), hands its precursors over in the
+      /// single pass's order, and the chunks follow one another in that order
+      /// -- so the stream is the unchunked stream, trace for trace and in
+      /// sequence. That matters beyond the values, because Gate C calibrates
+      /// on arrival order. The cap is exact: liveness is counted on the match-
+      /// batch grid the pass moves on, so `Stats::peak_live_precursors` never
+      /// exceeds it.
       std::size_t max_live_precursors = 0;
 
       /// Memory budget for the live blocks, BYTES. Non-zero overrides
@@ -798,9 +808,11 @@ namespace ODIA
       double mean_live_transitions = 0.0;
 
       /// What the sliding window actually bought, measured rather than
-      /// assumed: the largest number of precursors -- and of points -- whose
-      /// retention-time windows overlap at one instant. `peak_live_points x 4`
-      /// bytes is the chromatogram term of peak RSS.
+      /// assumed: the largest number of precursors -- and of points -- resident
+      /// at once. The window slides per match batch, so this is the overlap of
+      /// the precursors' spans on that grid, which the chunk planner counts
+      /// exactly and keeps at or under the cap. `peak_live_points x 4` bytes is
+      /// the chromatogram term of peak RSS.
       std::size_t peak_live_precursors = 0;
       std::uint64_t peak_live_points = 0;
       /// Precursors that were extracted at all, i.e. had a window and a

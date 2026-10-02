@@ -18,6 +18,10 @@
 //                 windows belongs to one of them, not to both
 //   wide_csr      more than 2^32 chromatogram points, which the 32-bit CSR
 //                 offsets refused outright (needs ~17.2 GiB)
+//   chunk_invariant  chunked extraction must hand the sink the unchunked
+//                 stream: the same cells (a float chunk bound skipped edge
+//                 frames), the same order (Gate C calibrates on arrival
+//                 order), and no more live than the cap
 //
 // Usage: odia_extract_cases <case>
 
@@ -664,10 +668,12 @@ namespace
                                                         &chunk_stats);
     checkRepresentation(y);
     check(chunk_stats.chunks > 1, "the cap split the library into chunks");
-    // Not "<= the cap": the cap partitions by retention-time overlap, and a
-    // batch's worth of early activation can still put one or two more live than
-    // the partition says. The claim that holds is that it is strictly tighter
-    // than the uncapped run, which is what the mechanism is for.
+    // The planner counts liveness on the match-batch grid the pass moves on,
+    // so the cap is exact. (It used to count retention-time overlap, and a
+    // batch's worth of early activation put more live than the cap allowed --
+    // 734,070 under a cap of 400,000 on the PXD fixture.)
+    check(chunk_stats.peak_live_precursors <= capped.max_live_precursors,
+          "and no more precursors are live than the cap allows");
     check(chunk_stats.peak_live_precursors < flat_stats.peak_live_precursors,
           "and the live set is tighter than without it");
     check(chunk_stats.spectra_decoded >= flat_stats.spectra_decoded,
@@ -678,6 +684,147 @@ namespace
           "chunking changes how many passes it takes, not the answer");
     std::printf("       %zu chunks, %zu spectra decoded against %zu in the run\n",
                 chunk_stats.chunks, chunk_stats.spectra_decoded, chunk_stats.spectra_read);
+  }
+
+  /// Chunking is invisible to the sink: the same traces, in the same order.
+  ///
+  /// `sliding` asserts this too, and passed for as long as it was false,
+  /// because its retention times were whole seconds -- exact in float. The
+  /// extractor kept its cycle axis in float and looked each chunk's spectrum
+  /// range up in the run's DOUBLE times with those float keys, so whenever a
+  /// time rounded the wrong way the chunk's first or last frame was never
+  /// read and its cells stayed zero. A real run's times are never whole: on
+  /// the PXD fixture 2,992 of 6,020 rounded up and 3,028 down, and every chunk
+  /// edge lost its frame with probability one half. Here the times are
+  /// 1000.37 + 0.1 c, which is the same hazard.
+  ///
+  /// Two further things are asserted, because the sink is not order-free and
+  /// the cap is a memory promise:
+  ///
+  ///   * ORDER. Gate C sets its threshold from the first decoys to ARRIVE, so
+  ///     a chunk plan that hands precursors over in a different order hands
+  ///     the scorer a different calibration sample (13 chunks moved tau from
+  ///     6.61 to 6.12 and peak groups by +17% on the fixture). The stream must
+  ///     be the unchunked stream, element for element.
+  ///   * CAP. No more precursors live than the cap: the planner must count on
+  ///     the batch grid the pass moves on, not on retention-time overlap.
+  ///
+  /// The geometry has the features that break each: two co-packed windows
+  /// sharing every frame time (they lose a frame together); windows clipped at
+  /// the run's ends and at a 100 s gap in the middle, so many precursors start
+  /// on one cycle and end on different ones and start order is not hand-over
+  /// order; that gap falling inside one match batch, which then holds the
+  /// precursors on both sides of it live at once although their retention
+  /// times never overlap -- as the PXD fixture's 60 s slices do; and two caps
+  /// that give two different chunk plans.
+  void caseChunkInvariant()
+  {
+    constexpr std::uint32_t CYCLES = 1500, GAP_AT = 750;
+    constexpr std::uint32_t PRECURSORS = 64;
+    constexpr double T0 = 1000.37, STEP = 0.1, HALF = 25.0, GAP = 100.0;
+
+    ScriptedRun run;
+    const auto w0 = run.addWindow(500.0, 510.0);
+    const auto w1 = run.addWindow(510.001, 520.0);
+
+    ScriptedLibrary lib;
+    std::vector<double> product;
+    const double span = STEP * double(CYCLES) + GAP + 2.0 * 15.0;
+    for (std::uint32_t i = 0; i < PRECURSORS; ++i)
+    {
+      const std::size_t at = lib.addPrecursor(i % 2 ? 515.0 : 505.0);
+      lib.library().precursors().irt[at] =
+        static_cast<float>(T0 - 15.0 + span * double(i) / double(PRECURSORS - 1));
+      for (int k = 0; k < 3; ++k)
+      {
+        product.push_back(200.0 + double(i) * 0.5 + 300.0 * k);
+        lib.addTransition(product.back());
+      }
+    }
+
+    // One frame per cycle carrying both windows at the SAME time, every
+    // transition present with an intensity that names the cycle and window.
+    for (std::uint32_t c = 0; c < CYCLES; ++c)
+    {
+      const double rt = T0 + STEP * double(c) + (c >= GAP_AT ? GAP : 0.0);
+      for (const auto w : {w0, w1})
+      {
+        const auto s = run.addSpectrum(w, rt);
+        for (const double mz : product)
+        { run.addPeak(s, mz, float(c) + 1.0f + (w == w1 ? 0.5f : 0.0f)); }
+      }
+    }
+    std::size_t rounds_up = 0, rounds_down = 0;
+    for (const auto& s : run.spectra())
+    {
+      const double f = double(static_cast<float>(s.retention_time));
+      rounds_up += f > s.retention_time;
+      rounds_down += f < s.retention_time;
+    }
+    check(rounds_up > 0 && rounds_down > 0,
+          "the run's times are not exact in float, in both directions");
+
+    auto opt = plainOptions();
+    opt.irt_slope = 1.0;
+    opt.irt_intercept = 0.0;
+    opt.rt_window_seconds = HALF;
+
+    RecordingSink reference;
+    ODIA::ChromatogramExtractor::Stats ref_stats;
+    ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, reference, &ref_stats);
+    check(ref_stats.chunks == 1, "uncapped, the run is one chunk");
+
+    const auto same_trace = [](const RecordingSink::Trace& a, const RecordingSink::Trace& b) {
+      return a.precursor == b.precursor && a.transition_begin == b.transition_begin &&
+             a.axis == b.axis && a.axis_begin == b.axis_begin && a.cycles == b.cycles &&
+             a.rt == b.rt && a.points == b.points;
+    };
+    std::size_t plans = 0, last_chunks = 0;
+    for (const std::size_t cap : {std::size_t(2), std::size_t(5)})
+    {
+      auto capped = opt;
+      capped.max_live_precursors = cap;
+      RecordingSink chunked;
+      ODIA::ChromatogramExtractor::Stats st;
+      ODIA::ChromatogramExtractor::extract(lib.library(), run, capped, chunked, &st);
+      const std::string at = " (cap " + std::to_string(cap) + ", " +
+                             std::to_string(st.chunks) + " chunks)";
+      check(st.chunks > 1, "the cap splits the library" + at);
+      if (st.chunks > 1 && st.chunks != last_chunks) { ++plans; }
+      last_chunks = st.chunks;
+
+      // Values, whatever the order: every precursor's trace, cell for cell.
+      std::size_t differing_cells = 0, missing = 0;
+      for (const auto& r : reference.traces)
+      {
+        const RecordingSink::Trace* found = nullptr;
+        for (const auto& c : chunked.traces)
+        { if (c.precursor == r.precursor) { found = &c; break; } }
+        if (found == nullptr || found->points.size() != r.points.size() ||
+            found->axis != r.axis || found->axis_begin != r.axis_begin)
+        { ++missing; continue; }
+        for (std::size_t k = 0; k < r.points.size(); ++k)
+        {
+          if (found->points[k].size() != r.points[k].size()) { ++missing; continue; }
+          for (std::size_t j = 0; j < r.points[k].size(); ++j)
+          { differing_cells += found->points[k][j] != r.points[k][j]; }
+        }
+      }
+      std::printf("       cap %zu: %zu chunks, %zu cells differ, %zu traces unmatched, "
+                  "peak live %zu\n", cap, st.chunks, differing_cells, missing,
+                  st.peak_live_precursors);
+      check(missing == 0 && differing_cells == 0,
+            "every trace holds what the single pass put in it" + at);
+
+      // Order: the stream itself.
+      bool same_stream = chunked.traces.size() == reference.traces.size();
+      for (std::size_t i = 0; same_stream && i < reference.traces.size(); ++i)
+      { same_stream = same_trace(chunked.traces[i], reference.traces[i]); }
+      check(same_stream, "the sink is handed the single pass's stream, in its order" + at);
+
+      check(st.peak_live_precursors <= cap, "no more precursors live than the cap" + at);
+    }
+    check(plans == 2, "the two caps give two different chunk plans");
   }
 }
 
@@ -693,11 +840,13 @@ int main(int argc, char** argv)
   else if (which == "band_edge") { caseBandEdge(); }
   else if (which == "wide_csr") { caseWideCsr(); }
   else if (which == "sliding") { caseSlidingWindow(); }
+  else if (which == "chunk_invariant") { caseChunkInvariant(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
-                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding>\n");
+                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
+                 "chunk_invariant>\n");
     return 2;
   }
 

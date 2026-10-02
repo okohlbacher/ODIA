@@ -622,6 +622,14 @@ add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 # chunks changes the number of passes and not the answer.
 add_test(NAME extract_sliding_window COMMAND odia_extract_cases sliding)
 
+# Chunking must be invisible to whatever consumes the stream. Retention times
+# that are NOT exact in float, because chunk spectrum ranges were searched with
+# float keys in the double times and `sliding`'s whole seconds hid it: a chunk's
+# first or last frame went unread and its cells stayed zero. Also asserts the
+# hand-over ORDER is the unchunked one (Gate C calibrates on arrival order) and
+# that the cap bounds the live set exactly. Fails on a48c223 on all three.
+add_test(NAME extract_chunk_invariant COMMAND odia_extract_cases chunk_invariant)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing

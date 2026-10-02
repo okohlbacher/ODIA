@@ -52,6 +52,17 @@ namespace ODIA
     struct CycleAxis
     {
       std::vector<std::size_t> spectrum;   ///< index into SpectrumSource::spectra()
+      /// POSITION of each cycle's spectrum in SpectrumSource::spectra(), the
+      /// coordinate the pass decodes and batches in.
+      ///
+      /// Everything that decides WHICH spectra a pass reads is computed from
+      /// these, never from `rt`. `rt` is float, the run's times are double, and
+      /// a float key searched in the double times lands one spectrum early or
+      /// late whenever the rounding goes the wrong way -- which is how chunked
+      /// extraction used to skip the first or last frame of a chunk and leave
+      /// those cells at zero (2,992 of 6,020 fixture spectra round up, 3,028
+      /// down; none is exact). A position cannot round.
+      std::vector<std::size_t> position;
       std::vector<float> rt;               ///< ascending, seconds
       double rt0 = 0.0;
       double step = 1.0;
@@ -195,6 +206,51 @@ namespace ODIA
       float* im_num = nullptr;
       float* im_den = nullptr;
       std::uint32_t lo = 0, hi = 0;
+    };
+
+    /// How many precursors are live in each match batch of the run, for the
+    /// chunk planner: add a precursor's span [first, last], ask the largest
+    /// count inside a span. A segment tree with the pending add kept on the
+    /// node (never pushed down), so both are O(log batches) -- the planner asks
+    /// once per precursor, millions of times, over ~10^3 batches.
+    class LiveCount
+    {
+    public:
+      explicit LiveCount(std::size_t batches)
+        : n_(std::max<std::size_t>(batches, 1)), max_(4 * n_, 0), add_(4 * n_, 0) {}
+
+      void reset()
+      {
+        std::fill(max_.begin(), max_.end(), 0u);
+        std::fill(add_.begin(), add_.end(), 0u);
+      }
+      void add(std::size_t first, std::size_t last) { add(1, 0, n_ - 1, first, last); }
+      std::uint32_t max(std::size_t first, std::size_t last) const
+      { return max(1, 0, n_ - 1, first, last); }
+
+    private:
+      void add(std::size_t node, std::size_t lo, std::size_t hi,
+               std::size_t first, std::size_t last)
+      {
+        if (last < lo || hi < first) { return; }
+        if (first <= lo && hi <= last) { ++max_[node]; ++add_[node]; return; }
+        const std::size_t mid = lo + (hi - lo) / 2;
+        add(2 * node, lo, mid, first, last);
+        add(2 * node + 1, mid + 1, hi, first, last);
+        max_[node] = add_[node] + std::max(max_[2 * node], max_[2 * node + 1]);
+      }
+      std::uint32_t max(std::size_t node, std::size_t lo, std::size_t hi,
+                        std::size_t first, std::size_t last) const
+      {
+        if (last < lo || hi < first) { return 0; }
+        if (first <= lo && hi <= last) { return max_[node]; }
+        const std::size_t mid = lo + (hi - lo) / 2;
+        return add_[node] + std::max(max(2 * node, lo, mid, first, last),
+                                     max(2 * node + 1, mid + 1, hi, first, last));
+      }
+
+      std::size_t n_;
+      std::vector<std::uint32_t> max_, add_;
     };
 
     /// Fixed-size blocks, reused rather than returned to the allocator.
@@ -423,6 +479,7 @@ namespace ODIA
           window_of[si] = static_cast<std::uint32_t>(w);
           cycle_of[si] = static_cast<std::uint32_t>(axis[w].rt.size());
           axis[w].spectrum.push_back(info[si].index);
+          axis[w].position.push_back(si);
           axis[w].rt.push_back(static_cast<float>(info[si].retention_time));
           break;
         }
@@ -618,60 +675,172 @@ namespace ODIA
     layout.counts = sink.needsLayoutCounts() ? &layout_counts : nullptr;
     sink.begin(layout);
 
-    // How much of the library is live at once.
+    // The pass's coordinates: which spectra it reads, in which blocks it
+    // decodes them, and in which batches it matches them. Fixed here, BEFORE
+    // the live set is measured and the library chunked, because both are
+    // properties of these coordinates and nothing else.
     //
-    // This is the number the whole design turns on, so it is measured rather
-    // than assumed. A precursor is live from the first cycle of its window to
-    // the last, and the peak of that occupancy -- not the library size -- is
-    // what has to fit. The two are the same thing only when the retention-time
-    // window is the whole run, which is exactly the uncalibrated case, and the
-    // report says so instead of implying a win that is not there.
-    std::vector<float> slot_rt_lo(n_slots, 0.0f), slot_rt_hi(n_slots, 0.0f);
-    std::vector<std::uint32_t> slot_points(n_slots, 0);
+    // Large enough that spawning workers is amortised. At 128 spectra and 64
+    // threads each worker got two spectra and thread creation cost more than
+    // the matching did -- measured 0.19 s against 0.14 s single-threaded.
+    // Was a constant; now `Options::decode_block`, because a heap profile put
+    // 5.57 GiB of a 9.45 GiB live peak in the block's `SpectrumPeaks` copies.
+    // Zero keeps the historical default rather than degenerating to no block.
+    const std::size_t BLOCK = options.decode_block ? options.decode_block : 256;
+    // Matching walks the decoded block in smaller batches, because the
+    // allocate/free cursors can only move between batches -- no chromatogram
+    // may appear or vanish while a worker is reading `live`. The batch is
+    // therefore the GRANULARITY OF THE SLIDING WINDOW: a precursor goes live up
+    // to one batch early and is freed up to one batch late.
+    //
+    // 128 spectra is ~5 cycles across IH1's 24 windows, about 7 s of gradient
+    // against retention-time windows of hundreds -- so the rounding is under 1%
+    // of what is resident. At the 1,024 the decode uses it would be 59 s, which
+    // is 5% of a 1,200 s window and 100% of a short one. The cost of the finer
+    // batch is one more pool wakeup per 128 spectra, microseconds against the
+    // ~1 s the decode of those spectra takes.
+    constexpr std::size_t MATCH_BATCH = 128;
+
+    std::size_t first_spectrum = 0, last_spectrum = info.size();
+    if (options.rt_high > options.rt_low)
+    {
+      first_spectrum = static_cast<std::size_t>(
+        std::lower_bound(info.begin(), info.end(), options.rt_low,
+                         [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
+        - info.begin());
+      last_spectrum = static_cast<std::size_t>(
+        std::lower_bound(info.begin(), info.end(), options.rt_high,
+                         [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
+        - info.begin());
+      // The cycle range above was resolved on the FLOAT axis, this spectrum
+      // range on the run's DOUBLE times, and the two disagree by one spectrum
+      // whenever a time rounds across the bound. Widened to every cycle the
+      // axis admitted, so a precursor's first or last cycle can never fall
+      // outside what the pass reads.
+      for (std::size_t w = 0; w < windows.size(); ++w)
+      {
+        if (global_lo[w] >= global_hi[w]) { continue; }
+        first_spectrum = std::min(first_spectrum, axis[w].position[global_lo[w]]);
+        last_spectrum = std::max(last_spectrum, axis[w].position[global_hi[w] - 1] + 1);
+      }
+    }
+    st.spectra_read = last_spectrum - first_spectrum;
+
+    // The batch grid is ABSOLUTE: batch boundaries sit at first_spectrum +
+    // j*BLOCK + k*MATCH_BATCH whichever chunk is reading, so a spectrum is in
+    // the same batch in every chunk plan. A chunk that started its grid at its
+    // own first spectrum would move every boundary, and with them the moment
+    // each precursor goes live and is handed over.
+    const std::size_t batches_per_block = (BLOCK + MATCH_BATCH - 1) / MATCH_BATCH;
+    const auto batchOf = [&](std::size_t si) {
+      const std::size_t r = si - first_spectrum;
+      return (r / BLOCK) * batches_per_block + (r % BLOCK) / MATCH_BATCH;
+    };
+    const std::size_t n_batches =
+      last_spectrum > first_spectrum ? batchOf(last_spectrum - 1) + 1 : 0;
+
+    // Each precursor's span on that grid. It goes live in the batch that reads
+    // its first cycle and is handed over after the batch that reads its last,
+    // so it is resident for exactly the batches [first_batch, last_batch].
+    // Computed from spectrum POSITIONS, never from retention times: see
+    // CycleAxis::position.
+    std::vector<float> slot_rt_lo(n_slots, 0.0f);
+    std::vector<std::uint32_t> first_batch(n_slots, 0), last_batch(n_slots, 0);
     for (std::size_t s = 0; s < n_slots; ++s)
     {
       const Assignment& a = assignments[s];
       slot_rt_lo[s] = axis[a.window].rt[a.lo];
-      slot_rt_hi[s] = axis[a.window].rt[a.hi - 1];
-      slot_points[s] = a.valid * (a.hi - a.lo);
+      const std::size_t si_lo = axis[a.window].position[a.lo];
+      const std::size_t si_hi = axis[a.window].position[a.hi - 1];
+      if (si_lo < first_spectrum || si_hi >= last_spectrum)
+      {
+        throw std::logic_error(
+          "precursor " + std::to_string(a.precursor) + " spans spectra " +
+          std::to_string(si_lo) + ".." + std::to_string(si_hi) +
+          ", outside the pass's range " + std::to_string(first_spectrum) + ".." +
+          std::to_string(last_spectrum));
+      }
+      first_batch[s] = static_cast<std::uint32_t>(batchOf(si_lo));
+      last_batch[s] = static_cast<std::uint32_t>(batchOf(si_hi));
     }
-    std::vector<std::uint32_t> by_start(n_slots), by_end(n_slots);
+    std::vector<std::uint32_t> by_start(n_slots);
     std::iota(by_start.begin(), by_start.end(), 0u);
-    std::iota(by_end.begin(), by_end.end(), 0u);
     std::sort(by_start.begin(), by_start.end(),
               [&](std::uint32_t a, std::uint32_t b) { return slot_rt_lo[a] < slot_rt_lo[b]; });
-    std::sort(by_end.begin(), by_end.end(),
-              [&](std::uint32_t a, std::uint32_t b) { return slot_rt_hi[a] < slot_rt_hi[b]; });
+
+    // How much of the library is live at once.
+    //
+    // This is the number the whole design turns on, so it is measured rather
+    // than assumed -- and measured on the grid the pass actually moves on. It
+    // used to be the overlap of the retention-time windows, which is what would
+    // be live if the window slid per spectrum. It slides per batch, so that
+    // undercounted by up to a batch's activations at each end: 1,461,670 swept
+    // against 2,349,537 resident on the PXD fixture, and a chunked run peaked
+    // at 734,070 live under a cap of 400,000 (worst where a batch straddles a
+    // gap in the run and holds the slices on both sides live at once). The
+    // live set at batch B is the precursors whose span contains B, exactly.
     std::size_t overlap_precursors = 0;
-    std::uint64_t overlap_points = 0;
     {
-      std::size_t i = 0, j = 0, live = 0;
-      std::uint64_t live_points = 0;
-      while (i < n_slots)
+      std::vector<std::int64_t> delta(n_batches + 1, 0);
+      for (std::size_t s = 0; s < n_slots; ++s)
       {
-        if (slot_rt_lo[by_start[i]] <= slot_rt_hi[by_end[j]])
-        {
-          ++live;
-          live_points += slot_points[by_start[i]];
-          overlap_precursors = std::max(overlap_precursors, live);
-          overlap_points = std::max(overlap_points, live_points);
-          ++i;
-        }
-        else
-        {
-          --live;
-          live_points -= slot_points[by_end[j]];
-          ++j;
-        }
+        ++delta[first_batch[s]];
+        --delta[std::size_t(last_batch[s]) + 1];
+      }
+      std::int64_t live = 0;
+      for (std::size_t b = 0; b < n_batches; ++b)
+      {
+        live += delta[b];
+        overlap_precursors = std::max(overlap_precursors, std::size_t(live));
+      }
+    }
+
+    // The order the pass hands precursors to the sink, fixed ONCE for the
+    // whole run and independent of how it is chunked.
+    //
+    // Unchunked, the pass hands over after each batch, window by window, every
+    // precursor whose last cycle that batch read, in the order of its window's
+    // end cursor. So the stream is sorted by (last_batch, window, rank in that
+    // cursor). The rank is computed here exactly as a single-chunk pass builds
+    // its cursor, which keeps a run that fits byte-identical to before.
+    //
+    // It has to be fixed, because the sink is not order-free: Gate C's
+    // threshold is the quantile of the FIRST gate_calibration_n decoys to
+    // arrive, and everything arriving before that is admitted unconditionally.
+    // Chunks that each emitted in their own order handed the gate a different
+    // calibration sample -- tau 6.61 unchunked against 6.12 at 13 chunks on the
+    // PXD fixture, and 2,634,793 peak groups against 3,083,453.
+    std::vector<std::uint32_t> emission_rank(n_slots, 0);
+    {
+      std::vector<std::vector<std::uint32_t>> cursor(windows.size());
+      for (const std::uint32_t s : by_start) { cursor[assignments[s].window].push_back(s); }
+      for (auto& c : cursor)
+      {
+        std::sort(c.begin(), c.end(), [&](std::uint32_t a, std::uint32_t b) {
+          return assignments[a].lo < assignments[b].lo; });
+        std::sort(c.begin(), c.end(), [&](std::uint32_t a, std::uint32_t b) {
+          return assignments[a].hi < assignments[b].hi; });
+        for (std::size_t r = 0; r < c.size(); ++r)
+        { emission_rank[c[r]] = static_cast<std::uint32_t>(r); }
       }
     }
 
     // The library, split into chunks whose live sets each fit under the cap.
     //
-    // Greedy over start time with a running set of end times, so a chunk is a
-    // band of the gradient rather than an arbitrary slice of the library -- and
-    // a band needs only the spectra inside it, which is why chunking costs a
-    // fraction of a decode pass rather than a whole one per chunk.
+    // A chunk is a CONTIGUOUS RUN OF THE HAND-OVER ORDER above, cut where
+    // adding the next precursor would put more than `cap` live in some batch.
+    // That makes chunking invisible to the sink by construction: each chunk
+    // reads every spectrum its precursors span (positions, not times), so each
+    // trace holds what the single pass would have put in it; it hands its
+    // precursors over in the single pass's order; and the chunks follow one
+    // another in that order, so their concatenation IS the single pass's
+    // stream. The cap holds exactly, because the live count it is tested
+    // against is the one the pass will have.
+    //
+    // A chunk is still a band of the gradient -- its precursors end within a
+    // run of consecutive batches -- and a band needs only the spectra inside
+    // it, which is why chunking costs a fraction of a decode pass rather than a
+    // whole one per chunk.
     std::vector<std::vector<std::uint32_t>> chunks;
     // Derive the cap from the memory budget when one is given. Stated in
     // bytes because that is the quantity a caller actually has, and inverted
@@ -707,20 +876,27 @@ namespace ODIA
     }
     else
     {
-      using MinHeap = std::priority_queue<float, std::vector<float>, std::greater<float>>;
-      MinHeap ends;
+      std::vector<std::uint32_t> order(n_slots);
+      std::iota(order.begin(), order.end(), 0u);
+      std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+        if (last_batch[a] != last_batch[b]) { return last_batch[a] < last_batch[b]; }
+        if (assignments[a].window != assignments[b].window)
+        { return assignments[a].window < assignments[b].window; }
+        return emission_rank[a] < emission_rank[b];
+      });
+      LiveCount live_count(n_batches);
       std::vector<std::uint32_t> current;
-      for (const std::uint32_t s : by_start)
+      for (const std::uint32_t s : order)
       {
-        while (!ends.empty() && ends.top() < slot_rt_lo[s]) { ends.pop(); }
-        if (ends.size() + 1 > cap && !current.empty())
+        if (!current.empty() &&
+            live_count.max(first_batch[s], last_batch[s]) + 1 > cap)
         {
           chunks.push_back(std::move(current));
           current.clear();
-          ends = MinHeap{};
+          live_count.reset();
         }
+        live_count.add(first_batch[s], last_batch[s]);
         current.push_back(s);
-        ends.push(slot_rt_hi[s]);
       }
       if (!current.empty()) { chunks.push_back(std::move(current)); }
       st.memory_bound_by = "precursor cap (" + std::to_string(cap) + "), " +
@@ -736,7 +912,18 @@ namespace ODIA
 
     // Where every precursor's points are right now: null outside its window,
     // which for most precursors is most of the run.
+    //
+    // The cycle range is set for every slot up front and KEPT after the slot
+    // is handed over, so a peak that lands in a precursor's range while it is
+    // not live reaches the `unhoused` test below. Resetting it to 0..0 on
+    // hand-over (and leaving it 0..0 before activation) made the cycle test
+    // skip such a peak first, and the guard could never fire.
     std::vector<LiveSlot> live(n_slots);
+    for (std::size_t s = 0; s < n_slots; ++s)
+    {
+      live[s].lo = assignments[s].lo;
+      live[s].hi = assignments[s].hi;
+    }
     BlockPool blocks;
     std::size_t live_now = 0, live_peak = 0;
     std::atomic<std::size_t> nonzero{0};
@@ -745,6 +932,18 @@ namespace ODIA
     // counted rather than assumed, because the alternative to catching it is a
     // silently truncated chromatogram.
     std::atomic<std::size_t> unhoused{0};
+    // The other half of that guarantee, and the half `unhoused` cannot see: a
+    // cycle the pass never READ leaves no peak to count. Per window, the cycles
+    // the current chunk has read are [first_seen, seen) -- a chunk reads a
+    // contiguous run of spectra, so a window's cycles in it are contiguous --
+    // and a precursor handed over with its range not inside that has cells that
+    // are zero because nothing looked. That is how chunked extraction lost the
+    // first or last frame of a chunk for as long as the chunk's spectrum range
+    // was looked up by a float time; it is checked on every hand-over now.
+    std::vector<std::uint32_t> seen(windows.size(), 0);
+    std::vector<std::uint32_t> first_seen(windows.size(),
+                                          std::numeric_limits<std::uint32_t>::max());
+    std::size_t unread = 0;
 
     // One forward pass over the run in acquisition order, so the decode stays
     // contiguous -- a window's spectra are strided through the file, and
@@ -826,41 +1025,6 @@ namespace ODIA
       }
     } pool_impl;
     if (threads > 1) { pool_impl.start(threads); }
-    // Large enough that spawning workers is amortised. At 128 spectra and 64
-    // threads each worker got two spectra and thread creation cost more than
-    // the matching did -- measured 0.19 s against 0.14 s single-threaded.
-    // Was a constant; now `Options::decode_block`, because a heap profile put
-    // 5.57 GiB of a 9.45 GiB live peak in the block's `SpectrumPeaks` copies.
-    // Zero keeps the historical default rather than degenerating to no block.
-    const std::size_t BLOCK = options.decode_block ? options.decode_block : 256;
-    // Matching walks the decoded block in smaller batches, because the
-    // allocate/free cursors can only move between batches -- no chromatogram
-    // may appear or vanish while a worker is reading `live`. The batch is
-    // therefore the GRANULARITY OF THE SLIDING WINDOW: a precursor goes live up
-    // to one batch early and is freed up to one batch late.
-    //
-    // 128 spectra is ~5 cycles across IH1's 24 windows, about 7 s of gradient
-    // against retention-time windows of hundreds -- so the rounding is under 1%
-    // of what is resident. At the 1,024 the decode uses it would be 59 s, which
-    // is 5% of a 1,200 s window and 100% of a short one. The cost of the finer
-    // batch is one more pool wakeup per 128 spectra, microseconds against the
-    // ~1 s the decode of those spectra takes.
-    constexpr std::size_t MATCH_BATCH = 128;
-
-    std::size_t first_spectrum = 0, last_spectrum = info.size();
-    if (options.rt_high > options.rt_low)
-    {
-      first_spectrum = static_cast<std::size_t>(
-        std::lower_bound(info.begin(), info.end(), options.rt_low,
-                         [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
-        - info.begin());
-      last_spectrum = static_cast<std::size_t>(
-        std::lower_bound(info.begin(), info.end(), options.rt_high,
-                         [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
-        - info.begin());
-    }
-    st.spectra_read = last_spectrum - first_spectrum;
-
     // A precursor leaving the pass: its chromatogram is final, so hand it over
     // and give the memory back.
     std::vector<std::uint64_t> off_scratch;
@@ -885,9 +1049,11 @@ namespace ODIA
     };
     const auto emit = [&](std::uint32_t slot) {
       const Assignment& a = assignments[slot];
-      // A precursor whose window the pass never reached -- possible only when
-      // the caller restricted the run -- still owes the sink a trace of zeros,
-      // which is what the flat array used to hand it.
+      if (a.lo < first_seen[a.window] || a.hi > seen[a.window]) { ++unread; }
+      // A precursor whose window the pass never reached still owes the sink a
+      // trace, which is what the flat array used to hand it. It can no longer
+      // happen -- the pass reads every cycle a precursor spans, even under a
+      // caller's restricted range -- and if it does, `unread` has counted it.
       if (live[slot].base == nullptr) { activate(slot); }
 
       const std::uint32_t tb = p.transition_begin[a.precursor];
@@ -958,12 +1124,17 @@ namespace ODIA
         blocks.give(live[slot].im_den, std::size_t(a.valid) * cycles);
       }
       live[slot] = LiveSlot{};
+      live[slot].lo = a.lo;     // kept, so `unhoused` can see a late peak
+      live[slot].hi = a.hi;
       --live_now;
     };
 
     for (const auto& slots : chunks)
     {
       const auto t_chunk_index = std::chrono::steady_clock::now();
+      std::fill(seen.begin(), seen.end(), 0u);
+      std::fill(first_seen.begin(), first_seen.end(),
+                std::numeric_limits<std::uint32_t>::max());
 
       // The m/z index of this chunk's transitions, per window. Rebuilt per
       // chunk rather than held for the whole library, because the index is
@@ -1063,42 +1234,46 @@ namespace ODIA
       {
         std::sort(by_lo[w].begin(), by_lo[w].end(), [&](std::uint32_t a, std::uint32_t b) {
           return assignments[a].lo < assignments[b].lo; });
+        // The hand-over cursor runs in the run-wide order fixed by the
+        // planner, not in an order sorted afresh per chunk: see emission_rank.
+        // On a single chunk the two are the same sequence.
         by_hi[w] = by_lo[w];
         std::sort(by_hi[w].begin(), by_hi[w].end(), [&](std::uint32_t a, std::uint32_t b) {
-          return assignments[a].hi < assignments[b].hi; });
+          return emission_rank[a] < emission_rank[b]; });
       }
       std::vector<std::size_t> cur_lo(windows.size(), 0), cur_hi(windows.size(), 0);
-      std::vector<std::uint32_t> seen(windows.size(), 0);
 
-      // One chunk needs only the spectra its own precursors elute in. With a
-      // single chunk that is the caller's range unchanged, so nothing about a
-      // run that fits today changes.
+      // One chunk needs only the spectra its own precursors elute in: from the
+      // first cycle of any of them to the last, as spectrum POSITIONS. This
+      // was a search of the run's double times for the float times of those
+      // cycles, which lands one spectrum inside the range whenever the float
+      // rounds the wrong way -- and that spectrum, the chunk's first or last
+      // frame, was then never read. With a single chunk it is the caller's
+      // range unchanged, so nothing about a run that fits changes.
       std::size_t chunk_first = first_spectrum, chunk_last = last_spectrum;
       if (chunks.size() > 1 && !slots.empty())
       {
-        double lo_rt = std::numeric_limits<double>::infinity();
-        double hi_rt = -std::numeric_limits<double>::infinity();
+        chunk_first = last_spectrum;
+        chunk_last = first_spectrum;
         for (const std::uint32_t slot : slots)
         {
-          lo_rt = std::min(lo_rt, double(slot_rt_lo[slot]));
-          hi_rt = std::max(hi_rt, double(slot_rt_hi[slot]));
+          const Assignment& a = assignments[slot];
+          chunk_first = std::min(chunk_first, axis[a.window].position[a.lo]);
+          chunk_last = std::max(chunk_last, axis[a.window].position[a.hi - 1] + 1);
         }
-        chunk_first = std::max(first_spectrum, static_cast<std::size_t>(
-          std::lower_bound(info.begin(), info.end(), lo_rt,
-                           [](const SpectrumInfo& s, double v) { return s.retention_time < v; })
-          - info.begin()));
-        chunk_last = std::min(last_spectrum, static_cast<std::size_t>(
-          std::upper_bound(info.begin(), info.end(), hi_rt,
-                           [](double v, const SpectrumInfo& s) { return v < s.retention_time; })
-          - info.begin()));
       }
 
       st.index_seconds += std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t_chunk_index).count();
 
-      for (std::size_t begin = chunk_first; begin < chunk_last; begin += BLOCK)
+      // Blocks and batches on the run's ABSOLUTE grid (see batchOf), clipped
+      // to the chunk: a chunk starting mid-block reads the rest of that block.
+      for (std::size_t block_at =
+             first_spectrum + ((chunk_first - first_spectrum) / BLOCK) * BLOCK;
+           block_at < chunk_last; block_at += BLOCK)
       {
-        const std::size_t end = std::min(begin + BLOCK, chunk_last);
+        const std::size_t begin = std::max(block_at, chunk_first);
+        const std::size_t end = std::min(block_at + BLOCK, chunk_last);
 
         const auto t_decode = std::chrono::steady_clock::now();
         source.peaks(begin, end, block);
@@ -1109,9 +1284,11 @@ namespace ODIA
         // Decoding is per block, because that is what the reader wants;
         // matching walks it in smaller batches, because that is the
         // granularity at which the sliding window can move. See MATCH_BATCH.
-        for (std::size_t batch = begin; batch < end; batch += MATCH_BATCH)
+        for (std::size_t batch_at = block_at; batch_at < end; batch_at += MATCH_BATCH)
         {
-          const std::size_t batch_end = std::min(batch + MATCH_BATCH, end);
+          const std::size_t batch = std::max(batch_at, begin);
+          const std::size_t batch_end = std::min(batch_at + MATCH_BATCH, end);
+          if (batch >= batch_end) { continue; }
 
           // Everything whose window starts inside this batch goes live. Doing it
           // between batches rather than per spectrum is what keeps the pass free
@@ -1122,6 +1299,7 @@ namespace ODIA
             const std::uint32_t w = window_of[si];
             if (w == std::numeric_limits<std::uint32_t>::max()) { continue; }
             seen[w] = std::max(seen[w], cycle_of[si] + 1);
+            first_seen[w] = std::min(first_seen[w], cycle_of[si]);
           }
           for (std::size_t w = 0; w < windows.size(); ++w)
           {
@@ -1273,7 +1451,7 @@ namespace ODIA
                                  - (st.sink_seconds - sink_before);
         }
 
-        if (options.progress_every && (begin / BLOCK) % 16 == 0)
+        if (options.progress_every && (block_at / BLOCK) % 16 == 0)
         {
           std::cerr << "\r  " << st.spectra_decoded << " / " << st.spectra_read
                     << " spectra"
@@ -1298,6 +1476,14 @@ namespace ODIA
     }
     if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
 
+    if (unread != 0)
+    {
+      throw std::logic_error(
+        std::to_string(unread) +
+        " precursors were handed over with cycles the pass never read. Their "
+        "cells there are zero because nothing looked, not because nothing was "
+        "there -- the chunk's spectrum range did not cover its precursors.");
+    }
     if (unhoused.load() != 0)
     {
       throw std::logic_error(
