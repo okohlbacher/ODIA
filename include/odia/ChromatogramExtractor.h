@@ -324,6 +324,21 @@ namespace ODIA
 
     virtual void accept(const PrecursorChromatogram&) = 0;
 
+    /// Batched delivery, for a sink that can consume several released
+    /// precursors at once (the -parallel_sink scorer). Zero, the default,
+    /// means "call accept() once per precursor", which is the historical path
+    /// and the only one the extractor takes for such a sink.
+    ///
+    /// Non-zero: the extractor may hand over up to this many precursors in
+    /// one `acceptBatch` call, in EXACTLY the order it would have called
+    /// `accept`, and keeps their storage alive until the call returns. Each
+    /// batch is a barrier: nothing later is released until it has returned.
+    virtual std::size_t batchCapacity() const { return 0; }
+    virtual void acceptBatch(const PrecursorChromatogram* traces, std::size_t n)
+    {
+      for (std::size_t i = 0; i < n; ++i) { accept(traces[i]); }
+    }
+
     /// Whether `ChromatogramLayout::counts` has to be filled in. See it.
     virtual bool needsLayoutCounts() const { return false; }
   };

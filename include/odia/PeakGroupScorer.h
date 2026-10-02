@@ -982,6 +982,21 @@ namespace ODIA
 
       unsigned threads = 0;
 
+      /// -parallel_sink (EXPLORATORY, off by default). Score the precursors the
+      /// extractor releases together on `threads` workers instead of one at a
+      /// time on the driver, by ORDERED SPECULATION: each precursor's work runs
+      /// on the pool into its own buffer, and everything order-dependent --
+      /// Gate C's admit/note and the calibration boundary, group indices, the
+      /// mass-anchor cap, counters, terminal reasons -- is committed on the
+      /// driver in the order the serial sink would have seen them. The result
+      /// is required to be byte-identical to the serial sink at any thread
+      /// count; see Session::addBatch.
+      bool parallel_sink = false;
+
+      /// Most precursors one parallel batch may hold. Bounds the speculative
+      /// buffers and how long the extractor keeps released chromatograms.
+      std::size_t sink_batch = 4096;
+
       /// True when `Library::precursors().irt` holds RUN SECONDS rather than
       /// library iRT units -- i.e. after the retention-time map has been fitted
       /// and applied. It centres pass 2's extraction window; no sub-score
@@ -1279,7 +1294,28 @@ namespace ODIA
 
       /// Score one precursor. Nothing about @p trace is retained after this
       /// returns, which is the contract that lets the caller free it.
+      ///
+      /// Two steps, always: `prepare_` does the per-precursor work into a
+      /// private buffer and touches no shared state, `commit_` applies it to
+      /// the Result. The serial path runs them back to back; the parallel
+      /// path (`addBatch`) runs many prepares on a pool and the commits on
+      /// the calling thread, in order. Same code either way.
       void add(const PrecursorChromatogram& trace);
+
+      /// Score @p n precursors as if `add` had been called on each in order.
+      /// With `Options::parallel_sink` and `threads > 1` the prepares run
+      /// concurrently; otherwise this IS that loop. The traces must stay valid
+      /// until it returns. An exception from any precursor's work is rethrown
+      /// after every EARLIER precursor has been committed -- the state the
+      /// serial loop would have reached.
+      void addBatch(const PrecursorChromatogram* traces, std::size_t n);
+
+      /// Whether `addBatch` will actually run anything concurrently.
+      bool parallel() const;
+
+      /// Precursors whose speculated work Gate C rejected at commit. For the
+      /// test that proves the arming boundary was crossed inside a batch.
+      std::size_t speculationDiscarded() const { return speculation_discarded_; }
 
       /// Fit the discriminant over everything added, and calibrate.
       ///
@@ -1318,6 +1354,25 @@ namespace ODIA
       const Library* library_;
       Options options_;
 
+      /// One precursor's speculative output; defined in the .cpp.
+      struct Staged;
+      /// Gate C's state as a worker may see it: a COPY taken on the driver.
+      /// Once `ready`, tau never changes, so a worker can decide exactly; before
+      /// it, admission is unconditional. Workers never touch `gate_null_`.
+      struct GateView { bool ready = false; double tau = 0.0; };
+      GateView gateView_() const;
+      void prepare_(const PrecursorChromatogram& trace, const GateView& gate,
+                    Staged& out) const;
+      void commit_(Staged& staged);
+
+      /// The -parallel_sink worker pool, created on first use.
+      struct SinkPool;
+      std::shared_ptr<SinkPool> pool_;
+      std::size_t batches_ = 0;              ///< parallel batches run
+      std::size_t batched_precursors_ = 0;   ///< precursors scored through them
+      std::size_t batch_max_ = 0;            ///< largest batch
+      std::size_t speculation_discarded_ = 0;   ///< bodies Gate C rejected at commit
+
     public:
       /// Install the run's MS1 traces after construction. See
       /// ChromatogramSink::ms1Available for why this cannot be a constructor
@@ -1336,12 +1391,18 @@ namespace ODIA
     class Sink final : public ChromatogramSink
     {
     public:
-      Sink(const Library& library, const Options& options) : session_(library, options) {}
+      Sink(const Library& library, const Options& options)
+        : session_(library, options),
+          session_batch_(options.sink_batch ? options.sink_batch : 1) {}
 
       /// See ChromatogramSink::ms1Available -- the traces do not exist yet when
       /// this sink is constructed.
       void ms1Available(const Ms1Traces* m) override { session_.setMs1Traces(m); }
       void accept(const PrecursorChromatogram& trace) override { session_.add(trace); }
+      std::size_t batchCapacity() const override
+      { return session_.parallel() ? session_batch_ : 0; }
+      void acceptBatch(const PrecursorChromatogram* traces, std::size_t n) override
+      { session_.addBatch(traces, n); }
       Result finish() { return session_.finish(); }
 
       /// Tell the harvest what mass correction the extractor is applying.
@@ -1368,6 +1429,7 @@ namespace ODIA
 
     private:
       Session session_;
+      std::size_t session_batch_ = 1;
     };
 
     static Result score(const Library& library, const Chromatograms& chromatograms,

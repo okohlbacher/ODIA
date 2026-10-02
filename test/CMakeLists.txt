@@ -555,6 +555,14 @@ add_test(NAME picker_prefers_coelution_over_amplitude COMMAND odia_picker_cases)
 add_test(NAME peak_bounds_cover_the_peak_not_the_window COMMAND odia_peak_bounds)
 add_test(NAME scoring_and_quantification_intervals_are_independent COMMAND odia_interval_split)
 
+# -parallel_sink commits everything order-dependent on the driver in the serial
+# order; this drives Session::add against Session::addBatch at 1, 8 and 48
+# threads with the Gate C null arming inside a batch and the mass-anchor cap
+# falling mid-batch, and requires the Result, the terminal reasons and the gate
+# log to be byte-identical.
+add_test(NAME parallel_sink_is_byte_identical
+         COMMAND odia_parallel_sink ${CMAKE_CURRENT_BINARY_DIR})
+
 # Does a reported 1% FDR mean 1% of the identifications are wrong?
 #
 # doc/07 lists entrapment as ordering item 4 and it had never been run. The
