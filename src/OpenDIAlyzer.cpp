@@ -3444,7 +3444,17 @@ protected:
       scoring_rt_is_run_seconds_ = false;
       seed_im_window_ = getDoubleOption_("precursor_im_window")
                         * std::max(1.0, getDoubleOption_("im_seed_window_scale"));
+      // The seed is calibration: its best-by-DScore apexes fit the map pass 1
+      // extracts under, so it scores NATIVELY like pass 1 (see calibrating_).
+      // Before this, the seed ran with calibrating_ false, so -fragvec_scores
+      // appended its block here, -classifier_model_in froze and
+      // -classifier_model_out saved the seed's discriminant, and
+      // -fold_pool_rank / -transition_mask / -mass_accuracy_centre applied --
+      // each moved the seed map and with it everything downstream.
+      const bool saved_cal = calibrating_;
+      calibrating_ = true;
       const auto rc = extractAndScore_(seed_lib, run, 0.0, false, scored);
+      calibrating_ = saved_cal;
       seed_im_window_ = 0.0;
       scoring_rt_is_run_seconds_ = saved;
       if (rc != EXECUTION_OK) { return rc; }
@@ -4627,8 +4637,12 @@ protected:
   /// features. The RT anchors are chosen by RT consistency, not by score, so with
   /// pass 1 native the features are the native run's and a frozen re-scoring of a
   /// run with its own model reproduces its native output.
-  bool calibrating_ = false;   // true while pass 1 / the RT refinement run: their
-                                // scoring is native, never frozen, never saved
+  /// The -rt_seed cirt blind search is calibration too and sets it as well
+  /// (seedRtFromCirtSearch_), so final-scoring-only options (-fragvec_scores,
+  /// the frozen model and its save, -fold_pool_rank, -transition_mask,
+  /// -mass_accuracy_centre) cannot reach the seed map.
+  bool calibrating_ = false;   // true while the CiRT seed / pass 1 / the RT refinement
+                                // run: their scoring is native, never frozen, never saved
   std::size_t pass_offset_ = 0;
 
   /// Refit the retention-time map and the discriminant, alternately, until the
