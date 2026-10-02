@@ -906,8 +906,12 @@ namespace ODIA
         " GiB / " + std::to_string(std::size_t(per)) + " B per live precursor (" +
         std::to_string(planes) + " planes) -> cap " + std::to_string(cap);
     }
+    // Whether the chunks hand over straight from the window cursors -- only
+    // when the planner did not cut the library, so the one chunk is all of it.
+    bool from_cursors = false;
     if (cap == 0 || overlap_precursors <= cap)
     {
+      from_cursors = true;
       chunks.push_back(std::move(by_start));
       st.memory_bound_by = "retention-time overlap (" +
                            std::to_string(overlap_precursors) + " of " +
@@ -1345,11 +1349,11 @@ namespace ODIA
           return assignments[a].lo < assignments[b].lo; });
       }
       // The hand-over cursors run in the run-wide order fixed above, not in an
-      // order sorted afresh per chunk. A single chunk takes the window cursors
-      // themselves. A chunk of several is a contiguous run of their merge, so
+      // order sorted afresh per chunk. An uncut library takes the window
+      // cursors themselves. A planned chunk is a contiguous run of their merge, so
       // its precursors of one window are a contiguous run of that window's
       // cursor, already in order: filtering the chunk by window is enough.
-      if (chunks.size() == 1) { by_hi = std::move(cursor); }
+      if (from_cursors) { by_hi = std::move(cursor); }
       else
       {
         for (const std::uint32_t slot : slots) { by_hi[assignments[slot].window].push_back(slot); }
