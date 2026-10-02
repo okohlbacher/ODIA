@@ -385,18 +385,78 @@ namespace ODIA
     /// Rung (i) of the fragment-evidence contract: 78 per-candidate columns,
     /// six 12-long vectors by LIBRARY-INTENSITY rank followed by six scalars.
     ///
-    /// Written only by `-out_fragvec`, never fitted and never a sub-score. The
-    /// names and their order ARE the sealed definition in
+    /// Written by `-out_fragvec`, and fitted ONLY under `-fragvec_scores` (see
+    /// `AppendedBlock`). The names and their order ARE the sealed definition in
     /// analysis77/pick/wf_v33_fragvec_contract.md s.5.1, and the arithmetic is
     /// the reference builder's (wf_v33_fragvec_features.py, `row_features`)
     /// re-expressed on the locals the scorer already has. Kept out of
-    /// `subScoreNames()` on purpose: a column the discriminant can see would
-    /// change the scores, and this export exists to be provably score-neutral.
+    /// `subScoreNames()` on purpose: that list is the shipped column set, and a
+    /// run without the flag must see exactly it -- the export alone exists to
+    /// be provably score-neutral.
     static const std::vector<std::string>& fragvecNames();
 
     /// 6 x 12 + 6. A compile-time constant so the writer, the row stride and
     /// the name table cannot drift apart.
     static constexpr std::size_t N_FRAGVEC = 78;
+
+    /// A block of columns appended to the classifier's matrix AFTER the
+    /// `N_SUB_SCORES` shipped ones, on the FINAL scoring only.
+    /// `-fragvec_scores` selects it; `None` is the shipped scorer.
+    ///
+    /// The SCHEMA is the whole contract, all 78 columns in contract order
+    /// (`fragvecNames()`), and the only thing that removes a column from the
+    /// classifier's matrix is this run's constant-column guard (the same rule
+    /// the shipped var_* get: no two different finite values). Not a column
+    /// list carried over from an earlier oracle read: that read was taken on
+    /// data that has since been withdrawn, so its column set is history, not a
+    /// specification. The MEAS/ABSENT indicator families are part of the
+    /// schema like any other column and are dropped only if constant here.
+    ///
+    /// Read at fit time from `Result::fragvec`, the flat float32 sidecar
+    /// `-out_fragvec` already keeps (312 B per group, reordered with the groups
+    /// in finish()), and NEVER stored on `PeakGroup::sub_scores`: 78 more
+    /// doubles on every group's own vector would hold 624 B per group for the
+    /// whole final pass and be copied twice more into the classifier's matrix
+    /// and its standardised copy. Only the columns the guard keeps are promoted
+    /// to double, and only for the duration of the fit.
+    ///
+    /// `Fragvec` is the experiment: the block as computed for each candidate.
+    /// `Permuted` is its dimension-matched control: the SAME kept columns with
+    /// whole ROWS reassigned across groups by one fixed, seeded permutation
+    /// (`fragvecPermutation`). Same marginals, same NaN pattern per row, same
+    /// within-row covariance, same float32 values, same kept set -- only the
+    /// link between a row and the candidate it describes is broken. An
+    /// unrelated noise block is NOT an adequate control here: the GBT
+    /// re-derives every column's bin edges from the selected rows each
+    /// iteration (gbt.h, `fixed_bins`), a single noise column has been seen to
+    /// move the operating point by several percent, and how much a wide append
+    /// moves it depends on what those columns look like, not only on how many
+    /// there are.
+    enum class AppendedBlock : std::uint8_t { None = 0, Fragvec = 1, Permuted = 2 };
+
+    /// The appended block's column names as `-out` and a saved model carry
+    /// them: `var_fv_<contract name>` for `Fragvec`, `var_fvperm_<contract
+    /// name>` for `Permuted` -- a different name on purpose, so a model trained
+    /// on one refuses to score the other -- and nothing for `None`. Always the
+    /// whole 78-column schema, index-aligned with `fragvecNames()`; which of
+    /// them the classifier actually saw is `Result::appended_kept`.
+    static const std::vector<std::string>& appendedNames(AppendedBlock block);
+
+    /// The constant-column guard over the block: the `fragvecNames()` indices,
+    /// ascending, of the columns of @p fragvec (@p n_rows x `N_FRAGVEC`
+    /// float32, row-major) that hold at least two different FINITE values --
+    /// the rule fitAndAssign_ applies to the shipped var_*, verbatim. The only
+    /// filter between the schema and the classifier's matrix; a permutation of
+    /// the rows cannot change its answer.
+    static std::vector<std::size_t> fragvecKeptColumns(const std::vector<float>& fragvec,
+                                                       std::size_t n_rows);
+
+    /// The row permutation `Permuted` reads through: a Fisher-Yates shuffle of
+    /// 0..n-1 driven by splitmix64 from @p seed (`-null_feature_seed`, mixed
+    /// with a fixed salt). A function of (n, seed) alone -- the rows it
+    /// permutes are already in finish()'s canonical order, so the same input
+    /// gets the same control on every thread count.
+    static std::vector<std::uint32_t> fragvecPermutation(std::size_t n, std::uint64_t seed);
 
     /// Test seam for the boundary rule. The rule lives in an anonymous
     /// namespace in the .cpp, which is right for it and leaves no way to assert
@@ -885,11 +945,23 @@ namespace ODIA
 
       /// Compute and retain the 78 rung-(i) fragment columns per candidate.
       ///
-      /// OUTPUT-ONLY: nothing reads `Result::fragvec` back into a score, a
-      /// sub-score, a calibration or a candidate decision, so a run with this
-      /// on must produce a byte-identical `-out`. Off on pass 1 and the RT
-      /// refinement -- they are the same arithmetic and would only pay for it.
+      /// COMPUTE only -- whether they are WRITTEN is the caller's business
+      /// (`-out_fragvec`), and whether they are SCORED is `fragvec_scores`.
+      /// With `fragvec_scores` `None`, nothing reads `Result::fragvec` back into
+      /// a score, a sub-score, a calibration or a candidate decision, so a run
+      /// with only this on must produce a byte-identical `-out`. Off on pass 1
+      /// and the RT refinement -- they are the same arithmetic and would only
+      /// pay for it.
       bool fragvec = false;
+
+      /// Append a block to the classifier's matrix (see `AppendedBlock`).
+      /// Anything but `None` REQUIRES `fragvec` on, because the block is read
+      /// from the array it fills; the caller sets both, and the fit refuses a
+      /// result whose array does not match its groups. Final scoring only:
+      /// pass 1 and the RT refinement choose calibration anchors by score, so a
+      /// column appended there would move the RT axis and pass 2's extraction,
+      /// and the arm would no longer compare evidence on the same candidates.
+      AppendedBlock fragvec_scores = AppendedBlock::None;
 
       /// MS1 traces for MS1_COELUTION, or null when the run has no MS1.
       ///
@@ -1110,6 +1182,19 @@ namespace ODIA
       /// reorders `groups` must reorder this too or the rows silently swap.
       std::vector<float> fragvec;
 
+      /// The block the fit appended after the `N_SUB_SCORES` columns (`None`
+      /// when `-fragvec_scores` is off), and the subset of its 78 schema
+      /// columns the constant-column guard KEPT on this run, as indices into
+      /// `appendedNames()` (equivalently, into `fragvecNames()`). The classifier's matrix is 42 + `appended_kept.size()`
+      /// wide; a dropped column is absent from it entirely, not zeroed --
+      /// there is no index contract to preserve past the shipped 42.
+      AppendedBlock appended = AppendedBlock::None;
+      std::vector<std::size_t> appended_kept;
+      /// `Permuted` only: the source row each row reads its block from
+      /// (`fragvecPermutation`), kept so `-out` publishes exactly what the fit
+      /// was given. 4 B per group; empty otherwise.
+      std::vector<std::uint32_t> appended_perm;
+
       /// Per-fragment mass residuals, when `collect_mass_anchors` was on.
       ///
       /// One entry per (retained candidate x contributing fragment), NOT per
@@ -1171,6 +1256,37 @@ namespace ODIA
     static std::vector<MassResidual> acceptedMassResiduals(const Result& result,
                                                            double q_threshold,
                                                            bool include_decoys = false);
+
+    /// Schema column @p j (0..77, a `fragvecNames()` index) of group @p row:
+    /// the float32 rung-(i) value widened to double, read from the row's own
+    /// sidecar row (`Fragvec`) or from `appended_perm[row]`'s (`Permuted`).
+    /// Exactly what `-out` writes as var_fv_* / var_fvperm_*, and, for a kept
+    /// column, exactly the cell the classifier is given -- so "classifier input
+    /// == -out_fragvec export" is an equality on every row and every column,
+    /// dropped ones included.
+    ///
+    /// Widened, never recomputed in double: the export, the contract's
+    /// reference builder and any offline fit all see these very float32
+    /// values, and a different rounding can move a GBT quantile edge.
+    ///
+    /// NaN is kept, as the engine keeps it on var_*: value fields are NaN on
+    /// ranks the library does not fill. THE LEARNER MEAN-IMPUTES IT, and that
+    /// is a deliberate, documented mismatch with how an offline histogram GBT
+    /// reads the same file. lda.h (scoreSemiSupervisedLDA, the
+    /// z-standardisation at ~455-512) computes each column's mean and sd over
+    /// its FINITE cells and then writes 0 -- the column mean -- into every
+    /// non-finite cell of `z`; the GBT is fitted on `z` (lda.h `g.fit(z, ...)`),
+    /// so gbt.h's own "non-finite goes to the LAST bin" missing bin is
+    /// unreachable from the engine and an unmeasured rank reads as an AVERAGE
+    /// one. An offline fit that passes the export's NaN raw to a histogram GBT
+    /// bins it separately, so offline and in-engine results on this block are
+    /// not the same model even on the same rows. The explicit indicators carry
+    /// in-engine what the NaN carries offline: R1_MEAS_k (rank k has a library
+    /// fragment) and R1_ABSENT_k (it was measured and empty), which is why
+    /// they are in the schema and why they are dropped only when constant on
+    /// the run. Changing the imputation itself would change every var_* fit as
+    /// well; it is a scorer experiment of its own and deliberately not done here.
+    static double appendedRaw(const Result& result, std::size_t row, std::size_t j);
 
     /// Scoring one precursor at a time.
     ///

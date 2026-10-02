@@ -15,6 +15,7 @@
 #include <limits>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 
 #include <atomic>
 
@@ -1199,6 +1200,84 @@ namespace
       return n;
     }();
     return names;
+  }
+
+  const std::vector<std::string>& PeakGroupScorer::appendedNames(AppendedBlock block)
+  {
+    static const std::vector<std::string> none;
+    const auto named = [](const char* prefix) {
+      std::vector<std::string> n;
+      n.reserve(N_FRAGVEC);
+      for (const auto& c : fragvecNames()) { n.push_back(prefix + c); }
+      return n;
+    };
+    static const std::vector<std::string> fv = named("var_fv_");
+    static const std::vector<std::string> perm = named("var_fvperm_");
+    switch (block)
+    {
+      case AppendedBlock::Fragvec: return fv;
+      case AppendedBlock::Permuted: return perm;
+      case AppendedBlock::None: break;
+    }
+    return none;
+  }
+
+  std::vector<std::uint32_t> PeakGroupScorer::fragvecPermutation(std::size_t n,
+                                                                 std::uint64_t seed)
+  {
+    // splitmix64, the generator NULL_CONTROL uses, salted so that
+    // -null_feature_seed 0 here is not the same stream as the null column's.
+    std::uint64_t state = seed ^ 0x6672616776656370ULL;  // "fragvecp"
+    const auto next = [&state]() {
+      std::uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+      z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+      return z ^ (z >> 31);
+    };
+    if (n > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
+    { throw std::length_error("fragvecPermutation: more than 2^32-1 rows"); }
+    std::vector<std::uint32_t> perm(n);
+    std::iota(perm.begin(), perm.end(), 0u);
+    // Fisher-Yates, top down. The modulo bias at n ~ 2^25 against 2^64 is
+    // ~1e-12 per draw -- irrelevant to a control whose only job is to break
+    // the row-to-candidate link.
+    for (std::size_t i = n; i > 1; --i)
+    {
+      const std::size_t k = static_cast<std::size_t>(next() % i);
+      std::swap(perm[i - 1], perm[k]);
+    }
+    return perm;
+  }
+
+  std::vector<std::size_t> PeakGroupScorer::fragvecKeptColumns(const std::vector<float>& fragvec,
+                                                               std::size_t n_rows)
+  {
+    if (fragvec.size() != n_rows * N_FRAGVEC)
+    { throw std::logic_error("fragvecKeptColumns: array is not N_FRAGVEC floats per row"); }
+    std::vector<std::size_t> kept;
+    for (std::size_t j = 0; j < N_FRAGVEC; ++j)
+    {
+      bool seen = false, useful = false;
+      float first = 0.0f;
+      for (std::size_t r = 0; r < n_rows && !useful; ++r)
+      {
+        const float v = fragvec[r * N_FRAGVEC + j];
+        if (!std::isfinite(v)) { continue; }
+        if (!seen) { seen = true; first = v; }
+        else if (v != first) { useful = true; }
+      }
+      if (useful) { kept.push_back(j); }
+    }
+    return kept;
+  }
+
+  double PeakGroupScorer::appendedRaw(const Result& result, std::size_t row, std::size_t j)
+  {
+    std::size_t src = row;
+    if (result.appended == AppendedBlock::Permuted) { src = result.appended_perm[row]; }
+    else if (result.appended != AppendedBlock::Fragvec)
+    { return std::numeric_limits<double>::quiet_NaN(); }
+    return static_cast<double>(result.fragvec[src * N_FRAGVEC + j]);
   }
 
   namespace
@@ -2495,6 +2574,13 @@ namespace
       // arithmetic is wf_v33_fragvec_features.py's `row_features`, which is
       // what the measured result was produced with.
       //
+      // Also the source of -fragvec_scores, which is why this block runs for
+      // EVERY candidate, decoys included, with no branch on the label: these
+      // columns then enter the classifier (fitAndAssign_), and a
+      // column computed differently for one class would be learned as the
+      // label -- the failure the trace-tensor contrast had (doc/80: it learned
+      // the decoys' construction, seal AUC 0.005).
+      //
       // Staged on the stack and appended at the push_back below, not here: the
       // `min_library_corr` gate a few lines down `continue`s AFTER this point,
       // and a row emitted for a candidate that never becomes a group would put
@@ -2781,15 +2867,94 @@ namespace
       }
     }
 
+    // -fragvec_scores: the appended block, and the SAME guard over it.
+    //
+    // Recorded on the result before anything reads it, because appendedRaw --
+    // which both the matrix below and the -out writer go through -- takes the
+    // block (and, for the control, the permutation) from there. With the flag
+    // off this sets None and clears both vectors, and nothing below appends a
+    // column: the matrix, the seed mask and the model's names are then built
+    // exactly as before.
+    result.appended = options.fragvec_scores;
+    result.appended_kept.clear();
+    result.appended_perm.clear();
+    const auto& schema = appendedNames(result.appended);
+    if (!schema.empty())
+    {
+      // The block is read from Result::fragvec, which is filled only when
+      // Options::fragvec was on for every add() and permuted with the groups
+      // in finish(). A size mismatch means some path produced groups without
+      // rows; training on whatever row happens to sit at the same index would
+      // be a silent label leak at worst and noise at best, so it stops here.
+      if (result.fragvec.size() != result.groups.size() * N_FRAGVEC)
+      {
+        throw std::logic_error(
+          "-fragvec_scores: " + std::to_string(result.fragvec.size()) +
+          " fragment-vector values for " + std::to_string(result.groups.size()) +
+          " groups (expected " + std::to_string(N_FRAGVEC) + " per group)");
+      }
+      if (result.appended == AppendedBlock::Permuted)
+      {
+        result.appended_perm = fragvecPermutation(result.groups.size(),
+                                                  options.null_feature_seed);
+      }
+      // The rule above, verbatim: a column with no two different finite
+      // values carries nothing. This guard is the ONLY thing that removes a
+      // schema column; there is no name-based exclusion (the MEAS/ABSENT
+      // indicators included). Unlike var_*, a dropped column is left OUT of
+      // the matrix rather than zeroed -- the zeroing exists only to keep the
+      // shipped indices aligned with subScoreNames(), nonpositive_features and
+      // seed_mask, and nothing indexes past them. A permutation moves no value
+      // between columns, so `permuted` keeps exactly the set `final` would.
+      result.appended_kept = fragvecKeptColumns(result.fragvec, result.groups.size());
+      std::ostringstream kept, dropped;
+      std::size_t n_dropped = 0;
+      for (std::size_t j = 0, k = 0; j < schema.size(); ++j)
+      {
+        if (k < result.appended_kept.size() && result.appended_kept[k] == j)
+        { kept << ' ' << schema[j]; ++k; }
+        else { ++n_dropped; dropped << ' ' << schema[j]; }
+      }
+      // Both lists, every run: which columns the classifier saw is the first
+      // thing to establish when reading an arm, and the drop list is
+      // run-specific (e.g. on a library where every precursor has at least k
+      // fragments, R1_MEAS_1..k are constant 1).
+      std::fprintf(stderr,
+                   "fragvec sub-scores (-fragvec_scores %s): contract schema, %zu "
+                   "columns; %zu groups; appending %zu after the %zu shipped:%s\n"
+                   "fragvec sub-scores: dropping %zu constant on this run:%s\n",
+                   result.appended == AppendedBlock::Fragvec ? "final" : "permuted",
+                   schema.size(), result.groups.size(), result.appended_kept.size(),
+                   static_cast<std::size_t>(N_SUB_SCORES), kept.str().c_str(),
+                   n_dropped, n_dropped ? dropped.str().c_str() : " none");
+    }
+    const std::size_t n_appended = result.appended_kept.size();
+    const std::size_t n_columns = N_SUB_SCORES + n_appended;
+
+    // MEMORY with a block appended: lda.h holds this matrix AND its
+    // standardised copy as rows of doubles, so each kept column costs 2 x 8 B
+    // per group for the duration of the fit -- up to 1,248 B per group at all
+    // 78 kept -- on top of the 312 B per group Result::fragvec holds through
+    // the final pass. Off, this is the same one-copy-per-row loop as before.
     std::vector<std::vector<double>> features;
     std::vector<int> labels;
     std::vector<long long> group;
     features.reserve(result.groups.size());
     labels.reserve(result.groups.size());
     group.reserve(result.groups.size());
-    for (const auto& g : result.groups)
+    for (std::size_t r = 0; r < result.groups.size(); ++r)
     {
-      features.push_back(g.sub_scores);
+      const auto& g = result.groups[r];
+      if (n_appended == 0) { features.push_back(g.sub_scores); }
+      else
+      {
+        std::vector<double> row;
+        row.reserve(n_columns);
+        row.assign(g.sub_scores.begin(), g.sub_scores.end());
+        for (const std::size_t j : result.appended_kept)
+        { row.push_back(appendedRaw(result, r, j)); }
+        features.push_back(std::move(row));
+      }
       labels.push_back(g.decoy ? 0 : 1);
       group.push_back(static_cast<long long>(g.precursor));
     }
@@ -2936,7 +3101,10 @@ namespace
     const bool pure_openswath = options.openswath_picking && !options.union_picking;
     if (options.coelution_picking && !pure_openswath)
     {
-      params.seed_mask.assign(N_SUB_SCORES, 0);
+      // The full matrix width, appended block included: lda.h treats a column
+      // PAST the end of the mask as unmasked, so a mask sized to the shipped
+      // columns would quietly let every appended one compete for the seed.
+      params.seed_mask.assign(n_columns, 0);
       params.seed_mask[CORR_SUM] = 1;
     }
     // Threading is per-classifier, not on LDAParams: the LDA solve is a small
@@ -2988,11 +3156,16 @@ namespace
     std::string engine_note;
     // The sub-score names travel with a saved gbt model so a frozen application
     // refuses a run whose sub-score set differs, whatever its width.
-    const std::vector<std::string> frozen_names = subScoreNames();
+    // An appended block's KEPT names ride along, so a model saved with
+    // var_fv_* refuses a run without them, a run that kept a different subset,
+    // and the var_fvperm_* control.
+    std::vector<std::string> frozen_names = subScoreNames();
+    for (const std::size_t j : result.appended_kept)
+    { frozen_names.push_back(appendedNames(result.appended)[j]); }
     const auto scored =
       options.classifier == "percolator"
         ? Scoring::scorePercolator(features, labels, group, params,
-                                   subScoreNames(), &engine_note,
+                                   frozen_names, &engine_note,
                                    options.classifier_model_out,
                                    options.classifier_model_in)
         // The gbt engine takes the same two paths as percolator: train-and-save,
