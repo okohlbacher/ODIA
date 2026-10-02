@@ -826,6 +826,54 @@ namespace
     }
     check(plans == 2, "the two caps give two different chunk plans");
   }
+
+  /// An explicit cap survives a byte budget that constrains nothing.
+  ///
+  /// A precursor all of whose transitions lack a product m/z is extracted
+  /// with zero rows, so it costs zero bytes; when every assigned precursor is
+  /// like that the budget inverts to "0 precursors", which used to be read as
+  /// unlimited -- and `min(explicit, 0)` erased the caller's cap with it. Two
+  /// such precursors over the same cycles, `-max_live_precursors 1` and a
+  /// budget: they must go through one at a time.
+  void caseCapZeroRows()
+  {
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0);
+    for (int c = 0; c < 300; ++c) { run.addSpectrum(w, 100.0 + 0.7 * c); }
+
+    ScriptedLibrary lib;
+    for (int i = 0; i < 2; ++i)
+    {
+      lib.addPrecursor(505.0);
+      lib.addTransition(0.0);                  // unrepresentable: no row
+      lib.addTransition(0.0);
+    }
+
+    auto opt = plainOptions();
+    opt.max_live_precursors = 1;
+    opt.live_memory_budget_bytes = std::size_t(1) << 30;
+    RecordingSink sink;
+    ODIA::ChromatogramExtractor::Stats st;
+    ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, sink, &st);
+    std::printf("       %zu chunks, peak live %zu, %zu traces; %s\n", st.chunks,
+                st.peak_live_precursors, sink.traces.size(), st.live_budget_note.c_str());
+    check(st.precursors_extracted == 2, "both zero-row precursors are extracted");
+    check(st.peak_live_precursors <= 1,
+          "the explicit cap holds when the byte budget binds nothing");
+    check(st.chunks == 2, "so the two overlapping precursors take two chunks");
+    check(sink.traces.size() == 2 && sink.traces[0].cycles == 300 &&
+          sink.traces[1].cycles == 300 && sink.traces[0].precursor == 0 &&
+          sink.traces[1].precursor == 1,
+          "and both are handed over, whole, in the unchunked order");
+
+    // Without an explicit cap the zero-cost budget leaves the run unbounded.
+    opt.max_live_precursors = 0;
+    ODIA::ChromatogramExtractor::Stats free_st;
+    RecordingSink free_sink;
+    ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, free_sink, &free_st);
+    check(free_st.chunks == 1 && free_st.peak_live_precursors == 2,
+          "a budget alone that binds nothing leaves one chunk");
+  }
 }
 
 int main(int argc, char** argv)
@@ -841,12 +889,13 @@ int main(int argc, char** argv)
   else if (which == "wide_csr") { caseWideCsr(); }
   else if (which == "sliding") { caseSlidingWindow(); }
   else if (which == "chunk_invariant") { caseChunkInvariant(); }
+  else if (which == "cap_zero_rows") { caseCapZeroRows(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
-                 "chunk_invariant>\n");
+                 "chunk_invariant|cap_zero_rows>\n");
     return 2;
   }
 

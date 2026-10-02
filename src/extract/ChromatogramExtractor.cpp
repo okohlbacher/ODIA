@@ -856,12 +856,17 @@ namespace ODIA
       { mean_cells += double(a.valid) * double(a.hi - a.lo); }
       if (!assignments.empty()) { mean_cells /= double(assignments.size()); }
       const double per = mean_cells * 4.0 * double(planes);
+      // 0 when a live precursor costs nothing -- every assigned precursor has
+      // zero valid transitions, which is supported input -- and then the budget
+      // constrains nothing at all.
       const std::size_t derived = per > 0.0
         ? std::max<std::size_t>(1, std::size_t(double(options.live_memory_budget_bytes) / per))
         : 0;
-      // The tighter of the two wins: an explicit -max_live_precursors is a
-      // caller's assertion and must not be loosened by a budget.
-      cap = (cap == 0) ? derived : std::min(cap, derived);
+      // The tighter of the constraints that actually BIND wins. An explicit
+      // -max_live_precursors is a caller's assertion and must not be loosened
+      // by a budget -- including a budget that binds nothing: min(cap, 0) used
+      // to read that 0 as "unlimited" and erase the explicit cap.
+      if (derived != 0) { cap = (cap == 0) ? derived : std::min(cap, derived); }
       st.live_budget_note = "budget " +
         std::to_string(options.live_memory_budget_bytes / (1024ull*1024*1024)) +
         " GiB / " + std::to_string(std::size_t(per)) + " B per live precursor (" +

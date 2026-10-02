@@ -630,6 +630,12 @@ add_test(NAME extract_sliding_window COMMAND odia_extract_cases sliding)
 # that the cap bounds the live set exactly. Fails on a48c223 on all three.
 add_test(NAME extract_chunk_invariant COMMAND odia_extract_cases chunk_invariant)
 
+# An explicit -max_live_precursors must survive a byte budget that binds
+# nothing: two overlapping precursors with zero valid transitions cost zero
+# bytes, the budget inverted to 0, and min(cap, 0) erased the explicit cap of 1
+# (peak live 2). Fails on b7c602f.
+add_test(NAME extract_cap_zero_rows COMMAND odia_extract_cases cap_zero_rows)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing
