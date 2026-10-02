@@ -1095,9 +1095,98 @@ namespace ODIA
       std::uint32_t group = 0;   ///< index into Result::groups
     };
 
+    /// Why the co-elution detector rejected a scan position, and the other
+    /// admission losses, counted per SCORING PASS.
+    ///
+    /// Six criteria reject silently, so "19,150 precursors yielded no candidate"
+    /// said nothing about WHICH test was responsible. On a realistic library
+    /// 14% of DIA-NN's confident precursors get no candidate at all, and those
+    /// lost are heavier (median m/z 894 vs 661), higher-mobility and ~34% less
+    /// abundant -- a pattern that points at a threshold rather than at absence
+    /// of signal, but only counting can say which threshold.
+    ///
+    /// OWNED BY THE RESULT. These used to live in a file-scope `thread_local`
+    /// that registered itself in a global vector of raw pointers, which had
+    /// three defects: (1) it was never reset, so every Session after the first
+    /// reported the cumulative sum of all Sessions on that thread -- pass 2's
+    /// census silently included pass 1's; (2) the reduction named fields by
+    /// hand and omitted `too_few_cycles` and `no_hit_anywhere`, so both always
+    /// printed 0 although both are incremented; (3) a pool thread that ever
+    /// incremented its instance left a dangling pointer behind once it exited.
+    /// A per-Session counter has none of these: it is the pass's own count, and
+    /// a speculative task fills a private instance that is merged with `merge`.
+    struct PickerRejects
+    {
+      std::size_t too_few_present[2] = {0, 0};   ///< [0] target, [1] decoy; <2 fragments in {k-1,k,k+1}
+      /// Precursors that never entered the correlation loop at all.
+      ///
+      /// `n < 2*S+4 || tc < 2` returns before anything is counted, so these were
+      /// invisible: they landed in `precursors_without_candidate` with no way to
+      /// tell them from a precursor the correlation test rejected.
+      std::size_t too_few_cycles = 0;
+      /// Never got a usable chromatogram OUT OF THE EXTRACTOR at all. These are
+      /// extraction losses, not picking losses.
+      std::size_t no_points[2] = {0, 0};   ///< pointCount(0) < 3
+      /// THREE different gates share this counter; it is kept as their sum so
+      /// older numbers stay comparable. Read the three below.
+      std::size_t empty_trace[2] = {0, 0};
+      /// Co-elution evidence below the (1-alpha) quantile of the decoy null.
+      std::size_t gate_c[2] = {0, 0};
+      /// Too few transitions showing a noise excursion (the -gate_alpha 0 path).
+      std::size_t few_excursions[2] = {0, 0};
+      /// The summed trace really is zero -- nothing extracted at all.
+      std::size_t zero_trace[2] = {0, 0};
+      std::size_t too_few_transitions[2] = {0, 0};
+      std::size_t masked_candidates = 0;   ///< v1.15: candidates scored with a transition mask
+      std::size_t masked_fragments = 0;    ///< v1.15: transitions removed over those candidates
+      /// Entered the loop, computed correlations, and found no qualifying
+      /// position anywhere in the window.
+      std::size_t no_hit_anywhere = 0;
+      std::size_t below_corr[2] = {0, 0};            ///< reference corr sum < min_corr_score
+      std::size_t reference_zero[2] = {0, 0};        ///< smoothed reference not positive
+      std::size_t not_local_max[2] = {0, 0};         ///< k is not the local maximum
+      std::size_t below_apex_evidence[2] = {0, 0};
+      std::size_t outside_margin[2] = {0, 0};        ///< beyond MaxCorrDiff of the best
+      /// Precursors that reached the co-elution picker, per class.
+      std::size_t reached[2] = {0, 0};
+      std::size_t too_few_at_apex = 0;   ///< candidate emitted, then dropped by the scorer
+      std::size_t scans[2] = {0, 0};     ///< positions examined
+
+      /// Add @p o field by field. Every field is named; a static_assert in the
+      /// .cpp pins the struct's size so a new counter cannot be added without
+      /// this function being revisited.
+      void merge(const PickerRejects& o);
+    };
+
+    /// Why MS1_COELUTION arrives constant, counted per SCORING PASS. Same
+    /// ownership as `PickerRejects` and for the same reasons: these were
+    /// process-wide atomics, so every pass after the first reported the
+    /// running total of all passes.
+    struct Ms1Census
+    {
+      std::size_t unavailable = 0;      ///< options.ms1 null/empty, or index out of range
+      std::size_t no_signal = 0;        ///< every MS1 point in the candidate window is 0
+      std::size_t too_short = 0;        ///< fewer than 5 cycles
+      std::size_t flat = 0;             ///< MS1 leg has zero variance -> Pearson undefined
+      std::size_t ok = 0;               ///< a finite correlation was produced
+      std::size_t bins_spanned = 0;     ///< sum of distinct MS1 bins per candidate
+      std::size_t spans = 0;            ///< candidates contributing to the above
+      std::size_t null_ptr = 0;         ///< options.ms1 was a null pointer
+      std::size_t empty = 0;            ///< traces object present but empty
+      std::size_t index_oob = 0;        ///< precursor index past the matrix
+      std::size_t degenerate_span = 0;  ///< hi <= lo, candidate spans nothing
+
+      void merge(const Ms1Census& o);
+    };
+
     struct Result
     {
       std::vector<PeakGroup> groups;
+
+      /// This pass's picker census and MS1 census. Diagnostic only: nothing
+      /// reads them back into a score, a fit or an output column.
+      PickerRejects picker_rejects;
+      Ms1Census ms1_census;
 
       /// `N_FRAGVEC` float32 per group, row-major, parallel to `groups` --
       /// empty unless `Options::fragvec` was on.
