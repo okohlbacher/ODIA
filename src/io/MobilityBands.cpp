@@ -4,9 +4,12 @@
 #include <odia/MobilityBands.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 namespace ODIA
 {
@@ -120,6 +123,92 @@ namespace ODIA
                                                  : 0.5 * (at[k] + at[order[r + 1]]);
     }
     return MobilityBandResult::Derived;
+  }
+
+  namespace
+  {
+    /// A whole-string, finite number or nothing. strtod alone accepts a
+    /// numeric prefix ("0.89abc") and "nan"/"inf"; neither is a stated bound.
+    bool parseFinite(const std::string& s, double& out)
+    {
+      if (s.empty()) { return false; }
+      errno = 0;
+      char* end = nullptr;
+      const double v = std::strtod(s.c_str(), &end);
+      if (errno == ERANGE || end != s.c_str() + s.size() || !std::isfinite(v)) { return false; }
+      out = v;
+      return true;
+    }
+  }
+
+  bool mobilityBandFromParameters(const std::vector<CvValue>& params, double& lo, double& hi)
+  {
+    bool have_lo = false, have_hi = false;
+    double l = 0.0, h = 0.0;
+    for (const auto& p : params)
+    {
+      const bool is_lo = p.accession == MZP_IM_LOWER_LIMIT;
+      const bool is_hi = p.accession == MZP_IM_UPPER_LIMIT;
+      if (!is_lo && !is_hi) { continue; }
+      double v = 0.0;
+      if (!parseFinite(p.value, v)) { return false; }
+      bool& have = is_lo ? have_lo : have_hi;
+      double& slot = is_lo ? l : h;
+      // Repeated with the same value is harmless; with another it is a
+      // contradiction, and picking one is a guess.
+      if (have && slot != v) { return false; }
+      have = true;
+      slot = v;
+    }
+    if (!have_lo || !have_hi) { return false; }
+    if (l > h) { std::swap(l, h); }
+    if (!(l < h)) { return false; }
+    lo = l;
+    hi = h;
+    return true;
+  }
+
+  const char* toString(IonPairing p)
+  {
+    switch (p)
+    {
+      case IonPairing::AsAttached:    return "as attached";
+      case IonPairing::ByPosition:    return "by position";
+      case IonPairing::CountMismatch: return "ion count != precursor count";
+      case IonPairing::MzMismatch:    return "ion m/z does not name its window";
+    }
+    return "unknown";
+  }
+
+  IonPairing pairIonsByPosition(const std::vector<std::size_t>& ions_per_precursor,
+                                const std::vector<double>& targets,
+                                const std::vector<double>& ion_mz,
+                                std::vector<std::size_t>& ion_of)
+  {
+    ion_of.clear();
+    const std::size_t n = ions_per_precursor.size();
+    const std::size_t attached =
+      std::accumulate(ions_per_precursor.begin(), ions_per_precursor.end(), std::size_t{0});
+    if (targets.size() != n || attached != ion_mz.size() || ion_mz.size() != n)
+    {
+      return IonPairing::CountMismatch;
+    }
+    bool one_each = true;
+    for (const std::size_t c : ions_per_precursor) { one_each = one_each && c == 1; }
+
+    // With one ion per precursor, frame order IS precursor order, so the two
+    // cases share the index map; they differ only in what they report.
+    for (std::size_t k = 0; k < n; ++k)
+    {
+      if (std::isfinite(ion_mz[k]) && std::isfinite(targets[k]) &&
+          !(std::abs(ion_mz[k] - targets[k]) <= 0.1))
+      {
+        ion_of.clear();
+        return IonPairing::MzMismatch;
+      }
+      ion_of.push_back(k);
+    }
+    return one_each ? IonPairing::AsAttached : IonPairing::ByPosition;
   }
 
 } // namespace ODIA

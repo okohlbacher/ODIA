@@ -41,6 +41,14 @@ namespace
     if (!ok) { ++failures; }
   }
 
+  void checkPairing(ODIA::IonPairing got, ODIA::IonPairing want, const std::string& what)
+  {
+    const bool ok = got == want;
+    std::printf("%s %s (want %s, got %s)\n", ok ? "  ok  " : "  FAIL", what.c_str(),
+                ODIA::toString(want), ODIA::toString(got));
+    if (!ok) { ++failures; }
+  }
+
   ODIA::IsolationWindow window(double centre, double width)
   {
     ODIA::IsolationWindow w;
@@ -163,6 +171,97 @@ int main()
                 "a frame where one window states its own band");
     check(near(w[0].im_low, 0.60) && near(w[0].im_high, 0.75),
           "what the file states is never overridden by what we derive");
+  }
+
+  // ===================================================== -im_bands_from_params
+  // A stock mzpeak-convert 0.12.5 diaPASEF frame, as ODIA's reader hands it
+  // (shared/pxd/imbands, raw dump of PXD047793 run 009): two precursors 763 and
+  // 413 with NULL precursor_index, so BOTH selected ions land on precursor 0 in
+  // file order (763 then 413) and precursor 1 gets none; the band is only in the
+  // ions' MZP:1000006/7 parameters, stringified to 17 significant digits.
+  const double NAN_ = std::numeric_limits<double>::quiet_NaN();
+  {
+    std::vector<std::size_t> ion_of;
+    checkPairing(ODIA::pairIonsByPosition({2, 0}, {763.0, 413.0}, {763.0, 413.0}, ion_of),
+                 ODIA::IonPairing::ByPosition, "stock 0.12.5 frame: both ions on precursor 0");
+    check(ion_of.size() == 2 && ion_of[0] == 0 && ion_of[1] == 1,
+          "the k-th ion of the frame is the k-th precursor's (763 -> 763, 413 -> 413)");
+
+    // Legacy reading of the same frame gives precursor 0 the LAST ion's band
+    // (413's) and precursor 1 nothing -- the wrong band, which R0C measured as
+    // worse than none. Positional pairing is what removes that.
+    checkPairing(ODIA::pairIonsByPosition({1, 1}, {763.0, 413.0}, {763.0, 413.0}, ion_of),
+                 ODIA::IonPairing::AsAttached, "patched converter: one ion per precursor");
+    check(ion_of.size() == 2 && ion_of[0] == 0 && ion_of[1] == 1, "as attached keeps the order");
+
+    checkPairing(ODIA::pairIonsByPosition({1}, {763.0}, {763.0}, ion_of),
+                 ODIA::IonPairing::AsAttached, "a single-window spectrum");
+  }
+  {
+    // Refusals: never guess.
+    std::vector<std::size_t> ion_of{7};
+    checkPairing(ODIA::pairIonsByPosition({3, 0}, {763.0, 413.0}, {763.0, 413.0, 500.0}, ion_of),
+                 ODIA::IonPairing::CountMismatch, "three ions for two precursors");
+    check(ion_of.empty(), "a refusal leaves no pairing behind");
+    checkPairing(ODIA::pairIonsByPosition({1, 0}, {763.0, 413.0}, {763.0}, ion_of),
+                 ODIA::IonPairing::CountMismatch, "one ion for two precursors");
+    checkPairing(ODIA::pairIonsByPosition({2, 0}, {763.0, 413.0}, {763.0}, ion_of),
+                 ODIA::IonPairing::CountMismatch, "attached count disagrees with the ion list");
+    // The writer listed the ions in the OTHER order: position would hand each
+    // window its neighbour's band. The m/z check is what catches it.
+    checkPairing(ODIA::pairIonsByPosition({2, 0}, {763.0, 413.0}, {413.0, 763.0}, ion_of),
+                 ODIA::IonPairing::MzMismatch, "ions in the reverse order are refused");
+    check(ion_of.empty(), "an m/z refusal leaves no pairing behind");
+    checkPairing(ODIA::pairIonsByPosition({2, 0}, {763.0, 413.0}, {763.0, 413.11}, ion_of),
+                 ODIA::IonPairing::MzMismatch, "0.11 Th off is not the window");
+    checkPairing(ODIA::pairIonsByPosition({2, 0}, {763.0, 413.0}, {763.0, 413.0001}, ion_of),
+                 ODIA::IonPairing::ByPosition, "float noise between the columns is the window");
+    // Unknown m/z on either side cannot contradict; position stands.
+    checkPairing(ODIA::pairIonsByPosition({2, 0}, {763.0, NAN_}, {NAN_, 413.0}, ion_of),
+                 ODIA::IonPairing::ByPosition, "an absent m/z does not refuse");
+  }
+  {
+    // The parameters themselves.
+    const std::vector<ODIA::CvValue> stock_763{
+      {"MZP:1000006", "0.89155395131847848"}, {"MZP:1000007", "1.6375174050443457"}};
+    double lo = -1.0, hi = -1.0;
+    check(ODIA::mobilityBandFromParameters(stock_763, lo, hi), "the stock 763 band parses");
+    // The patched converter's Float64 column holds 0.8915539513184785 (R0C);
+    // 17 significant digits round-trip to the same double, bit for bit.
+    check(lo == 0.8915539513184785 && hi == 1.6375174050443457,
+          "parsed band equals the column's double exactly");
+
+    const std::vector<ODIA::CvValue> reversed{{"MZP:1000006", "1.6375"}, {"MZP:1000007", "0.8915"}};
+    check(ODIA::mobilityBandFromParameters(reversed, lo, hi) && lo == 0.8915 && hi == 1.6375,
+          "limits in scan order (lower > upper) are swapped, not rejected");
+
+    const std::vector<ODIA::CvValue> other_params{
+      {"MS:1000045", "45.7"}, {"MZP:1000007", "0.9"}, {"", ""}, {"MZP:1000006", "0.6"}};
+    check(ODIA::mobilityBandFromParameters(other_params, lo, hi) && lo == 0.6 && hi == 0.9,
+          "unrelated parameters and order are ignored");
+
+    lo = hi = -1.0;
+    check(!ODIA::mobilityBandFromParameters({{"MZP:1000006", "0.6"}}, lo, hi) && lo == -1.0 &&
+            hi == -1.0,
+          "one limit alone is not a band, and nothing is written");
+    check(!ODIA::mobilityBandFromParameters({}, lo, hi), "no parameters, no band");
+    check(!ODIA::mobilityBandFromParameters({{"MZP:1000006", "0.6abc"}, {"MZP:1000007", "0.9"}}, lo,
+                                            hi),
+          "a numeric prefix is not a number");
+    check(!ODIA::mobilityBandFromParameters({{"MZP:1000006", "nan"}, {"MZP:1000007", "0.9"}}, lo, hi),
+          "NaN is not a bound");
+    check(!ODIA::mobilityBandFromParameters({{"MZP:1000006", "0.6"}, {"MZP:1000007", "inf"}}, lo, hi),
+          "an infinite bound is not stated");
+    check(!ODIA::mobilityBandFromParameters({{"MZP:1000006", ""}, {"MZP:1000007", "0.9"}}, lo, hi),
+          "an empty value is not stated");
+    check(!ODIA::mobilityBandFromParameters({{"MZP:1000006", "0.9"}, {"MZP:1000007", "0.9"}}, lo, hi),
+          "a degenerate band is not a band");
+    check(!ODIA::mobilityBandFromParameters(
+            {{"MZP:1000006", "0.6"}, {"MZP:1000007", "0.9"}, {"MZP:1000006", "0.7"}}, lo, hi),
+          "two different lower limits contradict each other");
+    check(ODIA::mobilityBandFromParameters(
+            {{"MZP:1000006", "0.6"}, {"MZP:1000007", "0.9"}, {"MZP:1000006", "0.6"}}, lo, hi),
+          "a repeated identical limit is harmless");
   }
 
   std::printf(failures ? "FAILED (%d)\n" : "ok (%d)\n", failures);

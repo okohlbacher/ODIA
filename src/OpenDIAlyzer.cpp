@@ -286,6 +286,21 @@ protected:
     // tool's own option. The format is dispatched by openRun instead.
     registerInputFile_("in", "<file>", "",
                        "Run to extract from (mzPeak).", false);
+    registerStringOption_("im_bands_from_params", "<mode>", "off",
+                          "Where a diaPASEF window's ion-mobility band is read from. 'off' "
+                          "(default): only the selected-ion ion_mobility_lower/upper_limit "
+                          "fields of the ions the reader attached to the window's own "
+                          "precursor, then the vendor DiaFrameMsMsWindows table, then the "
+                          "midpoint derivation. 'on': pair each spectrum's selected ions with "
+                          "its precursors BY POSITION in the frame (refused per spectrum, and "
+                          "counted, unless the counts match and each ion's m/z names its "
+                          "window within 0.1 Th), and take a band the limit fields do not "
+                          "state from the ion's MZP:1000006/MZP:1000007 CV parameters. A stock "
+                          "mzpeak-convert 0.12.5 file states the band only there and leaves "
+                          "precursor_index NULL, so 'off' derives the midpoint split instead "
+                          "(up to 0.116 1/K0 off on PXD047793). Logs one summary line when on.",
+                          false, true);
+    setValidStrings_("im_bands_from_params", {"off", "on"});
     registerOutputFile_("out_chrom", "<file>", "",
                         "Write extracted chromatograms here (TSV). OUTPUT-ONLY: "
                         "on a scoring run the dump is collected from the same "
@@ -1688,6 +1703,14 @@ protected:
   /// evenly across the run's time range so that something extracts -- but that
   /// is a placeholder for a calibration, not one, and it says so out loud
   /// rather than producing quietly meaningless chromatograms.
+  /// How every pass opens the run. One place, so the passes cannot disagree.
+  ODIA::RunOpenOptions runOpenOptions_()
+  {
+    ODIA::RunOpenOptions o;
+    o.im_bands_from_params = getStringOption_("im_bands_from_params") == "on";
+    return o;
+  }
+
   ExitCodes extractInto_(const ODIA::Library& library, const std::string& run,
                          ODIA::ChromatogramSink& sink,
                          double rt_window_override = 0.0,
@@ -1696,7 +1719,7 @@ protected:
     std::unique_ptr<ODIA::SpectrumSource> source;
     try
     {
-      source = ODIA::openRun(run);
+      source = ODIA::openRun(run, runOpenOptions_());
     }
     catch (const std::exception& e)
     {
@@ -3206,7 +3229,7 @@ protected:
       // Its own handle on the run. The extraction path opens and closes one per
       // pass, so there is none in scope here, and the sweep is a single
       // sequential read that shares nothing with an extraction.
-      auto pf_source = ODIA::openRun(run);
+      auto pf_source = ODIA::openRun(run, runOpenOptions_());
       const auto ev = ODIA::PrecursorPrefilter::measure(library, *pf_source, po, ps);
       auto keep = ODIA::PrecursorPrefilter::select(library, ev, po, ps);
       reportPrefilter_(ps, po);
@@ -3708,7 +3731,7 @@ protected:
     po.keep_fraction = 1.0;
 
     ODIA::PrecursorPrefilter::Stats ps;
-    auto source = ODIA::openRun(run);
+    auto source = ODIA::openRun(run, runOpenOptions_());
 
     // In CiRT mode measure ONLY the standards. Everything else was measured and
     // then discarded: the anchor loop below keeps just cirt_seed_idx_, so 708 of

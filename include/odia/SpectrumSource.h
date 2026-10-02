@@ -177,4 +177,22 @@ namespace ODIA
   /// reference the other is checked against.
   std::unique_ptr<SpectrumSource> openRun(const std::string& filename);
 
+  /// How a run is read, where the reading is a choice rather than a fact.
+  /// Default-constructed, every field reproduces openRun(filename) exactly.
+  struct RunOpenOptions
+  {
+    /// -im_bands_from_params. Off: a window's mobility band comes only from the
+    /// selected-ion ion_mobility_lower/upper_limit fields of the ions the reader
+    /// attached to its own precursor (or the vendor table, or the midpoint
+    /// derivation). On: the selected ions of a spectrum are first paired with
+    /// its precursors BY POSITION in the frame (checked by m/z; see
+    /// pairIonsByPosition), and a paired ion without the limit fields gives its
+    /// band from the MZP:1000006/7 CV parameters instead -- which is where a
+    /// stock mzpeak-convert 0.12.5 file states it.
+    bool im_bands_from_params = false;
+  };
+
+  std::unique_ptr<SpectrumSource> openRun(const std::string& filename,
+                                          const RunOpenOptions& options);
+
 } // namespace ODIA

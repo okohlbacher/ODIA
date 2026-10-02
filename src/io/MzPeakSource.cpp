@@ -44,8 +44,8 @@ namespace ODIA
   class MzPeakSource : public SpectrumSource
   {
   public:
-    explicit MzPeakSource(const std::string& filename)
-      : filename_(filename), index_(MzPeak::open(filename.c_str())),
+    explicit MzPeakSource(const std::string& filename, const RunOpenOptions& options = {})
+      : filename_(filename), options_(options), index_(MzPeak::open(filename.c_str())),
         spectra_(index_.spectra()), vendor_windows_(readVendorDiaWindows(filename))
     {
       for (const auto& v : vendor_windows_)
@@ -116,22 +116,99 @@ namespace ODIA
           }
         }
 
+        // -im_bands_from_params: each precursor's OWN selected ion, paired by
+        // position in the frame (see pairIonsByPosition). Empty -- the legacy
+        // per-precursor reading below -- when the option is off, which keeps
+        // the off path the unchanged code, or when the pairing is refused.
+        std::vector<const MzPeak::SelectedIonInfo*> paired;
+        if (options_.im_bands_from_params && !s.precursors().empty())
+        {
+          std::vector<std::size_t> counts;
+          std::vector<double> targets, ion_mz;
+          std::vector<const MzPeak::SelectedIonInfo*> flat;
+          for (const auto& prec : s.precursors())
+          {
+            counts.push_back(prec.selected_ions.size());
+            targets.push_back(prec.isolation_window.target_mz
+                                ? static_cast<double>(*prec.isolation_window.target_mz)
+                                : std::numeric_limits<double>::quiet_NaN());
+            for (const auto& sel : prec.selected_ions)
+            {
+              flat.push_back(&sel);
+              ion_mz.push_back(sel.selected_ion_mz.value_or(std::numeric_limits<double>::quiet_NaN()));
+            }
+          }
+          std::vector<std::size_t> ion_of;
+          const IonPairing how = pairIonsByPosition(counts, targets, ion_mz, ion_of);
+          ++pairing_[std::size_t(how)];
+          if (!ion_of.empty())
+          {
+            paired.resize(ion_of.size());
+            for (std::size_t k = 0; k < ion_of.size(); ++k) { paired[k] = flat[ion_of[k]]; }
+          }
+        }
+
         std::vector<SpectrumInfo> here;
         // The window's own mobility POSITION, kept beside it so a stated band
         // can be checked against the place the instrument actually put it.
         std::vector<double> here_pos;
+        std::size_t prec_k = 0;
         for (const auto& prec : s.precursors())
         {
+          const std::size_t k = prec_k++;
           const auto& w = prec.isolation_window;
           if (!w.target_mz) { continue; }
           SpectrumInfo one = info;
           one.window.mz_low = *w.target_mz - (w.lower_offset ? *w.lower_offset : 0.0f);
           one.window.mz_high = *w.target_mz + (w.upper_offset ? *w.upper_offset : 0.0f);
 
-          for (const auto& sel : prec.selected_ions)
+          if (paired.empty())
           {
-            if (sel.ion_mobility_lower_limit) { one.window.im_low = *sel.ion_mobility_lower_limit; }
-            if (sel.ion_mobility_upper_limit) { one.window.im_high = *sel.ion_mobility_upper_limit; }
+            for (const auto& sel : prec.selected_ions)
+            {
+              if (sel.ion_mobility_lower_limit) { one.window.im_low = *sel.ion_mobility_lower_limit; }
+              if (sel.ion_mobility_upper_limit) { one.window.im_high = *sel.ion_mobility_upper_limit; }
+            }
+          }
+          else
+          {
+            const auto& sel = *paired[k];
+            std::vector<CvValue> cv;
+            cv.reserve(sel.parameters.size());
+            for (const auto& p : sel.parameters)
+            {
+              cv.push_back({p.accession.value_or(std::string()), p.value.value_or(std::string())});
+            }
+            double plo = 0.0, phi = 0.0;
+            const bool from_params = mobilityBandFromParameters(cv, plo, phi);
+            if (sel.ion_mobility_lower_limit && sel.ion_mobility_upper_limit)
+            {
+              // Both columns: they are what the legacy reading uses, so they
+              // win, and the parameters are only a cross-check.
+              one.window.im_low = *sel.ion_mobility_lower_limit;
+              one.window.im_high = *sel.ion_mobility_upper_limit;
+              ++band_from_columns_;
+              if (from_params &&
+                  (plo != std::min(one.window.im_low, one.window.im_high) ||
+                   phi != std::max(one.window.im_low, one.window.im_high)))
+              {
+                ++band_column_param_disagree_;
+              }
+            }
+            else if (from_params)
+            {
+              one.window.im_low = plo;
+              one.window.im_high = phi;
+              ++band_from_params_;
+            }
+            else
+            {
+              // Neither: whatever single column there is, as the legacy
+              // reading would take it, from the RIGHT ion.
+              if (sel.ion_mobility_lower_limit) { one.window.im_low = *sel.ion_mobility_lower_limit; }
+              if (sel.ion_mobility_upper_limit) { one.window.im_high = *sel.ion_mobility_upper_limit; }
+              ++band_unstated_;
+            }
           }
           // The position is NOT taken from this precursor: the writer attaches
           // every selected ion of the spectrum to precursor 0 (see the same
@@ -303,6 +380,35 @@ namespace ODIA
                      "mobility bands\n";
       }
 
+      if (options_.im_bands_from_params)
+      {
+        // Always said when asked for, so a run that asked and got nothing
+        // (no parameters, every pairing refused) is visible as such.
+        const std::size_t refused_pairs = pairing_[std::size_t(IonPairing::CountMismatch)] +
+                                          pairing_[std::size_t(IonPairing::MzMismatch)];
+        std::cerr << "isolation windows: -im_bands_from_params: band from selected-ion "
+                     "PARAMETERS (MZP:1000006/7) for "
+                  << band_from_params_ << ", from the limit columns for " << band_from_columns_
+                  << ", stated by neither for " << band_unstated_
+                  << " spectrum-windows; ions paired with precursors "
+                  << toString(IonPairing::ByPosition) << " in "
+                  << pairing_[std::size_t(IonPairing::ByPosition)] << " spectra, "
+                  << toString(IonPairing::AsAttached) << " in "
+                  << pairing_[std::size_t(IonPairing::AsAttached)] << ", refused in "
+                  << refused_pairs << " (" << toString(IonPairing::CountMismatch) << ": "
+                  << pairing_[std::size_t(IonPairing::CountMismatch)] << ", "
+                  << toString(IonPairing::MzMismatch) << ": "
+                  << pairing_[std::size_t(IonPairing::MzMismatch)]
+                  << "; those keep the legacy per-precursor reading)";
+        if (band_column_param_disagree_)
+        {
+          std::cerr << "; WARNING " << band_column_param_disagree_
+                    << " windows state DIFFERENT bands in the columns and the parameters"
+                       " (the columns were used)";
+        }
+        std::cerr << '\n';
+      }
+
       std::size_t refused = 0;
       for (std::size_t r = 0; r < derivation_.size(); ++r)
       {
@@ -450,6 +556,14 @@ namespace ODIA
 
   private:
     std::string filename_;
+    RunOpenOptions options_;
+    /// -im_bands_from_params bookkeeping: per spectrum (pairing_, one counter
+    /// per IonPairing) and per paired spectrum-window (the rest).
+    std::array<std::size_t, 4> pairing_{};
+    std::size_t band_from_params_ = 0;
+    std::size_t band_from_columns_ = 0;
+    std::size_t band_unstated_ = 0;
+    std::size_t band_column_param_disagree_ = 0;
     std::vector<SpectrumInfo> ms1_info_;
     MzPeak::Index index_;
     MzPeak::Spectra spectra_;
@@ -482,6 +596,12 @@ namespace ODIA
   std::unique_ptr<SpectrumSource> openRun(const std::string& filename)
   {
     return std::make_unique<MzPeakSource>(filename);
+  }
+
+  std::unique_ptr<SpectrumSource> openRun(const std::string& filename,
+                                          const RunOpenOptions& options)
+  {
+    return std::make_unique<MzPeakSource>(filename, options);
   }
 
 } // namespace ODIA

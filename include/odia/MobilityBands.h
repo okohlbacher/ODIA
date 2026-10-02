@@ -5,7 +5,9 @@
 
 #include <odia/SpectrumSource.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace ODIA
@@ -60,5 +62,70 @@ namespace ODIA
   /// failure mode that loses nothing.
   MobilityBandResult deriveMobilityBands(const std::vector<MobilityPosition>& ions,
                                          std::vector<IsolationWindow>& windows);
+
+  // ------------------------------------------------------------------------
+  // -im_bands_from_params: the band a STOCK mzpeak-convert 0.12.5 file states
+  // ------------------------------------------------------------------------
+  //
+  // mzpeak-convert 0.12.5 writes each diaPASEF window's mobility band, but not
+  // where ODIA's reader looks: it is a pair of CV parameters on the selected
+  // ion (MZP:1000006 lower, MZP:1000007 upper, both 1/K0 in Vs/cm2, the
+  // DiaFrameMsMsWindows scan bounds through the same scan->1/K0 function that
+  // produces every peak's mobility), the plain ion_mobility_lower/upper_limit
+  // columns are absent, and precursor_index is NULL on every row -- so the
+  // reader attaches every ion of a frame to precursor 0 (NULL == NULL) and
+  // precursor 1 gets none. Without both pieces below the band is unreachable
+  // and the midpoint split is derived instead, up to 0.116 1/K0 off on
+  // PXD047793 (shared/pxd/R0C_CONVERT.md).
+
+  /// Selected-ion CV parameter accessions carrying the isolation window's
+  /// inverse-reduced-mobility band (mzPeak's own namespace).
+  inline constexpr const char* MZP_IM_LOWER_LIMIT = "MZP:1000006";
+  inline constexpr const char* MZP_IM_UPPER_LIMIT = "MZP:1000007";
+
+  /// One CV parameter as the reader hands it: accession and stringified value.
+  struct CvValue
+  {
+    std::string accession;
+    std::string value;
+  };
+
+  /// The band stated by @p params, if both limits are present and parse
+  /// COMPLETELY as finite numbers; ordered so that @p lo <= @p hi (a writer may
+  /// record them in scan order, where 1/K0 falls). Returns false -- and leaves
+  /// @p lo / @p hi untouched -- when either limit is missing, repeated with a
+  /// different value, or not a number, or when the two are equal: a degenerate
+  /// band is not a band.
+  bool mobilityBandFromParameters(const std::vector<CvValue>& params, double& lo, double& hi);
+
+  /// How a spectrum's selected ions were paired with its precursors.
+  enum class IonPairing : std::uint8_t
+  {
+    AsAttached,     ///< every precursor already carries exactly one ion: use it
+    ByPosition,     ///< mis-attached; the k-th ion of the frame names the k-th precursor
+    CountMismatch,  ///< ion count != precursor count: refused
+    MzMismatch      ///< a paired ion's m/z does not name its precursor's window: refused
+  };
+
+  const char* toString(IonPairing p);
+
+  /// Pair the selected ions of one spectrum with its precursors.
+  ///
+  /// @p ions_per_precursor[k] is how many ions the reader attached to precursor
+  /// k, @p targets[k] its isolation-window target m/z (NaN when absent), and
+  /// @p ion_mz the m/z of every ion of the spectrum IN FRAME ORDER -- precursor
+  /// 0's ions first, each precursor's in the order the reader attached them,
+  /// which is the file's row order (NaN when absent). On success
+  /// @p ion_of[k] is the frame-order index of precursor k's ion.
+  ///
+  /// Pairing by position is what the converter's own reader does since 0.12.x;
+  /// it is checked, not trusted: an ion whose m/z and its precursor's target are
+  /// both known must agree within 0.1 Th (window spacing here is 25 Th, float
+  /// noise between the two columns ~1e-4), or the spectrum is refused and
+  /// @p ion_of is cleared. A refusal leaves the caller on the legacy reading.
+  IonPairing pairIonsByPosition(const std::vector<std::size_t>& ions_per_precursor,
+                                const std::vector<double>& targets,
+                                const std::vector<double>& ion_mz,
+                                std::vector<std::size_t>& ion_of);
 
 } // namespace ODIA
