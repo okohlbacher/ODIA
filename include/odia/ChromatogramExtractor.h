@@ -872,6 +872,14 @@ namespace ODIA
       /// sweep, chunking, the live-slot table, starting the pool); `empty` is
       /// the trailing loop that hands never-extracted precursors to the sink.
       StageCost setup, index, decode, activate, match, emit, empty;
+      /// The per-chunk memory snapshot (smaps_rollup, mallinfo2, the chunk's
+      /// lines), bracketed on its own so it is neither in a stage nor in the
+      /// pass's unbracketed remainder. Empty when stage_label is.
+      StageCost probe;
+      /// Brackets that began before the previous bracket ended. The stages are
+      /// charged in sequence on one thread, so anything but 0 means two
+      /// brackets covered the same interval and the leaf sum double-counts it.
+      std::uint64_t bracket_overlaps = 0;
 
       /// The block pool's own accounting, which nothing printed before.
       /// `reserved` is what the pool ever allocated -- it never shrinks and is

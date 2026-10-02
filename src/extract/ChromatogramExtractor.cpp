@@ -416,6 +416,15 @@ namespace ODIA
     st = Stats{};
     const auto t_index = std::chrono::steady_clock::now();
     const ResourceSample r_setup = ResourceSample::now();
+    // Every bracket goes through here, so an overlap is counted rather than
+    // silently double-charged: the stages run in sequence on this thread.
+    double last_bracket_end = r_setup.wall;
+    const auto charge = [&](StageCost& c, const ResourceSample& from,
+                            const ResourceSample& to) {
+      if (from.wall < last_bracket_end) { ++st.bracket_overlaps; }
+      last_bracket_end = to.wall;
+      c.add(from, to);
+    };
 
     const auto& p = library.precursors();
     const auto& t = library.transitions();
@@ -1005,7 +1014,7 @@ namespace ODIA
       --live_now;
     };
 
-    st.setup.add(r_setup, ResourceSample::now());
+    charge(st.setup, r_setup, ResourceSample::now());
 
     // One line per stage per chunk, printed as the chunk ends -- see
     // Options::stage_label for why as-you-go. rss/hwm/threads are read once,
@@ -1189,7 +1198,7 @@ namespace ODIA
 
       st.index_seconds += std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t_chunk_index).count();
-      c_index.add(r_index, ResourceSample::now());
+      charge(c_index, r_index, ResourceSample::now());
 
       for (std::size_t begin = chunk_first; begin < chunk_last; begin += BLOCK)
       {
@@ -1200,7 +1209,7 @@ namespace ODIA
         source.peaks(begin, end, block);
         st.decode_seconds += std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - t_decode).count();
-        c_decode.add(r_decode, ResourceSample::now());
+        charge(c_decode, r_decode, ResourceSample::now());
         st.spectra_decoded += end - begin;
 
         // Decoding is per block, because that is what the reader wants;
@@ -1234,7 +1243,7 @@ namespace ODIA
                                    std::chrono::steady_clock::now() - t_alloc).count();
           // Ends where match begins, so the two brackets share one sample.
           const ResourceSample r_match = ResourceSample::now();
-          c_activate.add(r_activate, r_match);
+          charge(c_activate, r_activate, r_match);
 
           const auto t_match = std::chrono::steady_clock::now();
           std::atomic<std::size_t> next{batch};
@@ -1355,7 +1364,7 @@ namespace ODIA
           // whatever the process spends in the release loop below is the
           // driver's: the emit bracket is the serial sink, measured.
           const ResourceSample r_emit = ResourceSample::now();
-          c_match.add(r_match, r_emit);
+          charge(c_match, r_match, r_emit);
 
           // Everything the pass has now passed the end of is FINAL. This is the
           // whole change: the chromatogram goes to the consumer and the memory
@@ -1377,7 +1386,7 @@ namespace ODIA
           st.assemble_seconds += std::chrono::duration<double>(
                                    std::chrono::steady_clock::now() - t_free).count()
                                  - (st.sink_seconds - sink_before);
-          c_emit.add(r_emit, ResourceSample::now());
+          charge(c_emit, r_emit, ResourceSample::now());
         }
 
         if (options.progress_every && (begin / BLOCK) % 16 == 0)
@@ -1403,7 +1412,7 @@ namespace ODIA
       st.assemble_seconds += std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - t_flush).count()
                              - (st.sink_seconds - sink_before_flush);
-      c_emit.add(r_flush, ResourceSample::now());
+      charge(c_emit, r_flush, ResourceSample::now());
 
       st.index += c_index;
       st.decode += c_decode;
@@ -1413,7 +1422,9 @@ namespace ODIA
       {
         const StageCost* costs[] = {&c_index, &c_decode, &c_activate, &c_match, &c_emit};
         const char* names[] = {"index", "decode", "activate", "match", "emit (sink+release)"};
+        const ResourceSample r_probe = ResourceSample::now();
         report_chunk(chunk_i, costs, names, 5);
+        if (!options.stage_label.empty()) { charge(st.probe, r_probe, ResourceSample::now()); }
       }
     }
     if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
@@ -1442,7 +1453,7 @@ namespace ODIA
     }
     st.sink_seconds += std::chrono::duration<double>(
                          std::chrono::steady_clock::now() - t_empty).count();
-    st.empty.add(r_empty, ResourceSample::now());
+    charge(st.empty, r_empty, ResourceSample::now());
 
     st.precursors = n_prec;
     st.transitions = n_trans;

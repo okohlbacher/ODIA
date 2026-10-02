@@ -622,6 +622,10 @@ add_test(NAME extract_mobility_band_edge COMMAND odia_extract_cases band_edge)
 # chunks changes the number of passes and not the answer.
 add_test(NAME extract_sliding_window COMMAND odia_extract_cases sliding)
 
+# -debug_plane_identity's positive and negative controls: a zero on the fixture
+# means "the planes are identical there" only if this counter can fire.
+add_test(NAME extract_plane_identity_counter COMMAND odia_extract_cases plane_identity)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing

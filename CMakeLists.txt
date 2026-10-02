@@ -134,7 +134,10 @@ if(ODIA_LIB_SOURCES)
   target_link_libraries(odia_core PUBLIC OpenMS MzPeak::MzPeak
                                          ${ODIA_ARROW_TARGET} ${ODIA_PARQUET_TARGET}
                                          ${ONNXRuntime_LIBRARY} libzip::zip
-                                         ${SQLite3_LIBRARY})
+                                         ${SQLite3_LIBRARY}
+                                         # dlsym: ResourceProbe resolves mallinfo2 at run time,
+                                         # because the conda sysroot compiles against glibc 2.28.
+                                         ${CMAKE_DL_LIBS})
   if(OpenMP_CXX_FOUND)
     target_link_libraries(odia_core PUBLIC OpenMP::OpenMP_CXX)
   endif()

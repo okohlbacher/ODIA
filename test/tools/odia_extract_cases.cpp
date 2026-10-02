@@ -18,6 +18,9 @@
 //                 windows belongs to one of them, not to both
 //   wide_csr      more than 2^32 chromatogram points, which the 32-bit CSR
 //                 offsets refused outright (needs ~17.2 GiB)
+//   plane_identity  the -debug_plane_identity counter fires where the residual
+//                 denominators differ from the intensity plane (positive
+//                 control) and not where they do not
 //
 // Usage: odia_extract_cases <case>
 
@@ -73,6 +76,17 @@ namespace
       // Either the run separates by mobility or it does not, so a spectrum
       // carries a mobility for every peak or for none.
       if (!std::isnan(im)) { pk.ion_mobility.push_back(im); }
+    }
+
+    /// Like addPeak, but the mobility is stored even when it is NaN: a
+    /// spectrum that carries mobilities with one peak's missing, which
+    /// addPeak cannot express.
+    void addPeakIm(std::size_t spectrum, double mz, float intensity, float im)
+    {
+      auto& pk = peaks_[spectrum];
+      pk.mz.push_back(mz);
+      pk.intensity.push_back(intensity);
+      pk.ion_mobility.push_back(im);
     }
 
     const std::vector<ODIA::SpectrumInfo>& spectra() const override { return info_; }
@@ -678,6 +692,99 @@ namespace
           "chunking changes how many passes it takes, not the answer");
     std::printf("       %zu chunks, %zu spectra decoded against %zu in the run\n",
                 chunk_stats.chunks, chunk_stats.spectra_decoded, chunk_stats.spectra_read);
+
+    // The per-chunk resource ledger on the multi-chunk path: each chunk adds
+    // its index bracket and its snapshot exactly once, and no bracket starts
+    // before the previous one ended.
+    auto labelled = capped;
+    labelled.stage_label = "test";
+    ODIA::ChromatogramExtractor::Stats ledger_stats;
+    const auto z = ODIA::ChromatogramExtractor::extract(lib.library(), run, labelled,
+                                                        &ledger_stats);
+    check(z.intensity == x.intensity, "the stage ledger changes nothing extracted");
+    check(ledger_stats.chunks > 1 && ledger_stats.index.brackets == ledger_stats.chunks,
+          "one index bracket per chunk, summed over the chunks");
+    check(ledger_stats.probe.brackets == ledger_stats.chunks,
+          "one memory snapshot per chunk, charged to the probe stage");
+    check(ledger_stats.bracket_overlaps == 0, "no bracket overlaps another");
+  }
+
+  /// -debug_plane_identity: the comparator has to be able to fire.
+  ///
+  /// A count of zero on the fixture is only evidence for aliasing the residual
+  /// denominators to the intensity plane if the same counter returns nonzero
+  /// where they DO differ. Under Sum they differ exactly where a contributing
+  /// peak was non-positive (ppm and im) or had no finite 1/K0 (im only); under
+  /// Max wherever two peaks share a cell (base keeps one, the dens sum both).
+  /// Each cell below is one of those, and the expected counts are exact.
+  void casePlaneIdentity()
+  {
+    ScriptedRun run;
+    const auto w = run.addWindow(500.0, 510.0);
+    for (int c = 0; c < 3; ++c)
+    {
+      const auto s = run.addSpectrum(w, 100.0 + 10.0 * c);
+      // Ascending m/z, as a spectrum arrives.
+      if (c == 1)                                                // C: a negative peak
+      {
+        run.addPeakIm(s, 300.0, -3.0f, 1.0f);
+        run.addPeakIm(s, 300.0, 10.0f, 1.0f);
+      }
+      run.addPeakIm(s, 400.0, 10.0f, 1.0f);                      // A: clean
+      if (c == 2) { run.addPeakIm(s, 400.001, 4.0f, 1.0f); }    // A: two peaks, one cell
+      if (c == 0) { run.addPeakIm(s, 450.0, 5.0f, NA); }         // B: no 1/K0
+      else { run.addPeakIm(s, 450.0, 6.0f, 1.0f); }              // B: clean
+    }
+    ScriptedLibrary lib;
+    lib.addPrecursor(505.0, 1.0f);
+    lib.addTransition(400.0);
+    lib.addTransition(450.0);
+    lib.addTransition(300.0);
+
+    auto opt = plainOptions();
+    opt.collect_mass_residuals = true;
+    opt.collect_im_residuals = true;
+    const auto off = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt);
+
+    opt.count_plane_identity = true;
+    ODIA::ChromatogramExtractor::Stats sum;
+    const auto on = ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, &sum);
+    check(on.intensity == off.intensity, "counting changes nothing extracted");
+    check(sum.plane_cells == 9, "3 transitions x 3 cycles were compared");
+    // Sum: C@1 (-3 in base, not in either den), B@0 (no 1/K0: im_den only).
+    check(sum.ppm_den_differs == 1, "Sum: ppm_den differs at the negative peak only");
+    check(sum.im_den_differs == 2, "Sum: im_den differs at the negative and the NaN-1/K0 peak");
+    check(sum.im_den_zero == 1, "Sum: one cell had no finite 1/K0 at all");
+    std::printf("       Sum: cells %llu, ppm %llu, im %llu (zero %llu)\n",
+                static_cast<unsigned long long>(sum.plane_cells),
+                static_cast<unsigned long long>(sum.ppm_den_differs),
+                static_cast<unsigned long long>(sum.im_den_differs),
+                static_cast<unsigned long long>(sum.im_den_zero));
+
+    opt.aggregate = ODIA::ChromatogramExtractor::Options::Aggregate::Max;
+    ODIA::ChromatogramExtractor::Stats mx;
+    ODIA::ChromatogramExtractor::extract(lib.library(), run, opt, &mx);
+    // Max: A@2 (base 10, dens 14). C@1 now agrees: the -3 never raises the
+    // max, and the dens skip it. B@0 is still im only.
+    check(mx.ppm_den_differs == 1, "Max: ppm_den differs where two peaks share a cell");
+    check(mx.im_den_differs == 2, "Max: im_den differs there and at the NaN-1/K0 peak");
+
+    // Negative control: the clean transition alone, under Sum, counts zero.
+    ScriptedLibrary clean;
+    clean.addPrecursor(505.0, 1.0f);
+    clean.addTransition(450.0);
+    opt.aggregate = ODIA::ChromatogramExtractor::Options::Aggregate::Sum;
+    ScriptedRun run2;
+    const auto w2 = run2.addWindow(500.0, 510.0);
+    for (int c = 0; c < 3; ++c)
+    {
+      const auto s = run2.addSpectrum(w2, 100.0 + 10.0 * c);
+      run2.addPeakIm(s, 450.0, 6.0f, 1.0f);
+    }
+    ODIA::ChromatogramExtractor::Stats zero;
+    ODIA::ChromatogramExtractor::extract(clean.library(), run2, opt, &zero);
+    check(zero.plane_cells == 3 && zero.ppm_den_differs == 0 && zero.im_den_differs == 0,
+          "a clean run counts zero");
   }
 }
 
@@ -693,11 +800,13 @@ int main(int argc, char** argv)
   else if (which == "band_edge") { caseBandEdge(); }
   else if (which == "wide_csr") { caseWideCsr(); }
   else if (which == "sliding") { caseSlidingWindow(); }
+  else if (which == "plane_identity") { casePlaneIdentity(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
-                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding>\n");
+                 "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
+                 "plane_identity>\n");
     return 2;
   }
 

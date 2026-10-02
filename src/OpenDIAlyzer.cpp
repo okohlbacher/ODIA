@@ -1932,8 +1932,7 @@ protected:
             phase_(ex + " MS1 build");
             const ODIA::StageCost gap = minus_(phases_.back().second, sum);
             stageLine_(ex + " ms1", "unbracketed (phase - stages)", gap, ps);
-            stage_bracketed_ += sum;
-            stage_unbracketed_ += gap;
+            recordGap_(ex + " MS1 build", phases_.back().second, sum, gap);
           }
           {
             // Reported, not asserted. The MS1 axis borrows the FRAGMENT offset,
@@ -2059,7 +2058,8 @@ protected:
       const std::pair<const char*, const ODIA::StageCost*> parts[] = {
         {"setup", &stats.setup}, {"index", &stats.index}, {"decode", &stats.decode},
         {"activate", &stats.activate}, {"match", &stats.match},
-        {"emit (sink+release)", &stats.emit}, {"empty traces", &stats.empty}};
+        {"emit (sink+release)", &stats.emit}, {"empty traces", &stats.empty},
+        {"probe (chunk memory snapshots)", &stats.probe}};
       ODIA::StageCost sum;
       for (const auto& pr : parts)
       {
@@ -2070,8 +2070,8 @@ protected:
       phase_(ex + " extraction");
       const ODIA::StageCost gap = minus_(phases_.back().second, sum);
       stageLine_(ex + " pass", "unbracketed (phase - stages)", gap, ps);
-      stage_bracketed_ += sum;
-      stage_unbracketed_ += gap;
+      recordGap_(ex + " extraction", phases_.back().second, sum, gap);
+      bracket_overlaps_ += stats.bracket_overlaps;
       // Points are floats: x4 for bytes.
       const auto gib = [](std::uint64_t pts) { return double(pts) * 4.0 / 1073741824.0; };
       std::ostringstream pm;
@@ -2088,7 +2088,11 @@ protected:
       if (options.count_plane_identity)
       {
         std::ostringstream pi;
-        pi << "PLANE-IDENTITY " << ex << ": " << stats.plane_cells
+        pi << "PLANE-IDENTITY " << ex << " (aggregate "
+           << (options.aggregate == ODIA::ChromatogramExtractor::Options::Aggregate::Max
+                 ? "max: ppm_den sums every peak, base keeps one, so ppm_den != base is EXPECTED"
+                 : "sum")
+           << "): " << stats.plane_cells
            << " cells in blocks with residual planes; ppm_den != base in "
            << stats.ppm_den_differs << " (ppm planes "
            << (options.collect_mass_residuals ? "on" : "off") << "), im_den != base in "
@@ -5843,22 +5847,42 @@ private:
   unsigned extraction_index_ = 0;
 
   /// Close the phase that ends here, print it, and open the next.
+  ///
+  /// The probe itself -- the /proc/self/status read, the smaps_rollup walk
+  /// (~11-18 ms per GiB resident, all sys time), mallinfo2, the two log lines
+  /// -- runs BETWEEN the phase it closes and the one it opens, and is charged
+  /// to neither: it goes to `phase_probe_`, printed on the memory line and in
+  /// the total. Charged to the next phase it was, at 50 GiB, the whole of
+  /// several sub-second phases; at 600 GiB it would be seconds per boundary.
   void phase_(const std::string& name)
   {
     const ODIA::ResourceSample now = ODIA::ResourceSample::now();
     ODIA::StageCost c;
     c.add(phase_mark_, now);
-    phase_mark_ = now;
     phases_.emplace_back(name, c);
     writeLogInfo_("PHASE " + name + ": " +
                   ODIA::formatStageCost(c, ODIA::ProcessStatus::now()));
     // Who holds the resident set at this boundary (proportional set size and
-    // both allocators' own totals). Read here and at chunk ends only -- the
-    // smaps_rollup walk and mallinfo2 time themselves on the line. Never
+    // the allocators' own totals). Read here and at chunk ends only. Never
     // called while the extraction's workers or finish()'s OpenMP team run.
-    writeLogInfo_("PHASE " + name + " memory: " +
-                  ODIA::formatMemorySnapshot(ODIA::MemorySnapshot::now()));
+    const std::string mem = ODIA::formatMemorySnapshot(ODIA::MemorySnapshot::now());
+    const ODIA::ResourceSample after = ODIA::ResourceSample::now();
+    ODIA::StageCost probe;
+    probe.add(now, after);
+    phase_probe_ += probe;
+    std::ostringstream pc;
+    pc.setf(std::ios::fixed); pc.precision(3);
+    pc << " [probe, charged to no phase: wall " << probe.wall << " s, cpu " << probe.cpu()
+       << " s (sys " << probe.sys << ")]";
+    writeLogInfo_("PHASE " + name + " memory: " + mem + pc.str());
+    phase_mark_ = ODIA::ResourceSample::now();
+    // The log write above is the only thing between `after` and the new mark.
+    ODIA::StageCost tail;
+    tail.add(after, phase_mark_);
+    phase_probe_ += tail;
   }
+  /// What the phase-boundary probes cost, summed. Phases + this = process.
+  ODIA::StageCost phase_probe_;
 
   /// One STAGE line, the format phase_() uses.
   void stageLine_(const std::string& scope, const std::string& name,
@@ -5867,37 +5891,96 @@ private:
     writeLogInfo_("STAGE " + scope + " " + name + ": " + ODIA::formatStageCost(c, ps));
   }
 
-  /// The closing reconciliation, from main_'s exit guard: the last phase, the
-  /// phase sum against getrusage, and the leaf sum -- phases with each
-  /// extraction and MS1 build replaced by their STAGE lines -- whose gap to the
-  /// phase sum is exactly the time no STAGE bracket covered.
+  /// The closing reconciliation, from main_'s exit guard.
+  ///
+  /// What each line can and cannot detect:
+  ///   * PHASE total -- the phases telescope from a zero getrusage baseline, so
+  ///     phases + probe EQUAL getrusage at the last mark by construction, and
+  ///     the footer reads the same counter. Agreement there only bounds what
+  ///     ran after main_ returned; it cannot detect a misplaced bracket.
+  ///   * PHASE leaves -- the real decomposition check: inside each extraction
+  ///     and MS1 build, phase minus the sum of its STAGE brackets. A dropped
+  ///     bracket shows as a large positive gap, an overlap as a negative one;
+  ///     both are counted per extraction (not just summed, where an overlap
+  ///     in one pass could cancel a hole in another), and the extractor
+  ///     counts brackets that began before the previous one ended.
+  ///   * PHASE peak -- VmHWM and ru_maxrss are the SAME kernel counter
+  ///     (mm->hiwater_rss), and so is the OpenMS footer's peak (getrusage);
+  ///     their agreement is not a check. What is: the largest VmHWM and VmRSS
+  ///     any in-process read saw against the final value (the footer is lower
+  ///     than an observed VmRSS when the kernel never folded it into
+  ///     hiwater_rss), and how often VmHWM read lower than the read before.
   void closePhases_()
   {
     phase_("tail (results, cleanup in main_)");
     ODIA::StageCost sum;
     for (const auto& ph : phases_) { sum += ph.second; }
+    ODIA::StageCost with_probe = sum;
+    with_probe += phase_probe_;
     const ODIA::ResourceSample end = ODIA::ResourceSample::now();
     const ODIA::ProcessStatus ps_end = ODIA::ProcessStatus::now();
+    const auto& lg = ODIA::ProcessStatus::ledger();
+    const double kib_gib = 1.0 / 1048576.0;
     std::ostringstream m;
     m.setf(std::ios::fixed); m.precision(3);
     m << "PHASE total: " << phases_.size() << " phases, cpu " << sum.cpu()
       << " s (user " << sum.user << ", sys " << sum.sys << "), wall "
-      << sum.wall << " s after main_ began; process getrusage at exit of main_: cpu "
+      << sum.wall << " s after main_ began; phase-boundary probes cpu " << phase_probe_.cpu()
+      << " s (sys " << phase_probe_.sys << "), wall " << phase_probe_.wall
+      << " s; phases + probes cpu " << with_probe.cpu()
+      << " s; process getrusage at exit of main_: cpu "
       << end.user + end.sys << " s (user " << end.user << ", sys " << end.sys
       << "), minflt " << end.minflt << ", majflt " << end.majflt
-      << ". Compare against the footer's CPU; what differs ran after main_ returned.\n"
-      << "PHASE peak: VmHWM " << double(ps_end.hwm_kib) / 1048576.0 << " GiB ("
+      << ". Phases + probes equal getrusage by construction (telescoping); the "
+         "footer's CPU differs only by what ran after main_ returned.\n"
+      << "PHASE peak: final VmHWM " << double(ps_end.hwm_kib) * kib_gib << " GiB ("
       << ps_end.hwm_kib << " KiB), getrusage ru_maxrss " << end.maxrss_kib
-      << " KiB (the number a `time -v` footer prints as Maximum resident set size), "
-         "VmRSS now " << double(ps_end.rss_kib) / 1048576.0 << " GiB, threads "
-      << ps_end.threads << "\n"
-      << "PHASE leaves: STAGE-bracketed cpu inside extractions " << stage_bracketed_.cpu()
-      << " s and unbracketed " << stage_unbracketed_.cpu() << " s (wall "
-      << stage_bracketed_.wall << " / " << stage_unbracketed_.wall << " s)";
+      << " KiB (same kernel counter as VmHWM and the footer: agreement is not a check); "
+      << lg.reads.load() << " in-process reads of /proc/self/status: max VmRSS read "
+      << lg.max_rss_kib.load() << " KiB ("
+      << (ps_end.hwm_kib ? 100.0 * double(lg.max_rss_kib.load()) / double(ps_end.hwm_kib) : 0.0)
+      << "% of final VmHWM), max VmHWM read " << lg.max_hwm_kib.load()
+      << " KiB; VmHWM read lower than the previous read " << lg.hwm_decreases.load()
+      << " times (largest drop " << lg.max_hwm_drop_kib.load()
+      << " KiB: the kernel folds RSS into hiwater_rss lazily); footer "
+      << (end.maxrss_kib >= lg.max_rss_kib.load() ? "covers" : "UNDERCOUNTS")
+      << " every VmRSS read in-process; VmRSS now " << double(ps_end.rss_kib) * kib_gib
+      << " GiB, threads " << ps_end.threads << "\n"
+      << "PHASE leaves: STAGE-bracketed cpu inside extractions and MS1 builds "
+      << stage_bracketed_.cpu() << " s and unbracketed " << stage_unbracketed_.cpu()
+      << " s (wall " << stage_bracketed_.wall << " / " << stage_unbracketed_.wall
+      << " s) over " << stage_gaps_ << " bracketed phases; largest unbracketed cpu share "
+      << 100.0 * stage_gap_max_share_ << "% (" << stage_gap_max_label_
+      << "); negative gaps (overlapping brackets) " << stage_gaps_negative_
+      << "; extractor brackets that began before the previous ended " << bracket_overlaps_;
     writeLogInfo_(m.str());
   }
   /// Summed over every extraction and MS1 build, for closePhases_().
   ODIA::StageCost stage_bracketed_, stage_unbracketed_;
+  std::size_t stage_gaps_ = 0, stage_gaps_negative_ = 0;
+  double stage_gap_max_share_ = 0.0;
+  std::string stage_gap_max_label_ = "none";
+  std::uint64_t bracket_overlaps_ = 0;
+
+  /// One bracketed phase's gap, kept per phase rather than only summed.
+  /// Negative beyond scheduler noise (50 ms or 0.5% of the phase) is an
+  /// overlap: two brackets charged the same interval.
+  void recordGap_(const std::string& label, const ODIA::StageCost& phase,
+                  const ODIA::StageCost& parts, const ODIA::StageCost& gap)
+  {
+    stage_bracketed_ += parts;
+    stage_unbracketed_ += gap;
+    ++stage_gaps_;
+    const double tol = std::max(0.05, 0.005 * phase.cpu());
+    if (gap.cpu() < -tol || gap.wall < -std::max(0.05, 0.005 * phase.wall))
+    { ++stage_gaps_negative_; }
+    const double share = phase.cpu() > 0.0 ? gap.cpu() / phase.cpu() : 0.0;
+    if (std::abs(share) > std::abs(stage_gap_max_share_))
+    {
+      stage_gap_max_share_ = share;
+      stage_gap_max_label_ = label;
+    }
+  }
 
   /// Unbracketed = phase - sum of its stages. A negative field would mean the
   /// stages overlapped, which the brackets are built not to do.
