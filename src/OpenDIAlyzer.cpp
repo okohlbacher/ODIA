@@ -1063,6 +1063,18 @@ protected:
                        "handed to the scorer in move on a fixed 128-spectrum "
                        "grid that does not depend on this. 0 means the default.",
                        false, true);
+    registerStringOption_("tof_calibration", "<mode>", "run",
+                          "How m/z is rebuilt from the TOF index of a Bruker ims-compact mzPeak "
+                          "archive. 'run' uses the archive's run-wide chord, (a + b*tof)^2, which "
+                          "omits the vendor model's per-frame temperature term; on PXD047793 that "
+                          "reads +0.45..+1.4 ppm high against the Bruker SDK, smoothly in m/z "
+                          "(shared/pxd/R0B_MASS.md). 'frame' uses each spectrum's own pair, "
+                          "tof_c0/tof_c1, which the converter stores and which matched the SDK to "
+                          "0.000 ppm there; a spectrum whose pair is NULL stays on the chord. "
+                          "'frame' is refused for an archive that stores no pair. Default 'run' "
+                          "is the unchanged reader.",
+                          false, true);
+    setValidStrings_("tof_calibration", {"run", "frame"});
     registerOutputFile_("out", "<file>", "",
                         "Write scored peak groups here (TSV).", false);
     setValidFormats_("out", {"tsv"}, false);
@@ -1781,6 +1793,15 @@ protected:
   }
 
 
+  /// How every pass opens the run. One place, so pass 1, pass 2 and the
+  /// prefilter can never read the same file with different m/z.
+  ODIA::RunOptions runOptions_()
+  {
+    ODIA::RunOptions o;
+    o.per_frame_tof_calibration = getStringOption_("tof_calibration") == "frame";
+    return o;
+  }
+
   /// Extract every transition of @p library from @p run, and write the
   /// chromatograms if asked.
   ///
@@ -1798,7 +1819,7 @@ protected:
     std::unique_ptr<ODIA::SpectrumSource> source;
     try
     {
-      source = ODIA::openRun(run);
+      source = ODIA::openRun(run, runOptions_());
     }
     catch (const std::exception& e)
     {
@@ -3359,7 +3380,7 @@ protected:
       // Its own handle on the run. The extraction path opens and closes one per
       // pass, so there is none in scope here, and the sweep is a single
       // sequential read that shares nothing with an extraction.
-      auto pf_source = ODIA::openRun(run);
+      auto pf_source = ODIA::openRun(run, runOptions_());
       const auto ev = ODIA::PrecursorPrefilter::measure(library, *pf_source, po, ps);
       auto keep = ODIA::PrecursorPrefilter::select(library, ev, po, ps);
       reportPrefilter_(ps, po);
@@ -3873,7 +3894,7 @@ protected:
     po.keep_fraction = 1.0;
 
     ODIA::PrecursorPrefilter::Stats ps;
-    auto source = ODIA::openRun(run);
+    auto source = ODIA::openRun(run, runOptions_());
 
     // In CiRT mode measure ONLY the standards. Everything else was measured and
     // then discarded: the anchor loop below keeps just cirt_seed_idx_, so 708 of

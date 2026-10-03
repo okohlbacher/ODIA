@@ -3,6 +3,7 @@
 
 #include <odia/MobilityBands.h>
 #include <odia/SpectrumSource.h>
+#include <odia/TofCalibration.h>
 #include <odia/VendorDiaWindows.h>
 
 #include <limits>
@@ -44,10 +45,11 @@ namespace ODIA
   class MzPeakSource : public SpectrumSource
   {
   public:
-    explicit MzPeakSource(const std::string& filename)
+    MzPeakSource(const std::string& filename, const RunOptions& options)
       : filename_(filename), index_(MzPeak::open(filename.c_str())),
         spectra_(index_.spectra()), vendor_windows_(readVendorDiaWindows(filename))
     {
+      if (options.per_frame_tof_calibration) { loadTofCalibration_(); }
       for (const auto& v : vendor_windows_)
       {
         if (vendor_im_high_ == 0.0 && vendor_im_low_ == 0.0)
@@ -353,6 +355,7 @@ namespace ODIA
         const auto& intensity = batch[k].intensity();
         const std::size_t n = std::min(mz.size(), intensity.size());
         dst.mz.assign(mz.begin(), mz.begin() + n);
+        recalibrate_(want[k], dst.mz);
         dst.intensity.assign(intensity.begin(), intensity.begin() + n);
         const auto& im = batch[k].ion_mobility_array();
         if (im.size() >= n) { dst.ion_mobility.assign(im.begin(), im.begin() + n); }
@@ -418,6 +421,7 @@ namespace ODIA
         // hold equal peak lists and are separated by their mobility bands, not
         // by their storage.
         dst.mz.assign(mz.begin(), mz.begin() + n);
+        recalibrate_(want[s], dst.mz);
         dst.intensity.assign(intensity.begin(), intensity.begin() + n);
 
         const auto& im = batch[s].ion_mobility_array();
@@ -449,6 +453,59 @@ namespace ODIA
     }
 
   private:
+    /// -tof_calibration frame: read the per-spectrum pair once, up front, and
+    /// say what it will do. Refuses a run it cannot serve rather than falling
+    /// back to the chord, which is what the caller asked NOT to get.
+    void loadTofCalibration_()
+    {
+      const auto& chord = index_.ims_calibration();
+      if (!chord.valid)
+      {
+        throw std::runtime_error("-tof_calibration frame: " + filename_ +
+                                 " declares no TOF calibration (not a Bruker ims-compact archive), "
+                                 "so its m/z is not rebuilt from TOF and there is nothing to correct");
+      }
+      chord_a_ = chord.a;
+      chord_b_ = chord.b;
+      tof_ = TofCoefficientTable::fromArchive(filename_, spectra_.size());
+      per_frame_tof_ = true;
+
+      // The shift the pair applies, at three m/z, as the median over spectra.
+      // R0B_MASS measured chord - SDK at +0.67 / +1.20 / +1.43 ppm there, so
+      // on that run these should read about the negatives of those.
+      std::array<std::vector<double>, 3> shift;
+      const std::array<double, 3> at{400.0, 800.0, 1200.0};
+      for (std::size_t i = 0; i < tof_.size(); ++i)
+      {
+        if (!tof_.has(i)) { continue; }
+        for (std::size_t k = 0; k < at.size(); ++k)
+        {
+          shift[k].push_back(tofShiftPpm(at[k], chord_a_, chord_b_, tof_.c0(i), tof_.c1(i)));
+        }
+      }
+      std::cerr << "m/z: per-frame TOF calibration (tof_c0/tof_c1) for " << tof_.withPair() << " of "
+                << tof_.size() << " spectra, " << tof_.onChord()
+                << " left on the run-wide chord (a=" << chord_a_ << ", b=" << chord_b_ << ")";
+      if (!shift[0].empty())
+      {
+        std::cerr << "; median shift vs chord";
+        for (std::size_t k = 0; k < at.size(); ++k)
+        {
+          auto& v = shift[k];
+          std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+          std::cerr << (k ? ", " : " ") << v[v.size() / 2] << " ppm at " << at[k] << " Th";
+        }
+      }
+      std::cerr << '\n';
+    }
+
+    /// Off: does nothing, so the default reader is untouched by construction.
+    void recalibrate_(std::size_t file_index, std::vector<double>& mz) const
+    {
+      if (!per_frame_tof_ || !tof_.has(file_index)) { return; }
+      remapTofMz(mz, chord_a_, chord_b_, tof_.c0(file_index), tof_.c1(file_index));
+    }
+
     std::string filename_;
     std::vector<SpectrumInfo> ms1_info_;
     MzPeak::Index index_;
@@ -470,6 +527,13 @@ namespace ODIA
     /// One counter per MobilityBandResult, so a refusal is reported rather
     /// than inferred from chromatograms that came out worse.
     std::array<std::size_t, 5> derivation_{};
+
+    /// -tof_calibration frame. Immutable after construction, so the decode
+    /// path may read it from any thread.
+    bool per_frame_tof_ = false;
+    double chord_a_ = 0.0;
+    double chord_b_ = 0.0;
+    TofCoefficientTable tof_;
   };
 
   void SpectrumSource::peaks(std::size_t index, SpectrumPeaks& out)
@@ -481,7 +545,12 @@ namespace ODIA
 
   std::unique_ptr<SpectrumSource> openRun(const std::string& filename)
   {
-    return std::make_unique<MzPeakSource>(filename);
+    return std::make_unique<MzPeakSource>(filename, RunOptions{});
+  }
+
+  std::unique_ptr<SpectrumSource> openRun(const std::string& filename, const RunOptions& options)
+  {
+    return std::make_unique<MzPeakSource>(filename, options);
   }
 
 } // namespace ODIA

@@ -177,4 +177,17 @@ namespace ODIA
   /// reference the other is checked against.
   std::unique_ptr<SpectrumSource> openRun(const std::string& filename);
 
+  /// How a run is read. Every field defaults to what openRun(filename) does,
+  /// so a default-constructed RunOptions is the unchanged reader.
+  struct RunOptions
+  {
+    /// Rebuild m/z from each spectrum's own TOF calibration pair
+    /// (tof_c0/tof_c1) instead of the archive's run-wide chord. Bruker
+    /// ims-compact archives only; refused (throws) where the archive does not
+    /// store the pair. See TofCalibration.h.
+    bool per_frame_tof_calibration = false;
+  };
+
+  std::unique_ptr<SpectrumSource> openRun(const std::string& filename, const RunOptions& options);
+
 } // namespace ODIA
