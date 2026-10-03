@@ -18,6 +18,8 @@
 #include <stdexcept>
 
 #include <atomic>
+#include <chrono>
+#include <stdexcept>
 
 namespace ODIA
 {
@@ -1360,6 +1362,15 @@ namespace
         return stat >= tau;
       }
 
+      /// D6: a threshold decided before any precursor arrives. With ready set
+      /// the warm-up branch above never runs; nothing is admitted unchecked.
+      void freeze(double t)
+      {
+        std::lock_guard<std::mutex> g(mu);
+        tau = t;
+        ready = true;
+      }
+
       /// Record one decision. The path is passed in rather than stored because
       /// this struct is a file-scope singleton declared before Options is in
       /// scope here; the file is opened on first use and closed at exit.
@@ -1437,6 +1448,8 @@ namespace
     : gate_null_(std::make_shared<GateNull>()), library_(&library), options_(options)
   {
   }
+
+  void PeakGroupScorer::Session::freezeGate(double tau) { gate_null_->freeze(tau); }
 
   void PeakGroupScorer::Session::add(const PrecursorChromatogram& chromatogram_in)
   {
@@ -3521,6 +3534,213 @@ namespace
       out.push_back(r);
     }
     return out;
+  }
+
+  // ------------------------------------------------ Gate C hash calibration (D6)
+
+  std::uint64_t PeakGroupScorer::gateIdentityHash(std::string_view modified_sequence, int charge,
+                                                  bool decoy, std::uint64_t seed)
+  {
+    std::uint64_t h = 0xcbf29ce484222325ULL;               // FNV-1a 64 offset basis
+    const auto mix = [&h](unsigned char b) { h ^= b; h *= 0x100000001b3ULL; };
+    for (int k = 0; k < 8; ++k) { mix(static_cast<unsigned char>((seed >> (8 * k)) & 0xffU)); }
+    for (const char c : modified_sequence) { mix(static_cast<unsigned char>(c)); }
+    mix(0);
+    mix(static_cast<unsigned char>(charge & 0xff));
+    mix(decoy ? 1 : 0);
+    // splitmix64 finaliser: FNV's low bits are weak for short keys, and the
+    // selection orders by the whole word.
+    h ^= h >> 30; h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 27; h *= 0x94d049bb133111ebULL;
+    h ^= h >> 31;
+    return h;
+  }
+
+  bool PeakGroupScorer::gateUsesHashCalibration(const Options& options)
+  {
+    return options.gate_alpha > 0.0 && options.gate_mode != "prominence" &&
+           options.gate_calibration == "hash";
+  }
+
+  std::vector<std::uint32_t> PeakGroupScorer::selectGateCalibrationDecoys(
+    const Library& library, const std::vector<std::uint32_t>& plan_points,
+    const Options& options, std::size_t* eligible_out)
+  {
+    const auto& p = library.precursors();
+    const std::size_t n = std::min(plan_points.size(), library.precursorCount());
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> keyed;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      // Exactly the decoys Session::add brings to the gate in this pass:
+      // transitions present, pointCount(0) >= 3, not bypassed by the oracle.
+      if (p.decoy[i] == 0 || p.transition_count[i] == 0 || plan_points[i] < 3) { continue; }
+      if (options.oracle_rt != nullptr && std::isfinite(options.oracle_rt[i])) { continue; }
+      keyed.emplace_back(gateIdentityHash(library.strings().get(p.modified_sequence[i]),
+                                          static_cast<int>(p.charge[i]), true,
+                                          options.gate_calibration_seed),
+                         static_cast<std::uint32_t>(i));
+    }
+    if (eligible_out != nullptr) { *eligible_out = keyed.size(); }
+    const std::size_t want = options.gate_calibration_n;
+    if (want == 0 || keyed.size() < want) { return {}; }
+    // (hash, index) is a strict total order: the selection is a set, whatever
+    // order the library or the extraction presents precursors in.
+    std::nth_element(keyed.begin(), keyed.begin() + std::ptrdiff_t(want - 1), keyed.end());
+    std::vector<std::uint32_t> out;
+    out.reserve(want);
+    const auto pivot = keyed[want - 1];
+    for (const auto& k : keyed) { if (k <= pivot) { out.push_back(k.second); } }
+    std::sort(out.begin(), out.end());
+    return out;
+  }
+
+  namespace
+  {
+    /// Measures Gate C's statistic for the selected decoys, exactly as
+    /// Session::add computes it (same points, same smoothing, same RT centre),
+    /// and nothing else. Every other precursor arrives empty and is ignored.
+    class GateCalibrationSink final : public ChromatogramSink
+    {
+    public:
+      GateCalibrationSink(const PeakGroupScorer::Options& options, const std::vector<char>& selected)
+        : options_(options), selected_(selected) {}
+
+      void accept(const PrecursorChromatogram& c) override
+      {
+        const std::size_t i = c.precursor;
+        if (i >= selected_.size() || selected_[i] == 0) { return; }
+        if (c.transition_count == 0) { return; }
+        const std::size_t points = c.pointCount(0);
+        if (points < 3) { return; }
+        if (options_.oracle_rt != nullptr && std::isfinite(options_.oracle_rt[i])) { return; }
+        std::size_t contributing = 0;
+        const double m = coelutionEvidence(c, points, options_.gate_smooth_half, &contributing);
+        const double rt = c.rt != nullptr
+          ? 0.5 * (double(c.rt[0]) + double(c.rt[points - 1]))
+          : std::numeric_limits<double>::quiet_NaN();
+        stats.push_back(m);
+        rts.push_back(rt);
+      }
+
+      std::vector<double> stats;
+      std::vector<double> rts;
+
+    private:
+      const PeakGroupScorer::Options& options_;
+      const std::vector<char>& selected_;
+    };
+  }
+
+  PeakGroupScorer::GateCalibrationReport PeakGroupScorer::calibrateGateByHash(
+    const Library& library, SpectrumSource& source,
+    const ChromatogramExtractor::Options& extract, Sink& sink)
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    const Options& so = sink.options();
+    GateCalibrationReport r;
+    r.requested = so.gate_calibration_n;
+
+    // 1. The pass's plan: which precursors it assigns, over how many cycles.
+    std::vector<std::uint32_t> plan;
+    {
+      ChromatogramExtractor::Options po = extract;
+      po.plan_points = &plan;
+      po.plan_only = true;
+      po.terminal_reason = nullptr;
+      po.progress_every = 0;
+      NullChromatogramSink none;
+      ChromatogramExtractor::extract(library, source, po, none, nullptr);
+    }
+
+    // 2. The sample, chosen before a peak is read.
+    const std::vector<std::uint32_t> chosen =
+      selectGateCalibrationDecoys(library, plan, so, &r.eligible);
+    r.selected = chosen.size();
+    if (chosen.empty())
+    {
+      // Insufficient sample: as in arrival mode, a null that cannot reach
+      // gate_calibration_n never arms and the gate admits everything.
+      r.armed = false;
+      r.tau = -std::numeric_limits<double>::infinity();
+      sink.freezeGate(r.tau);
+      r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      return r;
+    }
+
+    // 3. Extract ONLY them, with the production pass's options otherwise.
+    std::vector<char> keep(library.precursorCount(), 0);
+    for (const std::uint32_t i : chosen) { keep[i] = 1; }
+    if (extract.precursor_keep != nullptr)
+    {
+      // The plan already honoured the caller's mask; AND it in anyway so the
+      // pre-pass can never extract something the pass excludes.
+      for (const std::uint32_t i : chosen)
+      { if (extract.precursor_keep[i] == 0) { keep[i] = 0; } }
+    }
+    GateCalibrationSink cal(so, keep);
+    ChromatogramExtractor::Stats cst;
+    {
+      ChromatogramExtractor::Options co = extract;
+      co.precursor_keep = keep.data();
+      co.terminal_reason = nullptr;
+      co.plan_points = nullptr;
+      co.plan_only = false;
+      ChromatogramExtractor::extract(library, source, co, cal, &cst);
+    }
+    r.chunks = cst.chunks;
+    r.spectra_decoded = cst.spectra_decoded;
+    r.measured = cal.stats.size();
+    if (r.measured != r.selected)
+    {
+      throw std::runtime_error(
+        "Gate C hash calibration: " + std::to_string(r.selected) +
+        " decoys were selected from the pass plan but " + std::to_string(r.measured) +
+        " reached the gate statistic -- the plan and the hand-over disagree");
+    }
+
+    // 4. tau exactly as arrival mode computes it from its sample.
+    std::vector<double> v = cal.stats;
+    std::sort(v.begin(), v.end());
+    const std::size_t k = std::min(v.size() - 1,
+      std::size_t((1.0 - so.gate_alpha) * double(v.size())));
+    r.tau = v[k];
+    r.zeros = std::size_t(std::count(v.begin(), v.end(), 0.0));
+    std::vector<double> rt;
+    for (const double x : cal.rts) { if (std::isfinite(x)) { rt.push_back(x); } }
+    std::sort(rt.begin(), rt.end());
+    const double qs[7] = {0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0};
+    for (int j = 0; j < 7; ++j)
+    {
+      r.rt_q[j] = rt.empty() ? std::numeric_limits<double>::quiet_NaN()
+                             : rt[std::min(rt.size() - 1, std::size_t(qs[j] * double(rt.size() - 1) + 0.5))];
+    }
+    r.armed = true;
+    sink.freezeGate(r.tau);
+    r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    return r;
+  }
+
+  std::string PeakGroupScorer::GateCalibrationReport::describe() const
+  {
+    char b[768];
+    if (!armed)
+    {
+      std::snprintf(b, sizeof b,
+                    "gate C NOT armed (hash): %zu eligible decoys < -gate_calibration_n %zu; "
+                    "the gate admits every precursor this pass (arrival mode would not arm "
+                    "either), %.1f s",
+                    eligible, requested, seconds);
+      return b;
+    }
+    std::snprintf(b, sizeof b,
+                  "gate C null armed (hash): n=%zu of %zu eligible decoys, tau=%.6g, "
+                  "zeros=%.4f (%zu), calibration RT p0/p5/p25/p50/p75/p95/p100 "
+                  "%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f s, pre-pass %zu chunk(s), "
+                  "%zu spectra decoded, %.1f s; the frozen tau gates every precursor",
+                  measured, eligible, tau, measured ? double(zeros) / double(measured) : 0.0,
+                  zeros, rt_q[0], rt_q[1], rt_q[2], rt_q[3], rt_q[4], rt_q[5], rt_q[6],
+                  chunks, spectra_decoded, seconds);
+    return b;
   }
 
 } // namespace ODIA

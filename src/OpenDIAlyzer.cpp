@@ -781,6 +781,26 @@ protected:
                           "pass (n, tau, share of zero statistics, first/last calibration RT) whatever "
                           "this is set to; on a library with fewer than -gate_calibration_n decoys the "
                           "null never arms and the line is absent.", false, true);
+    registerStringOption_("gate_calibration", "<mode>", "arrival",
+                          "ROUND1_PLAN D6: which decoys calibrate Gate C (-gate_mode quantile).\n\n"
+                          "'arrival' (default, unchanged): the first -gate_calibration_n decoys to "
+                          "reach the gate, with every precursor before them admitted unconditionally "
+                          "-- sample and warm-up both depend on hand-over order.\n\n"
+                          "'hash': before each scoring extraction the pass is PLANNED, the "
+                          "-gate_calibration_n eligible decoys (>= 3 points in this pass, not oracled) "
+                          "with the lowest fixed-seed hash of (modified sequence, charge, decoy) -- "
+                          "ties by library index -- are extracted in a calibration pre-pass, tau is "
+                          "frozen from their statistics (same quantile rule), and the frozen gate then "
+                          "applies to EVERY precursor, former warm-up arrivals included. Output does "
+                          "not depend on chunking or -decode_block by construction. Fewer eligible "
+                          "decoys than -gate_calibration_n: the gate does not arm and admits "
+                          "everything (arrival mode does not arm then either). Costs one extra "
+                          "extraction over the calibration decoys per pass. Not combinable with "
+                          "-gate_calibration_rt_min.", false, true);
+    setValidStrings_("gate_calibration", {"arrival", "hash"});
+    registerIntOption_("gate_calibration_seed", "<seed>", 0x0D1A5EED,
+                       "Seed of the identity hash for -gate_calibration hash. A different seed "
+                       "draws a different, equally order-free calibration sample.", false, true);
     registerDoubleOption_("empty_trace_sigma", "<sigma>", 3.0,
                           "How far above its own local noise a transition must rise to count as "
                           "carrying signal. The trace is already scaled to sigma by "
@@ -2042,6 +2062,23 @@ protected:
                     "library is being spread evenly over the run, which will "
                     "extract from approximately the wrong retention times. "
                     "Treat the output as a smoke test, not a result.");
+    }
+
+    // D6: a hash-calibrated Gate C is calibrated HERE, with the production
+    // pass's final options (mass and mobility calibration applied, same RT
+    // window), before a single precursor reaches the scorer.
+    if (pgs != nullptr && ODIA::PeakGroupScorer::gateUsesHashCalibration(pgs->options()))
+    {
+      try
+      {
+        const auto rep = ODIA::PeakGroupScorer::calibrateGateByHash(library, *source, options, *pgs);
+        writeLogInfo_(rep.describe());
+      }
+      catch (const std::exception& e)
+      {
+        writeLogError_(std::string("Gate C hash calibration failed: ") + e.what());
+        return INTERNAL_ERROR;
+      }
     }
 
     ODIA::ChromatogramExtractor::Stats stats;
@@ -4571,6 +4608,16 @@ protected:
     options.gate_calibration_n =
       static_cast<std::size_t>(std::max(100, getIntOption_("gate_calibration_n")));
     options.gate_calibration_rt_min = getDoubleOption_("gate_calibration_rt_min");   // v1.17, both passes
+    options.gate_calibration = getStringOption_("gate_calibration");                // D6
+    options.gate_calibration_seed =
+      static_cast<std::uint64_t>(static_cast<std::uint32_t>(getIntOption_("gate_calibration_seed")));
+    if (options.gate_calibration == "hash" && options.gate_calibration_rt_min > 0.0)
+    {
+      throw OpenMS::Exception::InvalidValue(__FILE__, __LINE__, OPENMS_PRETTY_FUNCTION,
+        "-gate_calibration hash selects its sample by identity hash; -gate_calibration_rt_min "
+        "is an arrival-mode exclusion and cannot be combined with it",
+        std::to_string(options.gate_calibration_rt_min));
+    }
     options.empty_trace_min_transitions =
       static_cast<std::size_t>(std::max(1, getIntOption_("empty_trace_min_transitions")));
     options.threads = static_cast<unsigned>(std::max(1, getIntOption_("threads")));

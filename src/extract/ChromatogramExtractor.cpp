@@ -666,6 +666,28 @@ namespace ODIA
     const std::size_t n_slots = assignments.size();
     st.precursors_extracted = n_slots;
 
+    // D6 plan output: what pointCount(0) will be at hand-over, per precursor,
+    // computed by the same assignment that drives the extraction (same test on
+    // transition 0's product m/z as the emit loop's count_scratch).
+    if (options.plan_points != nullptr)
+    {
+      auto& pp = *options.plan_points;
+      pp.assign(library.precursorCount(), 0);
+      for (const Assignment& a : assignments)
+      {
+        if (p.transition_count[a.precursor] == 0) { continue; }
+        if (t.product_mz[p.transition_begin[a.precursor]] == MZ_INVALID) { continue; }
+        pp[a.precursor] = a.hi - a.lo;
+      }
+      if (options.plan_only)
+      {
+        st.precursors = n_prec;
+        st.transitions = n_trans;
+        st.points = total_points;
+        return;
+      }
+    }
+
     // Four bytes a transition, and only for a sink that lays out one flat CSR.
     // A streaming sink never sees it, which is the difference between a term
     // proportional to the library and none.

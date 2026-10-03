@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -835,6 +836,25 @@ namespace ODIA
       /// those windows are empty, the statistic is 0 there, tau = 0 and nothing is rejected.
       double gate_calibration_rt_min = 0.0;
 
+      /// ROUND1_PLAN D6: WHICH decoys calibrate Gate C (quantile mode only).
+      ///
+      /// "arrival" (default, byte-identical): the first `gate_calibration_n`
+      /// decoys to reach the gate, everything before admitted unconditionally
+      /// -- the sample and the warm-up both depend on hand-over order.
+      ///
+      /// "hash": the `gate_calibration_n` ELIGIBLE decoys (this pass's plan
+      /// gives them >= 3 points; not oracled) with the lowest fixed-seed hash of
+      /// their stable identity (modified sequence, charge, decoy flag; ties by
+      /// library index) are selected BEFORE extraction, extracted in a
+      /// calibration pre-pass, tau is frozen from their statistics, and the
+      /// frozen gate then applies to EVERY production candidate -- no warm-up.
+      /// Insufficient sample (fewer eligible decoys than gate_calibration_n):
+      /// the gate does not arm and admits everything, exactly the condition
+      /// under which arrival mode never arms. See `calibrateGateByHash`.
+      std::string gate_calibration = "arrival";
+      /// Seed of the identity hash for gate_calibration = "hash".
+      std::uint64_t gate_calibration_seed = 0x0D1A5EEDULL;
+
       /// Half-width of the smoothing window, in cycles. A real peak spans
       /// several; a single bright cycle in one transition must not carry it.
       std::size_t gate_smooth_half = 2;
@@ -1319,6 +1339,15 @@ namespace ODIA
       /// Sub-scores decided after extraction; see `Sink::disableSubScores`.
       void disableSubScores(std::vector<int> indices)
       { options_.disabled_sub_scores = std::move(indices); }
+      /// D6: install a Gate C threshold decided BEFORE this Session sees any
+      /// precursor (gate_calibration = "hash"). From then on every gated
+      /// precursor is compared with @p tau -- nothing is admitted while a null
+      /// is built, because none is built. -infinity admits everything (the
+      /// insufficient-sample outcome). Must be called before the first add().
+      void freezeGate(double tau);
+      /// The options this Session scores with.
+      const Options& options() const { return options_; }
+
       void setAppliedMassCorrection(double offset, double log_slope,
                                     double slope_per_1000, double ref_mz)
       {
@@ -1370,6 +1399,9 @@ namespace ODIA
       void ms1Available(const Ms1Traces* m) override { session_.setMs1Traces(m); }
       void accept(const PrecursorChromatogram& trace) override { session_.add(trace); }
       Result finish() { return session_.finish(); }
+      /// See Session::freezeGate.
+      void freezeGate(double tau) { session_.freezeGate(tau); }
+      const Options& options() const { return session_.options(); }
 
       /// Tell the harvest what mass correction the extractor is applying.
       ///
@@ -1399,6 +1431,63 @@ namespace ODIA
 
     static Result score(const Library& library, const Chromatograms& chromatograms,
                         const Options& options);
+
+    // ------------------------------------------------ Gate C hash calibration
+    // ROUND1_PLAN D6. In arrival mode tau is the quantile of the first
+    // gate_calibration_n decoys to reach the gate and everything before them is
+    // admitted unconditionally, so both the sample and the warm-up depend on
+    // hand-over order (on the PXD fixture's pass 2 all 20,000 calibration decoys
+    // sat at one RT, 845.1 s). Hash mode removes the order from both: the sample
+    // is chosen from the pass's PLAN by a fixed-seed hash of stable identities,
+    // measured in a pre-pass, and the frozen tau gates every precursor.
+
+    /// What a hash calibration did, for the run log.
+    struct GateCalibrationReport
+    {
+      bool armed = false;            ///< tau frozen from a full sample
+      std::size_t requested = 0;     ///< gate_calibration_n
+      std::size_t eligible = 0;      ///< decoys this pass will gate (plan: >= 3 points, not oracled)
+      std::size_t selected = 0;      ///< lowest-hash eligible decoys extracted in the pre-pass
+      std::size_t measured = 0;      ///< of those, statistics measured (must equal selected)
+      double tau = std::numeric_limits<double>::quiet_NaN();
+      std::size_t zeros = 0;         ///< sample statistics exactly 0
+      /// RT (window midpoint, s) of the sample at p0, p5, p25, p50, p75, p95, p100.
+      double rt_q[7] = {0, 0, 0, 0, 0, 0, 0};
+      std::size_t chunks = 0;        ///< pre-pass extraction chunks
+      std::size_t spectra_decoded = 0;
+      double seconds = 0.0;          ///< plan + pre-pass wall
+      std::string describe() const;
+    };
+
+    /// Stable, platform-independent 64-bit identity hash: FNV-1a over the
+    /// seed (8 bytes little-endian), the modified sequence, a 0 byte, the
+    /// charge and the decoy flag, then a splitmix64 finaliser.
+    static std::uint64_t gateIdentityHash(std::string_view modified_sequence, int charge,
+                                          bool decoy, std::uint64_t seed);
+
+    /// The decoys a hash-calibrated Gate C is calibrated on: of the decoys
+    /// with plan_points[i] >= 3, transition_count > 0 and no oracle RT (the
+    /// exact set that reaches the gate in this pass), the `gate_calibration_n`
+    /// smallest by (hash, library index), returned in ascending library index.
+    /// Fewer eligible than requested returns EMPTY (the gate does not arm).
+    /// @p eligible receives the eligible count.
+    static std::vector<std::uint32_t> selectGateCalibrationDecoys(
+      const Library& library, const std::vector<std::uint32_t>& plan_points,
+      const Options& options, std::size_t* eligible = nullptr);
+
+    /// Whether @p options asks for a hash-calibrated Gate C (quantile mode,
+    /// gate_alpha > 0, gate_calibration = "hash").
+    static bool gateUsesHashCalibration(const Options& options);
+
+    /// Plan the pass with @p extract (plan_only), select the calibration
+    /// decoys, extract ONLY them with the same options, compute tau exactly as
+    /// arrival mode would from its sample (sorted, index floor((1-alpha) n)),
+    /// and freeze it into @p sink. Throws if a selected decoy did not reach the
+    /// gate (plan and hand-over disagree). Call immediately before the
+    /// production extract() with the same @p extract options.
+    static GateCalibrationReport calibrateGateByHash(
+      const Library& library, SpectrumSource& source,
+      const ChromatogramExtractor::Options& extract, Sink& sink);
 
     /// Refit over groups that already carry their sub-scores.
     ///
