@@ -339,10 +339,11 @@ protected:
                           "permutation seeded by -null_feature_seed (same marginals, NaN patterns, "
                           "within-row covariance and float32 values; only the link to the "
                           "candidate is broken), written as var_fvperm_<name>. Neither mode "
-                          "implies -out_fragvec. MISSINGNESS: the learner z-standardises and "
-                          "mean-imputes NaN (a NaN cell becomes the column mean), so it never "
-                          "reaches the GBT's missing bin; an offline histogram GBT on the export "
-                          "bins NaN separately. The R1_MEAS/R1_ABSENT indicators carry "
+                          "implies -out_fragvec. MISSINGNESS: natively the learner z-standardises "
+                          "and mean-imputes NaN (a NaN cell becomes the column mean), so it never "
+                          "reaches the GBT's missing bin; with -gbt_missing_bin (gbt/xgboost) it "
+                          "does, binned on its own, as an offline histogram GBT on the export "
+                          "bins NaN. The R1_MEAS/R1_ABSENT indicators carry "
                           "missingness in-engine. MEMORY: 312 B per candidate retained through "
                           "the final pass plus 16 B per kept column per candidate during the fit "
                           "(up to ~1.5 KB per candidate at 78 kept). Acceptance is pre-registered "
@@ -1681,6 +1682,7 @@ protected:
     // pass 1 and the RT refinement keep the native scorer, so the calibration and therefore every
     // feature are those of the flag-off run, and an engine arm with one of these equals an offline
     // replay (odia_scorer_replay) of the flag-off run's -out_scorer_input with the same flag.
+    // That holds with -fragvec_scores off only: -out_scorer_input refuses the appended block.
     registerFlag_("classifier_class_balance",
                   "gbt/xgboost: class-balanced objective -- positives and negatives carry EQUAL total "
                   "weight (mean weight 1, so -gbt_min_child_weight keeps its meaning), intercept 0. "
@@ -1725,7 +1727,9 @@ protected:
                         "DScore, QValue, PEP and every var_* sub-score, one row per scored peak group in "
                         "-out's row order, all values at 17 significant digits so they read back "
                         "bit-exactly. The input of odia_scorer_replay. OUTPUT-ONLY: -out is byte-identical "
-                        "with this on. (v1.18)", false, true);
+                        "with this on. Not combinable with -fragvec_scores final|permuted (refused): this "
+                        "file carries the shipped var_* columns only, never the appended block. (v1.18)",
+                        false, true);
     setValidFormats_("out_scorer_input", {"tsv"}, false);
     registerFlag_("fold_pool_rank",
                   "Pool the classifier's cross-validation folds by WITHIN-FOLD RANK over all groups "
@@ -5245,6 +5249,20 @@ protected:
 
   ExitCodes main_(int, const char**) override
   {
+    // -out_scorer_input writes the shipped var_* columns only, while -fragvec_scores fits the
+    // final classifier on those plus the appended block. Together the export would carry
+    // DScore/QValue/PEP from a fit on columns it does not hold, and odia_scorer_replay's guard
+    // against a foreign var_* column cannot see columns that were never written. Refused here,
+    // before any input is opened (r1/integration review).
+    if (const std::string fvs = getStringOption_("fragvec_scores");
+        fvs != "off" && !getStringOption_("out_scorer_input").empty())
+    {
+      writeLogError_("-out_scorer_input cannot be combined with -fragvec_scores " + fvs +
+                     ": it writes the shipped var_* columns only, not the appended block the "
+                     "final classifier is fitted on, so it would not be that classifier's input.");
+      return ILLEGAL_PARAMETERS;
+    }
+
     const std::string tr = getStringOption_("tr");
     const std::string fasta = getStringOption_("fasta");
     const std::string out_lib = getStringOption_("out_lib");

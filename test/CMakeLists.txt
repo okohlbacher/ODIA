@@ -852,5 +852,14 @@ add_test(NAME fragvec_tsv_joins_to_out
 # label-blind permutation.
 add_test(NAME fragvec_scores_block
          COMMAND odia_tsv_writers fragvec_scores "${CMAKE_CURRENT_BINARY_DIR}")
+# -out_scorer_input writes the shipped var_* columns only, so with the appended
+# block it would not be the classifier's input. The pair is refused during
+# parameter validation. No -tr or -in is given: without the refusal the tool
+# stops on "Give exactly one of -tr ..." instead and the expression misses.
+add_test(NAME fragvec_scores_refuses_scorer_input
+         COMMAND OpenDIAlyzer -fragvec_scores final
+                 -out_scorer_input "${CMAKE_CURRENT_BINARY_DIR}/fragvec_refused.scorer.tsv")
+set_tests_properties(fragvec_scores_refuses_scorer_input PROPERTIES
+  PASS_REGULAR_EXPRESSION "-out_scorer_input cannot be combined with -fragvec_scores final")
 add_test(NAME tsv_number_formatting_matches_ostream
          COMMAND odia_tsv_writers formatting)

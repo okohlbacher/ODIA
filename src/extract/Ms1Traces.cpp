@@ -248,8 +248,8 @@ namespace ODIA
     // will not transport to the full run.
     //
     // DECODE STAYS HERE. The mzPeak reader holds one Index and one Spectra
-    // handle (MzPeakSource.cpp:454-455) and is not thread-safe; only the match
-    // over a decoded block runs on several threads.
+    // handle (MzPeakSource's members index_ and spectra_) and is not
+    // thread-safe; only the match over a decoded block runs on several threads.
     //
     // THE UNIT IS A CONTIGUOUS RUN OF >= MIN_RUN FRAMES, not one frame. A
     // precursor's row is 1,343 floats = 5,372 B on IH1, not a multiple of a
