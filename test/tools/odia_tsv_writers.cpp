@@ -40,6 +40,7 @@
 #include <odia/PeakGroupScorer.h>
 #include <odia/TextWriter.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -563,6 +564,161 @@ namespace
     catch (const std::exception&) { threw = true; }
     check(threw, "a fragvec that is not 78 floats per group is refused, not written");
   }
+
+  // --------------------------------------------------------- -fragvec_scores
+
+  /// The block `-fragvec_scores` appends to the classifier is defined by WHICH
+  /// columns it takes, by the guard that is the only filter on them, by the
+  /// permutation its control reads through, and by the one function both the
+  /// fit and the -out writer read. None of that is arithmetic, so none of it
+  /// is covered by gate A4; all of it is checked here against things other
+  /// than the code that produces it.
+  void caseFragvecScores(const std::string& /*dir*/)
+  {
+    using PGS = ODIA::PeakGroupScorer;
+    using AB = PGS::AppendedBlock;
+    const auto sealed = sealedFragvecNames();
+
+    // 1. The schema: the whole sealed contract, 78 columns in contract order,
+    //    against the independent transcription, not against fragvecNames().
+    const auto& fv = PGS::appendedNames(AB::Fragvec);
+    const auto& pm = PGS::appendedNames(AB::Permuted);
+    bool names_ok = sealed.size() == 78 && fv.size() == sealed.size() && pm.size() == sealed.size();
+    for (std::size_t k = 0; names_ok && k < sealed.size(); ++k)
+    {
+      names_ok = fv[k] == "var_fv_" + sealed[k] && pm[k] == "var_fvperm_" + sealed[k];
+    }
+    check(names_ok, "var_fv_* / var_fvperm_* are the 78 sealed contract names, in order");
+    check(PGS::appendedNames(AB::None).empty(), "off appends nothing");
+
+    // 1b. The guard: the only filter. Built on rows whose columns are each one
+    //     of five shapes, chosen per column by index, so every shape lands on
+    //     indicator AND value columns alike -- and the MEAS/ABSENT families get
+    //     no special treatment either way.
+    {
+      const std::size_t n = 6;
+      std::vector<float> block(n * PGS::N_FRAGVEC, 0.0f);
+      std::vector<std::size_t> want_kept;
+      for (std::size_t j = 0; j < PGS::N_FRAGVEC; ++j)
+      {
+        const int shape = static_cast<int>(j % 5);
+        for (std::size_t r = 0; r < n; ++r)
+        {
+          float v = 0.0f;
+          switch (shape)
+          {
+            case 0: v = 1.0f; break;                                     // constant
+            case 1: v = NA; break;                                       // all NaN
+            case 2: v = (r == 2) ? 0.5f : NA; break;                     // one finite value
+            case 3: v = (r % 2) ? 1.0f : 0.0f; break;                    // 0/1 indicator
+            case 4: v = (r == 0) ? NA : static_cast<float>(r) * 0.25f; break;  // NaN + varying
+          }
+          block[r * PGS::N_FRAGVEC + j] = v;
+        }
+        if (shape == 3 || shape == 4) { want_kept.push_back(j); }
+      }
+      const auto kept = PGS::fragvecKeptColumns(block, n);
+      check(kept == want_kept, "the guard keeps exactly the columns with two different finite values (" +
+                               std::to_string(kept.size()) + " of 78)");
+      // Constant 1 on R1_MEAS_1 (every precursor has a rank-1 fragment) is
+      // dropped; a varying R1_MEAS_6 is kept -- by value, not by name.
+      std::vector<float> meas(n * PGS::N_FRAGVEC, 0.25f);
+      std::size_t i_meas1 = 0, i_meas6 = 0;
+      for (std::size_t j = 0; j < sealed.size(); ++j)
+      {
+        if (sealed[j] == "R1_MEAS_1") { i_meas1 = j; }
+        if (sealed[j] == "R1_MEAS_6") { i_meas6 = j; }
+      }
+      for (std::size_t r = 0; r < n; ++r)
+      {
+        meas[r * PGS::N_FRAGVEC + i_meas1] = 1.0f;
+        meas[r * PGS::N_FRAGVEC + i_meas6] = (r < 3) ? 1.0f : 0.0f;
+      }
+      const auto kept2 = PGS::fragvecKeptColumns(meas, n);
+      check(kept2.size() == 1 && kept2[0] == i_meas6,
+            "a constant R1_MEAS_1 is dropped and a varying R1_MEAS_6 kept, by value");
+      // Row order cannot change the answer (so `permuted` keeps what `final` keeps).
+      std::vector<float> rev(block.size());
+      for (std::size_t r = 0; r < n; ++r)
+      {
+        std::copy_n(block.begin() + static_cast<std::ptrdiff_t>((n - 1 - r) * PGS::N_FRAGVEC),
+                    PGS::N_FRAGVEC, rev.begin() + static_cast<std::ptrdiff_t>(r * PGS::N_FRAGVEC));
+      }
+      check(PGS::fragvecKeptColumns(rev, n) == kept, "the guard is invariant to row order");
+      bool threw = false;
+      try { (void)PGS::fragvecKeptColumns(block, n + 1); }
+      catch (const std::exception&) { threw = true; }
+      check(threw, "the guard refuses an array that is not 78 floats per row");
+    }
+
+    // 2. Fragvec: the value is the exported float32 widened, cell for cell,
+    //    NaN included.
+    PGS::Result r;
+    const std::vector<std::uint32_t> prec = {3, 3, 1, 4, 0, 2, 2};
+    for (std::size_t i = 0; i < prec.size(); ++i)
+    {
+      PGS::PeakGroup g;
+      g.precursor = prec[i];
+      g.apex_rt = 100.0f + 1.385f * static_cast<float>(i);
+      g.decoy = (i % 2) == 1;
+      r.groups.push_back(std::move(g));
+    }
+    for (std::size_t i = 0; i < r.groups.size() * PGS::N_FRAGVEC; ++i)
+    {
+      r.fragvec.push_back(i % 11 == 0 ? NA
+                                      : 1.0f / static_cast<float>(i + 3) + 0.1f * static_cast<float>(i % 7));
+    }
+    r.appended = AB::Fragvec;
+    const auto same = [](float src, double got) {
+      return std::isnan(src) ? std::isnan(got) : got == static_cast<double>(src);
+    };
+    long long bad = 0;
+    for (std::size_t row = 0; row < r.groups.size(); ++row)
+    {
+      for (std::size_t j = 0; j < PGS::N_FRAGVEC; ++j)
+      {
+        if (!same(r.fragvec[row * PGS::N_FRAGVEC + j], PGS::appendedRaw(r, row, j))) { ++bad; }
+      }
+    }
+    check(bad == 0, "every var_fv_* cell is its own row's -out_fragvec cell widened to double");
+
+    // 3. The permutation: a bijection, a function of (n, seed) only, moved by
+    //    the seed, and not the identity at a realistic size.
+    const auto p0 = PGS::fragvecPermutation(100000, 0);
+    std::vector<std::uint32_t> sorted = p0;
+    std::sort(sorted.begin(), sorted.end());
+    bool bijection = sorted.size() == 100000;
+    for (std::size_t k = 0; bijection && k < sorted.size(); ++k) { bijection = sorted[k] == k; }
+    check(bijection, "fragvecPermutation(n, seed) is a permutation of 0..n-1");
+    check(PGS::fragvecPermutation(100000, 0) == p0, "the permutation is deterministic");
+    check(PGS::fragvecPermutation(100000, 7) != p0, "-null_feature_seed moves the permutation");
+    std::size_t fixed_points = 0;
+    for (std::size_t k = 0; k < p0.size(); ++k) { fixed_points += p0[k] == k; }
+    check(fixed_points < 20, "the permutation is not near the identity (" +
+                             std::to_string(fixed_points) + " fixed points of 100,000)");
+
+    // 4. Permuted reads WHOLE ROWS through it: every cell of a row comes from
+    //    the same source row (so NaN patterns and within-row covariance travel
+    //    together), and the label plays no part in which row that is.
+    PGS::Result q = r;
+    q.appended = AB::Permuted;
+    q.appended_perm = PGS::fragvecPermutation(q.groups.size(), 3);
+    long long bad_perm = 0;
+    for (std::size_t row = 0; row < q.groups.size(); ++row)
+    {
+      const std::size_t src = q.appended_perm[row];
+      for (std::size_t j = 0; j < PGS::N_FRAGVEC; ++j)
+      {
+        if (!same(q.fragvec[src * PGS::N_FRAGVEC + j], PGS::appendedRaw(q, row, j))) { ++bad_perm; }
+      }
+    }
+    check(bad_perm == 0, "every var_fvperm_* row is one whole source row of the export");
+    PGS::Result flipped = q;
+    for (auto& g : flipped.groups) { g.decoy = !g.decoy; }
+    flipped.appended_perm = PGS::fragvecPermutation(flipped.groups.size(), 3);
+    check(flipped.appended_perm == q.appended_perm,
+          "flipping every Decoy flag leaves the permutation unchanged");
+  }
 }
 
 int main(int argc, char** argv)
@@ -576,10 +732,12 @@ int main(int argc, char** argv)
     if (which == "files") { caseFiles(dir); }
     else if (which == "formatting") { caseFormatting(); }
     else if (which == "fragvec") { caseFragvec(dir); }
+    else if (which == "fragvec_scores") { caseFragvecScores(dir); }
     else
     {
       std::fprintf(stderr,
-                   "usage: odia_tsv_writers <files|formatting|fragvec> [directory]\n");
+                   "usage: odia_tsv_writers <files|formatting|fragvec|fragvec_scores> "
+                   "[directory]\n");
       return 2;
     }
   }

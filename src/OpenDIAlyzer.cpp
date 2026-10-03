@@ -303,7 +303,10 @@ protected:
                         "OUTPUT-ONLY: the scorer already computes every input and "
                         "discards it, nothing here is read back into a score, a "
                         "sub-score, a calibration or a candidate decision, and -out "
-                        "must come out byte-identical with this on. A SEPARATE FILE "
+                        "must come out byte-identical with this on (-fragvec_scores "
+                        "is the one path that feeds these columns to the "
+                        "classifier, and it neither needs nor implies this flag; "
+                        "this flag alone never scores them). A SEPARATE FILE "
                         "rather than extra columns on -out, which is what makes that "
                         "assertable. Filled by the FINAL scoring only; a run that "
                         "exits on pass 1's scores writes nothing here. The ranks are "
@@ -317,6 +320,34 @@ protected:
                         "at the permutation, plus ~10.9 GB of file at 497 B/row.",
                         false);
     setValidFormats_("out_fragvec", {"tsv"}, false);
+    registerStringOption_("fragvec_scores", "<mode>", "off",
+                          "EXPERIMENT (doc/83 F11 stage 1). Append the rung-(i) per-fragment block "
+                          "(the 78 -out_fragvec columns, contract order, wf_v33_fragvec_contract.md "
+                          "s.5.1) to the classifier's matrix on the FINAL scoring only; pass 1 and "
+                          "the RT refinement are untouched, so calibration is byte-identical. "
+                          "'off' (default): the shipped scorer, -out byte-identical. 'final': the "
+                          "block is computed for every candidate, targets and decoys alike, kept "
+                          "as the float32 -out_fragvec holds and widened unchanged, and run "
+                          "through the shipped constant-column guard (no two different finite "
+                          "values -> left out of the matrix); the guard is the ONLY filter, the "
+                          "MEAS/ABSENT indicator columns included, and the log names every kept "
+                          "and dropped column. All 78 are written to -out after the shipped var_* "
+                          "as var_fv_<name>, at 9 significant digits, each cell equal to its "
+                          "-out_fragvec cell. 'permuted': the dimension-matched control -- the "
+                          "SAME kept columns with whole rows reassigned across groups by one fixed "
+                          "permutation seeded by -null_feature_seed (same marginals, NaN patterns, "
+                          "within-row covariance and float32 values; only the link to the "
+                          "candidate is broken), written as var_fvperm_<name>. Neither mode "
+                          "implies -out_fragvec. MISSINGNESS: the learner z-standardises and "
+                          "mean-imputes NaN (a NaN cell becomes the column mean), so it never "
+                          "reaches the GBT's missing bin; an offline histogram GBT on the export "
+                          "bins NaN separately. The R1_MEAS/R1_ABSENT indicators carry "
+                          "missingness in-engine. MEMORY: 312 B per candidate retained through "
+                          "the final pass plus 16 B per kept column per candidate during the fit "
+                          "(up to ~1.5 KB per candidate at 78 kept). Acceptance is pre-registered "
+                          "with the arms (shared/pxd/run_fv1.sh), never judged on a fixture.",
+                          false, true);
+    setValidStrings_("fragvec_scores", {"off", "final", "permuted"});
     registerDoubleOption_("mass_accuracy_centre", "<ppm>", 1e9,
                           "v1.16 INSTRUMENT: freeze the centre of the fragment mass-accuracy sub-score at this "
                           "value (ppm) in the FINAL scoring instead of the per-fit median over all candidates, so a "
@@ -3447,7 +3478,17 @@ protected:
       scoring_rt_is_run_seconds_ = false;
       seed_im_window_ = getDoubleOption_("precursor_im_window")
                         * std::max(1.0, getDoubleOption_("im_seed_window_scale"));
+      // The seed is calibration: its best-by-DScore apexes fit the map pass 1
+      // extracts under, so it scores NATIVELY like pass 1 (see calibrating_).
+      // Before this, the seed ran with calibrating_ false, so -fragvec_scores
+      // appended its block here, -classifier_model_in froze and
+      // -classifier_model_out saved the seed's discriminant, and
+      // -fold_pool_rank / -transition_mask / -mass_accuracy_centre applied --
+      // each moved the seed map and with it everything downstream.
+      const bool saved_cal = calibrating_;
+      calibrating_ = true;
       const auto rc = extractAndScore_(seed_lib, run, 0.0, false, scored);
+      calibrating_ = saved_cal;
       seed_im_window_ = 0.0;
       scoring_rt_is_run_seconds_ = saved;
       if (rc != EXECUTION_OK) { return rc; }
@@ -4467,7 +4508,26 @@ protected:
     // -out_fragvec, FINAL scoring only. Pass 1 and the RT refinement compute
     // the identical columns and nothing would ever read them: the export is
     // keyed on -out's row order, and -out is written from the final result.
-    options.fragvec = !calibrating_ && !out_fragvec_.empty();
+    //
+    // -fragvec_scores, FINAL scoring only, for the same reason the frozen
+    // model is: pass 1 and the RT refinement pick calibration anchors by score,
+    // so a column appended there would move the RT axis and pass 2's
+    // extraction, and the comparison would no longer be one of evidence.
+    // Both modes read the array -out_fragvec fills, so they compute it too.
+    {
+      const std::string fvs = getStringOption_("fragvec_scores");
+      using AB = ODIA::PeakGroupScorer::AppendedBlock;
+      options.fragvec_scores = calibrating_       ? AB::None
+                             : fvs == "final"    ? AB::Fragvec
+                             : fvs == "permuted" ? AB::Permuted
+                                                 : AB::None;
+    }
+    // COMPUTE the block when either consumer wants it; WRITING it is
+    // -out_fragvec's alone (writeScoreResult_), so scoring it costs the
+    // retained array and nothing on disk.
+    options.fragvec = !calibrating_ &&
+      (!out_fragvec_.empty() ||
+       options.fragvec_scores != ODIA::PeakGroupScorer::AppendedBlock::None);
     {
       const double mc = getDoubleOption_("mass_accuracy_centre");
       options.mass_accuracy_centre = (calibrating_ || mc > 1e8) ? std::numeric_limits<double>::quiet_NaN() : mc;
@@ -4611,8 +4671,12 @@ protected:
   /// features. The RT anchors are chosen by RT consistency, not by score, so with
   /// pass 1 native the features are the native run's and a frozen re-scoring of a
   /// run with its own model reproduces its native output.
-  bool calibrating_ = false;   // true while pass 1 / the RT refinement run: their
-                                // scoring is native, never frozen, never saved
+  /// The -rt_seed cirt blind search is calibration too and sets it as well
+  /// (seedRtFromCirtSearch_), so final-scoring-only options (-fragvec_scores,
+  /// the frozen model and its save, -fold_pool_rank, -transition_mask,
+  /// -mass_accuracy_centre) cannot reach the seed map.
+  bool calibrating_ = false;   // true while the CiRT seed / pass 1 / the RT refinement
+                                // run: their scoring is native, never frozen, never saved
   std::size_t pass_offset_ = 0;
 
   /// Refit the retention-time map and the discriminant, alternately, until the
@@ -4897,6 +4961,17 @@ protected:
       }
       writeLogInfo_("wrote scored peak groups to " + out);
     }
+    // Same failure shape as -out_fragvec's below: a run that returns pass 1's
+    // scores was fitted without the block, and an arm that asked for it must
+    // not be read as if it had it.
+    if (getStringOption_("fragvec_scores") != "off" &&
+        scored.appended == ODIA::PeakGroupScorer::AppendedBlock::None)
+    {
+      writeLogWarn_("-fragvec_scores " + getStringOption_("fragvec_scores") +
+                    " was given but this result was fitted without the appended "
+                    "block -- the run returned pass 1's scores. -out carries no "
+                    "var_fv* columns and the scores are the shipped scorer's.");
+    }
     // -out_fragvec rides -out: same result object, same row order, written
     // straight after it so the two files cannot come from different results.
     if (!out_fragvec_.empty())
@@ -4942,11 +5017,16 @@ protected:
     out << "Precursor.Id\tDecoy\tRT\tLeft.RT\tRight.RT\tApex.Intensity"
            "\tDScore\tQValue\tPEP\tMass.Ppm\tMass.Ppm.N";
     for (const auto& n : ODIA::PeakGroupScorer::subScoreNames()) { out << '\t' << n; }
+    // -fragvec_scores: the appended block, after every shipped column so a
+    // reader that indexes var_* by position is undisturbed. Empty when off.
+    const auto& appended = ODIA::PeakGroupScorer::appendedNames(scored.appended);
+    for (const auto& n : appended) { out << '\t' << n; }
     out << '\n';
 
     const auto& p = library.precursors();
-    for (const auto& g : scored.groups)
+    for (std::size_t r = 0; r < scored.groups.size(); ++r)
     {
+      const auto& g = scored.groups[r];
       const auto seq = library.strings().get(p.modified_sequence[g.precursor]);
       out << seq << static_cast<int>(p.charge[g.precursor]) << '\t'
           << static_cast<int>(g.decoy) << '\t' << g.apex_rt << '\t' << g.left_rt
@@ -4954,6 +5034,22 @@ protected:
           << '\t' << g.qvalue << '\t' << g.pep
           << '\t' << g.mass_ppm << '\t' << g.mass_ppm_n;
       for (const auto v : g.sub_scores) { out << '\t' << v; }
+      if (!appended.empty())
+      {
+        // NINE significant digits here, not the stream's 6, for the reason
+        // -out_fragvec uses nine: the values are float32 widened to double and
+        // %.9g is the shortest precision that round-trips every float32, so a
+        // var_fv_* cell is TEXTUALLY the -out_fragvec cell it was read from
+        // and the "classifier input == export" check is an equality rather
+        // than a tolerance. All 78, including any the guard left out of the
+        // matrix (the log names those), so the published schema is the same
+        // on every run. Restored afterwards so the next row's shipped columns
+        // keep their 6.
+        const auto old_precision = out.precision(9);
+        for (std::size_t j = 0; j < appended.size(); ++j)
+        { out << '\t' << ODIA::PeakGroupScorer::appendedRaw(scored, r, j); }
+        out.precision(old_precision);
+      }
       out << '\n';
     }
     if (!out) { throw std::runtime_error("write failed for " + path); }
