@@ -595,6 +595,21 @@ add_test(NAME library_subset_outlives_parent COMMAND odia_library_subset)
 # This pins the direction AND that the column keeps its range.
 add_test(NAME pep_rises_as_score_falls COMMAND odia_pep_monotone)
 
+# v1.18 learner fixes and the offline scorer replay. The selftest scores a synthetic candidate
+# table with the engine's own parameter construction, writes it in -out_scorer_input format, runs
+# every new flag (each must train, identify and change the output) and pins the GBT defects the
+# flags fix. The replay must then reproduce that table's DScore BIT-FOR-BIT -- at the default
+# thread count and at 3 threads -- which is the replay-reproduces-the-engine gate in miniature.
+add_test(NAME replay_selftest
+         COMMAND odia_replay_selftest "${CMAKE_CURRENT_BINARY_DIR}/replay_table.tsv")
+set_tests_properties(replay_selftest PROPERTIES FIXTURES_SETUP replay_table)
+add_test(NAME replay_reproduces_engine
+         COMMAND odia_scorer_replay -in "${CMAKE_CURRENT_BINARY_DIR}/replay_table.tsv" -expect_identical)
+add_test(NAME replay_reproduces_engine_3_threads
+         COMMAND odia_scorer_replay -in "${CMAKE_CURRENT_BINARY_DIR}/replay_table.tsv" -threads 3 -expect_identical)
+set_tests_properties(replay_reproduces_engine replay_reproduces_engine_3_threads PROPERTIES
+                     FIXTURES_REQUIRED replay_table PASS_REGULAR_EXPRESSION "expect_identical: PASS")
+
 # The retention-time axis of a precursor that falls in more than one isolation
 # window. Data-free: two overlapping windows and four cycles each, built in the
 # test. Nothing in the suite constructed a Chromatograms before this.

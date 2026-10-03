@@ -2825,6 +2825,215 @@ namespace
   /// deleted somewhere.
   bool PeakGroupScorer::refitsChangeScores() { return false; }
 
+  /// The classifier parameters of a scoring pass, from its Options. Moved verbatim out of
+  /// PeakGroupScorer::fitAndAssign_ (v1.18) so the engine and the offline replay share one
+  /// construction; the statements and their order are unchanged.
+  Scoring::LDAParams classifierParamsFor(const PeakGroupScorer::Options& options)
+  {
+    using PGS = PeakGroupScorer;
+    constexpr auto XCORR_COELUTION = PGS::XCORR_COELUTION;
+    constexpr auto LIBRARY_RMSD = PGS::LIBRARY_RMSD;
+    constexpr auto IM_DELTA = PGS::IM_DELTA;
+    constexpr auto CORR_SUM = PGS::CORR_SUM;
+    constexpr auto N_SUB_SCORES = PGS::N_SUB_SCORES;
+    Scoring::LDAParams params;
+    // These three were registered, parsed, and stored in Options -- and never
+    // copied here, so `-use_pi0`, `-train_fdr` and `-train_fdr_initial` silently
+    // returned the defaults. `acd000f` added all four of this family and touched
+    // nothing in this file; only `-classifier_iterations` was later connected
+    // (`c4b1416`), and it was found because an arm came back byte-identical.
+    // The consequence is not merely a dead knob: triage arms on record claim to
+    // have tested `use_pi0` and a relaxed `train_fdr`, and did not.
+    //
+    // Wiring rather than deprecating, because the intent is unambiguous -- all
+    // three carry detailed help text describing behaviour they never had -- and
+    // because the defaults are unchanged, so only a caller who asks for
+    // something different sees any difference.
+    if (options.train_fdr_initial > 0.0) { params.train_fdr_initial = options.train_fdr_initial; }
+    if (options.train_fdr > 0.0) { params.train_fdr = options.train_fdr; }
+    params.use_pi0 = options.use_pi0;
+    // The classifier's stability knobs, exposed because it turned out to need
+    // them. Adding a column of PURE NOISE moves identifications by up to 11.9%
+    // at the operating point, and the churn is in the DISCRIMINANT rather than
+    // the threshold: Spearman rho between a run and the same run with a noise
+    // column is 0.79-0.82, and agreement in the top 500 is 0.38-0.42. A model
+    // with 120 trees of depth 4 over ~3,400 positives has enough freedom to
+    // find a different-but-equally-good solution whenever the feature set
+    // changes, which makes every feature-level measurement on this pipeline
+    // unreadable. These let that be tested rather than argued about.
+    if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
+    if (options.gbt_min_child_rows > 0)
+    { params.gbt.min_child_rows = options.gbt_min_child_rows; }
+    if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
+    if (options.gbt_max_delta_step > 0.0) { params.gbt.max_delta_step = options.gbt_max_delta_step; }
+    if (options.gbt_intercept_zero) { params.gbt.intercept_zero = true; }
+    if (options.gbt_clip_gain) { params.gbt.clip_gain = true; }
+    if (options.gbt_warmup_rounds > 0) { params.gbt.warmup_rounds = options.gbt_warmup_rounds; }
+    params.seed = static_cast<unsigned>(options.classifier_seed);
+    params.gbt.fixed_bins = options.gbt_fixed_bins;
+    // More SHALLOW trees rather than fewer deep ones. Depth 2 is the only
+    // configuration measured to attribute an added column correctly, and it
+    // costs about 11% of identifications against depth 4's centre. Boosting
+    // recovers capacity additively -- many depth-2 trees approximate a richer
+    // function without ever fitting a leaf of a handful of rows, which is the
+    // surface gbt.h:441 names and the one that lets a noise column win a split
+    // at depth 4.
+    if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
+    if (options.gbt_learning_rate > 0.0)
+    { params.gbt.learning_rate = options.gbt_learning_rate; }
+    // `-classifier_iterations` was a DEAD OPTION: registered, parsed, stored on
+    // Options, and never read here, so the loop always ran LDAParams' own
+    // n_iter = 3 whatever the flag said. Found because a frozen-trajectory arm
+    // at `-classifier_iterations 1` came back BYTE-IDENTICAL to the default --
+    // which is the only reason a dead knob ever gets noticed.
+    //
+    // It matters beyond tidiness. Re-selecting the positive set each iteration
+    // is the path by which an added column changes the labels and therefore
+    // everything downstream; n_iter = 1 is the cheapest way to cut it, and
+    // until now that experiment could not be run at all.
+    // >= 0, not > 0: zero is a real request (seed-only, no semi-supervised iterations) that the
+    // old guard made unreachable; -1 is the "leave the LDAParams default" sentinel now.
+    if (options.classifier_iterations >= 0)
+    { params.n_iter = options.classifier_iterations; }
+    // Mechanism 5 rides the same pattern: the stop rule and its threshold existed in LDAParams
+    // from the start but had no CLI path, so `-classifier_iterations` was the cap AND the rule.
+    // With the stop armed, the cap becomes the backstop and composition decides.
+    params.stop_on_composition = options.classifier_stop_on_composition;
+    if (options.classifier_stop_jaccard > 0.0)
+    { params.stop_jaccard = options.classifier_stop_jaccard; }
+    if (options.classifier_stop_shrink_floor > 0.0)
+    { params.stop_shrink_floor = options.classifier_stop_shrink_floor; }
+    if (options.classifier_stop_patience > 0)
+    { params.stop_patience = options.classifier_stop_patience; }
+    params.iteration_log = options.classifier_iteration_log;
+    // Two of the sub-scores are lower-is-better by construction, so their
+    // weights may never come out positive. XCORR_COELUTION is the mean |lag|
+    // between fragment maxima -- a peak group IS a co-elution, so more lag is
+    // less evidence -- and LIBRARY_RMSD is a deviation from the library
+    // spectrum. Without the constraint the discriminant can fit, in-sample,
+    // that being further from the expectation argues FOR a peptide.
+    //
+    // This is DIA-NN's check_weights (diann.cpp:6592) applied to the features
+    // we actually have. Note what we do NOT have: it clips pdRT and pAcc, and
+    // this scorer carries neither an rt_delta nor a mass_error sub-score --
+    // both deliberately absent, see the SubScore comments. So the constraint
+    // transfers in principle and covers different columns.
+    // LOWER-IS-BETTER features, whose weights may never come out positive.
+    //
+    // IM_DELTA is stored as +|error|, and nothing stopped the semi-supervised
+    // fit assigning it a POSITIVE weight -- i.e. rewarding candidates for
+    // sitting FURTHER from their predicted mobility. That is not a theoretical
+    // risk: the initial target class is heavily contaminated on a sparse
+    // library (see the seeding note below), so a positive coefficient can be
+    // learned whenever the contaminating set happens to carry larger errors
+    // than the decoys.
+    //
+    // RT_DELTA was pinned here too, and the pin turned out to be the wrong
+    // half of the problem: measured, true peaks sit FURTHER from the predicted
+    // retention time than decoys do (AUC 0.215), so forcing "further is worse"
+    // made a useless feature into a harmful one. The feature is now removed
+    // rather than re-signed -- a group-level retention-time delta cannot
+    // separate a real group from an interference group at all.
+    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD, IM_DELTA};
+    params.match_decoy_candidate_counts = options.match_decoy_candidate_counts;
+    params.fold_pool_rank = options.fold_pool_rank;
+
+    // Seed the semi-supervised loop on CORR_SUM alone.
+    //
+    // The loop ignites by ranking with a single feature and taking whatever
+    // clears q <= train_fdr_initial as its first positive set. lda.h says what
+    // happens when that feature is too weak: "iteration 0 selects positives
+    // with this w, finds none at q<=train_fdr_initial, skips the fit, so w is
+    // unchanged and every later iteration skips too."
+    //
+    // That is not hypothetical here. On a REALISTIC library -- a stride sample
+    // of the human proteome, where only ~1.5% of targets are present in the
+    // sample -- ODIA identified NOTHING from 1,639,188 peak groups while DIA-NN
+    // found 738 of the same 50,000 precursors. The automatic seed picks the
+    // feature with the largest |t|, and against a positive class that is 98.5%
+    // absent peptides, no feature's class means separate enough to ignite.
+    //
+    // CORR_SUM is the detector's own summed pairwise fragment correlation --
+    // the quantity that moved rank-1 accuracy from 40.7% to 75.7%. DIA-NN
+    // mandates the same choice rather than deriving it: reset_weights sets
+    // w = (1, 0, 0, ...) so iteration 0 ranks by pTimeCorr, its co-elution sum,
+    // and nothing else (diann.cpp:6584).
+    //
+    // Only when the picker actually computed it. The amplitude detector leaves
+    // CORR_SUM at 0, and seeding on a constant would guarantee the failure this
+    // is meant to prevent.
+    //
+    // The OpenSWATH picker leaves it at 0 too, and the guard did not say so --
+    // `coelution_picking` stays true under `-picker openswath` because it is
+    // driven by a different flag, so the pure-OpenSWATH arm seeded its
+    // semi-supervised loop on an identically-zero column. That is not a
+    // hypothetical: every recorded number for that arm was produced this way,
+    // which means the measured verdict on OpenSWATH-style picking (+4.7% on
+    // IH1, -38.8% on Astral) is confounded with this defect and cannot be read
+    // as a property of the picker until it is re-measured.
+    //
+    // `union_openswath` is deliberately NOT excluded: it mixes co-elution
+    // candidates that carry a real corr_sum with OpenSWATH ones that carry
+    // zero, so the column is informative rather than constant.
+    const bool pure_openswath = options.openswath_picking && !options.union_picking;
+    if (options.coelution_picking && !pure_openswath)
+    {
+      params.seed_mask.assign(N_SUB_SCORES, 0);
+      params.seed_mask[CORR_SUM] = 1;
+    }
+    // Threading is per-classifier, not on LDAParams: the LDA solve is a small
+    // dense Cholesky and does not want threads, while the tree and network
+    // fits do.
+    if (options.classifier == "xgboost")
+    {
+      // Same learner as "gbt" -- the algorithm here IS XGBoost's, second-order
+      // Newton leaf values and the same split gain -- configured as pyProphet
+      // 3.0.15 configures XGBoost 3.2.0. Six of its nine parameters already
+      // match; this changes max_depth 4 -> 6 and eta 0.1 -> 0.3.
+      params.classifier = Scoring::LDAParams::Classifier::GBT;
+      // WHOLESALE replacement, so it must not silently discard the per-parameter
+      // overrides applied above -- `-classifier xgboost -gbt_max_depth 8` used to
+      // ignore the depth entirely. Take the preset first, then re-apply anything
+      // the caller set explicitly.
+      params.gbt = Scoring::GBTParams::pyprophet();
+      if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
+      if (options.gbt_min_child_rows > 0) { params.gbt.min_child_rows = options.gbt_min_child_rows; }
+      if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
+      if (options.gbt_max_delta_step > 0.0) { params.gbt.max_delta_step = options.gbt_max_delta_step; }
+      if (options.gbt_intercept_zero) { params.gbt.intercept_zero = true; }
+      if (options.gbt_clip_gain) { params.gbt.clip_gain = true; }
+      if (options.gbt_warmup_rounds > 0) { params.gbt.warmup_rounds = options.gbt_warmup_rounds; }
+      params.seed = static_cast<unsigned>(options.classifier_seed);
+      if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
+      if (options.gbt_learning_rate > 0.0) { params.gbt.learning_rate = options.gbt_learning_rate; }
+      params.gbt.fixed_bins = options.gbt_fixed_bins;
+      params.gbt.n_threads = static_cast<int>(options.threads);
+    }
+    else if (options.classifier == "gbt")
+    {
+      params.classifier = Scoring::LDAParams::Classifier::GBT;
+      params.gbt.n_threads = static_cast<int>(options.threads);
+    }
+    else if (options.classifier == "nn")
+    {
+      params.classifier = Scoring::LDAParams::Classifier::NN;
+      params.nn.n_threads = static_cast<int>(options.threads);
+    }
+
+    // v1.18 learner fixes. Set AFTER the classifier branch above, which replaces params.gbt
+    // wholesale for `xgboost` and would otherwise drop them. Every value assigned here is the
+    // LDAParams/GBTParams default unless its flag was given, so a flag-off run builds exactly the
+    // params it built before.
+    params.gbt.class_balance = options.classifier_class_balance;
+    params.gbt.depth_fix = options.gbt_depth_fix;
+    params.gbt.stop_on_stump = options.gbt_stop_on_stump;
+    params.gbt_keep_missing = options.gbt_missing_bin;
+    params.match_training_draw = options.classifier_matched_train_draw;
+    params.fold_tail_calibration = options.fold_tail_calibration;
+    params.oof_repeats = std::max(1, options.classifier_oof_repeats);
+    return params;
+  }
+
   void PeakGroupScorer::fitAndAssign_(const Library& library, Result& result,
                                       const Options& options)
   {
@@ -2972,192 +3181,19 @@ namespace
       group.push_back(static_cast<long long>(g.precursor));
     }
 
-    Scoring::LDAParams params;
-    // These three were registered, parsed, and stored in Options -- and never
-    // copied here, so `-use_pi0`, `-train_fdr` and `-train_fdr_initial` silently
-    // returned the defaults. `acd000f` added all four of this family and touched
-    // nothing in this file; only `-classifier_iterations` was later connected
-    // (`c4b1416`), and it was found because an arm came back byte-identical.
-    // The consequence is not merely a dead knob: triage arms on record claim to
-    // have tested `use_pi0` and a relaxed `train_fdr`, and did not.
-    //
-    // Wiring rather than deprecating, because the intent is unambiguous -- all
-    // three carry detailed help text describing behaviour they never had -- and
-    // because the defaults are unchanged, so only a caller who asks for
-    // something different sees any difference.
-    if (options.train_fdr_initial > 0.0) { params.train_fdr_initial = options.train_fdr_initial; }
-    if (options.train_fdr > 0.0) { params.train_fdr = options.train_fdr; }
-    params.use_pi0 = options.use_pi0;
-    // The classifier's stability knobs, exposed because it turned out to need
-    // them. Adding a column of PURE NOISE moves identifications by up to 11.9%
-    // at the operating point, and the churn is in the DISCRIMINANT rather than
-    // the threshold: Spearman rho between a run and the same run with a noise
-    // column is 0.79-0.82, and agreement in the top 500 is 0.38-0.42. A model
-    // with 120 trees of depth 4 over ~3,400 positives has enough freedom to
-    // find a different-but-equally-good solution whenever the feature set
-    // changes, which makes every feature-level measurement on this pipeline
-    // unreadable. These let that be tested rather than argued about.
-    if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
-    if (options.gbt_min_child_rows > 0)
-    { params.gbt.min_child_rows = options.gbt_min_child_rows; }
-    if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
-    if (options.gbt_max_delta_step > 0.0) { params.gbt.max_delta_step = options.gbt_max_delta_step; }
-    if (options.gbt_intercept_zero) { params.gbt.intercept_zero = true; }
-    if (options.gbt_clip_gain) { params.gbt.clip_gain = true; }
-    if (options.gbt_warmup_rounds > 0) { params.gbt.warmup_rounds = options.gbt_warmup_rounds; }
-    params.seed = static_cast<unsigned>(options.classifier_seed);
-    params.gbt.fixed_bins = options.gbt_fixed_bins;
-    // More SHALLOW trees rather than fewer deep ones. Depth 2 is the only
-    // configuration measured to attribute an added column correctly, and it
-    // costs about 11% of identifications against depth 4's centre. Boosting
-    // recovers capacity additively -- many depth-2 trees approximate a richer
-    // function without ever fitting a leaf of a handful of rows, which is the
-    // surface gbt.h:441 names and the one that lets a noise column win a split
-    // at depth 4.
-    if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
-    if (options.gbt_learning_rate > 0.0)
-    { params.gbt.learning_rate = options.gbt_learning_rate; }
-    // `-classifier_iterations` was a DEAD OPTION: registered, parsed, stored on
-    // Options, and never read here, so the loop always ran LDAParams' own
-    // n_iter = 3 whatever the flag said. Found because a frozen-trajectory arm
-    // at `-classifier_iterations 1` came back BYTE-IDENTICAL to the default --
-    // which is the only reason a dead knob ever gets noticed.
-    //
-    // It matters beyond tidiness. Re-selecting the positive set each iteration
-    // is the path by which an added column changes the labels and therefore
-    // everything downstream; n_iter = 1 is the cheapest way to cut it, and
-    // until now that experiment could not be run at all.
-    // >= 0, not > 0: zero is a real request (seed-only, no semi-supervised iterations) that the
-    // old guard made unreachable; -1 is the "leave the LDAParams default" sentinel now.
-    if (options.classifier_iterations >= 0)
-    { params.n_iter = options.classifier_iterations; }
-    // Mechanism 5 rides the same pattern: the stop rule and its threshold existed in LDAParams
-    // from the start but had no CLI path, so `-classifier_iterations` was the cap AND the rule.
-    // With the stop armed, the cap becomes the backstop and composition decides.
-    params.stop_on_composition = options.classifier_stop_on_composition;
-    if (options.classifier_stop_jaccard > 0.0)
-    { params.stop_jaccard = options.classifier_stop_jaccard; }
-    if (options.classifier_stop_shrink_floor > 0.0)
-    { params.stop_shrink_floor = options.classifier_stop_shrink_floor; }
-    if (options.classifier_stop_patience > 0)
-    { params.stop_patience = options.classifier_stop_patience; }
-    params.iteration_log = options.classifier_iteration_log;
-    // Two of the sub-scores are lower-is-better by construction, so their
-    // weights may never come out positive. XCORR_COELUTION is the mean |lag|
-    // between fragment maxima -- a peak group IS a co-elution, so more lag is
-    // less evidence -- and LIBRARY_RMSD is a deviation from the library
-    // spectrum. Without the constraint the discriminant can fit, in-sample,
-    // that being further from the expectation argues FOR a peptide.
-    //
-    // This is DIA-NN's check_weights (diann.cpp:6592) applied to the features
-    // we actually have. Note what we do NOT have: it clips pdRT and pAcc, and
-    // this scorer carries neither an rt_delta nor a mass_error sub-score --
-    // both deliberately absent, see the SubScore comments. So the constraint
-    // transfers in principle and covers different columns.
-    // LOWER-IS-BETTER features, whose weights may never come out positive.
-    //
-    // IM_DELTA is stored as +|error|, and nothing stopped the semi-supervised
-    // fit assigning it a POSITIVE weight -- i.e. rewarding candidates for
-    // sitting FURTHER from their predicted mobility. That is not a theoretical
-    // risk: the initial target class is heavily contaminated on a sparse
-    // library (see the seeding note below), so a positive coefficient can be
-    // learned whenever the contaminating set happens to carry larger errors
-    // than the decoys.
-    //
-    // RT_DELTA was pinned here too, and the pin turned out to be the wrong
-    // half of the problem: measured, true peaks sit FURTHER from the predicted
-    // retention time than decoys do (AUC 0.215), so forcing "further is worse"
-    // made a useless feature into a harmful one. The feature is now removed
-    // rather than re-signed -- a group-level retention-time delta cannot
-    // separate a real group from an interference group at all.
-    params.nonpositive_features = {XCORR_COELUTION, LIBRARY_RMSD, IM_DELTA};
-    params.match_decoy_candidate_counts = options.match_decoy_candidate_counts;
-    params.fold_pool_rank = options.fold_pool_rank;
+    // Built by classifierParamsFor() -- the SAME function odia_scorer_replay calls, so an offline
+    // replay of -out_scorer_input cannot drift from the engine's own parameter construction.
+    Scoring::LDAParams params = classifierParamsFor(options);
+    // -fragvec_scores (r1/integration merge of explore/fragvec-subscores into
+    // explore/scorer-replay's classifierParamsFor): the seed mask must span the
+    // full matrix width, appended block included -- lda.h treats a column PAST
+    // the end of the mask as unmasked, so a mask sized to the shipped columns
+    // would quietly let every appended one compete for the seed.
+    // classifierParamsFor() sees Options only and sizes it N_SUB_SCORES with
+    // CORR_SUM set; extending it with 0 is exactly the branch's
+    // assign(n_columns, 0) + [CORR_SUM] = 1. No block or no mask: unchanged.
+    if (n_appended > 0 && !params.seed_mask.empty()) { params.seed_mask.resize(n_columns, 0); }
 
-    // Seed the semi-supervised loop on CORR_SUM alone.
-    //
-    // The loop ignites by ranking with a single feature and taking whatever
-    // clears q <= train_fdr_initial as its first positive set. lda.h says what
-    // happens when that feature is too weak: "iteration 0 selects positives
-    // with this w, finds none at q<=train_fdr_initial, skips the fit, so w is
-    // unchanged and every later iteration skips too."
-    //
-    // That is not hypothetical here. On a REALISTIC library -- a stride sample
-    // of the human proteome, where only ~1.5% of targets are present in the
-    // sample -- ODIA identified NOTHING from 1,639,188 peak groups while DIA-NN
-    // found 738 of the same 50,000 precursors. The automatic seed picks the
-    // feature with the largest |t|, and against a positive class that is 98.5%
-    // absent peptides, no feature's class means separate enough to ignite.
-    //
-    // CORR_SUM is the detector's own summed pairwise fragment correlation --
-    // the quantity that moved rank-1 accuracy from 40.7% to 75.7%. DIA-NN
-    // mandates the same choice rather than deriving it: reset_weights sets
-    // w = (1, 0, 0, ...) so iteration 0 ranks by pTimeCorr, its co-elution sum,
-    // and nothing else (diann.cpp:6584).
-    //
-    // Only when the picker actually computed it. The amplitude detector leaves
-    // CORR_SUM at 0, and seeding on a constant would guarantee the failure this
-    // is meant to prevent.
-    //
-    // The OpenSWATH picker leaves it at 0 too, and the guard did not say so --
-    // `coelution_picking` stays true under `-picker openswath` because it is
-    // driven by a different flag, so the pure-OpenSWATH arm seeded its
-    // semi-supervised loop on an identically-zero column. That is not a
-    // hypothetical: every recorded number for that arm was produced this way,
-    // which means the measured verdict on OpenSWATH-style picking (+4.7% on
-    // IH1, -38.8% on Astral) is confounded with this defect and cannot be read
-    // as a property of the picker until it is re-measured.
-    //
-    // `union_openswath` is deliberately NOT excluded: it mixes co-elution
-    // candidates that carry a real corr_sum with OpenSWATH ones that carry
-    // zero, so the column is informative rather than constant.
-    const bool pure_openswath = options.openswath_picking && !options.union_picking;
-    if (options.coelution_picking && !pure_openswath)
-    {
-      // The full matrix width, appended block included: lda.h treats a column
-      // PAST the end of the mask as unmasked, so a mask sized to the shipped
-      // columns would quietly let every appended one compete for the seed.
-      params.seed_mask.assign(n_columns, 0);
-      params.seed_mask[CORR_SUM] = 1;
-    }
-    // Threading is per-classifier, not on LDAParams: the LDA solve is a small
-    // dense Cholesky and does not want threads, while the tree and network
-    // fits do.
-    if (options.classifier == "xgboost")
-    {
-      // Same learner as "gbt" -- the algorithm here IS XGBoost's, second-order
-      // Newton leaf values and the same split gain -- configured as pyProphet
-      // 3.0.15 configures XGBoost 3.2.0. Six of its nine parameters already
-      // match; this changes max_depth 4 -> 6 and eta 0.1 -> 0.3.
-      params.classifier = Scoring::LDAParams::Classifier::GBT;
-      // WHOLESALE replacement, so it must not silently discard the per-parameter
-      // overrides applied above -- `-classifier xgboost -gbt_max_depth 8` used to
-      // ignore the depth entirely. Take the preset first, then re-apply anything
-      // the caller set explicitly.
-      params.gbt = Scoring::GBTParams::pyprophet();
-      if (options.gbt_max_depth > 0) { params.gbt.max_depth = options.gbt_max_depth; }
-      if (options.gbt_min_child_rows > 0) { params.gbt.min_child_rows = options.gbt_min_child_rows; }
-      if (options.gbt_lambda > 0.0) { params.gbt.lambda = options.gbt_lambda; }
-      if (options.gbt_max_delta_step > 0.0) { params.gbt.max_delta_step = options.gbt_max_delta_step; }
-      if (options.gbt_intercept_zero) { params.gbt.intercept_zero = true; }
-      if (options.gbt_clip_gain) { params.gbt.clip_gain = true; }
-      if (options.gbt_warmup_rounds > 0) { params.gbt.warmup_rounds = options.gbt_warmup_rounds; }
-      params.seed = static_cast<unsigned>(options.classifier_seed);
-      if (options.gbt_n_trees > 0) { params.gbt.n_trees = options.gbt_n_trees; }
-      if (options.gbt_learning_rate > 0.0) { params.gbt.learning_rate = options.gbt_learning_rate; }
-      params.gbt.fixed_bins = options.gbt_fixed_bins;
-      params.gbt.n_threads = static_cast<int>(options.threads);
-    }
-    else if (options.classifier == "gbt")
-    {
-      params.classifier = Scoring::LDAParams::Classifier::GBT;
-      params.gbt.n_threads = static_cast<int>(options.threads);
-    }
-    else if (options.classifier == "nn")
-    {
-      params.classifier = Scoring::LDAParams::Classifier::NN;
-      params.nn.n_threads = static_cast<int>(options.threads);
-    }
 
     // THE SCORING-ENGINE SEAM.
     //
