@@ -233,8 +233,10 @@ namespace ODIA
       std::size_t max_precursors = 3000;
 
       /// An EXPLICIT sample, in place of the library stride. Empty (the default)
-      /// keeps the stride over the library, and every other field below is then
-      /// ignored -- so a caller that never sets these gets the old probe exactly.
+      /// with `use_sample` false keeps the stride over the library, and every
+      /// other field below is then ignored -- so a caller that never sets these
+      /// gets the old probe exactly. An explicit sample is capped at
+      /// `max_precursors` by the same stride, over its own order.
       ///
       /// WHY. The stride draws library precursors, and on a FASTA-predicted
       /// library almost none of them are in the run: 6.8 M targets of which
@@ -270,6 +272,33 @@ namespace ODIA
 
       /// Half-width around each `sample_rt`, seconds.
       double sample_rt_window = 0.0;
+
+      /// Take `sample` as THE sample even when it is empty.
+      ///
+      /// Without this, an empty `sample` means "use the library stride" -- so a
+      /// caller whose explicit sample merely came out empty (pass 1 scored no
+      /// target at the q bar) silently got the library-stride probe that
+      /// `-mass_probe_source scored` exists to replace, and the log credited
+      /// pass 1's scored groups with it. Set it whenever the sample is meant to
+      /// be explicit: an empty sample then yields NO residuals, hence an
+      /// unfitted model, never the stride.
+      bool use_sample = false;
+
+      /// Explicit sample with `sample_rt`: visit at most this many acquisition
+      /// cycles. 0 = no cap.
+      ///
+      /// WHY. Uncapped, the probe visits every cycle within `sample_rt_window`
+      /// of any sampled apex, serially. On the PXD047793 fixture that is all 215
+      /// cycles (6,020 spectra, 49.45 s); on the 130-min run 3,000 apexes at
+      /// +/-5 s reach nearly all ~4,600 cycles, ~20 min. Over the cap, this many
+      /// cycles are drawn STRATIFIED from those within reach of an apex (the
+      /// library probe's draw, `sample_seed`, over the reachable set rather
+      /// than the run), and only entries with a drawn cycle within
+      /// `sample_rt_window` of their apex are kept -- they are measured at the
+      /// drawn cycle(s), which may sit up to that far from the apex. Applied
+      /// BEFORE `max_precursors`, so the precursor cap is spent on entries the
+      /// probe can actually reach.
+      std::size_t sample_max_cycles = 0;
 
       /// Acquisition cycles probed. STRATIFIED RANDOM across the gradient: the
       /// run is cut into this many equal strata and one cycle is drawn at
@@ -682,9 +711,18 @@ namespace ODIA
       std::size_t spectra_decoded = 0;
       double collect_seconds = 0.0;
 
-      /// Set only on the explicit-sample path (`Options::sample`): how many
-      /// entries survived eligibility, and how many cycles were visited.
+      /// Set only on the explicit-sample path (`Options::sample` /
+      /// `use_sample`). `sample_entries`: entries that survived eligibility.
+      /// `sample_entries_in_reach`: of those, the ones with a visited cycle
+      /// within `sample_rt_window` of their apex (equal unless
+      /// `sample_max_cycles` bound). `sample_entries_probed`: what was probed,
+      /// after the `max_precursors` stride. `sample_cycles_available`: cycles
+      /// within reach of any eligible apex, before the cap;
+      /// `sample_cycles`: cycles visited.
       std::size_t sample_entries = 0;
+      std::size_t sample_entries_in_reach = 0;
+      std::size_t sample_entries_probed = 0;
+      std::size_t sample_cycles_available = 0;
       std::size_t sample_cycles = 0;
 
       /// The systematic (peak 1/K0 - library 1/K0) the probe measured and

@@ -752,7 +752,8 @@ add_test(NAME mass_calibration_recovers_offset COMMAND odia_mass_calibration)
 # rows and a matched decoy control, an explicit sample equal to the stride is
 # bit-identical to it, the stride does not recover the planted offset while the
 # scored sample does through the unchanged gate, and absent precursors probed
-# the same way fail it.
+# the same way fail it. An EMPTY explicit sample (use_sample) is nothing to
+# probe, never the stride; the cycle cap bounds the visited cycles.
 add_test(NAME mass_probe_from_scored_groups COMMAND odia_mass_probe_sample)
 
 # The per-run ion-mobility calibration (src/calibrate/MobilityCalibration.cpp).

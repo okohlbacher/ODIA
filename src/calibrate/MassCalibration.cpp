@@ -886,9 +886,19 @@ namespace ODIA
     // it feeds: `want_im` below holds exactly p.im[sampled[s]] when no
     // observed value was given, and the cycle draw and RT window are the
     // stride's unless `sample_rt` was given.
-    const bool explicit_sample = !opt.sample.empty();
+    //
+    // `use_sample` makes an EMPTY explicit sample mean "nothing to probe". Keyed
+    // on non-emptiness alone, a scored sample that came out empty fell through
+    // to the library stride -- the very probe it replaces -- and was reported
+    // as measured at pass 1's groups.
+    const bool explicit_sample = opt.use_sample || !opt.sample.empty();
     std::vector<std::uint32_t> sampled;
     std::vector<float> sample_rt, sample_im;
+    // With per-entry apex RTs the probe visits the cycles near those apexes
+    // rather than a stratified draw over the gradient. Decided here, before the
+    // query index is built, because a cycle cap removes the entries it can no
+    // longer reach.
+    std::vector<std::size_t> chosen;
     if (!explicit_sample)
     {
       sampled = RunProbe::samplePrecursors(library, opt.max_precursors,
@@ -918,6 +928,103 @@ namespace ODIA
         if (have_im) { sample_im.push_back(opt.sample_im[e]); }
       }
       if (diag != nullptr) { diag->sample_entries = sampled.size(); }
+
+      // Keep entry e where keep(e); the three lists stay parallel.
+      const auto keepEntries = [&](const auto& keep) {
+        std::size_t n = 0;
+        for (std::size_t e = 0; e < sampled.size(); ++e)
+        {
+          if (!keep(e)) { continue; }
+          sampled[n] = sampled[e];
+          if (!sample_rt.empty()) { sample_rt[n] = sample_rt[e]; }
+          if (!sample_im.empty()) { sample_im[n] = sample_im[e]; }
+          ++n;
+        }
+        sampled.resize(n);
+        if (!sample_rt.empty()) { sample_rt.resize(n); }
+        if (!sample_im.empty()) { sample_im.resize(n); }
+      };
+
+      // A cycle REACHES an apex a when a lies within its first and last
+      // spectrum's RT, widened by the window on both sides.
+      const double w = std::max(0.0, opt.sample_rt_window);
+      const auto lo_of = [&](std::size_t c) {
+        return static_cast<double>(info[cycles[c].first].retention_time) - w;
+      };
+      const auto hi_of = [&](std::size_t c) {
+        return static_cast<double>(info[cycles[c].second - 1].retention_time) + w;
+      };
+      // The cycles among `candidates` (ascending) that reach some finite apex.
+      const auto cyclesReaching = [&](const std::vector<std::size_t>& candidates) {
+        std::vector<double> apex;
+        apex.reserve(sample_rt.size());
+        for (const float a : sample_rt) { if (std::isfinite(a)) { apex.push_back(a); } }
+        std::sort(apex.begin(), apex.end());
+        std::vector<std::size_t> reached;
+        for (const std::size_t c : candidates)
+        {
+          if (cycles[c].second <= cycles[c].first) { continue; }
+          const auto it = std::lower_bound(apex.begin(), apex.end(), lo_of(c));
+          if (it != apex.end() && *it <= hi_of(c)) { reached.push_back(c); }
+        }
+        return reached;
+      };
+
+      if (!sample_rt.empty())
+      {
+        std::vector<std::size_t> all(cycles.size());
+        std::iota(all.begin(), all.end(), std::size_t{0});
+        chosen = cyclesReaching(all);
+        if (diag != nullptr) { diag->sample_cycles_available = chosen.size(); }
+
+        // THE CYCLE CAP. Uncapped, every cycle near any apex is visited, in a
+        // serial loop: all 215 of the PXD fixture's (49.45 s), and nearly all
+        // ~4,600 of the full 130-min run's at 3,000 apexes (~20 min). Over the
+        // cap, draw the library probe's stratified sample from the REACHABLE
+        // cycles and keep only the entries a drawn cycle reaches.
+        if (opt.sample_max_cycles > 0 && chosen.size() > opt.sample_max_cycles)
+        {
+          const auto pick = RunProbe::stratifiedCycles(chosen.size(), opt.sample_max_cycles,
+                                                       opt.sample_seed);
+          std::vector<std::size_t> drawn;
+          drawn.reserve(pick.size());
+          for (const std::size_t k : pick) { drawn.push_back(chosen[k]); }
+          chosen.swap(drawn);
+          // Cycles are in acquisition order, so both bounds ascend: the first
+          // drawn cycle whose upper bound reaches a has the smallest lower bound
+          // of all that could. A NaN apex is ungated (see predicted_rt below)
+          // and is kept.
+          std::vector<double> lo, hi;
+          lo.reserve(chosen.size());
+          hi.reserve(chosen.size());
+          for (const std::size_t c : chosen) { lo.push_back(lo_of(c)); hi.push_back(hi_of(c)); }
+          keepEntries([&](std::size_t e) {
+            const double a = sample_rt[e];
+            if (!std::isfinite(a)) { return true; }
+            const auto k = static_cast<std::size_t>(
+              std::lower_bound(hi.begin(), hi.end(), a) - hi.begin());
+            return k < hi.size() && lo[k] <= a;
+          });
+        }
+      }
+      if (diag != nullptr) { diag->sample_entries_in_reach = sampled.size(); }
+
+      // The precursor cap, by the library sample's own stride over the given
+      // order -- AFTER the cycle cap, so it is spent on entries the probe can
+      // reach. The visited cycles are then re-derived from what is left.
+      if (opt.max_precursors > 0 && sampled.size() > opt.max_precursors)
+      {
+        const std::size_t n = sampled.size(), want = opt.max_precursors;
+        std::vector<char> keep(n, 0);
+        for (std::size_t k = 0; k < want; ++k) { keep[k * n / want] = 1; }
+        keepEntries([&](std::size_t e) { return keep[e] != 0; });
+        if (!sample_rt.empty()) { chosen = cyclesReaching(chosen); }
+      }
+      if (diag != nullptr)
+      {
+        diag->sample_entries_probed = sampled.size();
+        diag->sample_cycles = chosen.size();
+      }
     }
     if (sampled.empty()) { return out; }
     const bool explicit_rt = explicit_sample && !sample_rt.empty();
@@ -986,29 +1093,12 @@ namespace ODIA
     // why neither a prefix nor a fixed stride would do here.
     //
     // With per-entry apex RTs the question is no longer "where in the gradient"
-    // but "at the apex we already found", so the probe visits exactly the
-    // cycles that overlap some apex +/- rt_window, in acquisition order.
-    std::vector<std::size_t> chosen;
+    // but "at the apex we already found": `chosen` was set above to the cycles
+    // that reach some apex +/- rt_window, in acquisition order (at most
+    // `sample_max_cycles` of them).
     if (!explicit_rt)
     {
       chosen = RunProbe::stratifiedCycles(cycles.size(), opt.cycles, opt.sample_seed);
-    }
-    else
-    {
-      std::vector<double> apex;
-      apex.reserve(sample_rt.size());
-      for (const float a : sample_rt) { if (std::isfinite(a)) { apex.push_back(a); } }
-      std::sort(apex.begin(), apex.end());
-      const double w = std::max(0.0, rt_window);
-      for (std::size_t c = 0; c < cycles.size(); ++c)
-      {
-        if (cycles[c].second <= cycles[c].first) { continue; }
-        const double lo = static_cast<double>(info[cycles[c].first].retention_time) - w;
-        const double hi = static_cast<double>(info[cycles[c].second - 1].retention_time) + w;
-        const auto it = std::lower_bound(apex.begin(), apex.end(), lo);
-        if (it != apex.end() && *it <= hi) { chosen.push_back(c); }
-      }
-      if (diag != nullptr) { diag->sample_cycles = chosen.size(); }
     }
 
     // rt = irt_slope * iRT + irt_intercept, per SAMPLED precursor. NaN where

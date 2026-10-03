@@ -24,6 +24,14 @@
 //   4. The control: the same explicit path on ABSENT precursors (interference
 //      only), at arbitrary "apexes", must not pass. The explicit path cannot
 //      manufacture a mode.
+//   5. A malformed explicit sample throws.
+//   6. `use_sample` with an EMPTY sample yields no residuals and an unfitted
+//      model -- never the library stride it used to fall through to -- and is
+//      a no-op on a non-empty sample.
+//   7. The cycle cap (`sample_max_cycles`): at or above the reachable cycles
+//      it is bit-identical to no cap; binding, it visits at most that many,
+//      drops the entries no drawn cycle reaches, still recovers the planted
+//      offset, and the precursor cap strides what it kept.
 
 #include <odia/DIANNLibraryFile.h>
 #include <odia/LibraryGenerator.h>
@@ -416,6 +424,131 @@ namespace
       check(threw, "sample_rt not parallel to sample throws");
     }
   }
+
+  // ---- 6. an empty explicit sample is nothing to probe -------------------------
+  //
+  // The defect: with the explicit path keyed on `!sample.empty()`, a scored
+  // sample that came out EMPTY (pass 1 scored no target at the q bar) took the
+  // library stride -- the noise probe -- and was logged as measured at pass 1's
+  // groups. `use_sample` makes the empty sample mean what it says.
+  void emptySample(World& w)
+  {
+    std::printf("6. use_sample with an EMPTY sample yields nothing, not the stride\n");
+    auto o = baseOptions();
+    const auto stride = ODIA::MassCalibration::collect(w.lib, w.run, o, nullptr);
+    check(!stride.empty(), "control: the same options without use_sample take the stride (" +
+                             std::to_string(stride.size()) + " residuals)");
+
+    o.use_sample = true;   // sample, sample_rt, sample_im all left empty
+    ODIA::MassCalibration::Diagnostics d;
+    const auto r = ODIA::MassCalibration::collect(w.lib, w.run, o, &d);
+    check(r.empty(), "0 residuals (got " + std::to_string(r.size()) + ")");
+    check(d.spectra_decoded == 0 && d.sample_entries == 0,
+          "no spectrum decoded and no entry sampled");
+    const auto m = ODIA::MassCalibration::calibrate(w.lib, w.run, o, nullptr);
+    check(!m.fitted && m.residuals == 0 && m.form == "none",
+          "an unfitted model from 0 residuals (" + m.reason + ")");
+
+    // ...and use_sample on a NON-empty sample changes nothing.
+    auto a = baseOptions();
+    for (std::uint32_t i = 7; i < 8000; i += 50) { a.sample.push_back(i); }
+    auto b = a;
+    b.use_sample = true;
+    const auto ra = ODIA::MassCalibration::collect(w.lib, w.run, a, nullptr);
+    const auto rb = ODIA::MassCalibration::collect(w.lib, w.run, b, nullptr);
+    bool same = !ra.empty() && ra.size() == rb.size();
+    for (std::size_t i = 0; same && i < ra.size(); ++i)
+    {
+      same = std::memcmp(&ra[i].ppm, &rb[i].ppm, sizeof ra[i].ppm) == 0 &&
+             std::memcmp(&ra[i].mz, &rb[i].mz, sizeof ra[i].mz) == 0;
+    }
+    check(same, "use_sample on a non-empty sample is bit-identical to leaving it unset");
+  }
+
+  // ---- 7. the cycle cap ---------------------------------------------------------
+  //
+  // Uncapped, the probe visits every cycle near any apex, serially; on a long
+  // run that is nearly the whole run. The cap draws the library probe's
+  // stratified sample from the reachable cycles and keeps only the entries a
+  // drawn cycle reaches; the precursor cap is applied after it.
+  void cycleCap(World& w)
+  {
+    std::printf("7. -mass_probe_max_cycles: the cap bounds the visited cycles\n");
+    const auto scored = [&]() {
+      auto o = baseOptions();
+      for (std::size_t i = 0; i < w.mz.size(); ++i)
+      {
+        if (!w.present[i]) { continue; }
+        o.sample.push_back(static_cast<std::uint32_t>(i));
+        o.sample_rt.push_back(static_cast<float>(w.apex_rt[i] + (i % 3 == 0 ? 1.7 : -0.9)));
+        o.sample_im.push_back(static_cast<float>(w.im[i] + 0.002));
+      }
+      o.use_sample = true;
+      o.sample_rt_window = 5.0;
+      return o;
+    };
+    const auto same = [](const std::vector<ODIA::MassResidual>& a,
+                         const std::vector<ODIA::MassResidual>& b) {
+      if (a.empty() || a.size() != b.size()) { return false; }
+      for (std::size_t i = 0; i < a.size(); ++i)
+      {
+        if (std::memcmp(&a[i].ppm, &b[i].ppm, sizeof a[i].ppm) != 0 ||
+            std::memcmp(&a[i].rt, &b[i].rt, sizeof a[i].rt) != 0) { return false; }
+      }
+      return true;
+    };
+
+    auto o0 = scored();
+    ODIA::MassCalibration::Diagnostics d0;
+    const auto r0 = ODIA::MassCalibration::collect(w.lib, w.run, o0, &d0);
+    check(d0.sample_cycles == d0.sample_cycles_available && d0.sample_cycles > 100,
+          "uncapped: every reachable cycle is visited (" + std::to_string(d0.sample_cycles) +
+            " of " + std::to_string(d0.sample_cycles_available) + ")");
+    check(d0.sample_entries_in_reach == 160 && d0.sample_entries_probed == 160,
+          "uncapped: all 160 entries probed");
+
+    // A cap at or above the reachable count is no cap: bit-identical.
+    auto o1 = scored();
+    o1.sample_max_cycles = d0.sample_cycles_available;
+    const auto r1 = ODIA::MassCalibration::collect(w.lib, w.run, o1, nullptr);
+    check(same(r0, r1), "a cap >= the reachable cycles changes nothing, bit for bit");
+
+    // A binding cap.
+    auto o2 = scored();
+    o2.sample_max_cycles = 40;
+    ODIA::MassCalibration::Diagnostics d2;
+    const auto m2 = ODIA::MassCalibration::calibrate(w.lib, w.run, o2, &d2);
+    std::printf("   capped at 40 cycles:\n%s", ODIA::MassCalibration::report(m2, &d2).c_str());
+    check(d2.sample_cycles_available == d0.sample_cycles_available,
+          "the cap is drawn from the same reachable set");
+    check(d2.sample_cycles > 0 && d2.sample_cycles <= 40,
+          "at most 40 cycles visited (" + std::to_string(d2.sample_cycles) + ")");
+    check(d2.spectra_decoded == 4 * d2.sample_cycles,
+          "and only their spectra decoded (" + std::to_string(d2.spectra_decoded) + ")");
+    check(d2.sample_entries_in_reach > 0 && d2.sample_entries_in_reach < 160 &&
+            d2.sample_entries_probed == d2.sample_entries_in_reach,
+          "entries no drawn cycle reaches are dropped (" +
+            std::to_string(d2.sample_entries_in_reach) + " of 160 kept)");
+    check(m2.fitted && std::abs(m2.ppmAt(700.0) - PLANTED_PPM) < 0.7,
+          "and the capped probe still recovers the planted " + std::to_string(PLANTED_PPM) +
+            " ppm (got " + std::to_string(m2.ppmAt(700.0)) + ")");
+
+    // The precursor cap comes AFTER the cycle cap, and the visited cycles are
+    // re-derived from what it leaves.
+    auto o3 = scored();
+    o3.sample_max_cycles = 40;
+    o3.max_precursors = 10;
+    ODIA::MassCalibration::Diagnostics d3;
+    (void)ODIA::MassCalibration::collect(w.lib, w.run, o3, &d3);
+    check(d3.sample_entries_in_reach == d2.sample_entries_in_reach &&
+            d3.sample_entries_probed == 10,
+          "max_precursors strides the entries the cycle cap kept (" +
+            std::to_string(d3.sample_entries_probed) + " of " +
+            std::to_string(d3.sample_entries_in_reach) + ")");
+    check(d3.sample_cycles > 0 && d3.sample_cycles <= d2.sample_cycles,
+          "and only cycles that still reach a probed entry are visited (" +
+            std::to_string(d3.sample_cycles) + ")");
+  }
 } // namespace
 
 int main()
@@ -425,6 +558,8 @@ int main()
   build(w);
   identity(w);
   probe(w);
+  emptySample(w);
+  cycleCap(w);
   std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "PASSED", failures,
               failures == 1 ? "" : "s");
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;

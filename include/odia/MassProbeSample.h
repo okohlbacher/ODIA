@@ -23,6 +23,9 @@
 // precursor-index-sorted list, so a cap spreads over the library's m/z rather
 // than keeping the highest scores (a score-ordered cut is a selection on the
 // very evidence being calibrated -- memory odia-accepted-groups-are-a-biased-sample).
+// OpenDIAlyzer passes cap 0 and lets MassCalibration::collect apply the same
+// stride (Options::max_precursors) AFTER its cycle cap, so the precursor cap is
+// spent on entries the probe's visited cycles can reach.
 // Deterministic: every tie is broken by group index.
 
 #pragma once
