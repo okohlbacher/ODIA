@@ -1012,6 +1012,14 @@ namespace ODIA
       // The precursor cap, by the library sample's own stride over the given
       // order -- AFTER the cycle cap, so it is spent on entries the probe can
       // reach. The visited cycles are then re-derived from what is left.
+      //
+      // Not the 3679589 sample. There, MassProbeSample::fromGroups strided the
+      // q-passing targets BEFORE the eligibility checks above; here the stride
+      // runs over the eligible entries. With more than max_precursors (3,000)
+      // targets of which some are ineligible, the probed set differs even with
+      // the cycle cap lifted. The PXD fixture (814 targets) never strides, so
+      // no gate has compared the two -- while DIA-NN reports 93,900 precursors
+      // at 1% FDR on the full PXD047793 run 009.
       if (opt.max_precursors > 0 && sampled.size() > opt.max_precursors)
       {
         const std::size_t n = sampled.size(), want = opt.max_precursors;

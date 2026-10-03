@@ -413,8 +413,10 @@ protected:
                           "thresholds; pass 2 extracts through that model. If pass 1 scored no "
                           "target at that q there is nothing to probe: the gate counts as FAILED "
                           "and the failed-gate fallback decides the window -- the library probe "
-                          "is never run in its place. Needs -passes >= 2 and a scoring stage "
-                          "(refused otherwise).",
+                          "is never run in its place. Runs only where pass 2 runs: -stop_after "
+                          "score (the default with -in) and -passes >= 2. Any other -stop_after "
+                          "(library, extract, calib) or -passes 1 ends before the probe and is "
+                          "refused.",
                           false, true);
     setValidStrings_("mass_probe_source", {"library", "scored"});
     registerDoubleOption_("mass_probe_q", "<q>", 0.01,
@@ -2154,8 +2156,8 @@ protected:
                               const std::string& out_chrom, const std::string& out)
   {
     const int passes = std::max(1, getIntOption_("passes"));
-    // (-mass_probe_source scored with passes == 1 is refused before any work,
-    // with the other parameter checks in main_.)
+    // (-mass_probe_source scored with passes == 1 or -stop_after calib is
+    // refused before any work, with the other parameter checks in main_.)
 
     // An EXTERNAL iRT map must be worth as much as a fitted one.
     //
@@ -3196,6 +3198,8 @@ protected:
     // would cost a full extraction to tell us nothing more about it. Placed
     // after the library's irt has been rewritten, so a caller that also asked
     // for -out_lib gets the CALIBRATED library rather than the original.
+    // (-mass_probe_source scored, measured at the start of pass 2, is refused
+    // with calib in main_.)
     if (getStringOption_("stop_after") == "calib")
     {
       writeLogInfo_("-stop_after calib: the retention-time map is fitted and its "
@@ -5072,22 +5076,30 @@ protected:
     }
 
     // -mass_probe_source scored measures the fragment mass error at pass 1's
-    // SCORED groups and applies it from pass 2. Without a second pass (-passes
-    // 1), or without scoring at all (-stop_after extract), every extraction
-    // runs DEFERRED -- uncalibrated -- and the probe is never reached, so the
-    // flag would silently mean "no mass calibration". Refused here, before the
-    // library is built, rather than next to `passes` in runScoreWorkflow_.
+    // SCORED groups, at the start of pass 2. Only -stop_after score with
+    // -passes >= 2 reaches pass 2: 'library' extracts nothing, 'extract' scores
+    // nothing, 'calib' returns after the retention-time map and before pass 2
+    // (runScoreWorkflow_), and -passes 1 has no pass 2. In each of those any
+    // extraction runs DEFERRED -- uncalibrated -- and the probe is never
+    // reached, so the flag would silently mean "no mass calibration". Refused
+    // here, before the library is built, rather than next to `passes` in
+    // runScoreWorkflow_.
     if (getStringOption_("mass_probe_source") == "scored")
     {
-      if (stop_after == "extract")
+      if (stop_after != "score")
       {
-        writeLogError_("-mass_probe_source scored needs scored peak groups, and -stop_after "
-                       "extract scores nothing: the extraction would run uncalibrated and the "
-                       "probe would never be measured. Use -mass_probe_source library.");
+        writeLogError_("-mass_probe_source scored is measured at the start of pass 2, and "
+                       "-stop_after " + stop_after + " ends before pass 2: " +
+                       (stop_after == "library" ? "it extracts nothing"
+                        : stop_after == "extract"
+                          ? "it scores nothing, so the extraction would run uncalibrated"
+                          : "it returns after the retention-time map, so pass 1 would run "
+                            "uncalibrated") +
+                       " and the probe would never be measured. Use -stop_after score, or "
+                       "-mass_probe_source library.");
         return ILLEGAL_PARAMETERS;
       }
-      if ((stop_after == "score" || stop_after == "calib") &&
-          std::max(1, getIntOption_("passes")) == 1)
+      if (std::max(1, getIntOption_("passes")) == 1)
       {
         writeLogError_("-mass_probe_source scored needs -passes >= 2: the probe is drawn from "
                        "pass 1's scored groups and applied from pass 2, so with one pass the "
