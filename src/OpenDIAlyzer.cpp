@@ -2026,18 +2026,6 @@ protected:
                     "Treat the output as a smoke test, not a result.");
     }
 
-    // Moved here from ChromatogramExtractor::extract, where it went to stderr
-    // on every extraction of every run. Same text, now behind -debug.
-    {
-      char rt_line[256];
-      std::snprintf(rt_line, sizeof rt_line,
-                    "RT-RESTRICT DIAGNOSTIC: restrict_rt=%d irt_slope=%.6g irt_intercept=%.6g "
-                    "rt_window_seconds=%.6g",
-                    int(options.irt_slope != 0.0), options.irt_slope, options.irt_intercept,
-                    options.rt_window_seconds);
-      writeDebug_(rt_line, 1);
-    }
-
     phase_(ex + " pre-extraction (MS1 report, -out_ms1_iso, checks)");
     ODIA::ChromatogramExtractor::Stats stats;
     const auto t = std::chrono::steady_clock::now();
@@ -4866,16 +4854,22 @@ protected:
     const double finish_s = std::chrono::duration<double>(now - t_finish).count();
     const auto ms = std::chrono::duration<double, std::milli>(now - t).count();
     phase_("e" + std::to_string(extraction_index_) + " finish() (classifier, FDR)");
-    // This bracket was labelled "scored on the fly", and its time was read as
-    // the scorer's. It is not: it opens before extractInto_ and so encloses
+    // The label stays byte-for-byte as on main: arm_assert.py's scorer axis,
+    // wf_v77_u3.py and proc_sampler.sh all parse "scored on the fly <N> peak
+    // groups with <classifier>", and a renamed label turned the scorer axis
+    // into None == None (SAME) instead of a failure.
+    reportScoring_(scored, options.classifier, ms, "scored on the fly");
+    // What the bracket above actually encloses, on a line of its own. Its time
+    // was read as the scorer's; it opens before extractInto_ and so encloses
     // the run open, both calibration probes, the MS1 build, the extraction
-    // (with the streaming sink) and finish(). Said on the line now, with
-    // finish() split out; the PHASE lines carry the full decomposition.
-    std::ostringstream how;
-    how.setf(std::ios::fixed); how.precision(3);
-    how << "extracted+scored (bracket = calibration probes + MS1 build + extraction "
-           "with streaming sink + finish(); finish() alone " << finish_s << " s):";
-    reportScoring_(scored, options.classifier, ms, how.str());
+    // (with the streaming sink) and finish(). The PHASE lines carry the full
+    // decomposition. This line must never contain the parsed label followed by
+    // a count, hence the hyphenated form.
+    std::ostringstream note;
+    note.setf(std::ios::fixed); note.precision(3);
+    note << "note: the scored-on-the-fly bracket = calibration probes + MS1 build + "
+            "extraction with streaming sink + finish(); finish() alone " << finish_s << " s";
+    writeLogInfo_(note.str());
     return EXECUTION_OK;
   }
 
