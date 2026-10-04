@@ -9,6 +9,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <queue>
@@ -270,10 +271,10 @@ namespace ODIA
       std::uint64_t gen_ = 0;
     };
 
-    /// Fixed-size blocks, reused rather than returned to the allocator.
+    /// Blocks, reused rather than returned to the allocator.
     ///
     /// Nearly every precursor asks for the same size -- 12 transitions by the
-    /// window's cycle count -- so a free list per size hits essentially always,
+    /// window's cycle count -- so the free list hits essentially always,
     /// and the pass does one allocation per concurrently-live precursor for the
     /// whole run instead of one per precursor. That matters at 4.26 M
     /// precursors: 4.26 M allocate/free pairs of ~40 KB through malloc is where
@@ -282,6 +283,23 @@ namespace ODIA
     ///
     /// Blocks are handed out ZEROED, because the match accumulates into them
     /// and a reused block still holds the previous precursor's peaks.
+    ///
+    /// "The same size" holds within a stretch of the run, not across it. The
+    /// cycles inside a fixed retention-time window fall as the cycle time
+    /// lengthens, and on PXD047793 run 009 it drifts from 1.593 to 1.642 s
+    /// (1,564 -> 1,531 cycles at +/-1255 s), so the chunks of a pass ask for
+    /// sizes their predecessors never did. Kept for the whole pass, the pool
+    /// then held every chunk's live set side by side -- eleven of them in pass
+    /// 1, killed at 2.25 TB in the ninth. So the pass releases it at each chunk
+    /// boundary, when nothing is live, and what it holds is one chunk's.
+    ///
+    /// Within a chunk the same drift still defeats an exact-size match, and a
+    /// pass of few wide chunks -- pass 2, or any pass the cap does not cut --
+    /// sees many sizes go by (pass 2 at -live_memory_gb 245 replayed up to
+    /// ~567 GiB retained in one chunk). So a request takes the SMALLEST free
+    /// block that holds it, and a block is filed under its capacity, not under
+    /// the size it was last asked for. Only the first n cells are zeroed, and
+    /// nothing reads past them: a precursor's cells are rows x its own cycles.
     class BlockPool
     {
     public:
@@ -291,18 +309,20 @@ namespace ODIA
         // It is still emitted -- a consumer counting precursors that yielded
         // nothing must see it -- so it needs a base that is not null.
         if (n == 0) { return &dummy_; }
-        auto& bin = free_[n];
         float* p = nullptr;
-        if (!bin.empty())
+        const auto fit = free_.lower_bound(n);
+        if (fit != free_.end())
         {
-          p = bin.back();
-          bin.pop_back();
+          p = fit->second;
+          free_.erase(fit);
         }
         else
         {
           owned_.push_back(std::make_unique_for_overwrite<float[]>(n));
           p = owned_.back().get();
-          reserved_ += n;
+          capacity_.emplace(p, n);
+          held_ += n;
+          reserved_ = std::max(reserved_, held_);
         }
         std::fill_n(p, n, 0.0f);
         live_ += n;
@@ -313,17 +333,37 @@ namespace ODIA
       void give(float* p, std::size_t n)
       {
         if (n == 0) { return; }
-        free_[n].push_back(p);
+        free_.emplace(capacity_.at(p), p);
         live_ -= n;
       }
 
+      /// Frees every block back to the allocator and keeps the statistics.
+      /// Only when none is live: a live block is a chromatogram still being
+      /// filled, so releasing one is a defect and is refused with the number.
+      void release()
+      {
+        if (live_ != 0)
+        {
+          throw std::logic_error("the block pool was released with " +
+                                 std::to_string(live_) + " points still live");
+        }
+        free_.clear();
+        capacity_.clear();
+        owned_.clear();
+        held_ = 0;
+      }
+
+      /// The most points the pool held at once, live and free -- its share of
+      /// RSS, where peakPoints() is only the live part of it.
       std::uint64_t reservedPoints() const { return reserved_; }
       std::uint64_t peakPoints() const { return peak_; }
 
     private:
-      std::unordered_map<std::size_t, std::vector<float*>> free_;
+      /// Free blocks by CAPACITY, so lower_bound(n) is the best fit.
+      std::multimap<std::size_t, float*> free_;
+      std::unordered_map<const float*, std::size_t> capacity_;
       std::vector<std::unique_ptr<float[]>> owned_;
-      std::uint64_t live_ = 0, peak_ = 0, reserved_ = 0;
+      std::uint64_t live_ = 0, peak_ = 0, held_ = 0, reserved_ = 0;
       float dummy_ = 0.0f;
     };
   } // namespace
@@ -972,6 +1012,17 @@ namespace ODIA
     }
     st.chunks = chunks.size();
     if (chunks.empty()) { chunks.emplace_back(); st.chunks = 1; }
+
+    // The plan, said BEFORE the pass. The summary that reports it is written
+    // after extract() returns, so a pass the kernel kills reports nothing: run
+    // 009's pass-1 arms were killed in chunk 9 of a plan no log recorded.
+    std::cerr << "extraction plan: " << st.chunks << (st.chunks == 1 ? " chunk, " : " chunks, ")
+              << (cap ? "cap " + std::to_string(cap) + " live precursors" : std::string("no cap"))
+              << " (" << n_slots << " extracted, " << overlap_precursors
+              << " live at once uncut); "
+              << (st.live_budget_note.empty() ? std::string("no byte budget")
+                                              : st.live_budget_note)
+              << '\n';
 
     st.index_seconds = std::chrono::duration<double>(
                          std::chrono::steady_clock::now() - t_index).count();
@@ -1632,6 +1683,19 @@ namespace ODIA
       st.assemble_seconds += std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - t_flush).count()
                              - (st.sink_seconds - sink_before_flush);
+
+      // The chunk is over and none of it is live, so its blocks go back to the
+      // allocator instead of waiting for sizes the next chunk will not ask for
+      // (see BlockPool). Every block is zeroed when taken, so which memory the
+      // next chunk is handed cannot reach a trace.
+      if (live_now != 0)
+      {
+        throw std::logic_error(std::to_string(live_now) + " precursors of chunk " +
+                               std::to_string(chunk_no + 1) + " of " +
+                               std::to_string(chunks.size()) +
+                               " were still live after its flush");
+      }
+      blocks.release();
     }
     if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
 
@@ -1660,6 +1724,7 @@ namespace ODIA
     // early, and a chunked run never reaches the sweep's number at all.
     st.peak_live_precursors = live_peak;
     st.peak_live_points = blocks.peakPoints();
+    st.pool_reserved_points = blocks.reservedPoints();
   }
 
 } // namespace ODIA
