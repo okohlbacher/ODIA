@@ -683,6 +683,24 @@ add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
 add_test(NAME gate_calibration_hash_is_order_free COMMAND odia_gate_calibration
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# The block pool must hold the largest chunk, not the sum of the chunks. It
+# reuses a block only for the same size, and on a run whose cycle time drifts
+# -- run 009's, 1.593 -> 1.642 s -- no later chunk asks for an earlier one's
+# sizes; kept for the whole pass it held every chunk's live set side by side,
+# and pass 1 was killed at 2.25 TB in chunk 9 of 11. Here a cycle axis drifting
+# each way (0.5 -> 0.6 s and back), cut into 15 and 29 chunks: the pool must stay
+# within 1.05x the peak live set and the stream must still be the uncut one and
+# the brute force. Fails on 73d7a88 (11.6x to 20.1x).
+add_test(NAME extract_pool_released_per_chunk COMMAND odia_extract_cases pool_release)
+
+# Released per chunk, an exact-size pool still grows INSIDE a chunk that holds
+# many generations of precursors -- an uncut pass, or pass 2's few wide chunks
+# (replayed at up to ~567 GiB retained in one chunk of run 009) -- because each
+# generation on a lengthening cycle asks for smaller blocks than the last. Best
+# fit serves them from the larger freed blocks. The 0.5 -> 0.6 s axis, uncut and
+# in 4 chunks: within 1.05x the peak live set (exact sizes: 3.64x and 1.17x).
+add_test(NAME extract_pool_best_fit COMMAND odia_extract_cases pool_best_fit)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing
