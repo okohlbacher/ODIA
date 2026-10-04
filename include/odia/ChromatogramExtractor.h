@@ -708,9 +708,14 @@ namespace ODIA
       /// boundary, so it holds one chunk's blocks at most. (It used to keep
       /// them for the whole pass, and on a run whose cycle time drifts no later
       /// chunk reuses them -- run 009's pass 1 held the sum of eleven chunks
-      /// and was killed at 2.25 TB.) `Stats::pool_reserved_points` is what it
-      /// held. A strict byte limit would still need weighted interval
-      /// accounting in the planner.
+      /// and was killed at 2.25 TB.) `Stats::pool_reserved_points` is the peak
+      /// pool-owned float capacity, which is not RSS. A strict byte bound
+      /// would need more than weighted interval accounting in the planner: it
+      /// would also need bounded pool retention for strictly growing request
+      /// sizes within a chunk (N, N+1, N+2, ... cells, each freed before the
+      /// next is taken, retain their sum while only the largest is live), and
+      /// accounting for the capacities that actually serve the live requests.
+      /// Best fit and the release at chunk boundaries supply neither.
       std::size_t live_memory_budget_bytes = 0;
 
       /// How many spectra are decoded and held at once.
@@ -869,16 +874,36 @@ namespace ODIA
       /// the precursors' spans on that grid, which the chunk planner counts
       /// exactly and keeps at or under the cap. `peak_live_points` counts every
       /// plane, so `x 4` bytes is the peak of LIVE block storage. It is a lower
-      /// bound on the chromatogram term of RSS, not that term: the block pool
-      /// retains freed blocks for reuse within a chunk, so what it holds can be
+      /// bound on the peak pool-owned float capacity, not that capacity: the
+      /// block pool retains freed blocks for reuse within a chunk, and serves a
+      /// request from a block that may be larger, so what it holds can be
       /// larger -- `pool_reserved_points`.
       std::size_t peak_live_precursors = 0;
       std::uint64_t peak_live_points = 0;
-      /// The most points the block pool held at once, live and free, all
-      /// planes; `x 4` bytes is the chromatogram term of RSS. The pool is
+      /// Peak pool-owned float capacity: the most floats the block pool's
+      /// backing arrays held at once, live and free, all planes. The pool is
       /// released at every chunk boundary, so this is the largest chunk's
-      /// holding, not the sum over chunks.
+      /// holding, not the sum over chunks. It is NOT the chromatogram term of
+      /// RSS: a released array goes back to the allocator, which may keep its
+      /// pages resident, and the pool's map nodes and the allocation overhead
+      /// are not counted. RSS needs its own measurement.
       std::uint64_t pool_reserved_points = 0;
+      /// The pool's backing arrays, counted as they are allocated and as they
+      /// are destroyed -- the latter by the arrays' deleter, when the memory
+      /// goes back to the allocator, independently of the pool's point
+      /// counters. Test instrumentation; nothing prints them.
+      ///   allocated:  over the whole call.
+      ///   freed:      destroyed by the time these statistics are taken (every
+      ///               chunk ends with a release, so equal to `allocated`).
+      ///   peak:       the most alive at once.
+      ///   chunk_max:  the most allocated within one chunk.
+      ///   left_after_release: the most still alive right after a chunk
+      ///               boundary's release -- 0 when each release destroyed them.
+      std::uint64_t pool_blocks_allocated = 0;
+      std::uint64_t pool_blocks_freed = 0;
+      std::uint64_t pool_blocks_peak = 0;
+      std::uint64_t pool_blocks_chunk_max = 0;
+      std::uint64_t pool_blocks_left_after_release = 0;
       /// Precursors that were extracted at all, i.e. had a window and a
       /// non-empty cycle range.
       std::size_t precursors_extracted = 0;

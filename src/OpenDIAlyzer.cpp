@@ -2010,8 +2010,9 @@ protected:
         << stats.peak_live_points << " points ("
         << double(stats.peak_live_points) * sizeof(float) / 1073741824.0
         << " GiB), bound by " << stats.memory_bound_by;
-    // What the block pool held, live and free: the chromatogram term of RSS,
-    // which the live peak above is only a lower bound on.
+    // What the block pool held, live and free: the peak pool-owned float
+    // capacity, which the live peak above is a lower bound on. Not RSS -- the
+    // allocator may keep released arrays' pages resident.
     msg << "\n  block pool: reserved at most " << stats.pool_reserved_points << " points ("
         << double(stats.pool_reserved_points) * sizeof(float) / 1073741824.0
         << " GiB), released at each chunk boundary";

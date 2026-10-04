@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <odia/ChromatogramExtractor.h>
+#include <odia/BlockPool.h>
 
 #include <algorithm>
 #include <atomic>
@@ -269,102 +270,6 @@ namespace ODIA
       std::vector<std::uint32_t> max_, add_;
       std::vector<std::uint64_t> gen_of_;
       std::uint64_t gen_ = 0;
-    };
-
-    /// Blocks, reused rather than returned to the allocator.
-    ///
-    /// Nearly every precursor asks for the same size -- 12 transitions by the
-    /// window's cycle count -- so the free list hits essentially always,
-    /// and the pass does one allocation per concurrently-live precursor for the
-    /// whole run instead of one per precursor. That matters at 4.26 M
-    /// precursors: 4.26 M allocate/free pairs of ~40 KB through malloc is where
-    /// a general allocator fragments, and fragmentation would put back exactly
-    /// the memory this change exists to remove.
-    ///
-    /// Blocks are handed out ZEROED, because the match accumulates into them
-    /// and a reused block still holds the previous precursor's peaks.
-    ///
-    /// "The same size" holds within a stretch of the run, not across it. The
-    /// cycles inside a fixed retention-time window fall as the cycle time
-    /// lengthens, and on PXD047793 run 009 it drifts from 1.593 to 1.642 s
-    /// (1,564 -> 1,531 cycles at +/-1255 s), so the chunks of a pass ask for
-    /// sizes their predecessors never did. Kept for the whole pass, the pool
-    /// then held every chunk's live set side by side -- eleven of them in pass
-    /// 1, killed at 2.25 TB in the ninth. So the pass releases it at each chunk
-    /// boundary, when nothing is live, and what it holds is one chunk's.
-    ///
-    /// Within a chunk the same drift still defeats an exact-size match, and a
-    /// pass of few wide chunks -- pass 2, or any pass the cap does not cut --
-    /// sees many sizes go by (pass 2 at -live_memory_gb 245 replayed up to
-    /// ~567 GiB retained in one chunk). So a request takes the SMALLEST free
-    /// block that holds it, and a block is filed under its capacity, not under
-    /// the size it was last asked for. Only the first n cells are zeroed, and
-    /// nothing reads past them: a precursor's cells are rows x its own cycles.
-    class BlockPool
-    {
-    public:
-      float* take(std::size_t n)
-      {
-        // A precursor all of whose transitions lack a product m/z has no rows.
-        // It is still emitted -- a consumer counting precursors that yielded
-        // nothing must see it -- so it needs a base that is not null.
-        if (n == 0) { return &dummy_; }
-        float* p = nullptr;
-        const auto fit = free_.lower_bound(n);
-        if (fit != free_.end())
-        {
-          p = fit->second;
-          free_.erase(fit);
-        }
-        else
-        {
-          owned_.push_back(std::make_unique_for_overwrite<float[]>(n));
-          p = owned_.back().get();
-          capacity_.emplace(p, n);
-          held_ += n;
-          reserved_ = std::max(reserved_, held_);
-        }
-        std::fill_n(p, n, 0.0f);
-        live_ += n;
-        peak_ = std::max(peak_, live_);
-        return p;
-      }
-
-      void give(float* p, std::size_t n)
-      {
-        if (n == 0) { return; }
-        free_.emplace(capacity_.at(p), p);
-        live_ -= n;
-      }
-
-      /// Frees every block back to the allocator and keeps the statistics.
-      /// Only when none is live: a live block is a chromatogram still being
-      /// filled, so releasing one is a defect and is refused with the number.
-      void release()
-      {
-        if (live_ != 0)
-        {
-          throw std::logic_error("the block pool was released with " +
-                                 std::to_string(live_) + " points still live");
-        }
-        free_.clear();
-        capacity_.clear();
-        owned_.clear();
-        held_ = 0;
-      }
-
-      /// The most points the pool held at once, live and free -- its share of
-      /// RSS, where peakPoints() is only the live part of it.
-      std::uint64_t reservedPoints() const { return reserved_; }
-      std::uint64_t peakPoints() const { return peak_; }
-
-    private:
-      /// Free blocks by CAPACITY, so lower_bound(n) is the best fit.
-      std::multimap<std::size_t, float*> free_;
-      std::unordered_map<const float*, std::size_t> capacity_;
-      std::vector<std::unique_ptr<float[]>> owned_;
-      std::uint64_t live_ = 0, peak_ = 0, held_ = 0, reserved_ = 0;
-      float dummy_ = 0.0f;
     };
   } // namespace
 
@@ -1725,6 +1630,11 @@ namespace ODIA
     st.peak_live_precursors = live_peak;
     st.peak_live_points = blocks.peakPoints();
     st.pool_reserved_points = blocks.reservedPoints();
+    st.pool_blocks_allocated = blocks.blocksAllocated();
+    st.pool_blocks_freed = blocks.blocksFreed();
+    st.pool_blocks_peak = blocks.blocksPeak();
+    st.pool_blocks_chunk_max = blocks.blocksBetweenReleasesMax();
+    st.pool_blocks_left_after_release = blocks.blocksLeftAfterRelease();
   }
 
 } // namespace ODIA

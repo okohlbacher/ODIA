@@ -656,7 +656,11 @@ add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
 # and pass 1 was killed at 2.25 TB in chunk 9 of 11. Here a cycle axis drifting
 # each way (0.5 -> 0.6 s and back), cut into 15 and 29 chunks: the pool must stay
 # within 1.05x the peak live set and the stream must still be the uncut one and
-# the brute force. Fails on 73d7a88 (11.6x to 20.1x).
+# the brute force. Fails on 73d7a88 (11.6x to 20.1x). The release must also
+# DESTROY the backing arrays, counted by their deleter: none may survive a chunk
+# boundary, and the pool may never own more than one chunk's. Fails with
+# owned_.clear() removed from BlockPool::release() (the held count reset alone
+# passes the ratio).
 add_test(NAME extract_pool_released_per_chunk COMMAND odia_extract_cases pool_release)
 
 # Released per chunk, an exact-size pool still grows INSIDE a chunk that holds
@@ -666,6 +670,12 @@ add_test(NAME extract_pool_released_per_chunk COMMAND odia_extract_cases pool_re
 # fit serves them from the larger freed blocks. The 0.5 -> 0.6 s axis, uncut and
 # in 4 chunks: within 1.05x the peak live set (exact sizes: 3.64x and 1.17x).
 add_test(NAME extract_pool_best_fit COMMAND odia_extract_cases pool_best_fit)
+
+# A returned block is filed under its CAPACITY, not the size it last served:
+# take(100) -> give -> take(60) -> give -> take(90) is one backing array. The
+# drifting-run cases cannot see this (their sizes move one way). Fails with
+# give() filing a block under the size just returned.
+add_test(NAME extract_pool_best_fit_by_capacity COMMAND odia_extract_cases pool_capacity)
 
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator

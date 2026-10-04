@@ -31,13 +31,18 @@
 //                 zero-transition / zero-valid precursors, both caps at once
 //   no_assignments  nothing assigned: every precursor still handed over, empty
 //   pool_release  on a run whose cycle time drifts, the block pool holds the
-//                 largest chunk and not the sum of them, and the stream is
-//                 still the uncut one
+//                 largest chunk and not the sum of them, its backing arrays
+//                 are destroyed at every chunk boundary (counted by their
+//                 deleter), and the stream is still the uncut one
 //   pool_best_fit and within a chunk of many generations it reuses a larger
 //                 free block for a smaller request
+//   pool_capacity a returned block is filed under its capacity, not the size
+//                 it last served: take(100), give, take(60), give, take(90)
+//                 is one backing array
 //
 // Usage: odia_extract_cases <case>
 
+#include <odia/BlockPool.h>
 #include <odia/ChromatogramExtractor.h>
 #include <odia/SpectrumSource.h>
 
@@ -48,6 +53,7 @@
 #include <exception>
 #include <limits>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -1637,6 +1643,15 @@ namespace
   /// five planes and in order, and equal the brute force -- which is also what
   /// catches a block that is not zeroed when it is taken (removing the fill
   /// fails every arm).
+  ///
+  /// The point ratio alone does not prove the release FREES anything: a
+  /// release that reset the held count but kept the arrays (owned_.clear()
+  /// removed, held_ = 0 kept) restarts the count each chunk and still passes
+  /// it. So the backing arrays are counted too, their destruction by their
+  /// deleter rather than by the pool's bookkeeping: none may survive a chunk
+  /// boundary, every one allocated must be destroyed by the end, the pool may
+  /// never own more arrays than one chunk allocated, and the pass may
+  /// allocate at most the largest chunk's count per chunk.
   void casePoolRelease()
   {
     for (const bool lengthens : {true, false})
@@ -1692,6 +1707,26 @@ namespace
                 "the pool holds at least what is live" + at);
           check(double(st.pool_reserved_points) <= 1.05 * double(st.peak_live_points),
                 "the pool holds at most 1.05x the largest chunk's live set" + at);
+
+          std::printf("       backing arrays: %llu allocated, %llu destroyed, at most %llu "
+                      "owned at once, %llu in the largest chunk, %llu left after a "
+                      "release\n",
+                      static_cast<unsigned long long>(st.pool_blocks_allocated),
+                      static_cast<unsigned long long>(st.pool_blocks_freed),
+                      static_cast<unsigned long long>(st.pool_blocks_peak),
+                      static_cast<unsigned long long>(st.pool_blocks_chunk_max),
+                      static_cast<unsigned long long>(st.pool_blocks_left_after_release));
+          check(st.pool_blocks_chunk_max > 0 &&
+                  st.pool_blocks_allocated > st.pool_blocks_chunk_max,
+                "more than one chunk allocated backing arrays" + at);
+          check(st.pool_blocks_left_after_release == 0,
+                "no backing array survives a chunk boundary" + at);
+          check(st.pool_blocks_freed == st.pool_blocks_allocated,
+                "every backing array allocated is destroyed by the end of the pass" + at);
+          check(st.pool_blocks_peak == st.pool_blocks_chunk_max,
+                "the pool never owns more backing arrays than one chunk allocated" + at);
+          check(st.pool_blocks_allocated <= st.pool_blocks_chunk_max * st.chunks,
+                "the pass allocates at most the largest chunk's arrays per chunk" + at);
         }
       }
     }
@@ -1753,6 +1788,85 @@ namespace
         check(double(st.pool_reserved_points) <= 1.05 * double(st.peak_live_points),
               "the pool holds at most 1.05x the peak live set" + at);
       }
+    }
+  }
+
+  /// A returned block keeps its CAPACITY, whatever it last served.
+  ///
+  /// Best fit files a free block under what it can hold. Filed instead under
+  /// the size it was last asked for, a block that served a smaller request
+  /// looks smaller than it is, and a later request between the two sizes
+  /// allocates beside it -- which the drifting-run cases cannot see, because
+  /// their sizes move one way. take(100) -> give -> take(60) -> give ->
+  /// take(90) must therefore be served by ONE backing array. Also checked on
+  /// the pool directly: a reused block is zeroed over the request, of two
+  /// free blocks the smaller that holds the request is taken, a release while
+  /// a block is live is refused, and a release destroys every backing array
+  /// (counted by their deleter).
+  void casePoolCapacity()
+  {
+    const auto zero = [](const float* p, std::size_t n) {
+      return std::all_of(p, p + n, [](float v) { return v == 0.0f; });
+    };
+    {
+      ODIA::BlockPool pool;
+      float* const a = pool.take(100);
+      check(zero(a, 100), "a new block is zeroed");
+      std::fill_n(a, 100, 7.0f);
+      pool.give(a, 100);
+      float* const b = pool.take(60);
+      check(b == a, "take(60) after give(100) reuses the 100-float block");
+      check(zero(b, 60), "the reused block is zeroed over the 60 requested");
+      std::fill_n(b, 60, 7.0f);
+      pool.give(b, 60);
+      float* const c = pool.take(90);
+      check(c == a, "take(90) after that block served 60 reuses it: it is filed by "
+                    "capacity, not by the size it last served");
+      check(zero(c, 90), "the reused block is zeroed over the 90 requested");
+      std::printf("       take(100) give take(60) give take(90): %llu backing array(s), "
+                  "pool held %llu floats, peak live %llu\n",
+                  static_cast<unsigned long long>(pool.blocksAllocated()),
+                  static_cast<unsigned long long>(pool.reservedPoints()),
+                  static_cast<unsigned long long>(pool.peakPoints()));
+      check(pool.blocksAllocated() == 1, "the three requests need one backing array");
+      check(pool.reservedPoints() == 100, "the pool held 100 floats, the one array");
+      check(pool.peakPoints() == 100, "peak live counts requested points: 100");
+
+      bool refused = false;
+      try { pool.release(); }
+      catch (const std::logic_error&) { refused = true; }
+      check(refused, "a release while 90 points are live is refused");
+      pool.give(c, 90);
+      pool.release();
+      check(pool.blocksFreed() == 1 && pool.blocksLeftAfterRelease() == 0,
+            "release destroys the backing array");
+    }
+    {
+      ODIA::BlockPool pool;
+      float* const big = pool.take(200);
+      float* const small = pool.take(100);
+      pool.give(big, 200);
+      pool.give(small, 100);
+      float* const x = pool.take(90);
+      float* const y = pool.take(150);
+      check(x == small, "take(90) takes the smaller free block that holds it (100, not 200)");
+      check(y == big, "take(150) then takes the 200-float block");
+      float* const z = pool.take(10);
+      check(z != big && z != small && pool.blocksAllocated() == 3,
+            "with every block live, take(10) allocates");
+      pool.give(x, 90); pool.give(y, 150); pool.give(z, 10);
+      pool.release();
+      check(pool.blocksFreed() == 3 && pool.blocksLeftAfterRelease() == 0 &&
+              pool.blocksPeak() == 3 && pool.blocksBetweenReleasesMax() == 3,
+            "release destroys all three backing arrays");
+      float* const again = pool.take(50);
+      check(pool.blocksAllocated() == 4 && pool.blocksBetweenReleasesMax() == 3,
+            "after a release nothing is reused: take(50) allocates");
+      pool.give(again, 50);
+      pool.release();
+      check(pool.blocksFreed() == 4 && pool.blocksLeftAfterRelease() == 0 &&
+              pool.blocksPeak() == 3,
+            "the second release destroys it; never more than 3 owned at once");
     }
   }
 
@@ -1821,13 +1935,14 @@ int main(int argc, char** argv)
   else if (which == "no_assignments") { caseNoAssignments(); }
   else if (which == "pool_release") { casePoolRelease(); }
   else if (which == "pool_best_fit") { casePoolBestFit(); }
+  else if (which == "pool_capacity") { casePoolCapacity(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
                  "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments|"
-                 "pool_release|pool_best_fit>\n");
+                 "pool_release|pool_best_fit|pool_capacity>\n");
     return 2;
   }
 
