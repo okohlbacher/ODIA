@@ -30,6 +30,9 @@
 //                 spectra, missing acquisitions, no-window / outside-run /
 //                 zero-transition / zero-valid precursors, both caps at once
 //   no_assignments  nothing assigned: every precursor still handed over, empty
+//   pool_release  on a run whose cycle time drifts, the block pool holds the
+//                 largest chunk and not the sum of them, and the stream is
+//                 still the uncut one
 //
 // Usage: odia_extract_cases <case>
 
@@ -1532,6 +1535,166 @@ namespace
     check(both_failed == 0, "with both caps the tighter binds, and the stream is unchanged");
   }
 
+  // ------------------------------------------------- the block pool
+
+  /// A run whose cycle time DRIFTS, as PXD047793 run 009's does (1.593 ->
+  /// 1.642 s), so the cycles inside a fixed retention-time window -- and with
+  /// them the block each precursor asks the pool for -- change along the run.
+  ///
+  /// One window, 1,600 cycles whose spacing moves linearly from @p from to
+  /// @p to seconds, in steps of 2^-10 s so every time is exact in float. The
+  /// spacing is then monotone, and so is the number of cycles a window centred
+  /// on a cycle holds: the block sizes fall along a lengthening cycle and grow
+  /// along a shortening one, which the cases check rather than assume. A
+  /// precursor every 8 cycles, three transitions each, centred on a cycle and
+  /// clear of the run's ends; every transition is present in most spectra
+  /// with an intensity naming the cycle, beside a second peak 3 ppm off target
+  /// so the mass planes carry sums, and absent from every ninth spectrum so a
+  /// trace has zero cells for a stale block to show up in.
+  struct DriftRun
+  {
+    ScriptedRun run;
+    ScriptedLibrary lib;
+    static constexpr std::uint32_t CYCLES = 1600, EVERY = 8;
+    static constexpr double HALF = 60.0;
+
+    DriftRun(double from, double to)
+    {
+      const auto w = run.addWindow(500.0, 510.0);
+      std::vector<double> t(CYCLES);
+      double at = 1000.0 + 375.0 / 1024.0;
+      for (std::uint32_t c = 0; c < CYCLES; ++c)
+      {
+        t[c] = at;
+        at += std::round(1024.0 * (from + (to - from) * double(c) / double(CYCLES))) / 1024.0;
+      }
+      std::vector<double> product;
+      for (std::uint32_t c = 0; c < CYCLES; c += EVERY)
+      {
+        if (t[c] - HALF <= t.front() || t[c] + HALF >= t.back()) { continue; }
+        const auto i = lib.addPrecursor(505.0);
+        lib.library().precursors().irt[i] = static_cast<float>(t[c]);
+        const double first = 200.0 + 0.37 * double(product.size() / 3);
+        for (int k = 0; k < 3; ++k)
+        {
+          product.push_back(first + 310.0 * k);
+          lib.addTransition(product.back());
+        }
+      }
+      for (std::uint32_t c = 0; c < CYCLES; ++c)
+      {
+        const auto s = run.addSpectrum(w, t[c]);
+        for (std::size_t j = 0; j < product.size(); ++j)
+        {
+          if ((c + j) % 9 == 0) { continue; }
+          run.addPeak(s, product[j], float(c) + 1.0f + 0.25f * float(j % 4));
+          run.addPeak(s, product[j] * (1.0 + 3e-6), 0.5f + float((c * 7 + j) % 5));
+        }
+      }
+    }
+  };
+
+  /// The premise the pool cases rest on, checked on the brute force: every
+  /// window is a full one, and the block sizes move one way along the run --
+  /// down when @p falling, up otherwise -- by more than a tenth.
+  bool driftPremise(const Oracle& o, const ODIA::Library& lib, bool falling)
+  {
+    bool monotone = o.assigned.size() == lib.precursorCount() && o.tail.empty();
+    for (std::size_t e = 1; monotone && e < o.assigned.size(); ++e)
+    {
+      const std::uint32_t was = o.assigned[e - 1].cycles, now = o.assigned[e].cycles;
+      monotone = falling ? now <= was : now >= was;
+    }
+    const std::uint32_t first = o.assigned.empty() ? 0 : o.assigned.front().cycles;
+    const std::uint32_t last = o.assigned.empty() ? 0 : o.assigned.back().cycles;
+    std::printf("       %zu precursors, %u -> %u cycles a window along the run\n",
+                o.assigned.size(), first, last);
+    return monotone && (falling ? double(last) < 0.9 * double(first)
+                                : double(first) < 0.9 * double(last));
+  }
+
+  /// The block pool must hold one chunk, not the run.
+  ///
+  /// It was kept for the whole pass and reused a block only for the same
+  /// size. On a run whose cycle time drifts no later chunk asks for the
+  /// earlier chunks' sizes, so each chunk allocated its live set afresh beside
+  /// the last: run 009's pass 1 retained the SUM of its eleven chunks and was
+  /// killed at 2.25 TB in the ninth. The pool is now released at every chunk
+  /// boundary.
+  ///
+  /// Each chunk here is a few precursors whose windows all overlap -- pass 1's
+  /// geometry, a +/-1255 s window over chunks ~570 s of centres wide -- so all
+  /// of a chunk is live at once, it reuses nothing within itself, and the pool
+  /// must hold exactly the largest chunk: at most 1.05x `peak_live_points`.
+  /// Both directions of drift: run 009's cycle lengthens, so the sizes fall;
+  /// along a shortening one they grow, and no reuse policy can serve them from
+  /// an earlier chunk's blocks, so that arm fails without the release whatever
+  /// the pool reuses. Kept for the pass, as on 73d7a88, the pool held 20.1x /
+  /// 12.1x (lengthening) and 19.9x / 11.6x (shortening) at caps of 6 / 12.
+  /// Released, the stream must still be the uncut one, bit for bit in all
+  /// five planes and in order, and equal the brute force -- which is also what
+  /// catches a block that is not zeroed when it is taken (removing the fill
+  /// fails every arm).
+  void casePoolRelease()
+  {
+    for (const bool lengthens : {true, false})
+    {
+      DriftRun d(lengthens ? 0.5 : 0.6, lengthens ? 0.6 : 0.5);
+      const auto& lib = d.lib.library();
+      const std::string run = lengthens ? "lengthening" : "shortening";
+      std::printf("       cycle time %s:\n", lengthens ? "0.5 -> 0.6 s" : "0.6 -> 0.5 s");
+      auto opt = matrixOptions();
+      opt.rt_window_seconds = DriftRun::HALF;
+      const Oracle oracle = bruteForce(d.run, lib, opt);
+      check(driftPremise(oracle, lib, lengthens),
+            "a " + run + " cycle moves every block size the same way");
+
+      RecordingSink reference;
+      ODIA::ChromatogramExtractor::Stats ref_st;
+      ODIA::ChromatogramExtractor::extract(lib, d.run, opt, reference, &ref_st);
+      check(ref_st.chunks == 1, "uncapped, the " + run + " run is one chunk");
+      const std::string ref_vs_oracle = againstOracle(oracle, reference.traces);
+      check(ref_vs_oracle.empty(), "the uncut stream equals the brute force" +
+                                   (ref_vs_oracle.empty() ? "" : ": " + ref_vs_oracle));
+
+      for (const std::size_t cap : {std::size_t(6), std::size_t(12)})
+      {
+        for (const unsigned threads : {1u, 4u})
+        {
+          auto o = opt;
+          o.max_live_precursors = cap;
+          o.threads = threads;
+          RecordingSink got;
+          ODIA::ChromatogramExtractor::Stats st;
+          std::string error;
+          try { ODIA::ChromatogramExtractor::extract(lib, d.run, o, got, &st); }
+          catch (const std::exception& e) { error = e.what(); }
+          const std::string at = " (" + run + ", cap " + std::to_string(cap) + ", " +
+                                 std::to_string(threads) + " threads, " +
+                                 std::to_string(st.chunks) + " chunks)";
+          const double ratio = st.peak_live_points
+                                 ? double(st.pool_reserved_points) / double(st.peak_live_points)
+                                 : 0.0;
+          std::printf("       cap %zu, %u threads: %zu chunks, peak live %llu points, pool "
+                      "reserved %llu (%.3fx)%s\n", cap, threads, st.chunks,
+                      static_cast<unsigned long long>(st.peak_live_points),
+                      static_cast<unsigned long long>(st.pool_reserved_points), ratio,
+                      error.empty() ? "" : (" -- " + error).c_str());
+          check(error.empty() && st.chunks >= 8, "the cap cuts the run into many chunks" + at);
+          const std::string why = againstOracle(oracle, got.traces);
+          check(why.empty() && sameStream(got.traces, reference.traces),
+                "the chunked stream is the uncut one and the brute force" + at +
+                (why.empty() ? "" : ": " + why));
+          check(st.peak_live_precursors <= cap, "no more precursors live than the cap" + at);
+          check(st.pool_reserved_points >= st.peak_live_points,
+                "the pool holds at least what is live" + at);
+          check(double(st.pool_reserved_points) <= 1.05 * double(st.peak_live_points),
+                "the pool holds at most 1.05x the largest chunk's live set" + at);
+        }
+      }
+    }
+  }
+
   /// Nothing assigned: no precursor has a covering window. Every precursor
   /// with transitions is still handed over, empty, in library order -- chunked
   /// or not, budgeted or not -- and nothing throws.
@@ -1595,12 +1758,14 @@ int main(int argc, char** argv)
   else if (which == "cap_zero_rows") { caseCapZeroRows(); }
   else if (which == "chunk_matrix") { caseChunkMatrix(); }
   else if (which == "no_assignments") { caseNoAssignments(); }
+  else if (which == "pool_release") { casePoolRelease(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
-                 "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments>\n");
+                 "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments|"
+                 "pool_release>\n");
     return 2;
   }
 

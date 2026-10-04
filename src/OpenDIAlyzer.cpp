@@ -2010,6 +2010,11 @@ protected:
         << stats.peak_live_points << " points ("
         << double(stats.peak_live_points) * sizeof(float) / 1073741824.0
         << " GiB), bound by " << stats.memory_bound_by;
+    // What the block pool held, live and free: the chromatogram term of RSS,
+    // which the live peak above is only a lower bound on.
+    msg << "\n  block pool: reserved at most " << stats.pool_reserved_points << " points ("
+        << double(stats.pool_reserved_points) * sizeof(float) / 1073741824.0
+        << " GiB), released at each chunk boundary";
     if (!stats.live_budget_note.empty())
     { msg << "\n  live budget: " << stats.live_budget_note; }
     if (stats.chunks > 1)
