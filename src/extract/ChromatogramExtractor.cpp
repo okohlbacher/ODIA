@@ -9,6 +9,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <queue>
@@ -270,10 +271,10 @@ namespace ODIA
       std::uint64_t gen_ = 0;
     };
 
-    /// Fixed-size blocks, reused rather than returned to the allocator.
+    /// Blocks, reused rather than returned to the allocator.
     ///
     /// Nearly every precursor asks for the same size -- 12 transitions by the
-    /// window's cycle count -- so a free list per size hits essentially always,
+    /// window's cycle count -- so the free list hits essentially always,
     /// and the pass does one allocation per concurrently-live precursor for the
     /// whole run instead of one per precursor. That matters at 4.26 M
     /// precursors: 4.26 M allocate/free pairs of ~40 KB through malloc is where
@@ -291,6 +292,14 @@ namespace ODIA
     /// then held every chunk's live set side by side -- eleven of them in pass
     /// 1, killed at 2.25 TB in the ninth. So the pass releases it at each chunk
     /// boundary, when nothing is live, and what it holds is one chunk's.
+    ///
+    /// Within a chunk the same drift still defeats an exact-size match, and a
+    /// pass of few wide chunks -- pass 2, or any pass the cap does not cut --
+    /// sees many sizes go by (pass 2 at -live_memory_gb 245 replayed up to
+    /// ~567 GiB retained in one chunk). So a request takes the SMALLEST free
+    /// block that holds it, and a block is filed under its capacity, not under
+    /// the size it was last asked for. Only the first n cells are zeroed, and
+    /// nothing reads past them: a precursor's cells are rows x its own cycles.
     class BlockPool
     {
     public:
@@ -300,17 +309,18 @@ namespace ODIA
         // It is still emitted -- a consumer counting precursors that yielded
         // nothing must see it -- so it needs a base that is not null.
         if (n == 0) { return &dummy_; }
-        auto& bin = free_[n];
         float* p = nullptr;
-        if (!bin.empty())
+        const auto fit = free_.lower_bound(n);
+        if (fit != free_.end())
         {
-          p = bin.back();
-          bin.pop_back();
+          p = fit->second;
+          free_.erase(fit);
         }
         else
         {
           owned_.push_back(std::make_unique_for_overwrite<float[]>(n));
           p = owned_.back().get();
+          capacity_.emplace(p, n);
           held_ += n;
           reserved_ = std::max(reserved_, held_);
         }
@@ -323,7 +333,7 @@ namespace ODIA
       void give(float* p, std::size_t n)
       {
         if (n == 0) { return; }
-        free_[n].push_back(p);
+        free_.emplace(capacity_.at(p), p);
         live_ -= n;
       }
 
@@ -338,6 +348,7 @@ namespace ODIA
                                  std::to_string(live_) + " points still live");
         }
         free_.clear();
+        capacity_.clear();
         owned_.clear();
         held_ = 0;
       }
@@ -348,7 +359,9 @@ namespace ODIA
       std::uint64_t peakPoints() const { return peak_; }
 
     private:
-      std::unordered_map<std::size_t, std::vector<float*>> free_;
+      /// Free blocks by CAPACITY, so lower_bound(n) is the best fit.
+      std::multimap<std::size_t, float*> free_;
+      std::unordered_map<const float*, std::size_t> capacity_;
       std::vector<std::unique_ptr<float[]>> owned_;
       std::uint64_t live_ = 0, peak_ = 0, held_ = 0, reserved_ = 0;
       float dummy_ = 0.0f;

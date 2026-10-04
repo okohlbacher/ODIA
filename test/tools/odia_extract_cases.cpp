@@ -33,6 +33,8 @@
 //   pool_release  on a run whose cycle time drifts, the block pool holds the
 //                 largest chunk and not the sum of them, and the stream is
 //                 still the uncut one
+//   pool_best_fit and within a chunk of many generations it reuses a larger
+//                 free block for a smaller request
 //
 // Usage: odia_extract_cases <case>
 
@@ -1695,6 +1697,65 @@ namespace
     }
   }
 
+  /// Within a chunk the pool must reuse a larger free block for a smaller
+  /// request.
+  ///
+  /// Released per chunk, an exact-size pool is still unbounded INSIDE a chunk
+  /// that holds many generations of precursors -- the uncut pass here, or
+  /// pass 2's few wide chunks (replayed at up to ~567 GiB retained in one chunk
+  /// of run 009 at -live_memory_gb 245) -- because on a drifting run every
+  /// generation asks for smaller blocks than the one before and none of the
+  /// freed ones is the right size. Best fit takes the smallest free block that
+  /// holds the request, so a falling size always fits: the pool must stay
+  /// within 1.05x the peak live set -- with exact sizes it held 3.64x uncut
+  /// and 1.17x in 4 chunks -- and the stream must be the brute force's. Sizes
+  /// that fall is this run's premise and is checked; on a real library they
+  /// also vary with the valid transitions, and a request larger than every
+  /// free block still allocates.
+  void casePoolBestFit()
+  {
+    DriftRun d(0.5, 0.6);
+    const auto& lib = d.lib.library();
+    auto opt = matrixOptions();
+    opt.rt_window_seconds = DriftRun::HALF;
+    const Oracle oracle = bruteForce(d.run, lib, opt);
+    check(driftPremise(oracle, lib, true), "a lengthening cycle moves every block size the same way");
+
+    for (const std::size_t cap : {std::size_t(0), std::size_t(40)})
+    {
+      for (const unsigned threads : {1u, 4u})
+      {
+        auto o = opt;
+        o.max_live_precursors = cap;
+        o.threads = threads;
+        RecordingSink got;
+        ODIA::ChromatogramExtractor::Stats st;
+        std::string error;
+        try { ODIA::ChromatogramExtractor::extract(lib, d.run, o, got, &st); }
+        catch (const std::exception& e) { error = e.what(); }
+        const std::string at = " (cap " + std::to_string(cap) + ", " +
+                               std::to_string(threads) + " threads, " +
+                               std::to_string(st.chunks) + " chunks)";
+        const double ratio = st.peak_live_points
+                               ? double(st.pool_reserved_points) / double(st.peak_live_points)
+                               : 0.0;
+        std::printf("       cap %zu, %u threads: %zu chunks, peak live %llu points, pool "
+                    "reserved %llu (%.3fx)%s\n", cap, threads, st.chunks,
+                    static_cast<unsigned long long>(st.peak_live_points),
+                    static_cast<unsigned long long>(st.pool_reserved_points), ratio,
+                    error.empty() ? "" : (" -- " + error).c_str());
+        check(error.empty() && st.chunks == (cap == 0 ? 1u : 4u),
+              "uncapped one chunk, at a cap of 40 four wide ones" + at);
+        const std::string why = againstOracle(oracle, got.traces);
+        check(why.empty(), "the stream is the brute force" + at + (why.empty() ? "" : ": " + why));
+        check(st.pool_reserved_points >= st.peak_live_points,
+              "the pool holds at least what is live" + at);
+        check(double(st.pool_reserved_points) <= 1.05 * double(st.peak_live_points),
+              "the pool holds at most 1.05x the peak live set" + at);
+      }
+    }
+  }
+
   /// Nothing assigned: no precursor has a covering window. Every precursor
   /// with transitions is still handed over, empty, in library order -- chunked
   /// or not, budgeted or not -- and nothing throws.
@@ -1759,13 +1820,14 @@ int main(int argc, char** argv)
   else if (which == "chunk_matrix") { caseChunkMatrix(); }
   else if (which == "no_assignments") { caseNoAssignments(); }
   else if (which == "pool_release") { casePoolRelease(); }
+  else if (which == "pool_best_fit") { casePoolBestFit(); }
   else
   {
     std::fprintf(stderr,
                  "usage: odia_extract_cases "
                  "<invalid_mz|aggregate|mobility|im_gating|band_edge|wide_csr|sliding|"
                  "chunk_invariant|cap_zero_rows|chunk_matrix|no_assignments|"
-                 "pool_release>\n");
+                 "pool_release|pool_best_fit>\n");
     return 2;
   }
 

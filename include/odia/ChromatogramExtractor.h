@@ -700,14 +700,16 @@ namespace ODIA
       /// run where the live precursors have larger-than-average blocks (more
       /// valid transitions, or wider windows) exceeds the budget; it admits at
       /// least one precursor even if that one alone is over it; and within a
-      /// chunk the block pool reuses a freed block only for a request of the
-      /// same size, so the storage it holds can exceed the chunk's peak live
-      /// storage. ACROSS chunks it does not add up: the pool is released at
-      /// every chunk boundary, so it holds one chunk's blocks at most. (It used
-      /// to keep them for the whole pass, and on a run whose cycle time drifts
-      /// no later chunk reuses them -- run 009's pass 1 held the sum of eleven
-      /// chunks and was killed at 2.25 TB.) `Stats::pool_reserved_points` is
-      /// what it held. A strict byte limit would still need weighted interval
+      /// chunk the block pool serves a request from the smallest free block
+      /// that holds it, so the storage it holds exceeds the chunk's peak live
+      /// storage by what larger blocks carry beyond the requests they serve,
+      /// and by a request larger than every free block, which allocates. ACROSS
+      /// chunks it does not add up: the pool is released at every chunk
+      /// boundary, so it holds one chunk's blocks at most. (It used to keep
+      /// them for the whole pass, and on a run whose cycle time drifts no later
+      /// chunk reuses them -- run 009's pass 1 held the sum of eleven chunks
+      /// and was killed at 2.25 TB.) `Stats::pool_reserved_points` is what it
+      /// held. A strict byte limit would still need weighted interval
       /// accounting in the planner.
       std::size_t live_memory_budget_bytes = 0;
 

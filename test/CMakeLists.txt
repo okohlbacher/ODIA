@@ -659,6 +659,14 @@ add_test(NAME extract_no_assignments COMMAND odia_extract_cases no_assignments)
 # the brute force. Fails on 73d7a88 (11.6x to 20.1x).
 add_test(NAME extract_pool_released_per_chunk COMMAND odia_extract_cases pool_release)
 
+# Released per chunk, an exact-size pool still grows INSIDE a chunk that holds
+# many generations of precursors -- an uncut pass, or pass 2's few wide chunks
+# (replayed at up to ~567 GiB retained in one chunk of run 009) -- because each
+# generation on a lengthening cycle asks for smaller blocks than the last. Best
+# fit serves them from the larger freed blocks. The 0.5 -> 0.6 s axis, uncut and
+# in 4 chunks: within 1.05x the peak live set (exact sizes: 3.64x and 1.17x).
+add_test(NAME extract_pool_best_fit COMMAND odia_extract_cases pool_best_fit)
+
 # More than 2^32 chromatogram points, which the 32-bit CSR offsets refused
 # outright at 266,664 precursors -- against the 4,255,113 the library generator
 # emits. The point array is preallocated as transitions x cycles, so crossing
