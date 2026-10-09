@@ -7,6 +7,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -430,6 +433,36 @@ namespace ODIA
     }
     for (auto& a : axis) { a.finish(); }
 
+    // CHUNKBUG DIAGNOSTIC (scratch worktree only): position in `info` of every
+    // (window, cycle), so a chunk's exact spectrum needs can be computed.
+    const char* diag_env = std::getenv("ODIA_CHUNK_DIAG");
+    const char* dump_env = std::getenv("ODIA_CHUNK_DUMP");
+    const bool chunk_fix = std::getenv("ODIA_CHUNK_FIX") != nullptr;
+    std::vector<std::vector<std::uint32_t>> si_of(windows.size());
+    for (std::size_t si = 0; si < info.size(); ++si)
+    {
+      if (window_of[si] != std::numeric_limits<std::uint32_t>::max())
+      { si_of[window_of[si]].push_back(static_cast<std::uint32_t>(si)); }
+    }
+    FILE* dump = dump_env ? std::fopen(dump_env, "w") : nullptr;
+    if (dump) { std::fprintf(dump, "id\tdecoy\tcharge\tmz\tprecursor\twindow\tlo\thi\tchunk\tsi_lo\tsi_hi\tchunk_first\tchunk_last\tvalid\tnz\tnz_first\tnz_last\tsum\thash\n"); }
+    std::size_t diag_chunk = 0, diag_first = 0, diag_last = 0;
+    if (diag_env)
+    {
+      std::size_t unsorted = 0;
+      for (std::size_t si = 1; si < info.size(); ++si)
+      { if (info[si].retention_time < info[si - 1].retention_time) { ++unsorted; } }
+      std::size_t up = 0, down = 0, exact = 0;
+      for (std::size_t si = 0; si < info.size(); ++si)
+      {
+        const double r = info[si].retention_time;
+        const double f = double(static_cast<float>(r));
+        if (f > r) { ++up; } else if (f < r) { ++down; } else { ++exact; }
+      }
+      std::fprintf(stderr, "CHUNKDIAG spectra %zu windows %zu rt_descents %zu float_round_up %zu down %zu exact %zu fix=%d\n",
+                   info.size(), windows.size(), unsorted, up, down, exact, int(chunk_fix));
+    }
+
     // The caller's retention-time range, resolved to a cycle range per window
     // and to a spectrum range for the pass. Resolving it BEFORE decoding is the
     // difference between reading the slice and reading the run: filtering
@@ -738,7 +771,7 @@ namespace ODIA
     // which for most precursors is most of the run.
     std::vector<LiveSlot> live(n_slots);
     BlockPool blocks;
-    std::size_t live_now = 0, live_peak = 0;
+    std::size_t live_now = 0, live_peak = 0, chunk_peak = 0;
     std::atomic<std::size_t> nonzero{0};
     // Points a peak fell on while the destination precursor was not live. It
     // must be zero -- the cycle test below already excludes them -- and it is
@@ -882,6 +915,7 @@ namespace ODIA
       live[slot].lo = a.lo;
       live[slot].hi = a.hi;
       live_peak = std::max(live_peak, ++live_now);
+      chunk_peak = std::max(chunk_peak, live_now);
     };
     const auto emit = [&](std::uint32_t slot) {
       const Assignment& a = assignments[slot];
@@ -937,6 +971,38 @@ namespace ODIA
       trace.offset = off_scratch.data();
       trace.count = count_scratch.data();
 
+      if (dump)
+      {
+        std::uint64_t h = 1469598103934665603ull;
+        std::size_t nz = 0, nz_first = 0, nz_last = 0;
+        double sum = 0.0;
+        const float* b = live[slot].base;
+        for (std::uint32_t r = 0; r < a.valid; ++r)
+        {
+          for (std::uint32_t c = 0; c < cycles; ++c)
+          {
+            const float v = b[std::size_t(r) * cycles + c];
+            std::uint32_t bits; std::memcpy(&bits, &v, 4);
+            h = (h ^ bits) * 1099511628211ull;
+            if (v != 0.0f)
+            {
+              ++nz; sum += v;
+              if (c == 0) { ++nz_first; }
+              if (c + 1 == cycles) { ++nz_last; }
+            }
+          }
+        }
+        {
+          const auto seq = library.strings().get(p.modified_sequence[a.precursor]);
+          std::fprintf(dump, "%.*s%d\t%d\t%d\t%.6f\t", int(seq.size()), seq.data(),
+                       int(p.charge[a.precursor]), int(p.decoy[a.precursor] ? 1 : 0),
+                       int(p.charge[a.precursor]), fromFixed(p.mz[a.precursor]));
+        }
+        std::fprintf(dump, "%u\t%u\t%u\t%u\t%zu\t%u\t%u\t%zu\t%zu\t%u\t%zu\t%zu\t%zu\t%.9g\t%016llx\n",
+                     a.precursor, a.window, a.lo, a.hi, diag_chunk,
+                     si_of[a.window][a.lo], si_of[a.window][a.hi - 1], diag_first, diag_last,
+                     a.valid, nz, nz_first, nz_last, sum, (unsigned long long)h);
+      }
       const auto t_sink = std::chrono::steady_clock::now();
       sink.accept(trace);
       st.sink_seconds += std::chrono::duration<double>(
@@ -1091,6 +1157,48 @@ namespace ODIA
           std::upper_bound(info.begin(), info.end(), hi_rt,
                            [](double v, const SpectrumInfo& s) { return v < s.retention_time; })
           - info.begin()));
+      }
+      // CHUNKBUG: the exact spectrum range this chunk's cycles need.
+      {
+        std::size_t need_first = std::numeric_limits<std::size_t>::max(), need_last = 0;
+        std::size_t lo_missed = 0, hi_missed = 0;
+        for (const std::uint32_t slot : slots)
+        {
+          const Assignment& a = assignments[slot];
+          need_first = std::min<std::size_t>(need_first, si_of[a.window][a.lo]);
+          need_last = std::max<std::size_t>(need_last, std::size_t(si_of[a.window][a.hi - 1]) + 1);
+        }
+        if (slots.empty()) { need_first = first_spectrum; need_last = last_spectrum; }
+        need_first = std::max(need_first, first_spectrum);
+        need_last = std::min(need_last, last_spectrum);
+        for (const std::uint32_t slot : slots)
+        {
+          const Assignment& a = assignments[slot];
+          if (si_of[a.window][a.lo] < chunk_first) { ++lo_missed; }
+          if (si_of[a.window][a.hi - 1] >= chunk_last) { ++hi_missed; }
+        }
+        if (diag_env)
+        {
+          double lo_rt = std::numeric_limits<double>::infinity(), hi_rt = -lo_rt;
+          for (const std::uint32_t slot : slots)
+          {
+            lo_rt = std::min(lo_rt, double(slot_rt_lo[slot]));
+            hi_rt = std::max(hi_rt, double(slot_rt_hi[slot]));
+          }
+          const auto rt = [&](std::size_t si) { return si < info.size() ? info[si].retention_time : -1.0; };
+          std::fprintf(stderr,
+            "CHUNKDIAG chunk %zu/%zu slots %zu lo_rt(float) %.9f hi_rt(float) %.9f | planned [%zu,%zu) rt %.9f..%.9f | needed [%zu,%zu) rt %.9f..%.9f | slots whose first cycle is NOT decoded %zu, last cycle NOT decoded %zu\n",
+            diag_chunk + 1, chunks.size(), slots.size(), lo_rt, hi_rt,
+            chunk_first, chunk_last, rt(chunk_first), rt(chunk_last ? chunk_last - 1 : 0),
+            need_first, need_last, rt(need_first), rt(need_last ? need_last - 1 : 0),
+            lo_missed, hi_missed);
+        }
+        if (chunk_fix && chunks.size() > 1 && !slots.empty())
+        {
+          chunk_first = need_first;
+          chunk_last = need_last;
+        }
+        diag_first = chunk_first; diag_last = chunk_last;
       }
 
       st.index_seconds += std::chrono::duration<double>(
@@ -1295,7 +1403,15 @@ namespace ODIA
       st.assemble_seconds += std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - t_flush).count()
                              - (st.sink_seconds - sink_before_flush);
+      if (diag_env)
+      {
+        std::fprintf(stderr, "CHUNKDIAG chunk %zu/%zu peak live %zu precursors (cap %zu)\n",
+                     diag_chunk + 1, chunks.size(), chunk_peak, cap);
+      }
+      chunk_peak = 0;
+      ++diag_chunk;
     }
+    if (dump) { std::fclose(dump); dump = nullptr; }
     if (options.progress_every) { std::cerr << "\r" << std::string(48, ' ') << "\r"; }
 
     if (unhoused.load() != 0)
