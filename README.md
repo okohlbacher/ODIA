@@ -8,8 +8,8 @@ tree. Its tools derive from `TOPPBase`, so they accept the usual TOPP command
 line (`-ini`, `-write_ini`, `-threads`, …) and emit CTD, but OpenMS itself is
 consumed as an installed, read-only dependency and is never modified.
 
-> Status: infrastructure only. The scientific scope is still being defined —
-> see `doc/`.
+> **Status: retired (2026-10-06).** Development has stopped; see
+> [doc/84-project-retirement.md](doc/84-project-retirement.md) for the final state, results and branch map.
 
 ## Layout
 
